@@ -9,6 +9,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+electron/dist/
 # Operating system files
 .DS_Store
 Thumbs.db
