@@ -8,39 +8,31 @@ app into an Electron shell for desktop deployment.
 
 ## Running locally
 
-1. Install [Node.js](https://nodejs.org/) (version 14 or later).
-2. Navigate to this folder and install dependencies:
+1. Install [Node.js](https://nodejs.org/) (version 14 or later) and Python 3.
+2. From the project root run the cross‑platform setup script to install both Node and Python dependencies:
 
    ```bash
-   cd revenuepilot-app-skeleton
-   npm install
+   node setup.js
    ```
 
-   If you see errors installing packages, you may need to check your internet
-   connectivity or proxy settings.  The dependencies listed in `package.json`
-   include React, React DOM, React Quill (for the rich text editor), Vite, and
-   the React plugin for Vite.
+   This installs npm packages, creates a Python virtual environment under `backend/venv` and installs the backend requirements inside it.
 
 3. **Start the development servers.**
 
-   There are two ways to run both the backend and the frontend:
-
-   *Using the helper script*
-
-   A convenience script `start.sh` has been added to start both the FastAPI backend and the Vite frontend together.  From the project root run:
+   A cross‑platform start script launches both the FastAPI backend and the Vite frontend:
 
    ```bash
-   ./start.sh
+   npm start
    ```
 
-   This launches the backend on port 8000 in the background and then starts the React development server.  You can view the app at the URL printed by Vite (usually `http://localhost:5173`).  When you stop the frontend (e.g. via `Ctrl+C`), the backend will be terminated automatically.
+   This starts the backend on port 8000 and then runs the React development server.  When you stop the frontend (e.g. via `Ctrl+C`), the backend process is terminated automatically.
 
    *Manual startup*
 
    If you prefer to run the servers separately, start the backend in one terminal:
 
    ```bash
-   uvicorn backend.main:app --reload --port 8000
+   backend/venv/bin/python backend/main.py  # on Windows use backend\venv\Scripts\python
    ```
 
    Then, in another terminal, start the frontend:
@@ -99,7 +91,7 @@ deploy RevenuePilot, consider the following steps:
 
 1. **Install dependencies**: Ensure `react-quill` and `openai` are installed
    via `npm install` and `pip install -r backend/requirements.txt`.  The
-   installer script (`install.sh`) automates most of this setup.
+   `setup.js` script automates most of this setup.
 
 2. **Configure your OpenAI API key**: Set the environment variable
    `OPENAI_API_KEY` before starting the backend.  For example:
