@@ -7,8 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "start": "node start.js",
+    "setup": "node setup.js",
+    "build:backend": "pyinstaller backend/main.py --onefile --name backend --distpath backend/dist",
     "electron:dev": "npm run build && electron electron/main.js",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && npm run build:backend && electron-builder"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -19,6 +22,29 @@
     "@vitejs/plugin-react": "^4.2.0",
     "electron": "^37.2.5",
     "electron-builder": "^26.0.12",
+    "electron-updater": "^6.6.2",
     "vite": "^5.1.0"
+  },
+  "build": {
+    "appId": "com.revenuepilot.app",
+    "productName": "RevenuePilot",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/dist/**/*",
+      "electron/main.js",
+      "backend/dist/backend*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/dist",
+        "to": "backend"
+      }
+    ],
+    "mac": { "target": "dmg" },
+    "win": { "target": "nsis" },
+    "linux": { "target": "AppImage" }
   }
 }

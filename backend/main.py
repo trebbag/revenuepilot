@@ -145,7 +145,7 @@ def deidentify(text: str) -> str:
         De‑identified text with sensitive information replaced by tokens.
     """
     # Remove phone numbers (e.g., 123-456-7890, (123) 456‑7890 or 1234567890)
-    text = re.sub(r"\b(?:\(\d{3}\)\s*)?\d{3}[-\.\s]?\d{3}[-\.\s]?\d{4}\b", "[PHONE]", text)
+    text = re.sub(r"(?:\(\d{3}\)\s*|\b\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b", "[PHONE]", text)
     # Remove dates formatted as MM/DD/YYYY, M/D/YY or YYYY‑MM‑DD
     text = re.sub(r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\b", "[DATE]", text)
     # Remove email addresses

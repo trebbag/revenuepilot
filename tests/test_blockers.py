@@ -78,7 +78,6 @@ def test_metrics_contains_timeseries_data():
     assert "timeseries" in data and data["timeseries"], "timeseries data missing"
 
 
-@pytest.mark.xfail(reason="Electron packaging not configured")
 def test_electron_packaging_configuration_present():
     """Electron builder configuration should be present in package.json.
 
