@@ -99,7 +99,7 @@ deploy RevenuePilot, consider the following steps:
    `OPENAI_API_KEY` before starting the backend.  For example:
 
    ```bash
-   export OPENAI_API_KEY=sk-your-key-here
+   export OPENAI_API_KEY=sk-your-key-here  # project keys like sk-proj-... also work
    uvicorn backend.main:app --reload --port 8000
    ```
 

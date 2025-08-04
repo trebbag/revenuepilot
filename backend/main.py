@@ -351,12 +351,13 @@ async def set_api_key(model: ApiKeyModel):
         return JSONResponse({"status": "error", "message": "Key cannot be empty"}, status_code=400)
 
     # Basic format validation: accept keys starting with ``sk-`` and at
-    # least 20 additional characters consisting of letters, numbers or
-    # hyphens.  This covers classic and project‑scoped keys without
-    # relying on the OpenAI SDK's pattern enforcement.
+    # least 20 additional non‑whitespace characters.  This intentionally
+    # permits new project‑scoped keys such as ``sk-proj-`` which may
+    # include hyphens or colons in their suffix without relying on the
+    # OpenAI SDK's pattern enforcement.
     import re
 
-    if not re.fullmatch(r"sk-[A-Za-z0-9-]{20,}", key):
+    if not re.fullmatch(r"sk-\S{20,}", key):
         return JSONResponse(
             {"status": "error", "message": "Key not in expected format"},
             status_code=400,
