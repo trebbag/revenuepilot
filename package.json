@@ -8,17 +8,47 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "npm run build && electron electron/main.js",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder -mwl"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-quill": "^2.0.0"
+    "react-quill": "^2.0.0",
+    "electron-updater": "^6.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
     "electron": "^37.2.5",
     "electron-builder": "^26.0.12",
     "vite": "^5.1.0"
+  },
+  "build": {
+    "appId": "com.revenuepilot.app",
+    "productName": "RevenuePilot",
+    "files": ["dist/**/*", "electron/**/*"],
+    "directories": {
+      "buildResources": "assets"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "identity": null
+    },
+    "win": {
+      "target": "nsis",
+      "publisherName": "RevenuePilot",
+      "signingHashAlgorithms": ["sha256"],
+      "certificateFile": "${CSC_LINK}",
+      "certificatePassword": "${CSC_KEY_PASSWORD}"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility"
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://updates.example.com"
+      }
+    ]
   }
 }

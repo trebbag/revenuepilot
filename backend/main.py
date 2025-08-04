@@ -9,13 +9,16 @@ with calls to your chosen language model (e.g., OpenAI's GPT‑4o) when
 deploying in production.
 """
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
-from datetime import datetime
+import logging
+import os
 import re
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # Import prompt builders and OpenAI helper for LLM integration.
 # These imports are commented out above to avoid import errors when the
@@ -25,19 +28,23 @@ import re
 # deploying.
 from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
 from .openai_client import call_openai
+from .key_manager import get_api_key, save_api_key
 
 import json
 import sqlite3
-import os
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="RevenuePilot API")
 
-# Enable CORS so that the React frontend (typically served from
-# http://localhost:5173) can communicate with this API during development.
-# In production, restrict the allowed origins to specific domains.
+# Enable CORS so that the React frontend can communicate with this API.
+# Allowed origins are configurable via the ``ALLOWED_ORIGINS`` environment
+# variable (comma separated). Defaults to localhost for development.
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+origins = [o.strip() for o in allowed_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in production
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,22 +79,8 @@ db_conn.commit()
 # metrics computations.
 db_conn.row_factory = sqlite3.Row
 
-# Load API key from file if present.  This allows the key to persist
-# across restarts without requiring environment variables.  If the
-# environment variable OPENAI_API_KEY is already set, it will take
-# precedence.
-# Determine the location for storing the API key.  Use a path inside
-# the backend package directory so that the file is written relative
-# to this module's location rather than the current working directory.
-API_KEY_FILE = os.path.join(os.path.dirname(__file__), "openai_key.txt")
-if not os.getenv("OPENAI_API_KEY"):
-    try:
-        with open(API_KEY_FILE, "r") as f:
-            key = f.read().strip()
-            if key:
-                os.environ["OPENAI_API_KEY"] = key
-    except FileNotFoundError:
-        pass
+# Preload any stored API key into the environment so subsequent calls work.
+get_api_key()
 
 # Model for setting API key via API endpoint
 class ApiKeyModel(BaseModel):
@@ -364,9 +357,7 @@ async def set_api_key(model: ApiKeyModel):
         )
 
     try:
-        with open(API_KEY_FILE, "w", encoding="utf-8") as f:
-            f.write(key)
-        os.environ["OPENAI_API_KEY"] = key
+        save_api_key(key)
         return {"status": "saved"}
     except Exception as exc:
         return JSONResponse(

@@ -21,6 +21,7 @@ Thumbs.db
 .env.*
 # Database & analytics artifacts
 backend/analytics.db
+analytics.db
 # Logs and coverage
 *.log
 coverage/

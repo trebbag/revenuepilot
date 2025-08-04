@@ -8,9 +8,10 @@ variable `OPENAI_API_KEY`.  If the key is not available or the network
 call fails, an exception will be raised.
 """
 
-import os
 from typing import List, Dict, Any
 import openai
+
+from .key_manager import get_api_key
 
 
 def call_openai(messages: List[Dict[str, str]], model: str = "gpt-4o", temperature: float = 0) -> str:
@@ -28,22 +29,10 @@ def call_openai(messages: List[Dict[str, str]], model: str = "gpt-4o", temperatu
     Raises:
         RuntimeError: If the API key is missing or the call fails.
     """
-    # Always attempt to load the API key for each call.  First check the
-    # environment; if missing, read it from the local file and set the
-    # environment variable for subsequent calls.  Raise a clear error
-    # if no key is available.
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        key_path = os.path.join(os.path.dirname(__file__), "openai_key.txt")
-        if os.path.exists(key_path):
-            try:
-                with open(key_path) as f:
-                    api_key = f.read().strip()
-                if api_key:
-                    os.environ["OPENAI_API_KEY"] = api_key
-            except Exception:
-                # ignore file read errors here; we'll handle missing key below
-                api_key = None
+    # Always attempt to load the API key for each call.  ``get_api_key``
+    # checks the environment, OS keyring and a user-scoped file.  A clear
+    # error is raised if no key is available.
+    api_key = get_api_key()
     if not api_key:
         raise RuntimeError("OpenAI key not configured.")
     openai.api_key = api_key
