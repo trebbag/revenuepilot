@@ -62,10 +62,16 @@ app into an Electron shell for desktop deployment.
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
-4. Wrap with Electron (optional).  To package this as a desktop app,
-   install Electron and configure a `main.js` that loads the Vite build
-   output.  You can use a tool like `electron-builder` or `electron-forge`
-   to handle packaging.
+4. **Run the Electron shell**.  The project includes scripts to launch
+   and package a desktop version:
+
+   ```bash
+   npm run electron:dev   # build the frontend and start Electron
+   npm run electron:build # generate a distributable with electron-builder
+   ```
+
+   Vite outputs files to `electron/dist`, which `electron/main.js`
+   loads when creating the Electron `BrowserWindow`.
 
 ## Structure
 

@@ -5,4 +5,7 @@ import react from '@vitejs/plugin-react';
 // fast refresh and JSX/TSX support.
 export default defineConfig({
   plugins: [react()],
+  build: {
+    outDir: 'electron/dist',
+  },
 });
