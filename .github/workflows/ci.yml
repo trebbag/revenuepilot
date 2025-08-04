@@ -24,5 +24,7 @@ jobs:
       - run: npm run build
       - run: npm run build:backend
       - run: npm run electron:build
+
         env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
