@@ -1,0 +1,20 @@
+/* CSS variables controlling the colour palette.  This uses Option 1
+   (modern minimal) for a clean look with strong contrasting accents. */
+:root {
+  --bg: #F9FAFC;
+  --text: #1F2937;
+  --primary: #1E3A8A;
+  --secondary: #0D9488;
+  --panel-bg: #FFFFFF;
+  --disabled: #E5E7EB;
+
+  /* Additional accent colours for visual variation.  Use these sparingly to
+     highlight specific UI elements such as different suggestion cards or
+     status indicators.  All colours meet contrast requirements on the
+     light background. */
+  --accent-green: #2E7D32;    /* deep green */
+  --accent-purple: #8E44AD;   /* medium purple */
+  --accent-red: #E57373;      /* light red */
+  --accent-light-blue: #64B5F6; /* light blue */
+  --accent-gold: #F9A825;     /* warm gold/orange */
+}
