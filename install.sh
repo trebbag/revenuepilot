@@ -1,26 +1,39 @@
 #!/bin/bash
-# Installation script for the RevenuePilot application on macOS.
+# Cross-platform installation script for the RevenuePilot application.
 
 set -e
 
 echo "Installing RevenuePilot..."
 
-# Check for Homebrew
-if ! command -v brew >/dev/null 2>&1; then
-  echo "Homebrew not found. Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-fi
+OS=$(uname -s)
 
-# Ensure Node.js is installed
-if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js not found. Installing Node.js..."
-  brew install node
-fi
-
-# Ensure Python 3 is installed
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "Python3 not found. Installing Python3..."
-  brew install python
+if [[ "$OS" == "Darwin" ]]; then
+  # macOS using Homebrew
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew not found. Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node.js not found. Installing Node.js..."
+    brew install node
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Python3 not found. Installing Python3..."
+    brew install python
+  fi
+elif [[ "$OS" == "Linux" ]]; then
+  # Debian-based Linux
+  if ! command -v node >/dev/null 2>&1; then
+    echo "Node.js not found. Installing Node.js..."
+    sudo apt-get update && sudo apt-get install -y nodejs npm
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Python3 not found. Installing Python3..."
+    sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip
+  fi
+else
+  echo "Unsupported operating system: $OS"
+  exit 1
 fi
 
 # Navigate to the extracted project directory
