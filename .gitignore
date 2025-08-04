@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+# Virtual environments
+.venv/
+# Node
+node_modules/
+dist/
+build/
+# Operating system files
+.DS_Store
+Thumbs.db
+# Editor / tooling
+.vscode/
+.idea/
+# Environment / secrets
+.env
+.env.*
+# Database & analytics artifacts
+backend/analytics.db
+# Logs and coverage
+*.log
+coverage/
