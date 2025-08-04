@@ -340,48 +340,30 @@ async def summarize(req: NoteRequest) -> Dict[str, str]:
 async def set_api_key(model: ApiKeyModel):
     """
     Store and validate an OpenAI API key.  Accepts a JSON body with a
-    single field "key" and writes it to a local file.  Before saving,
-    performs a lightweight validation by calling the ChatCompletion API
-    with a trivial message.  Returns JSON with status 'saved' on
-    success or an error message on failure.
+    single field "key" and writes it to a local file.  Validation is
+    performed using a simple format check rather than a live API call so
+    that newer project‑scoped keys (e.g. ``sk-proj-``) are accepted even
+    when the SDK's built-in regex is out of date.  Returns JSON with
+    status ``saved`` on success or an error message on failure.
     """
     key = model.key.strip()
-    # Reject empty keys early
     if not key:
         return JSONResponse({"status": "error", "message": "Key cannot be empty"}, status_code=400)
 
-    # Validate the key by making a trivial API call.  Use a lightweight
-    # model and minimal tokens to minimise latency and cost.  If the
-    # call fails, return an error without storing the key.
-    import openai, json  # imported here to avoid unused import when not validating
-    try:
-        # Assigning the API key triggers validation in the OpenAI SDK.  On
-        # newer project‑scoped keys (e.g. sk‑proj...) older SDK versions may
-        # raise a "string did not match the expected pattern" error here.
-        openai.api_key = key
-        # Perform a trivial call to ensure the key is actually usable.  We
-        # discard the response as we only care about authentication success.
-        _ = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-            temperature=0,
-        )
-    except Exception as exc:
-        # Some versions of the OpenAI SDK enforce a regex on the API key
-        # format and will raise an exception like "string did not match the
-        # expected pattern" for newer project‑scoped keys (e.g. sk‑proj...).
-        # In that case we skip the validation and proceed to save the key.
-        msg = str(exc)
-        if 'expected pattern' not in msg and 'did not match' not in msg:
-            return JSONResponse(
-                {"status": "error", "message": f"Key failed validation: {exc}"},
-                status_code=400,
-            )
+    # Basic format validation: accept keys starting with ``sk-`` and at
+    # least 20 additional characters consisting of letters, numbers or
+    # hyphens.  This covers classic and project‑scoped keys without
+    # relying on the OpenAI SDK's pattern enforcement.
+    import re
 
-    # If validation succeeded, persist the key to disk and environment.
+    if not re.fullmatch(r"sk-[A-Za-z0-9-]{20,}", key):
+        return JSONResponse(
+            {"status": "error", "message": "Key not in expected format"},
+            status_code=400,
+        )
+
     try:
-        with open(API_KEY_FILE, "w") as f:
+        with open(API_KEY_FILE, "w", encoding="utf-8") as f:
             f.write(key)
         os.environ["OPENAI_API_KEY"] = key
         return {"status": "saved"}
