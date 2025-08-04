@@ -45,7 +45,7 @@ function Settings({ settings, updateSettings }) {
           type="password"
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
-          placeholder="sk-..."
+          placeholder="sk-... (e.g., sk-proj-...)"
           style={{ flexGrow: 1, padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
         />
         <button onClick={handleSaveKey} style={{ marginLeft: '0.5rem' }}>Save Key</button>
