@@ -2,6 +2,7 @@
 import { render, waitFor, cleanup } from '@testing-library/react';
 import Dashboard from '../Dashboard.jsx';
 import { vi, beforeEach, test, expect, afterEach } from 'vitest';
+import '../../i18n.js';
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 

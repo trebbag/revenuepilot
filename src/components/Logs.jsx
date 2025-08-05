@@ -4,6 +4,7 @@
 // user actions and verify that events are being logged correctly.
 
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getEvents } from '../api.js';
 
 function formatTimestamp(ts) {
@@ -15,9 +16,10 @@ function formatTimestamp(ts) {
   }
 }
 
-export default function Logs() {
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
+  export default function Logs() {
+    const { t } = useTranslation();
+    const [events, setEvents] = useState([]);
+    const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     // Fetch events when component mounts
@@ -31,19 +33,14 @@ export default function Logs() {
   }, []);
 
   return (
-    <div className="logs-page" style={{ padding: '1rem', overflowY: 'auto' }}>
-      <h2>Event Log</h2>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
-        This log shows recent actions captured by the app. Use it to verify
-        that events such as note creation, beautification, suggestions,
-        summaries, chart uploads and audio recordings are being logged and
-        processed.
-      </p>
-      {loading ? (
-        <p>Loading…</p>
-      ) : events.length === 0 ? (
-        <p>No events recorded yet.</p>
-      ) : (
+      <div className="logs-page" style={{ padding: '1rem', overflowY: 'auto' }}>
+        <h2>{t('logs.title')}</h2>
+        <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('logs.intro')}</p>
+        {loading ? (
+          <p>{t('logs.loading')}</p>
+        ) : events.length === 0 ? (
+          <p>{t('logs.none')}</p>
+        ) : (
         <div style={{ border: '1px solid var(--disabled)', borderRadius: '4px', padding: '0.5rem', maxHeight: '60vh', overflowY: 'scroll' }}>
           {events.map((ev, idx) => (
             <div key={idx} style={{ marginBottom: '0.5rem' }}>

@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, describe, test, expect, beforeEach, afterEach } from 'vitest';
+import '../../i18n.js';
 import ClipboardExportButtons from '../ClipboardExportButtons.jsx';
 import * as api from '../../api.js';
 

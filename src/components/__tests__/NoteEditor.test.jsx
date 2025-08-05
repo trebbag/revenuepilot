@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
+import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
 
 afterEach(() => cleanup());

@@ -2,12 +2,19 @@
 // Allows the user to toggle which suggestion categories are shown and switch colour themes.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from '../i18n.js';
 import { setApiKey, saveSettings } from '../api.js';
 
 
 function Settings({ settings, updateSettings }) {
+  const { t } = useTranslation();
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const handleDeleteTemplate = (id) => {
+    setTemplates((prev) => prev.filter((tpl) => tpl.id !== id));
+  };
   const handleToggle = async (key) => {
     const updated = { ...settings, [key]: !settings[key] };
     updateSettings(updated);
@@ -46,15 +53,22 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleLangChange = async (event) => {
+    const updated = { ...settings, lang: event.target.value };
+    updateSettings(updated);
+    i18n.changeLanguage(event.target.value);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
-      <h2>Settings</h2>
-      <h3>OpenAI API Key</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
-        Enter your OpenAI API key here. The key will be stored securely on your
-        machine and used by the backend to call the language model. You can
-        update it at any time.
-      </p>
+      <h2>{t('settings.title')}</h2>
+      <h3>{t('settings.apiKey')}</h3>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.apiKeyHelp')}</p>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}>
         <input
           type="password"
@@ -63,11 +77,11 @@ function Settings({ settings, updateSettings }) {
           placeholder="sk-... (e.g., sk-proj-...)"
           style={{ flexGrow: 1, padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
         />
-        <button onClick={handleSaveKey} style={{ marginLeft: '0.5rem' }}>Save Key</button>
+        <button onClick={handleSaveKey} style={{ marginLeft: '0.5rem' }}>{t('settings.saveKey')}</button>
       </div>
       {apiKeyStatus && <p style={{ color: 'var(--secondary)' }}>{apiKeyStatus}</p>}
 
-      <h3>Theme</h3>
+      <h3>{t('settings.theme')}</h3>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         <input
           type="radio"
@@ -76,7 +90,7 @@ function Settings({ settings, updateSettings }) {
           checked={settings.theme === 'modern'}
           onChange={handleThemeChange}
         />{' '}
-        Modern Minimal
+        {t('settings.modern')}
       </label>
 
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
@@ -87,7 +101,7 @@ function Settings({ settings, updateSettings }) {
           checked={settings.theme === 'dark'}
           onChange={handleThemeChange}
         />{' '}
-        Dark Elegance
+        {t('settings.dark')}
       </label>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         <input
@@ -97,17 +111,17 @@ function Settings({ settings, updateSettings }) {
           checked={settings.theme === 'warm'}
           onChange={handleThemeChange}
         />{' '}
-        Warm Professional
+        {t('settings.warm')}
       </label>
 
-      <h3>Suggestion Categories</h3>
+      <h3>{t('settings.suggestionCategories')}</h3>
       <label style={{ display: 'block' }}>
         <input
           type="checkbox"
           checked={settings.enableCodes}
           onChange={() => handleToggle('enableCodes')}
         />{' '}
-        Show Codes & Rationale
+        {t('settings.showCodes')}
       </label>
       <label style={{ display: 'block' }}>
         <input
@@ -115,7 +129,7 @@ function Settings({ settings, updateSettings }) {
           checked={settings.enableCompliance}
           onChange={() => handleToggle('enableCompliance')}
         />{' '}
-        Show Compliance Alerts
+        {t('settings.showCompliance')}
       </label>
       <label style={{ display: 'block' }}>
         <input
@@ -123,7 +137,7 @@ function Settings({ settings, updateSettings }) {
           checked={settings.enablePublicHealth}
           onChange={() => handleToggle('enablePublicHealth')}
         />{' '}
-        Show Public Health Prompts
+        {t('settings.showPublicHealth')}
       </label>
       <label style={{ display: 'block' }}>
         <input
@@ -131,14 +145,11 @@ function Settings({ settings, updateSettings }) {
           checked={settings.enableDifferentials}
           onChange={() => handleToggle('enableDifferentials')}
         />{' '}
-        Show Differential Diagnoses
+        {t('settings.showDifferentials')}
       </label>
 
-      <h3>Custom Clinical Rules</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
-        Enter one rule per line. These rules will be passed to the AI model to
-        customise suggestions based on payer or clinic‑specific requirements.
-      </p>
+      <h3>{t('settings.customRules')}</h3>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.customRulesHelp')}</p>
       <textarea
         value={(settings.rules || []).join('\n')}
         onChange={async (e) => {
@@ -156,17 +167,23 @@ function Settings({ settings, updateSettings }) {
         }}
         rows={5}
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
-        placeholder="e.g. Commercial payer X requires three ROS for 99214; Include time spent on counselling for CPT 99406"
+        placeholder={t('settings.customRulesPlaceholder')}
       />
-      <h3>Templates</h3>
+      <h3>{t('settings.language')}</h3>
+      <select value={settings.lang} onChange={handleLangChange}>
+        <option value="en">{t('settings.english')}</option>
+        <option value="es">{t('settings.spanish')}</option>
+      </select>
+
+      <h3>{t('settings.templates')}</h3>
       <ul>
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}
-            <button onClick={() => handleDeleteTemplate(tpl.id)}>Delete</button>
+            <button onClick={() => handleDeleteTemplate(tpl.id)}>{t('templatesModal.delete')}</button>
           </li>
         ))}
-        {templates.length === 0 && <li>No templates</li>}
+        {templates.length === 0 && <li>{t('settings.noTemplates')}</li>}
       </ul>
     </div>
   );

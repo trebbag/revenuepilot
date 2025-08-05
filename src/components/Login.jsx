@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { login } from '../api.js';
 
 /**
@@ -7,6 +8,7 @@ import { login } from '../api.js';
  * so the application can render the secured views.
  */
 function Login({ onLoggedIn }) {
+  const { t } = useTranslation();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
@@ -31,40 +33,40 @@ function Login({ onLoggedIn }) {
 
   return (
     <div className="login-form" style={{ maxWidth: '20rem', margin: '2rem auto' }}>
-      <h2>Login</h2>
-      <form onSubmit={handleSubmit}>
-        <div style={{ marginBottom: '0.5rem' }}>
-          <label>
-            Username
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-          </label>
-        </div>
-        <div style={{ marginBottom: '0.5rem' }}>
-          <label>
-            Password
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </label>
-        </div>
+        <h2>{t('login.title')}</h2>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: '0.5rem' }}>
+            <label>
+              {t('login.username')}
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <div style={{ marginBottom: '0.5rem' }}>
+            <label>
+              {t('login.password')}
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </label>
+          </div>
         {error && (
           <p style={{ color: 'red' }} data-testid="login-error">
             {error}
           </p>
         )}
-        <button type="submit" disabled={loading}>
-          {loading ? 'Logging in…' : 'Login'}
-        </button>
-      </form>
-    </div>
+          <button type="submit" disabled={loading}>
+            {loading ? t('login.loggingIn') : t('login.login')}
+          </button>
+        </form>
+      </div>
   );
 }
 

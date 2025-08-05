@@ -1,0 +1,10 @@
+specialty:
+  cardiology:
+    beautify:
+      en: "Cardiology specific beautify instruction"
+      es: "Instrucción de embellecer específica de cardiología"
+payer:
+  medicare:
+    suggest:
+      en: "Follow Medicare coding rules"
+      es: "Siga las reglas de codificación de Medicare"

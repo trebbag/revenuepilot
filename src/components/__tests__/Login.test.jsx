@@ -2,6 +2,7 @@
 
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, expect, test, beforeEach, afterEach } from 'vitest';
+import '../../i18n.js';
 
 vi.mock('../../api.js', () => ({ login: vi.fn() }));
 import { login } from '../../api.js';

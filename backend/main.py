@@ -154,6 +154,7 @@ db_conn.execute(
     "theme TEXT NOT NULL,"
     "categories TEXT NOT NULL,"
     "rules TEXT NOT NULL,"
+    "lang TEXT NOT NULL,"
     "FOREIGN KEY(user_id) REFERENCES users(id)"
 
     ")"
@@ -241,6 +242,7 @@ class UserSettings(BaseModel):
         "differentials": True,
     }
     rules: List[str] = []
+    lang: str = "en"
 
 
 def hash_password(password: str) -> str:
@@ -281,15 +283,23 @@ async def login(model: LoginModel) -> Dict[str, str]:
 @app.get("/settings")
 async def get_user_settings(user=Depends(get_current_user)) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
-    row = db_conn.execute(
-        "SELECT theme, categories, rules FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
+    try:
+        row = db_conn.execute(
+            "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+            (user["sub"],),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+        row = db_conn.execute(
+            "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+            (user["sub"],),
+        ).fetchone()
     if row:
         return {
             "theme": row["theme"],
             "categories": json.loads(row["categories"]),
             "rules": json.loads(row["rules"]),
+            "lang": row["lang"],
         }
     return UserSettings().dict()
 
@@ -303,15 +313,29 @@ async def save_user_settings(model: UserSettings, user=Depends(get_current_user)
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
-    db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules) VALUES (?, ?, ?, ?)",
-        (
-            row["id"],
-            model.theme,
-            json.dumps(model.categories),
-            json.dumps(model.rules),
-        ),
-    )
+    try:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
+            (
+                row["id"],
+                model.theme,
+                json.dumps(model.categories),
+                json.dumps(model.rules),
+                model.lang,
+            ),
+        )
+    except sqlite3.OperationalError:
+        db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+        db_conn.execute(
+            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
+            (
+                row["id"],
+                model.theme,
+                json.dumps(model.categories),
+                json.dumps(model.rules),
+                model.lang,
+            ),
+        )
     db_conn.commit()
     return model.dict()
 
@@ -330,6 +354,9 @@ class NoteRequest(BaseModel):
     chart: Optional[str] = None
     rules: Optional[List[str]] = None
     audio: Optional[str] = None
+    lang: str = "en"
+    specialty: Optional[str] = None
+    payer: Optional[str] = None
 
 
 class CodeSuggestion(BaseModel):
@@ -805,7 +832,7 @@ async def summarize(req: NoteRequest) -> Dict[str, str]:
         combined += "\n\n" + str(req.audio)
     cleaned = deidentify(combined)
     try:
-        messages = build_summary_prompt(cleaned)
+        messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
         response_content = call_openai(messages)
         summary = response_content.strip()
     except Exception as exc:
@@ -901,7 +928,7 @@ async def beautify_note(req: NoteRequest) -> dict:
     # back to a simple uppercase transformation so the endpoint still
     # returns something useful.
     try:
-        messages = build_beautify_prompt(cleaned)
+        messages = build_beautify_prompt(cleaned, req.lang, req.specialty, req.payer)
         response_content = call_openai(messages)
         # The assistant's reply is expected to contain only the
         # beautified note text.  We strip any leading/trailing
@@ -949,7 +976,7 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
     # SuggestionsResponse schema.  If anything fails, we fall back to
     # the simple rule-based engine defined previously.
     try:
-        messages = build_suggest_prompt(cleaned_for_prompt)
+        messages = build_suggest_prompt(cleaned_for_prompt, req.lang, req.specialty, req.payer)
         response_content = call_openai(messages)
         # The model should return raw JSON.  Parse it into a Python dict.
         data = json.loads(response_content)

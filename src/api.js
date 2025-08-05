@@ -81,7 +81,7 @@ export async function saveSettings(settings) {
  * @param {string} text
  * @returns {Promise<string>}
  */
-export async function beautifyNote(text) {
+export async function beautifyNote(text, lang = 'en') {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -91,7 +91,7 @@ export async function beautifyNote(text) {
     const resp = await fetch(`${baseUrl}/beautify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, lang }),
     });
     const data = await resp.json();
     return data.beautified;
@@ -116,7 +116,7 @@ export async function getSuggestions(text, context = {}) {
     // Construct the request payload.  Always include the main note text; add
     // optional chart, rules and audio transcript when provided.  The backend
     // should ignore any empty or missing fields.
-    const payload = { text };
+    const payload = { text, lang: context.lang };
     if (context.chart) payload.chart = context.chart;
     if (context.rules && Array.isArray(context.rules) && context.rules.length > 0) {
       payload.rules = context.rules;
@@ -375,7 +375,7 @@ export async function summarizeNote(text, context = {}) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (baseUrl) {
-    const payload = { text };
+    const payload = { text, lang: context.lang };
     if (context.chart) payload.chart = context.chart;
     if (context.audio) payload.audio = context.audio;
     try {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 /**
  * Drafts view component.  Lists saved drafts by patient ID and allows
@@ -10,6 +11,7 @@ import { useEffect, useState } from 'react';
  * localStorage and updates the list.
  */
 function Drafts({ onOpenDraft }) {
+  const { t } = useTranslation();
   const [drafts, setDrafts] = useState([]);
 
   // Load drafts from localStorage on mount
@@ -40,14 +42,14 @@ function Drafts({ onOpenDraft }) {
   };
 
   return (
-    <div className="drafts-view">
-      <h2>Saved Drafts</h2>
-      {drafts.length === 0 ? (
-        <p>No drafts saved.</p>
-      ) : (
-        <ul className="drafts-list">
-          {drafts.map((draft) => (
-            <li key={draft.patientID} className="draft-item">
+      <div className="drafts-view">
+        <h2>{t('drafts.title')}</h2>
+        {drafts.length === 0 ? (
+          <p>{t('drafts.none')}</p>
+        ) : (
+          <ul className="drafts-list">
+            {drafts.map((draft) => (
+              <li key={draft.patientID} className="draft-item">
               <div className="draft-info">
                 <button
                   className="draft-open-btn"
@@ -57,14 +59,14 @@ function Drafts({ onOpenDraft }) {
                 </button>
                 <span className="draft-snippet">{draft.snippet}{draft.snippet.length >= 100 ? '…' : ''}</span>
               </div>
-              <button
-                className="draft-delete-btn"
-                onClick={() => handleDelete(draft.patientID)}
-                title="Delete draft"
-              >
-                ✕
-              </button>
-            </li>
+                <button
+                  className="draft-delete-btn"
+                  onClick={() => handleDelete(draft.patientID)}
+                  title={t('drafts.delete')}
+                >
+                  ✕
+                </button>
+              </li>
           ))}
         </ul>
       )}

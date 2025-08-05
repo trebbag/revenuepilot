@@ -8,6 +8,7 @@
 // development can proceed without breaking the UI.
 
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 let ReactQuill;
 try {
   // Dynamically require ReactQuill to avoid breaking when the package is
@@ -24,6 +25,7 @@ try {
 }
 
 function NoteEditor({ id, value, onChange, onRecord, recording = false, transcript = '' }) {
+  const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
   // controlled input in both modes.
@@ -46,15 +48,15 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false, transcri
   const toolbar = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
-        <button type="button" onClick={onRecord}>
-          {recording ? 'Stop Recording' : 'Record Audio'}
-        </button>
+          <button type="button" onClick={onRecord}>
+            {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+          </button>
       )}
       {transcript && (
         <span
           style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}
         >
-          Transcript: {transcript}
+            {t('noteEditor.transcript')} {transcript}
         </span>
       )}
     </div>
@@ -86,8 +88,8 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false, transcri
         value={localValue}
         onChange={handleTextAreaChange}
         style={{ width: '100%', height: '100%', padding: '0.5rem' }}
-        placeholder="Type your clinical note here..."
-      />
+          placeholder={t('noteEditor.placeholder')}
+        />
     </div>
   );
 }
