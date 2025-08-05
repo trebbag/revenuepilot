@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,19 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT)"
     )
     db.execute(
-        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE settings (user_id INTEGER PRIMARY KEY, theme TEXT NOT NULL, categories TEXT NOT NULL, rules TEXT NOT NULL)"
+    )
+    pwd = hashlib.sha256(b"pw").hexdigest()
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("admin", pwd, "admin"),
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("user", pwd, "user"),
     )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
@@ -28,23 +41,38 @@ def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_login_and_settings(client):
-    resp = client.post("/login", json={"username": "alice", "role": "admin"})
+def test_user_settings_roundtrip(client):
+    token = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+
+    resp = client.get("/settings", headers=auth_header(token))
     assert resp.status_code == 200
-    token = resp.json()["access_token"]
-    assert token
+    assert resp.json()["theme"] == "modern"
+
+    new_settings = {
+        "theme": "dark",
+        "categories": {
+            "codes": False,
+            "compliance": True,
+            "publicHealth": True,
+            "differentials": True,
+        },
+        "rules": ["x"],
+    }
+    resp = client.post(
+        "/settings", json=new_settings, headers=auth_header(token)
+    )
+    assert resp.status_code == 200
+
+    resp = client.get("/settings", headers=auth_header(token))
+    data = resp.json()
+    assert data["theme"] == "dark"
+    assert data["categories"]["codes"] is False
+    assert data["rules"] == ["x"]
 
     resp = client.get("/settings")
-    assert resp.status_code == 200
-    assert "advanced_scrubber" in resp.json()
-
-    resp = client.post("/settings", json={"advanced_scrubber": True})
-    assert resp.json()["advanced_scrubber"] is True
-    # reset to keep other tests deterministic
-    client.post("/settings", json={"advanced_scrubber": False})
-
-    resp = client.post("/settings", json={"advanced_scrubber": None})
-    assert resp.status_code == 422
+    assert resp.status_code in {401, 403}
 
 
 def test_events_metrics_with_auth(client):
@@ -53,12 +81,16 @@ def test_events_metrics_with_auth(client):
     assert resp.status_code in {401, 403}
 
     # user without admin role
-    token_user = client.post("/login", json={"username": "u", "role": "user"}).json()["access_token"]
+    token_user = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
     resp = client.get("/events", headers=auth_header(token_user))
     assert resp.status_code == 403
 
     # log event and fetch with admin
-    token_admin = client.post("/login", json={"username": "a", "role": "admin"}).json()["access_token"]
+    token_admin = client.post(
+        "/login", json={"username": "admin", "password": "pw"}
+    ).json()["access_token"]
     client.post("/event", json={"eventType": "note_started"})
     resp = client.get("/events", headers=auth_header(token_admin))
     assert resp.status_code == 200
