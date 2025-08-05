@@ -359,6 +359,7 @@ class NoteRequest(BaseModel):
     payer: Optional[str] = None
 
 
+
 class CodeSuggestion(BaseModel):
     """Represents a single coding suggestion with rationale."""
     code: str

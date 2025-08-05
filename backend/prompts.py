@@ -109,7 +109,7 @@ def build_suggest_prompt(
     instructions = _get_custom_instruction("suggest", lang, specialty, payer) or default_instructions.get(lang, default_instructions["en"])
     return [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
+        {"role": "user", "content": user_content},
     ]
 
 

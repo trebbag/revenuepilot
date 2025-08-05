@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main
+from backend import main, prompts
 
 
 @pytest.fixture
@@ -31,6 +31,9 @@ def client(monkeypatch, tmp_path):
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("user", pwd, "user"),
     )
+    db.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
+    )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
     monkeypatch.setattr(main, "events", [])
@@ -41,10 +44,20 @@ def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_user_settings_roundtrip(client):
-    token = client.post(
-        "/login", json={"username": "user", "password": "pw"}
-    ).json()["access_token"]
+def test_login_and_settings(client):
+    pwd = main.hash_password("pw")
+    main.db_conn.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("alice", pwd, "admin"),
+    )
+    main.db_conn.commit()
+    resp = client.post(
+        "/login", json={"username": "alice", "password": "pw"}
+    )
+    assert resp.status_code == 200
+    token = resp.json()["access_token"]
+    assert token
+
 
     resp = client.get("/settings", headers=auth_header(token))
     assert resp.status_code == 200
@@ -81,15 +94,28 @@ def test_events_metrics_with_auth(client):
     assert resp.status_code in {401, 403}
 
     # user without admin role
+    pwd = main.hash_password("pw")
+    main.db_conn.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("u", pwd, "user"),
+    )
+    main.db_conn.commit()
     token_user = client.post(
-        "/login", json={"username": "user", "password": "pw"}
+        "/login", json={"username": "u", "password": "pw"}
+
     ).json()["access_token"]
     resp = client.get("/events", headers=auth_header(token_user))
     assert resp.status_code == 403
 
     # log event and fetch with admin
+
+    main.db_conn.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("a", pwd, "admin"),
+    )
+    main.db_conn.commit()
     token_admin = client.post(
-        "/login", json={"username": "admin", "password": "pw"}
+        "/login", json={"username": "a", "password": "pw"}
     ).json()["access_token"]
     client.post("/event", json={"eventType": "note_started"})
     resp = client.get("/events", headers=auth_header(token_admin))
@@ -175,3 +201,29 @@ def test_suggest_and_fallback(client, monkeypatch):
     resp = client.post("/suggest", json={"text": "cough"})
     data = resp.json()
     assert any(c["code"] == "99213" for c in data["codes"])
+
+
+def test_suggest_with_demographics(client, monkeypatch):
+    def fake_call_openai(msgs):
+        user = msgs[1]["content"]
+        assert "HPV vaccine" in user
+        assert "Pap smear" in user
+        return json.dumps(
+            {"codes": [], "compliance": [], "publicHealth": [], "differentials": []}
+        )
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+
+    def fake_get(age, sex, region):
+        assert age == 30
+        assert sex == "female"
+        assert region == "US"
+        return {"vaccinations": ["HPV vaccine"], "screenings": ["Pap smear"]}
+
+    monkeypatch.setattr(prompts, "get_guidelines", fake_get)
+
+    resp = client.post(
+        "/suggest",
+        json={"text": "note", "age": 30, "sex": "female", "region": "US"},
+    )
+    assert resp.status_code == 200

@@ -77,6 +77,10 @@ function App() {
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
+  // Demographic details used for public health suggestions
+  const [age, setAge] = useState('');
+  const [sex, setSex] = useState('');
+  const [region, setRegion] = useState('');
   // Suggestions fetched from the API
   const [suggestions, setSuggestions] = useState({
     codes: [],
@@ -401,7 +405,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText, audioTranscript]);
+  }, [draftText, audioTranscript, age, sex, region]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
