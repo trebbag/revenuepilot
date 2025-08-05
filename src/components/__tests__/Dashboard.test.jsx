@@ -1,7 +1,9 @@
 /* @vitest-environment jsdom */
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, cleanup } from '@testing-library/react';
 import Dashboard from '../Dashboard.jsx';
-import { vi, beforeEach, test, expect } from 'vitest';
+import { vi, beforeEach, test, expect, afterEach } from 'vitest';
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
 
 vi.mock('../../api.js', () => ({
   getMetrics: vi.fn().mockResolvedValue({
@@ -22,6 +24,10 @@ vi.mock('../../api.js', () => ({
     timeseries: { daily: [{ date: '2024-01-01', count: 1 }], weekly: [{ week: '2024-01', count: 1 }] },
   }),
 }));
+
+afterEach(() => {
+  cleanup();
+});
 
 const token = [
   btoa(JSON.stringify({ alg: 'none', typ: 'JWT' })),

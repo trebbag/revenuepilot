@@ -151,6 +151,17 @@ db_conn.execute(
 )
 db_conn.commit()
 
+db_conn.execute(
+    "CREATE TABLE IF NOT EXISTS templates ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "user TEXT NOT NULL,"
+    "clinic TEXT,"
+    "name TEXT NOT NULL,"
+    "content TEXT NOT NULL"
+    ")"
+)
+db_conn.commit()
+
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
 # metrics computations.
@@ -345,6 +356,14 @@ class EventModel(BaseModel):
     deficiency: Optional[bool] = None
 
 
+class TemplateModel(BaseModel):
+    """Template structure for note creation snippets."""
+
+    id: Optional[int] = None
+    name: str
+    content: str
+
+
 def deidentify(text: str) -> str:
     """Redact common protected health information from ``text``.
 
@@ -509,6 +528,49 @@ async def log_event(event: EventModel) -> Dict[str, str]:
     except Exception as exc:
         print(f"Error inserting event into database: {exc}")
     return {"status": "logged"}
+
+
+@app.get("/templates", response_model=List[TemplateModel])
+def get_templates(user=Depends(get_current_user)) -> List[TemplateModel]:
+    """Return custom templates for the current user and clinic."""
+
+    clinic = user.get("clinic")
+    cursor = db_conn.cursor()
+    rows = cursor.execute(
+        "SELECT id, name, content FROM templates WHERE user=? AND (clinic=? OR clinic IS NULL)",
+        (user["sub"], clinic),
+    ).fetchall()
+    return [TemplateModel(id=row["id"], name=row["name"], content=row["content"]) for row in rows]
+
+
+@app.post("/templates", response_model=TemplateModel)
+def create_template(tpl: TemplateModel, user=Depends(get_current_user)) -> TemplateModel:
+    """Create a new custom template for the user."""
+
+    clinic = user.get("clinic")
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "INSERT INTO templates (user, clinic, name, content) VALUES (?, ?, ?, ?)",
+        (user["sub"], clinic, tpl.name, tpl.content),
+    )
+    db_conn.commit()
+    tpl_id = cursor.lastrowid
+    return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
+
+
+@app.delete("/templates/{template_id}")
+def delete_template(template_id: int, user=Depends(get_current_user)) -> Dict[str, str]:
+    """Delete a custom template owned by the current user."""
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "DELETE FROM templates WHERE id=? AND user=?",
+        (template_id, user["sub"]),
+    )
+    db_conn.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"status": "deleted"}
 
 
 # Endpoint: aggregate metrics from the logged events.  Returns counts of

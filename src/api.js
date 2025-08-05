@@ -255,6 +255,66 @@ export async function updateServerSettings(settings) {
 }
 
 /**
+ * Retrieve custom templates for the current user from the backend.
+ * Returns an empty array if the backend is unreachable.
+ * @returns {Promise<Array<{id:number,name:string,content:string}>>}
+ */
+export async function getTemplates() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return [];
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await fetch(`${baseUrl}/templates`, { headers });
+  if (!resp.ok) return [];
+  return await resp.json();
+}
+
+/**
+ * Persist a custom template for the current user.
+ * @param {{name:string, content:string}} tpl
+ * @returns {Promise<object>}
+ */
+export async function createTemplate(tpl) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return tpl;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/templates`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(tpl),
+  });
+  return await resp.json();
+}
+
+/**
+ * Delete a custom template by its identifier.
+ * @param {number} id
+ * @returns {Promise<void>}
+ */
+export async function deleteTemplate(id) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  await fetch(`${baseUrl}/templates/${id}`, {
+    method: 'DELETE',
+    headers,
+  });
+}
+
+/**
  * Send the OpenAI API key to the backend for persistent storage.  This
  * allows the user to configure the key through the UI instead of
  * environment variables.  If no backend is configured, the call
