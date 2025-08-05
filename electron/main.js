@@ -70,6 +70,15 @@ function createWindow() {
     ? path.join(process.resourcesPath, 'dist', 'index.html')
     : path.join(__dirname, 'dist', 'index.html');
   win.loadFile(indexPath);
+
+  // Inject the backend URL so the frontend can locate the API server.
+  // This avoids having to bake the URL at build time and allows local
+  // development against the Python backend running on port 8000.
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(
+      "window.__BACKEND_URL__ = 'http://localhost:8000';"
+    );
+  });
 }
 
 app.whenReady().then(async () => {
