@@ -21,7 +21,9 @@
     "react-dom": "^18.2.0",
     "react-quill": "^2.0.0",
     "electron-updater": "^6.3.0",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "chart.js": "^4.4.0",
+    "react-chartjs-2": "^5.2.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",

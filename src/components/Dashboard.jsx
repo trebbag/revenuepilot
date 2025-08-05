@@ -1,6 +1,27 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
 import { useState, useEffect } from 'react';
 import { getMetrics } from '../api.js';
+import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 function Dashboard() {
   // Initialise metrics as an empty object so that property accesses
@@ -65,6 +86,12 @@ function Dashboard() {
       current: metrics.avg_beautify_time ? metrics.avg_beautify_time.toFixed(1) : 0,
       direction: 'lower',
     },
+    {
+      title: 'Revenue per Visit',
+      baseline: 0,
+      current: metrics.revenue_per_visit ? metrics.revenue_per_visit.toFixed(2) : 0,
+      direction: 'higher',
+    },
   ];
 
   /**
@@ -94,6 +121,30 @@ function Dashboard() {
       dir: effectiveDiff > 0 ? 'up' : effectiveDiff < 0 ? 'down' : null,
       diff: Math.abs(diff),
     };
+  };
+
+  const dailyData = {
+    labels: metrics.timeseries?.daily?.map((d) => d.date) || [],
+    datasets: [
+      {
+        label: 'Events',
+        data: metrics.timeseries?.daily?.map((d) => d.count) || [],
+        borderColor: 'rgba(54, 162, 235, 1)',
+        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+      },
+    ],
+  };
+
+  const weeklyData = {
+    labels: metrics.timeseries?.weekly?.map((w) => w.week) || [],
+    datasets: [
+      {
+        label: 'Events',
+        data: metrics.timeseries?.weekly?.map((w) => w.count) || [],
+        borderColor: 'rgba(255, 99, 132, 1)',
+        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+      },
+    ],
   };
   return (
     <div className="dashboard">
@@ -143,19 +194,39 @@ function Dashboard() {
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
           <h3>Daily Events</h3>
-          <ul>
-            {metrics.timeseries.daily?.map((d) => (
-              <li key={d.date}>{d.date}: {d.count}</li>
-            ))}
-          </ul>
-          <h3>Weekly Events</h3>
-          <ul>
-            {metrics.timeseries.weekly?.map((w) => (
-              <li key={w.week}>{w.week}: {w.count}</li>
-            ))}
-          </ul>
+          <Line data={dailyData} />
+          <h3 style={{ marginTop: '1rem' }}>Weekly Events</h3>
+          <Line data={weeklyData} />
         </div>
       )}
+
+      {metrics.coding_distribution &&
+        Object.keys(metrics.coding_distribution).length > 0 && (
+          <div style={{ marginTop: '1rem' }}>
+            <h3>Coding Distribution</h3>
+            <ul>
+              {Object.entries(metrics.coding_distribution).map(([code, val]) => (
+                <li key={code}>
+                  {code}: {val}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+      {metrics.denial_rates &&
+        Object.keys(metrics.denial_rates).length > 0 && (
+          <div style={{ marginTop: '1rem' }}>
+            <h3>Denial Rates</h3>
+            <ul>
+              {Object.entries(metrics.denial_rates).map(([code, val]) => (
+                <li key={code}>
+                  {code}: {val}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
     </div>
   );
 }

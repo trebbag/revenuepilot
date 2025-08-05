@@ -4,6 +4,35 @@
 // operations with dummy data.
 
 /**
+ * Authenticate a user and retrieve a JWT from the backend. The token is
+ * returned to the caller so it can be persisted in localStorage or other
+ * storage. Throws an error when authentication fails.
+ *
+ * @param {string} username
+ * @param {string} password
+ * @param {string} role
+ * @returns {Promise<string>} JWT access token
+ */
+export async function login(username, password, role = 'admin') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await fetch(`${baseUrl}/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, role }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.message || 'Login failed');
+  }
+  const data = await resp.json();
+  // Backend returns token under access_token
+  return data.access_token;
+}
+
+/**
  * Beautify (reformat) the clinical note.  In this stub it simply
  * capitalises the text and trims whitespace.
  * @param {string} text
@@ -157,8 +186,15 @@ export async function getMetrics() {
       total_notes: 0,
       total_beautify: 0,
       total_suggest: 0,
+      total_summary: 0,
+      total_chart_upload: 0,
+      total_audio: 0,
       avg_note_length: 0,
       avg_beautify_time: 0,
+      revenue_per_visit: 0,
+      coding_distribution: {},
+      denial_rates: {},
+      timeseries: { daily: [], weekly: [] },
     };
   }
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;

@@ -8,6 +8,7 @@ import Settings from './components/Settings.jsx';
 import { beautifyNote, getSuggestions, logEvent, transcribeAudio, summarizeNote } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
+import Login from './components/Login.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -20,6 +21,9 @@ function stripHtml(html) {
 
 // Basic skeleton component implementing the toolbar, tab system and suggestion panel.
 function App() {
+  const [token, setToken] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  );
   // Track which tab is active: 'draft' or 'beautified'
   const [activeTab, setActiveTab] = useState('draft');
   // Store the beautified text once generated
@@ -132,6 +136,11 @@ function App() {
         'Chief Complaint: \n\nInterval History: \n\nReview of Systems: \n\nPhysical Exam: \n\nAssessment & Plan: ',
     },
   ];
+
+  // If there is no JWT stored, show the login form instead of the main app
+  if (!token) {
+    return <Login onLoggedIn={(tok) => setToken(tok)} />;
+  }
 
   // When the user clicks the Beautify button, run a placeholder transformation.
   // In the real app this will call the LLM API to reformat the note.
