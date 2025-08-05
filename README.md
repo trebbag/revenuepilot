@@ -65,20 +65,6 @@ app into an Electron shell for desktop deployment.
 4. **Run the Electron shell**.  The project includes scripts to launch
    and package a desktop version:
 
- ```bash
-  npm run electron:dev   # build the frontend and start Electron
-  npm run electron:build # generate a distributable with electron-builder
-  ```
-
-  Vite outputs files to `electron/dist`, which `electron/main.js`
-  loads when creating the Electron `BrowserWindow`.
-
-  The packaged application now bundles the FastAPI backend and a Python
-  runtime.  Ensure `backend/venv` contains all Python dependencies before
-  running `electron-builder`; this virtual environment will be shipped with
-  the app and used by `electron/main.js` to launch the backend subprocess.
-  If you prefer to ship a standalone Python build instead, place the
-  executable under `python/` so it is included in the distributable.
 
 ## Structure
 
