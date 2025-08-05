@@ -102,6 +102,8 @@ app into an Electron shell for desktop deployment.
     can run `npm run update-server` to host the `dist/` directory and set
     `UPDATE_SERVER_URL=http://localhost:8080`.  Local packaging works without
     it but auto‑updates will be disabled.
+  * `PYTHON` – optional path to a Python interpreter. If unset, the build scripts
+    look for `python3` then `python`.
   * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
     Windows builds.
 
