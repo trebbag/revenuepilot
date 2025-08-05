@@ -1,12 +1,13 @@
 // Settings page component for RevenuePilot.
 // Allows the user to toggle which suggestion categories are shown and switch colour themes.
 
-import { useState } from 'react';
-import { setApiKey, updateServerSettings } from '../api.js';
+import { useState, useEffect } from 'react';
+import { setApiKey, updateServerSettings, getTemplates, deleteTemplate } from '../api.js';
 
 function Settings({ settings, updateSettings }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
+  const [templates, setTemplates] = useState([]);
   const handleToggle = (key) => {
     updateSettings({ ...settings, [key]: !settings[key] });
   };
@@ -36,6 +37,17 @@ function Settings({ settings, updateSettings }) {
     updateSettings({ ...settings, advancedScrubbing: newVal });
     try {
       await updateServerSettings({ advanced_scrubber: newVal });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+  useEffect(() => {
+    getTemplates().then(setTemplates).catch(() => setTemplates([]));
+  }, []);
+  const handleDeleteTemplate = async (id) => {
+    try {
+      await deleteTemplate(id);
+      setTemplates((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
       console.error(e);
     }
@@ -152,6 +164,16 @@ function Settings({ settings, updateSettings }) {
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
         placeholder="e.g. Commercial payer X requires three ROS for 99214; Include time spent on counselling for CPT 99406"
       />
+      <h3>Templates</h3>
+      <ul>
+        {templates.map((tpl) => (
+          <li key={tpl.id}>
+            {tpl.name}{' '}
+            <button onClick={() => handleDeleteTemplate(tpl.id)}>Delete</button>
+          </li>
+        ))}
+        {templates.length === 0 && <li>No templates</li>}
+      </ul>
     </div>
   );
 }
