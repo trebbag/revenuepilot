@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "electron:dev": "npm run build && electron electron/main.js",
+    "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
 
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node scripts/check-build-env.js && electron-builder -mwl",
 
