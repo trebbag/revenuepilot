@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -38,6 +40,13 @@ async function main() {
   );
 
   await run(pipPath, ['install', '-r', path.join(backendDir, 'requirements.txt')]);
+
+  const freeze = spawnSync(pipPath, ['freeze'], { encoding: 'utf8' });
+  if (freeze.status === 0) {
+    fs.writeFileSync(path.join(backendDir, 'requirements.lock'), freeze.stdout);
+  } else {
+    throw new Error('pip freeze failed');
+  }
 }
 
 main().catch(err => {

@@ -25,6 +25,7 @@ backend/analytics.db
 analytics.db
 # Backend virtual environment
 backend/venv/
+backend/requirements.lock
 # Logs and coverage
 *.log
 coverage/
