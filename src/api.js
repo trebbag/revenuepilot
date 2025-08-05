@@ -10,10 +10,9 @@
  *
  * @param {string} username
  * @param {string} password
- * @param {string} role
  * @returns {Promise<string>} JWT access token
  */
-export async function login(username, password, role = 'admin') {
+export async function login(username, password) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -21,7 +20,7 @@ export async function login(username, password, role = 'admin') {
   const resp = await fetch(`${baseUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, role }),
+    body: JSON.stringify({ username, password }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -116,7 +115,7 @@ export async function getSuggestions(text, context = {}) {
  * @param {Blob} blob
  * @returns {Promise<string>}
  */
-export async function transcribeAudio(blob) {
+export async function transcribeAudio(blob, diarise = false) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -125,21 +124,23 @@ export async function transcribeAudio(blob) {
     const form = new FormData();
     form.append('file', blob, 'audio.webm');
     try {
-      const resp = await fetch(`${baseUrl}/transcribe`, {
+      const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
         method: 'POST',
         body: form,
       });
       const data = await resp.json();
-      if (typeof data === 'string') return data;
-      if (data.transcript) return data.transcript;
-      if (data.provider || data.patient)
-        return `${data.provider || ''} ${data.patient || ''}`.trim();
+      if (data.provider || data.patient) {
+        return { provider: data.provider || '', patient: data.patient || '' };
+      }
+      if (data.transcript) {
+        return { provider: data.transcript, patient: '' };
+      }
     } catch (err) {
       console.error('Transcription error', err);
     }
   }
   // Fallback placeholder when no backend is available
-  return `[transcribed ${blob.size} bytes]`;
+  return { provider: `[transcribed ${blob.size} bytes]`, patient: '' };
 }
 
 /**
@@ -175,7 +176,7 @@ export async function logEvent(eventType, details = {}) {
  * when no backend is configured.
  * @returns {Promise<object>}
  */
-export async function getMetrics() {
+export async function getMetrics(filters = {}) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -191,16 +192,66 @@ export async function getMetrics() {
       total_audio: 0,
       avg_note_length: 0,
       avg_beautify_time: 0,
+      avg_close_time: 0,
       revenue_per_visit: 0,
       coding_distribution: {},
+      denial_rate: 0,
       denial_rates: {},
+      deficiency_rate: 0,
       timeseries: { daily: [], weekly: [] },
     };
   }
+  const params = new URLSearchParams();
+  if (filters.start) params.append('start', filters.start);
+  if (filters.end) params.append('end', filters.end);
+  if (filters.clinician) params.append('clinician', filters.clinician);
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/metrics`, { headers });
+  const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, { headers });
   return await resp.json();
+}
+
+/**
+ * Retrieve persisted backend settings such as the advanced scrubber toggle.
+ * Returns an empty object if the backend is unreachable.
+ * @returns {Promise<object>}
+ */
+export async function getServerSettings() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  try {
+    const resp = await fetch(`${baseUrl}/settings`);
+    if (!resp.ok) return {};
+    return await resp.json();
+  } catch (e) {
+    console.error('Failed to fetch settings', e);
+    return {};
+  }
+}
+
+/**
+ * Persist backend settings.
+ * @param {object} settings
+ * @returns {Promise<object>}
+ */
+export async function updateServerSettings(settings) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  try {
+    const resp = await fetch(`${baseUrl}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    return await resp.json();
+  } catch (e) {
+    console.error('Failed to update settings', e);
+    return {};
+  }
 }
 
 /**

@@ -8,28 +8,31 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
-
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
-
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js",
     "update-server": "node scripts/update-server.js",
-    "setup-env": "node scripts/setup-env.js"
+    "setup-env": "node scripts/setup-env.js",
+    "test": "vitest run"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-quill": "^2.0.0",
-    "electron-updater": "^6.3.0",
-    "dotenv": "^16.6.1",
     "chart.js": "^4.4.0",
-    "react-chartjs-2": "^5.2.0"
+    "dotenv": "^16.6.1",
+    "electron-updater": "^6.3.0",
+    "pdfkit": "^0.13.0",
+    "react": "^18.2.0",
+    "react-chartjs-2": "^5.2.0",
+    "react-dom": "^18.2.0",
+    "react-quill": "^2.0.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^14.0.0",
     "@vitejs/plugin-react": "^4.2.0",
     "electron": "^37.2.5",
     "electron-builder": "^26.0.12",
-    "vite": "^5.1.0"
+    "jsdom": "^24.0.0",
+    "vite": "^5.1.0",
+    "vitest": "^1.5.0"
   },
   "build": {
     "appId": "com.revenuepilot.app",
@@ -38,7 +41,9 @@
       {
         "from": "electron/dist",
         "to": "dist",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       "electron/main.js",
       "package.json"
@@ -58,7 +63,9 @@
     },
     "win": {
       "target": "nsis",
+
       "signingHashAlgorithms": ["sha256"]
+
     },
     "linux": {
       "target": [
