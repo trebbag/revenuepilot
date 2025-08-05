@@ -175,7 +175,7 @@ export async function logEvent(eventType, details = {}) {
  * when no backend is configured.
  * @returns {Promise<object>}
  */
-export async function getMetrics() {
+export async function getMetrics(filters = {}) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -191,15 +191,22 @@ export async function getMetrics() {
       total_audio: 0,
       avg_note_length: 0,
       avg_beautify_time: 0,
+      avg_close_time: 0,
       revenue_per_visit: 0,
       coding_distribution: {},
+      denial_rate: 0,
       denial_rates: {},
+      deficiency_rate: 0,
       timeseries: { daily: [], weekly: [] },
     };
   }
+  const params = new URLSearchParams();
+  if (filters.start) params.append('start', filters.start);
+  if (filters.end) params.append('end', filters.end);
+  if (filters.clinician) params.append('clinician', filters.clinician);
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/metrics`, { headers });
+  const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, { headers });
   return await resp.json();
 }
 
