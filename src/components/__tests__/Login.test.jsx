@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, expect, test, beforeEach, afterEach } from 'vitest';
 
@@ -32,3 +33,4 @@ test('shows error on failed login', async () => {
   fireEvent.click(getByRole('button', { name: /login/i }));
   expect(await findByText('bad')).toBeTruthy();
 });
+
