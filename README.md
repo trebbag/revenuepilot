@@ -89,6 +89,22 @@ app into an Electron shell for desktop deployment.
   npm run electron:build
   ```
 
+  `electron:build` invokes [`electron-builder`](https://www.electron.build/) to
+  produce signed installers for macOS (`.dmg`), Windows (`.exe`) and Linux
+  (`AppImage` and `.deb`).  The FastAPI backend along with its virtual
+  environment is copied into the final app bundle so the desktop build runs
+  without a system Python.
+
+  To test automatic updates locally, point `UPDATE_SERVER_URL` at a server
+  hosting the generated artifacts.  A tiny static file server is provided:
+
+  ```bash
+  npm run update-server
+  ```
+
+  It serves the `dist/` directory on port 8080 and can be used as a target
+  for the auto‑update feed during development.
+
 `electron:build` downloads icon assets and bundles the backend.  The `.env`
 file is read by the build scripts and should define:
 
