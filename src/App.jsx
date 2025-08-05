@@ -68,8 +68,10 @@ function App() {
     differentials: [],
   });
 
-  // User settings controlling theme and which suggestion categories are enabled
-  const [settingsState, setSettingsState] = useState({
+  // Default values for theme and suggestion category settings.  These are
+  // merged with any values persisted in ``localStorage`` so user preferences
+  // survive page reloads.
+  const defaultSettings = {
     theme: 'modern',
     enableCodes: true,
     enableCompliance: true,
@@ -79,12 +81,38 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
+  };
+  // User settings controlling theme and which suggestion categories are enabled.
+  // Load any previously saved settings from ``localStorage`` on first render.
+  const [settingsState, setSettingsState] = useState(() => {
+    try {
+      const stored = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('settings') || '{}') : {};
+      return { ...defaultSettings, ...stored };
+    } catch {
+      return defaultSettings;
+    }
   });
 
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
   };
+
+  // Persist theme and suggestion category preferences whenever they change so
+  // they remain after a page reload or application restart.
+  useEffect(() => {
+    const { theme, enableCodes, enableCompliance, enablePublicHealth, enableDifferentials } = settingsState;
+    localStorage.setItem(
+      'settings',
+      JSON.stringify({ theme, enableCodes, enableCompliance, enablePublicHealth, enableDifferentials })
+    );
+  }, [
+    settingsState.theme,
+    settingsState.enableCodes,
+    settingsState.enableCompliance,
+    settingsState.enablePublicHealth,
+    settingsState.enableDifferentials,
+  ]);
 
   // Templates for quick note creation
   const templates = [
