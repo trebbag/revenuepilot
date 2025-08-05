@@ -45,6 +45,44 @@ except Exception:  # pragma: no cover - library is optional
     scrubadub = None  # type: ignore
     _SCRUBBER_AVAILABLE = False
 
+try:
+    from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+    from presidio_anonymizer import AnonymizerEngine
+    from presidio_anonymizer.entities import OperatorConfig
+    from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+    _provider = NlpEngineProvider(
+        nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+        }
+    )
+    _nlp_engine = _provider.create_engine()
+    _analyzer = AnalyzerEngine(nlp_engine=_nlp_engine, supported_languages=["en"])
+
+    _address_pattern = Pattern(
+        "address",
+        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
+        0.5,
+    )
+    _address_recognizer = PatternRecognizer(
+        supported_entity="ADDRESS", patterns=[_address_pattern]
+    )
+    _analyzer.registry.add_recognizer(_address_recognizer)
+
+    _ssn_pattern = Pattern("ssn", r"\b\d{3}-\d{2}-\d{4}\b", 0.5)
+    _ssn_recognizer = PatternRecognizer(
+        supported_entity="US_SSN", patterns=[_ssn_pattern]
+    )
+    _analyzer.registry.add_recognizer(_ssn_recognizer)
+
+    _anonymizer = AnonymizerEngine()
+    _ADVANCED_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    _ADVANCED_AVAILABLE = False
+    _analyzer = None  # type: ignore
+    _anonymizer = None  # type: ignore
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="RevenuePilot API")
@@ -95,6 +133,12 @@ db_conn.execute(
 )
 db_conn.commit()
 
+# Store simple key/value settings.  Currently only used for advanced PHI scrubbing toggle.
+db_conn.execute(
+    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+)
+db_conn.commit()
+
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
 # metrics computations.
@@ -102,6 +146,18 @@ db_conn.row_factory = sqlite3.Row
 
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
+
+# Determine whether the advanced scrubber is enabled either via environment variable
+# or persisted setting in the database.
+USE_ADVANCED_SCRUBBER = os.getenv("USE_ADVANCED_SCRUBBER", "false").lower() == "true"
+try:
+    row = db_conn.execute(
+        "SELECT value FROM settings WHERE key='advanced_scrubber'"
+    ).fetchone()
+    if row:
+        USE_ADVANCED_SCRUBBER = row["value"] == "true"
+except Exception:
+    pass
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -158,11 +214,37 @@ class LoginModel(BaseModel):
     role: str
 
 
+class SettingsModel(BaseModel):
+    advanced_scrubber: bool
+
+
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, str]:
     """Return a JWT for the provided user and role."""
     token = create_token(model.username, model.role)
     return {"access_token": token}
+
+
+@app.get("/settings")
+async def get_settings() -> Dict[str, bool]:
+    """Return current backend settings."""
+    return {"advanced_scrubber": USE_ADVANCED_SCRUBBER}
+
+
+@app.post("/settings")
+async def update_settings(model: SettingsModel) -> Dict[str, bool]:
+    """Persist backend settings such as the advanced scrubber toggle."""
+    global USE_ADVANCED_SCRUBBER
+    USE_ADVANCED_SCRUBBER = model.advanced_scrubber
+    try:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            ("advanced_scrubber", "true" if USE_ADVANCED_SCRUBBER else "false"),
+        )
+        db_conn.commit()
+    except Exception as exc:  # pragma: no cover - best effort
+        logging.warning("Failed to persist settings: %s", exc)
+    return {"advanced_scrubber": USE_ADVANCED_SCRUBBER}
 
 
 class NoteRequest(BaseModel):
@@ -216,6 +298,30 @@ def deidentify(text: str) -> str:
         The cleaned text with sensitive spans replaced by tokens such as
         ``[NAME]`` or ``[PHONE]``.
     """
+
+    if USE_ADVANCED_SCRUBBER and _ADVANCED_AVAILABLE:
+        try:
+            entities = [
+                "PERSON",
+                "PHONE_NUMBER",
+                "EMAIL_ADDRESS",
+                "US_SSN",
+                "DATE_TIME",
+                "ADDRESS",
+            ]
+            results = _analyzer.analyze(text=text, language="en", entities=entities)
+            operators = {
+                r.entity_type: OperatorConfig(
+                    "replace", {"new_value": f"[{r.entity_type}]"}
+                )
+                for r in results
+            }
+            text = _anonymizer.anonymize(
+                text=text, analyzer_results=results, operators=operators
+            ).text
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Advanced scrubber failed: %s", exc)
 
     if _SCRUBBER_AVAILABLE:
         try:

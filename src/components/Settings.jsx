@@ -2,7 +2,7 @@
 // Allows the user to toggle which suggestion categories are shown and switch colour themes.
 
 import { useState } from 'react';
-import { setApiKey } from '../api.js';
+import { setApiKey, updateServerSettings } from '../api.js';
 
 function Settings({ settings, updateSettings }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
@@ -29,6 +29,15 @@ function Settings({ settings, updateSettings }) {
       setApiKeyInput('');
       // Clear the status after a short delay
       setTimeout(() => setApiKeyStatus(''), 4000);
+    }
+  };
+  const handleAdvancedToggle = async () => {
+    const newVal = !settings.advancedScrubbing;
+    updateSettings({ ...settings, advancedScrubbing: newVal });
+    try {
+      await updateServerSettings({ advanced_scrubber: newVal });
+    } catch (e) {
+      console.error(e);
     }
   };
   return (
@@ -62,6 +71,16 @@ function Settings({ settings, updateSettings }) {
           onChange={handleThemeChange}
         />{' '}
         Modern Minimal
+      </label>
+
+      <h3>Privacy</h3>
+      <label style={{ display: 'block' }}>
+        <input
+          type="checkbox"
+          checked={settings.advancedScrubbing}
+          onChange={handleAdvancedToggle}
+        />{' '}
+        Enable advanced PHI scrubbing
       </label>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         <input

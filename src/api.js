@@ -206,6 +206,49 @@ export async function getMetrics() {
 }
 
 /**
+ * Retrieve persisted backend settings such as the advanced scrubber toggle.
+ * Returns an empty object if the backend is unreachable.
+ * @returns {Promise<object>}
+ */
+export async function getServerSettings() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  try {
+    const resp = await fetch(`${baseUrl}/settings`);
+    if (!resp.ok) return {};
+    return await resp.json();
+  } catch (e) {
+    console.error('Failed to fetch settings', e);
+    return {};
+  }
+}
+
+/**
+ * Persist backend settings.
+ * @param {object} settings
+ * @returns {Promise<object>}
+ */
+export async function updateServerSettings(settings) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  try {
+    const resp = await fetch(`${baseUrl}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    return await resp.json();
+  } catch (e) {
+    console.error('Failed to update settings', e);
+    return {};
+  }
+}
+
+/**
  * Send the OpenAI API key to the backend for persistent storage.  This
  * allows the user to configure the key through the UI instead of
  * environment variables.  If no backend is configured, the call

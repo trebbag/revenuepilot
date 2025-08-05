@@ -7,3 +7,5 @@ platformdirs
 pyjwt
 scrubadub
 python-multipart
+presidio-analyzer
+presidio-anonymizer
