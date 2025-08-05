@@ -22,6 +22,8 @@ Thumbs.db
 # Database & analytics artifacts
 backend/analytics.db
 analytics.db
+# Backend virtual environment
+backend/venv/
 # Logs and coverage
 *.log
 coverage/
@@ -30,3 +32,6 @@ coverage/
 assets/*.icns
 assets/*.ico
 assets/*.png
+# Local certificates
+*.pem
+*.p12

@@ -1,6 +1,6 @@
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 
 const icons = [
   { env: 'ICON_PNG_URL', name: 'icon.png' },
@@ -16,15 +16,13 @@ if (!fs.existsSync(dir)) {
 function download(url, dest) {
   return new Promise((resolve, reject) => {
     if (!url) return resolve();
-    const file = fs.createWriteStream(dest);
-    https.get(url, response => {
-      if (response.statusCode !== 200) {
-        reject(new Error(`Failed to get '${url}' (${response.statusCode})`));
-        return;
+    execFile('curl', ['-L', url, '-o', dest], error => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
       }
-      response.pipe(file);
-      file.on('finish', () => file.close(resolve));
-    }).on('error', reject);
+    });
   });
 }
 
@@ -34,6 +32,9 @@ async function run() {
     if (url) {
       const dest = path.join(dir, icon.name);
       await download(url, dest);
+      console.log(`Downloaded ${icon.name} from ${url}`);
+    } else {
+      console.log(`${icon.env} not set, skipping`);
     }
   }
 }
