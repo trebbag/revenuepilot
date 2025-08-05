@@ -16,6 +16,7 @@ import {
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
+import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -484,12 +485,11 @@ function App() {
               >
                 {loadingSummary ? 'Summarizing…' : 'Summarize'}
               </button>
-              <button
-                disabled={!beautified}
-                onClick={() => navigator.clipboard.writeText(beautified)}
-              >
-                Copy
-              </button>
+              <ClipboardExportButtons
+                beautified={beautified}
+                summary={summaryText}
+                patientID={patientID}
+              />
               <button
                 disabled={!patientID || !draftText.trim()}
                 onClick={() => {

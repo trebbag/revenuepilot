@@ -1,10 +1,11 @@
 require('dotenv').config();
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const PDFDocument = require('pdfkit');
 const http = require('http');
 
 let backendProcess;
@@ -12,6 +13,34 @@ const backendUrl =
   process.env.BACKEND_URL ||
   process.env.VITE_API_URL ||
   'http://localhost:8000';
+
+ipcMain.handle('export-note', async (_event, { beautified, summary }) => {
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    filters: [
+      { name: 'Text File', extensions: ['txt'] },
+      { name: 'PDF', extensions: ['pdf'] },
+    ],
+  });
+  if (canceled || !filePath) return;
+  if (filePath.endsWith('.pdf')) {
+    await new Promise((resolve, reject) => {
+      const doc = new PDFDocument();
+      const stream = fs.createWriteStream(filePath);
+      doc.pipe(stream);
+      doc.text('Beautified Note:\n');
+      doc.text(beautified || '');
+      doc.moveDown();
+      doc.text('Summary:\n');
+      doc.text(summary || '');
+      doc.end();
+      stream.on('finish', resolve);
+      stream.on('error', reject);
+    });
+  } else {
+    const content = `Beautified Note:\n${beautified || ''}\n\nSummary:\n${summary || ''}`;
+    fs.writeFileSync(filePath, content);
+  }
+});
 
 function waitForServer(url, timeout = 10000) {
   return new Promise((resolve, reject) => {
