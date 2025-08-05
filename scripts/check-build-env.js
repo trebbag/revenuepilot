@@ -1,17 +1,12 @@
+
 require('dotenv').config();
 
 const required = ['UPDATE_SERVER_URL'];
+
 const signing = ['CSC_LINK', 'CSC_KEY_PASSWORD'];
 
-let missing = false;
-for (const name of required) {
-  if (!process.env[name]) {
-    console.error(`Missing required environment variable: ${name}`);
-    missing = true;
-  }
-}
-if (missing) {
-  process.exit(1);
+if (!process.env.UPDATE_SERVER_URL) {
+  console.warn('UPDATE_SERVER_URL not set; updates will be disabled.');
 }
 for (const name of signing) {
   if (!process.env[name]) {

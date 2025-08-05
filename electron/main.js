@@ -5,10 +5,32 @@ const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 
 let backendProcess;
 
-function startBackend() {
+function waitForServer(url, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      http
+        .get(url, res => {
+          res.resume();
+          resolve();
+        })
+        .on('error', err => {
+          if (Date.now() - start > timeout) {
+            reject(err);
+          } else {
+            setTimeout(check, 200);
+          }
+        });
+    };
+    check();
+  });
+}
+
+async function startBackend() {
   const backendDir = app.isPackaged
     ? path.join(process.resourcesPath, 'backend')
     : path.join(__dirname, '..', 'backend');
@@ -16,13 +38,24 @@ function startBackend() {
     ? path.join(backendDir, 'venv', 'Scripts', 'python.exe')
     : path.join(backendDir, 'venv', 'bin', 'python');
   const pythonExecutable = fs.existsSync(venvPath) ? venvPath : 'python';
-  const scriptPath = path.join(backendDir, 'main.py');
 
-  backendProcess = spawn(pythonExecutable, [scriptPath], {
+  const args = [
+    '-m',
+    'uvicorn',
+    'main:app',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '8000'
+  ];
+
+  backendProcess = spawn(pythonExecutable, args, {
     cwd: backendDir,
     env: process.env,
     stdio: 'inherit'
   });
+
+  await waitForServer('http://127.0.0.1:8000');
 }
 
 function createWindow() {
@@ -39,10 +72,19 @@ function createWindow() {
     ? path.join(process.resourcesPath, 'dist', 'index.html')
     : path.join(__dirname, 'dist', 'index.html');
   win.loadFile(indexPath);
+
+  // Inject the backend URL so the frontend can locate the API server.
+  // This avoids having to bake the URL at build time and allows local
+  // development against the Python backend running on port 8000.
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(
+      "window.__BACKEND_URL__ = 'http://localhost:8000';"
+    );
+  });
 }
 
-app.whenReady().then(() => {
-  startBackend();
+app.whenReady().then(async () => {
+  await startBackend();
   createWindow();
 
   if (process.env.UPDATE_SERVER_URL) {
