@@ -54,7 +54,7 @@ app into an Electron shell for desktop deployment.
 
    The environment variable `VITE_API_URL` tells the frontend where to reach the backend.  Without it, the app will fall back to stubbed data.
 
-5. **Configure the OpenAI API key**
+4. **Configure the OpenAI API key**
 
    The app now includes a Settings page where you can paste your OpenAI API key.  The key is stored on your machine in the backend directory (`openai_key.txt`) and loaded automatically when the backend starts.  To set the key:
 
@@ -64,9 +64,39 @@ app into an Electron shell for desktop deployment.
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
-4. **Run the Electron shell**.  The project includes scripts to launch
-   and package a desktop version:
+5. **Run the Electron shell**.  The project includes scripts to launch
+   an Electron wrapper for development and to build distributable binaries:
 
+   ```bash
+   npm run electron:dev
+   ```
+
+   This command builds the frontend and starts Electron along with the Python
+   backend so you can develop against the desktop shell.
+
+   To create installers for macOS, Windows and Linux run:
+
+   ```bash
+   npm run electron:build
+   ```
+
+   `electron:build` downloads icon assets and bundles the backend.  Set the
+   following environment variables before running it:
+
+   * `OPENAI_API_KEY` – API key consumed by the backend.
+   * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
+   * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
+     Windows `.ico`, and macOS `.icns` icons.
+   * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
+     Windows builds.
+   * Optional `UPDATE_SERVER_URL` – feed URL for auto‑updates.
+
+   After packaging, run the output located in `dist/`:
+
+   * **macOS** – open the generated `.dmg`/`.zip` or run `open dist/mac/RevenuePilot.app`.
+   * **Windows** – execute `dist/RevenuePilot Setup.exe`.
+   * **Linux** – run `dist/RevenuePilot-<version>.AppImage` or install the
+     `.deb` package.
 
 ## Structure
 
