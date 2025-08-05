@@ -90,14 +90,17 @@ app into an Electron shell for desktop deployment.
   * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
 
     Windows `.ico`, and macOS `.icns` icons.
-  * `UPDATE_SERVER_URL` – feed URL for auto‑updates.  During development you
+  * `UPDATE_SERVER_URL` – feed URL for auto‑updates.  For production releases
+    you must set this to point at your update server.  During development you
     can run `npm run update-server` to host the `dist/` directory and set
-    `UPDATE_SERVER_URL=http://localhost:8080`.
+    `UPDATE_SERVER_URL=http://localhost:8080`.  Local packaging works without
+    it but auto‑updates will be disabled.
   * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
     Windows builds.
 
-  The build script aborts if `UPDATE_SERVER_URL` is missing and warns when
-  signing variables are not supplied.
+  The build script warns if `UPDATE_SERVER_URL` is missing, so local builds
+  may not receive updates.  It also warns when signing variables are not
+  supplied.
 
 ### Update server
 
