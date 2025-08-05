@@ -160,6 +160,15 @@ deploy RevenuePilot, consider the following steps:
    Remember to maintain HIPAA compliance by de‑identifying notes before
    sending them to any external API.
 
+### De-identification assumptions
+
+The backend's `deidentify` helper uses the [`scrubadub`](https://github.com/datasnakes/scrubadub)
+library along with regex fallbacks.  It targets common US‑centric patterns
+such as multi‑word names, several date formats, phone numbers, addresses,
+emails and Social Security numbers, replacing them with bracketed tokens
+like `[NAME]` or `[DATE]`.  Unusual formats or non‑English text may not be
+fully scrubbed, so manual review remains necessary for sensitive data.
+
 These steps will transform the scaffold into a fully operational clinical
 documentation assistant.
 

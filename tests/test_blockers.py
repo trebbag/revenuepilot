@@ -37,20 +37,27 @@ def test_audio_transcription_returns_text():
     assert result.strip(), "Transcription should not be empty"
 
 
-def test_deidentify_removes_names_and_dates():
-    """Advanced PHI scrubber should remove names and dates beyond simple patterns.
+def test_deidentify_handles_complex_phi():
+    """PHI scrubber should handle multi-word names, varied dates and IDs.
 
-    The current `deidentify` implementation removes phone numbers, standard
-    dates and naïvely capitalised names.  It does not catch more complex
-    patterns or multiple words.  This test documents the desired behaviour
-    when a more sophisticated scrubber (e.g. ML‑based) is integrated.
+    This ensures the `deidentify` helper redacts more than trivial patterns,
+    including different date formats and additional identifiers like email
+    addresses or Social Security numbers.
     """
-    text = "John A. Doe visited on 2023-07-15 and called (123) 456-7890."
+
+    text = (
+        "Jane Mary Doe visited on July 15, 2023, 07/15/23 and 2023-07-15. "
+        "She emailed jane.doe@example.com, called (123) 456-7890, "
+        "gave SSN 123-45-6789 and lives at 789 Oak Avenue."
+    )
     cleaned = deidentify(text)
-    # Expect names and dates to be replaced with tokens
-    assert "[NAME]" in cleaned, "Names should be redacted"
-    assert "[DATE]" in cleaned, "Dates should be redacted"
+    assert "[NAME]" in cleaned, "Multi-word names should be redacted"
+    # Three different date styles should be redacted
+    assert cleaned.count("[DATE]") >= 3, "Dates should be redacted"
     assert "[PHONE]" in cleaned, "Phone numbers should be redacted"
+    assert "[EMAIL]" in cleaned, "Emails should be redacted"
+    assert "[SSN]" in cleaned, "SSNs should be redacted"
+    assert "[ADDRESS]" in cleaned, "Addresses should be redacted"
 
 
 def test_metrics_requires_authentication():

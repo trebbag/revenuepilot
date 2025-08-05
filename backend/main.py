@@ -36,6 +36,13 @@ from .key_manager import get_api_key, save_api_key
 import json
 import sqlite3
 
+try:
+    import scrubadub
+    _SCRUBBER_AVAILABLE = True
+except Exception:  # pragma: no cover - library is optional
+    scrubadub = None  # type: ignore
+    _SCRUBBER_AVAILABLE = False
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="RevenuePilot API")
@@ -186,17 +193,34 @@ class EventModel(BaseModel):
 
 
 def deidentify(text: str) -> str:
-    """
-    Perform a very basic de‑identification on the input text.  This function
-    removes phone numbers, dates, and sequences of capitalized words (which
-    often correspond to names).  For production use, replace this with a
-    comprehensive PHI scrubbing library or model.
+    """De‑identify clinical text using ``scrubadub`` and regex fallbacks.
+
+    The function first attempts to leverage the external `scrubadub`
+    library for PHI scrubbing.  Any placeholders produced by that library are
+    normalised to the bracketed tokens used throughout the project
+    (``[NAME]``, ``[DATE]`` ...).  Additional regular expressions catch common
+    U.S. identifiers and ensure multi‑word names and varied date formats are
+    redacted.
 
     Args:
         text: Raw note text containing possible PHI.
     Returns:
-        De‑identified text with sensitive information replaced by tokens.
+        Text with sensitive information replaced by bracketed tokens.
     """
+
+    if _SCRUBBER_AVAILABLE:
+        try:
+            # ``replace_with='placeholder'`` yields tokens like ``{{EMAIL}}``.
+            text = scrubadub.clean(text, replace_with="placeholder")
+            text = re.sub(
+                r"\{\{([A-Z_]+?)(?:-\d+)?\}\}",
+                lambda m: f"[{m.group(1)}]",
+                text,
+            )
+            text = text.replace("[SOCIAL_SECURITY_NUMBER]", "[SSN]")
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("scrubadub failed: %s", exc)
+
     # Remove phone numbers (e.g., 123-456-7890, (123) 456‑7890 or 1234567890)
     # The previous implementation anchored the pattern to a word boundary,
     # which failed for numbers that began with a parenthesis like
@@ -208,16 +232,38 @@ def deidentify(text: str) -> str:
         "[PHONE]",
         text,
     )
-    # Remove dates formatted as MM/DD/YYYY, M/D/YY or YYYY‑MM‑DD
-    text = re.sub(r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\b", "[DATE]", text)
+
+    # Remove dates formatted as MM/DD/YYYY, M/D/YY, YYYY‑MM‑DD or month names.
+    text = re.sub(
+        r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\b",
+        "[DATE]",
+        text,
+    )
+    month = (
+        "(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        "Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    )
+    text = re.sub(rf"\b{month}\s+\d{{1,2}},?\s+\d{{2,4}}\b", "[DATE]", text, flags=re.IGNORECASE)
+    text = re.sub(rf"\b\d{{1,2}}\s+{month}\s+\d{{2,4}}\b", "[DATE]", text, flags=re.IGNORECASE)
+
     # Remove email addresses
-    text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+        "[EMAIL]",
+        text,
+        flags=re.IGNORECASE,
+    )
     # Remove U.S. Social Security numbers (XXX-XX-XXXX)
     text = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[SSN]", text)
     # Remove addresses: patterns like '123 Main St' or '456 Elm Avenue'
-    text = re.sub(r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b", "[ADDRESS]", text, flags=re.IGNORECASE)
-    # Remove capitalized names (naive pattern: capital letter followed by lowercase letters, possibly multiple words).  Avoid all‑caps abbreviations.
-    text = re.sub(r"\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b", "[NAME]", text)
+    text = re.sub(
+        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
+        "[ADDRESS]",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # Remove capitalized names including middle initials and multiple words
+    text = re.sub(r"\b[A-Z][a-z]+(?:\s(?:[A-Z]\.|[A-Z][a-z]+))+\b", "[NAME]", text)
     return text
 
 
