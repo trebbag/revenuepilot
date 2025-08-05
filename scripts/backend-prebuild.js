@@ -16,9 +16,7 @@ async function main() {
   const backendDir = path.join(__dirname, '..', 'backend');
   const venvDir = path.join(backendDir, 'venv');
 
-  if (!fs.existsSync(venvDir)) {
-    await run('python', ['-m', 'venv', venvDir]);
-  }
+  await run('python', ['-m', 'venv', '--copies', '--clear', venvDir]);
 
   const pipPath = path.join(
     venvDir,

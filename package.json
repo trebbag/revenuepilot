@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "npm run build && electron electron/main.js",
-    "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && electron-builder -mwl",
+    "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && electron-builder -wl",
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js"
   },
@@ -34,6 +34,7 @@
         "filter": ["**/*"]
       },
       "electron/main.js",
+      "package.json",
       {
         "from": "backend",
         "to": "backend",
@@ -43,21 +44,8 @@
     "directories": {
       "buildResources": "assets"
     },
-    "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
-      "identity": null
-    },
     "win": {
-      "target": "nsis",
-      "publisherName": "RevenuePilot",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "certificateFile": "${CSC_LINK}",
-      "certificatePassword": "${CSC_KEY_PASSWORD}"
+      "target": "nsis"
     },
     "linux": {
       "target": [
@@ -69,7 +57,7 @@
     "publish": [
       {
         "provider": "generic",
-        "url": "https://updates.example.com"
+        "url": "${env.UPDATE_SERVER_URL}"
       }
     ],
     "icon": "assets/icon.png"
