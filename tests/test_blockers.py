@@ -78,15 +78,18 @@ def test_metrics_contains_timeseries_data():
     assert "timeseries" in data and data["timeseries"], "timeseries data missing"
 
 
-@pytest.mark.xfail(reason="Electron packaging not configured")
 def test_electron_packaging_configuration_present():
     """Electron builder configuration should be present in package.json.
 
-    Packaging is currently absent.  Once implemented, `package.json` should
-    define build scripts and an electron‑builder config section.
+    The application now ships with Electron build tooling.  We verify that
+    the package manifest defines an ``electron:build`` script and includes
+    a basic electron-builder configuration block.
     """
     with open(os.path.join(os.path.dirname(__file__), "..", "package.json"), encoding="utf-8") as f:
         pkg = json.load(f)
+
+    scripts = pkg.get("scripts", {})
+    assert "electron:build" in scripts, "electron build script missing"
+
     build = pkg.get("build") or {}
-    # Expect either a build script or an electron builder config
-    assert "electron" in json.dumps(build).lower(), "Electron packaging configuration missing"
+    assert build.get("appId"), "electron-builder config missing"
