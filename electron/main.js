@@ -33,7 +33,10 @@ function createWindow() {
     },
   });
 
-  win.loadFile(path.join(__dirname, 'dist/index.html'));
+  const indexPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'dist', 'index.html')
+    : path.join(__dirname, 'dist', 'index.html');
+  win.loadFile(indexPath);
 }
 
 app.whenReady().then(() => {
