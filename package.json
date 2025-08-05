@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
 
-    "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node scripts/check-build-env.js && electron-builder -mwl",
+    "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
 
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js",
@@ -39,11 +39,12 @@
         "filter": ["**/*"]
       },
       "electron/main.js",
-      "package.json",
+      "package.json"
+    ],
+    "extraResources": [
       {
         "from": "backend",
-        "to": "backend",
-        "filter": ["**/*"]
+        "to": "backend"
       }
     ],
     "directories": {
