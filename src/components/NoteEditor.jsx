@@ -23,7 +23,7 @@ try {
   ReactQuill = null;
 }
 
-function NoteEditor({ id, value, onChange }) {
+function NoteEditor({ id, value, onChange, onRecord, recording = false, transcript = '' }) {
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
   // controlled input in both modes.
@@ -43,29 +43,52 @@ function NoteEditor({ id, value, onChange }) {
     onChange(newVal);
   };
 
+  const toolbar = (
+    <div style={{ marginBottom: '0.5rem' }}>
+      {onRecord && (
+        <button type="button" onClick={onRecord}>
+          {recording ? 'Stop Recording' : 'Record Audio'}
+        </button>
+      )}
+      {transcript && (
+        <span
+          style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}
+        >
+          Transcript: {transcript}
+        </span>
+      )}
+    </div>
+  );
+
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
     return (
-      <ReactQuill
-        id={id}
-        theme="snow"
-        value={value}
-        // ReactQuill's onChange passes the new HTML string as the first
-        // argument.  We ignore the other args (delta, source, editor) and
-        // forward the HTML string to the parent onChange.
-        onChange={(content) => onChange(content)}
-        style={{ height: '100%', width: '100%' }}
-      />
+      <div style={{ height: '100%', width: '100%' }}>
+        {toolbar}
+        <ReactQuill
+          id={id}
+          theme="snow"
+          value={value}
+          // ReactQuill's onChange passes the new HTML string as the first
+          // argument.  We ignore the other args (delta, source, editor) and
+          // forward the HTML string to the parent onChange.
+          onChange={(content) => onChange(content)}
+          style={{ height: '100%', width: '100%' }}
+        />
+      </div>
     );
   }
   return (
-    <textarea
-      id={id}
-      value={localValue}
-      onChange={handleTextAreaChange}
-      style={{ width: '100%', height: '100%', padding: '0.5rem' }}
-      placeholder="Type your clinical note here..."
-    />
+    <div style={{ width: '100%', height: '100%' }}>
+      {toolbar}
+      <textarea
+        id={id}
+        value={localValue}
+        onChange={handleTextAreaChange}
+        style={{ width: '100%', height: '100%', padding: '0.5rem' }}
+        placeholder="Type your clinical note here..."
+      />
+    </div>
   );
 }
 

@@ -454,19 +454,24 @@ async def summarize(req: NoteRequest) -> Dict[str, str]:
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), diarize: bool = False) -> Dict[str, Any]:
+async def transcribe(
+    file: UploadFile = File(...), diarise: bool = False
+) -> Dict[str, str]:
     """Transcribe uploaded audio.
 
     The endpoint accepts an audio file (e.g. from the browser's
-    ``MediaRecorder`` API) and returns either a single transcript or, when
-    ``diarize`` is true, separate transcripts for provider and patient.
-    Actual transcription is delegated to :mod:`backend.audio_processing`.
+    ``MediaRecorder`` API) and returns a JSON object with separate
+    ``provider`` and ``patient`` transcripts.  When ``diarise`` is false,
+    the full transcription is returned under ``provider`` and ``patient``
+    is left empty.  Actual transcription is delegated to
+    :mod:`backend.audio_processing`.
     """
 
     audio_bytes = await file.read()
-    if diarize:
+    if diarise:
         return diarize_and_transcribe(audio_bytes)
-    return {"transcript": simple_transcribe(audio_bytes)}
+    text = simple_transcribe(audio_bytes)
+    return {"provider": text, "patient": ""}
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
 # field "key" and stores it in a local file.  Also updates the
