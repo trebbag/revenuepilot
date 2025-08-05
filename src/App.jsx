@@ -11,7 +11,7 @@ import {
   logEvent,
   transcribeAudio,
   summarizeNote,
-  getServerSettings,
+  getSettings,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
@@ -93,7 +93,6 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
-    advancedScrubbing: false,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   // Load any previously saved settings from ``localStorage`` on first render.
@@ -109,56 +108,27 @@ function App() {
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('settings', JSON.stringify(newSettings));
+    }
   };
 
-  // Persist theme and suggestion category preferences whenever they change so
-  // they remain after a page reload or application restart.
   useEffect(() => {
-    const {
-      theme,
-      enableCodes,
-      enableCompliance,
-      enablePublicHealth,
-      enableDifferentials,
-      advancedScrubbing,
-    } = settingsState;
-    localStorage.setItem(
-      'settings',
-      JSON.stringify({
-        theme,
-        enableCodes,
-        enableCompliance,
-        enablePublicHealth,
-        enableDifferentials,
-        advancedScrubbing,
-      })
-    );
-  }, [
-    settingsState.theme,
-    settingsState.enableCodes,
-    settingsState.enableCompliance,
-    settingsState.enablePublicHealth,
-    settingsState.enableDifferentials,
-    settingsState.advancedScrubbing,
-  ]);
-
-  // Load server-controlled settings (e.g., advanced scrubbing) once on mount.
-  useEffect(() => {
-    async function fetchBackendSettings() {
+    if (!token) return;
+    async function fetchSettings() {
       try {
-        const server = await getServerSettings();
-        if (typeof server.advanced_scrubber === 'boolean') {
-          setSettingsState((s) => ({
-            ...s,
-            advancedScrubbing: server.advanced_scrubber,
-          }));
+        const remote = await getSettings();
+        const merged = { ...defaultSettings, ...remote };
+        setSettingsState(merged);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('settings', JSON.stringify(merged));
         }
       } catch (e) {
-        console.error('Failed to load server settings', e);
+        console.error('Failed to load settings', e);
       }
     }
-    fetchBackendSettings();
-  }, []);
+    fetchSettings();
+  }, [token]);
 
   // Templates for quick note creation
   const templates = [

@@ -32,6 +32,50 @@ export async function login(username, password) {
 }
 
 /**
+ * Fetch persisted user settings from the backend.
+ * Requires a valid JWT stored in localStorage.
+ * @returns {Promise<object>}
+ */
+export async function getSettings() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  if (!token) throw new Error('Not authenticated');
+  const resp = await fetch(`${baseUrl}/settings`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) throw new Error('Failed to fetch settings');
+  return await resp.json();
+}
+
+/**
+ * Persist user settings to the backend.
+ * Requires authentication and mirrors the payload returned from getSettings.
+ * @param {object} settings
+ * @returns {Promise<object>}
+ */
+export async function saveSettings(settings) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  if (!token) throw new Error('Not authenticated');
+  const resp = await fetch(`${baseUrl}/settings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(settings),
+  });
+  if (!resp.ok) throw new Error('Failed to save settings');
+  return await resp.json();
+}
+
+/**
  * Beautify (reformat) the clinical note.  In this stub it simply
  * capitalises the text and trims whitespace.
  * @param {string} text
@@ -216,43 +260,6 @@ export async function getMetrics(filters = {}) {
  * Returns an empty object if the backend is unreachable.
  * @returns {Promise<object>}
  */
-export async function getServerSettings() {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  try {
-    const resp = await fetch(`${baseUrl}/settings`);
-    if (!resp.ok) return {};
-    return await resp.json();
-  } catch (e) {
-    console.error('Failed to fetch settings', e);
-    return {};
-  }
-}
-
-/**
- * Persist backend settings.
- * @param {object} settings
- * @returns {Promise<object>}
- */
-export async function updateServerSettings(settings) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  try {
-    const resp = await fetch(`${baseUrl}/settings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings),
-    });
-    return await resp.json();
-  } catch (e) {
-    console.error('Failed to update settings', e);
-    return {};
-  }
-}
 
 /**
  * Send the OpenAI API key to the backend for persistent storage.  This
