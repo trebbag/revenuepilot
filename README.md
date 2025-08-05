@@ -80,20 +80,38 @@ app into an Electron shell for desktop deployment.
    npm run electron:build
    ```
 
-  `electron:build` downloads icon assets and bundles the backend.  Provide
-  icon URLs through the following environment variables or place the files
-  manually under `assets/`:
+
+   `electron:build` downloads icon assets and bundles the backend.  Set the
+   following environment variables before running it:
+
 
   * `OPENAI_API_KEY` – API key consumed by the backend.
   * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
   * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
-    Windows `.ico`, and macOS `.icns` icons. Packaging aborts if a URL is
-    missing and the corresponding file does not already exist.
-   * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
-     Windows builds.
-   * Optional `UPDATE_SERVER_URL` – feed URL for auto‑updates.
 
-   After packaging, run the output located in `dist/`:
+    Windows `.ico`, and macOS `.icns` icons.
+  * `UPDATE_SERVER_URL` – feed URL for auto‑updates.  During development you
+    can run `npm run update-server` to host the `dist/` directory and set
+    `UPDATE_SERVER_URL=http://localhost:8080`.
+  * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
+    Windows builds.
+
+  The build script aborts if `UPDATE_SERVER_URL` is missing and warns when
+  signing variables are not supplied.
+
+### Update server
+
+Run a minimal HTTP server to host built artifacts for auto‑update testing:
+
+```bash
+npm run update-server
+```
+
+This serves the `dist/` directory on port 8080.  Point
+`UPDATE_SERVER_URL` at this URL when building.
+
+After packaging, run the output located in `dist/`:
+
 
    * **macOS** – open the generated `.dmg`/`.zip` or run `open dist/mac/RevenuePilot.app`.
    * **Windows** – execute `dist/RevenuePilot Setup.exe`.
