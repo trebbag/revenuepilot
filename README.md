@@ -74,15 +74,22 @@ app into an Electron shell for desktop deployment.
    This command builds the frontend and starts Electron along with the Python
    backend so you can develop against the desktop shell.
 
-   To create installers for macOS, Windows and Linux run:
+  To create installers for macOS, Windows and Linux you first need to collect
+  build-time environment variables.  Run the setup script and follow the
+  prompts to create a `.env` file:
 
-   ```bash
-   npm run electron:build
-   ```
+  ```bash
+  npm run setup-env
+  ```
 
+  After `.env` has been written you can build the installers:
 
-   `electron:build` downloads icon assets and bundles the backend.  Set the
-   following environment variables before running it:
+  ```bash
+  npm run electron:build
+  ```
+
+  `electron:build` downloads icon assets and bundles the backend.  The `.env`
+  file is read by the build scripts and should define:
 
 
   * `OPENAI_API_KEY` – API key consumed by the backend.

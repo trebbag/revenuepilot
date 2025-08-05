@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const { app, BrowserWindow } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
