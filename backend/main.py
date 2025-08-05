@@ -205,24 +205,21 @@ class EventModel(BaseModel):
 
 
 def deidentify(text: str) -> str:
-    """De‑identify clinical text using ``scrubadub`` and regex fallbacks.
+    """Redact common protected health information from ``text``.
 
-    The function first attempts to leverage the external `scrubadub`
-    library for PHI scrubbing.  Any placeholders produced by that library are
-    normalised to the bracketed tokens used throughout the project
-    (``[NAME]``, ``[DATE]`` ...).  Additional regular expressions catch common
-    U.S. identifiers and ensure multi‑word names and varied date formats are
-    redacted.
+    The helper uses ``scrubadub`` when available and augments it with
+    explicit regular expressions so that the most frequent identifiers are
+    consistently replaced with bracketed placeholders.
 
     Args:
-        text: Raw note text containing possible PHI.
+        text: Raw note text potentially containing PHI.
     Returns:
-        Text with sensitive information replaced by bracketed tokens.
+        The cleaned text with sensitive spans replaced by tokens such as
+        ``[NAME]`` or ``[PHONE]``.
     """
 
     if _SCRUBBER_AVAILABLE:
         try:
-            # ``replace_with='placeholder'`` yields tokens like ``{{EMAIL}}``.
             text = scrubadub.clean(text, replace_with="placeholder")
             text = re.sub(
                 r"\{\{([A-Z_]+?)(?:-\d+)?\}\}",
@@ -233,49 +230,44 @@ def deidentify(text: str) -> str:
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("scrubadub failed: %s", exc)
 
-    # Remove phone numbers (e.g., 123-456-7890, (123) 456‑7890 or 1234567890)
-    # The previous implementation anchored the pattern to a word boundary,
-    # which failed for numbers that began with a parenthesis like
-    # ``(123) 456-7890``.  By using a negative lookbehind for digits we
-    # allow punctuation or whitespace before the number while still
-    # preventing mid-number matches.
-    text = re.sub(
-        r"(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b",
-        "[PHONE]",
-        text,
-    )
-
-    # Remove dates formatted as MM/DD/YYYY, M/D/YY, YYYY‑MM‑DD or month names.
-    text = re.sub(
-        r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\b",
-        "[DATE]",
-        text,
-    )
     month = (
-        "(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
         "Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
     )
-    text = re.sub(rf"\b{month}\s+\d{{1,2}},?\s+\d{{2,4}}\b", "[DATE]", text, flags=re.IGNORECASE)
-    text = re.sub(rf"\b\d{{1,2}}\s+{month}\s+\d{{2,4}}\b", "[DATE]", text, flags=re.IGNORECASE)
 
-    # Remove email addresses
-    text = re.sub(
-        r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
-        "[EMAIL]",
-        text,
-        flags=re.IGNORECASE,
+    phone_pattern = re.compile(
+        r"(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b",
+        re.IGNORECASE,
     )
-    # Remove U.S. Social Security numbers (XXX-XX-XXXX)
-    text = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[SSN]", text)
-    # Remove addresses: patterns like '123 Main St' or '456 Elm Avenue'
-    text = re.sub(
+    date_pattern = re.compile(
+        rf"\b("  # start group
+        r"\d{1,2}/\d{1,2}/\d{2,4}"
+        r"|\d{4}-\d{1,2}-\d{1,2}"
+        rf"|{month}\s+\d{{1,2}},?\s+\d{{2,4}}"
+        rf"|\d{{1,2}}\s+{month}\s+\d{{2,4}}"
+        r")\b",
+        re.IGNORECASE,
+    )
+    email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+    ssn_pattern = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+    address_pattern = re.compile(
         r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
-        "[ADDRESS]",
-        text,
-        flags=re.IGNORECASE,
+        re.IGNORECASE,
     )
-    # Remove capitalized names including middle initials and multiple words
-    text = re.sub(r"\b[A-Z][a-z]+(?:\s(?:[A-Z]\.|[A-Z][a-z]+))+\b", "[NAME]", text)
+    name_pattern = re.compile(r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.))+\b")
+
+    patterns = [
+        ("PHONE", phone_pattern),
+        ("DATE", date_pattern),
+        ("EMAIL", email_pattern),
+        ("SSN", ssn_pattern),
+        ("ADDRESS", address_pattern),
+        ("NAME", name_pattern),
+    ]
+
+    for token, pattern in patterns:
+        text = pattern.sub(f"[{token}]", text)
+
     return text
 
 
