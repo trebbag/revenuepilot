@@ -1,71 +1,129 @@
-"""
-Placeholder functions for audio transcription and speaker diarisation.
+"""Utilities for audio transcription and diarisation.
 
-RevenuePilot may eventually support uploading or recording visit audio and
-extracting separate transcripts for the provider and patient.  Full
-implementation requires external libraries and models (e.g. pyannote.audio
-for speaker diarisation and OpenAI Whisper for transcription).  Because
-those dependencies cannot be installed in this environment, these
-functions act as stubs.  They show the expected interface and return
-empty transcripts.  Replace the bodies with calls to your chosen
-speech‑to‑text and speaker separation services.
+The real application can accept recorded visit audio and convert it to
+text using OpenAI's Whisper API.  When ``pyannote.audio`` is available we
+also attempt basic speaker diarisation so that provider and patient text
+can be separated.  Both functions gracefully fall back to lightweight
+placeholders when the required models or API keys are unavailable so the
+rest of the application continues to function in limited environments.
 """
 
-from typing import Dict, Tuple
+from __future__ import annotations
+
+import io
+import tempfile
+from typing import Dict
+
+import openai
+
+from .key_manager import get_api_key
+
+try:  # pragma: no cover - optional heavy dependency
+    from pyannote.audio import Pipeline, Audio
+    import torchaudio
+
+    _DIARISATION_AVAILABLE = True
+except Exception:  # pragma: no cover - dependency may be missing
+    Pipeline = Audio = torchaudio = None  # type: ignore
+    _DIARISATION_AVAILABLE = False
 
 
-def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
+def _transcribe_bytes(data: bytes) -> str:
+    """Helper that attempts to transcribe ``data`` using Whisper.
+
+    If transcription fails for any reason (missing key, invalid audio,
+    network error) a deterministic placeholder string is returned so the
+    caller always receives some text.
     """
-    Separate speakers and transcribe the audio.  The returned dictionary
-    should map speaker roles (e.g. "provider", "patient") to their
-    respective transcripts.  In this stub implementation, both
-    transcripts are empty.  In production, you could use a library
-    like pyannote.audio to segment the audio by speaker and then feed
-    each segment into a transcription model like OpenAI Whisper or
-    Google Cloud Speech‑to‑Text.
 
-    Args:
-        audio_bytes: Raw audio data (e.g. from a WebM or WAV file).
-    Returns:
-        A dictionary with keys 'provider' and 'patient' containing
-        transcribed text.
-    """
-    # TODO: implement diarisation and transcription
-    return {"provider": "", "patient": ""}
-
-
-def simple_transcribe(audio_bytes: bytes) -> str:
-    """Transcribe audio without speaker separation.
-
-    The real project will eventually call out to a speech‑to‑text
-    service such as OpenAI Whisper.  In the test environment we do not
-    have access to those heavy dependencies, but the function should
-    still return *some* text so the rest of the pipeline can proceed.
-
-    This lightweight implementation attempts to decode the provided
-    bytes as UTF‑8.  If that yields no readable characters it falls
-    back to returning a deterministic placeholder string containing the
-    byte length.  This keeps the function side‑effect free while
-    ensuring callers always receive non‑empty text when audio is
-    supplied.
-
-    Args:
-        audio_bytes: Raw audio data.
-
-    Returns:
-        A single string containing the "transcribed" audio or a
-        placeholder message when decoding fails.
-    """
-    if not audio_bytes:
+    if not data:
         return ""
 
-    try:
-        decoded = audio_bytes.decode("utf-8").strip()
+    api_key = get_api_key()
+    if api_key:
+        openai.api_key = api_key
+        try:
+            with io.BytesIO(data) as buf:
+                resp = openai.Audio.transcriptions.create(
+                    model="whisper-1", file=buf
+                )
+            # ``resp`` may be a dict or an object depending on SDK version
+            text = resp["text"] if isinstance(resp, dict) else getattr(resp, "text", "")
+            if text:
+                return text.strip()
+        except Exception:
+            # Fall back to placeholder below
+            pass
+
+    try:  # Last-resort attempt: interpret bytes as UTF-8 text
+        decoded = data.decode("utf-8").strip()
         if decoded:
             return decoded
     except Exception:
-        # Decoding can fail for arbitrary byte sequences.  Swallow the
-        # error and fall back to a deterministic placeholder.
         pass
 
-    return f"[transcribed {len(audio_bytes)} bytes]"
+    return f"[transcribed {len(data)} bytes]"
+
+
+def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
+    """Transcribe audio and attempt speaker diarisation.
+
+    The function first tries to separate speakers using
+    ``pyannote.audio``'s pretrained diarisation pipeline.  Each detected
+    speaker segment is then sent to Whisper for transcription.  Because
+    diarisation requires heavy optional dependencies, the function
+    automatically falls back to a simple single-speaker transcription
+    when those libraries or models are unavailable.
+
+    Args:
+        audio_bytes: Raw audio data from a recording.
+    Returns:
+        Dictionary mapping ``provider`` and ``patient`` to their
+        respective transcripts.  When diarisation fails, the ``provider``
+        key contains the full transcription and ``patient`` is empty.
+    """
+
+    if not audio_bytes:
+        return {"provider": "", "patient": ""}
+
+    if _DIARISATION_AVAILABLE:
+        try:
+            # Write bytes to a temporary file so pyannote can process it
+            with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+                tmp.write(audio_bytes)
+                tmp.flush()
+                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+                diarization = pipeline(tmp.name)
+                audio = Audio()
+                speaker_text: Dict[str, str] = {}
+                for turn, _, speaker in diarization.itertracks(yield_label=True):
+                    waveform, sr = audio.crop(tmp.name, turn)
+                    buf = io.BytesIO()
+                    torchaudio.save(buf, waveform, sr, format="wav")
+                    buf.seek(0)
+                    text = _transcribe_bytes(buf.read())
+                    if text:
+                        speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
+                # Map first two speakers to provider/patient roles
+                speakers = sorted(speaker_text.keys())
+                provider = speaker_text.get(speakers[0], "").strip() if speakers else ""
+                patient = speaker_text.get(speakers[1], "").strip() if len(speakers) > 1 else ""
+                if provider or patient:
+                    return {"provider": provider, "patient": patient}
+        except Exception:
+            # Any failure falls through to simple transcription below
+            pass
+
+    # Fallback: single-speaker transcription
+    text = _transcribe_bytes(audio_bytes)
+    return {"provider": text, "patient": ""}
+
+
+def simple_transcribe(audio_bytes: bytes) -> str:
+    """Transcribe audio without attempting speaker separation.
+
+    This is a thin wrapper around :func:`_transcribe_bytes` that exposes
+    the original public interface used elsewhere in the project.
+    """
+
+    return _transcribe_bytes(audio_bytes)
