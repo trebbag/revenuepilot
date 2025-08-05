@@ -12,6 +12,7 @@ deploying in production.
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -31,7 +32,8 @@ import jwt
 # deploying.
 from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
 from .openai_client import call_openai
-from .key_manager import get_api_key, save_api_key
+from .key_manager import get_api_key, save_api_key, APP_NAME
+from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 
 import json
@@ -68,12 +70,21 @@ app.add_middleware(
 events: List[Dict[str, Any]] = []
 
 # Set up a SQLite database for persistent analytics storage.  The database
-# file is located in the backend directory.  It contains a single table
-# `events` with columns for eventType, timestamp and details (stored
-# as a JSON string).  Using a lightweight embedded database makes it
-# possible to retain analytics between restarts without requiring an
-# external database service.
-DB_PATH = "analytics.db"
+# now lives in the user's data directory (platform-specific) so analytics
+# persist outside the project folder.  A migration step moves any existing
+# database from the old location if found.
+data_dir = user_data_dir(APP_NAME, APP_NAME)
+os.makedirs(data_dir, exist_ok=True)
+DB_PATH = os.path.join(data_dir, "analytics.db")
+
+# Migrate previous database file from the repository directory if it exists
+old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
+if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
+    try:  # best-effort migration
+        shutil.move(old_db_path, DB_PATH)
+    except Exception:
+        pass
+
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 db_conn.execute(
     "CREATE TABLE IF NOT EXISTS events ("
