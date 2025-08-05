@@ -31,8 +31,7 @@
       "dist/**/*",
       "electron/**/*",
       "backend/**/*",
-      "backend/venv/**/*",
-      "python/**/*"
+      "backend/venv/**/*"
     ],
     "directories": {
       "buildResources": "assets"
