@@ -17,7 +17,7 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT)"
     )
     db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
     db.execute(
         "CREATE TABLE settings (user_id INTEGER PRIMARY KEY, theme TEXT NOT NULL, categories TEXT NOT NULL, rules TEXT NOT NULL)"
@@ -30,9 +30,6 @@ def client(monkeypatch, tmp_path):
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("user", pwd, "user"),
-    )
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
