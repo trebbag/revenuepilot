@@ -12,7 +12,7 @@ cd "$DIR"
 echo "Starting backend (FastAPI) on port 8000..."
 
 # Start backend in background.  --reload enables live code reloading.
-uvicorn backend.main:app --reload --port 8000 &
+backend/venv/bin/uvicorn backend.main:app --reload --port 8000 &
 BACKEND_PID=$!
 
 # Ensure the backend is terminated when this script exits
