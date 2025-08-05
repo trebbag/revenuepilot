@@ -29,12 +29,15 @@ function download(url, dest) {
 async function run() {
   for (const icon of icons) {
     const url = process.env[icon.env];
+    const dest = path.join(dir, icon.name);
     if (url) {
-      const dest = path.join(dir, icon.name);
       await download(url, dest);
       console.log(`Downloaded ${icon.name} from ${url}`);
+    } else if (fs.existsSync(dest)) {
+      console.log(`${icon.name} already present, skipping download`);
     } else {
-      console.log(`${icon.env} not set, skipping`);
+      console.error(`${icon.env} not set and ${icon.name} missing`);
+      process.exit(1);
     }
   }
 }

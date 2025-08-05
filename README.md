@@ -80,13 +80,15 @@ app into an Electron shell for desktop deployment.
    npm run electron:build
    ```
 
-   `electron:build` downloads icon assets and bundles the backend.  Set the
-   following environment variables before running it:
+  `electron:build` downloads icon assets and bundles the backend.  Provide
+  icon URLs through the following environment variables or place the files
+  manually under `assets/`:
 
-   * `OPENAI_API_KEY` – API key consumed by the backend.
-   * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
-   * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
-     Windows `.ico`, and macOS `.icns` icons.
+  * `OPENAI_API_KEY` – API key consumed by the backend.
+  * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
+  * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
+    Windows `.ico`, and macOS `.icns` icons. Packaging aborts if a URL is
+    missing and the corresponding file does not already exist.
    * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
      Windows builds.
    * Optional `UPDATE_SERVER_URL` – feed URL for auto‑updates.
