@@ -1,12 +1,11 @@
 """
 Backend API for the RevenuePilot application.
 
-This FastAPI application provides endpoints to beautify clinical notes and
-generate coding/compliance suggestions.  It performs basic de‑identification
-on incoming text before sending it to an AI model.  Currently the AI calls
-are stubbed out and return fixed responses.  Replace the placeholder logic
-with calls to your chosen language model (e.g., OpenAI's GPT‑4o) when
-deploying in production.
+This FastAPI application provides endpoints to beautify clinical notes,
+generate coding/compliance suggestions and produce patient‑friendly
+summaries. It performs basic de‑identification on incoming text before
+sending it to an AI model via ``call_openai``. If the model call fails,
+each endpoint returns a sensible fallback.
 """
 
 import logging
@@ -524,7 +523,8 @@ async def beautify_note(req: NoteRequest) -> dict:
     """
     Beautify (reformat) a clinical note.  This endpoint de‑identifies the
     incoming note and then calls an LLM to rephrase it into a professional
-    format.  Here we simply uppercase the cleaned text as a placeholder.
+    format. If the model call fails, the cleaned text is uppercased as a
+    fallback.
 
     Args:
         req: NoteRequest with a raw clinical note.
@@ -556,8 +556,8 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
     Generate coding and compliance suggestions for a clinical note.  This
     endpoint de‑identifies the text and then calls an AI model to
     determine relevant CPT/ICD codes, compliance prompts, public health
-    reminders, and differential diagnoses.  Currently returns fixed
-    suggestions for demonstration.
+    reminders, and differential diagnoses.  Falls back to rule-based
+    suggestions if the model call fails.
 
     Args:
         req: NoteRequest with a raw clinical note.
@@ -599,7 +599,8 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
                 codes_list.append(CodeSuggestion(code=code_str, rationale=rationale))
         # Extract other categories, ensuring they are lists of strings.
         compliance = [str(x) for x in data.get("compliance", [])]
-        public_health = [str(x) for x in data.get("public_health", [])]
+        public_health_raw = data.get("publicHealth", data.get("public_health", []))
+        public_health = [str(x) for x in public_health_raw]
         diffs = [str(x) for x in data.get("differentials", [])]
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
