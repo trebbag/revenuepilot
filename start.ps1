@@ -9,7 +9,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
 Write-Host "Starting backend (FastAPI) on port 8000..."
-$backend = Start-Process uvicorn -ArgumentList 'backend.main:app --reload --port 8000' -PassThru
+$uvicornPath = Join-Path $scriptDir 'backend\venv\Scripts\uvicorn.exe'
+$backend = Start-Process $uvicornPath -ArgumentList 'backend.main:app --reload --port 8000' -PassThru
 
 try {
     Write-Host "Backend started with PID $($backend.Id)"
@@ -24,3 +25,4 @@ finally {
     Write-Host "Stopping backend..."
     Stop-Process -Id $backend.Id
 }
+

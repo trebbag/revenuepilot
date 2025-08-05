@@ -71,8 +71,9 @@ app into an Electron shell for desktop deployment.
    npm run electron:dev
    ```
 
-   This command builds the frontend and starts Electron along with the Python
-   backend so you can develop against the desktop shell.
+    This command builds the frontend, sets up the backend by running
+    `backend:prebuild`, and starts Electron along with the Python backend so
+    you can develop against the desktop shell.
 
   To create installers for macOS, Windows and Linux you first need to collect
   build-time environment variables.  Run the setup script and follow the
@@ -102,6 +103,7 @@ file is read by the build scripts and should define:
 * `CSC_LINK` and `CSC_KEY_PASSWORD` – path and password to the macOS
   Developer ID certificate.
 
+
 The build check fails if any of the above variables are missing.
 
 ### Code signing certificates
@@ -122,6 +124,7 @@ For production builds each platform must be signed:
 3. Configure `CSC_LINK` and `CSC_KEY_PASSWORD` in `.env`.
 
 Electron‑builder reads these variables during packaging.
+
 
 ### Update server
 

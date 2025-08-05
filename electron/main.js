@@ -8,6 +8,10 @@ const path = require('path');
 const http = require('http');
 
 let backendProcess;
+const backendUrl =
+  process.env.BACKEND_URL ||
+  process.env.VITE_API_URL ||
+  'http://localhost:8000';
 
 function waitForServer(url, timeout = 10000) {
   return new Promise((resolve, reject) => {
@@ -74,11 +78,11 @@ function createWindow() {
   win.loadFile(indexPath);
 
   // Inject the backend URL so the frontend can locate the API server.
-  // This avoids having to bake the URL at build time and allows local
-  // development against the Python backend running on port 8000.
+  // The value is read from BACKEND_URL or VITE_API_URL and falls back to
+  // http://localhost:8000 for local development.
   win.webContents.on('dom-ready', () => {
     win.webContents.executeJavaScript(
-      "window.__BACKEND_URL__ = 'http://localhost:8000';"
+      `window.__BACKEND_URL__ = ${JSON.stringify(backendUrl)};`
     );
   });
 }
