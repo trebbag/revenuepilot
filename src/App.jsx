@@ -5,7 +5,14 @@ import Dashboard from './components/Dashboard.jsx';
 import Logs from './components/Logs.jsx';
 import Help from './components/Help.jsx';
 import Settings from './components/Settings.jsx';
-import { beautifyNote, getSuggestions, logEvent, transcribeAudio, summarizeNote } from './api.js';
+import {
+  beautifyNote,
+  getSuggestions,
+  logEvent,
+  transcribeAudio,
+  summarizeNote,
+  getServerSettings,
+} from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
@@ -85,6 +92,7 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
+    advancedScrubbing: false,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   // Load any previously saved settings from ``localStorage`` on first render.
@@ -105,10 +113,24 @@ function App() {
   // Persist theme and suggestion category preferences whenever they change so
   // they remain after a page reload or application restart.
   useEffect(() => {
-    const { theme, enableCodes, enableCompliance, enablePublicHealth, enableDifferentials } = settingsState;
+    const {
+      theme,
+      enableCodes,
+      enableCompliance,
+      enablePublicHealth,
+      enableDifferentials,
+      advancedScrubbing,
+    } = settingsState;
     localStorage.setItem(
       'settings',
-      JSON.stringify({ theme, enableCodes, enableCompliance, enablePublicHealth, enableDifferentials })
+      JSON.stringify({
+        theme,
+        enableCodes,
+        enableCompliance,
+        enablePublicHealth,
+        enableDifferentials,
+        advancedScrubbing,
+      })
     );
   }, [
     settingsState.theme,
@@ -116,7 +138,26 @@ function App() {
     settingsState.enableCompliance,
     settingsState.enablePublicHealth,
     settingsState.enableDifferentials,
+    settingsState.advancedScrubbing,
   ]);
+
+  // Load server-controlled settings (e.g., advanced scrubbing) once on mount.
+  useEffect(() => {
+    async function fetchBackendSettings() {
+      try {
+        const server = await getServerSettings();
+        if (typeof server.advanced_scrubber === 'boolean') {
+          setSettingsState((s) => ({
+            ...s,
+            advancedScrubbing: server.advanced_scrubber,
+          }));
+        }
+      } catch (e) {
+        console.error('Failed to load server settings', e);
+      }
+    }
+    fetchBackendSettings();
+  }, []);
 
   // Templates for quick note creation
   const templates = [
