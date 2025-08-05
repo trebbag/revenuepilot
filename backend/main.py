@@ -330,6 +330,9 @@ class NoteRequest(BaseModel):
     chart: Optional[str] = None
     rules: Optional[List[str]] = None
     audio: Optional[str] = None
+    age: Optional[int] = None
+    sex: Optional[str] = None
+    region: Optional[str] = None
 
 
 class CodeSuggestion(BaseModel):
@@ -949,7 +952,12 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
     # SuggestionsResponse schema.  If anything fails, we fall back to
     # the simple rule-based engine defined previously.
     try:
-        messages = build_suggest_prompt(cleaned_for_prompt)
+        messages = build_suggest_prompt(
+            cleaned_for_prompt,
+            age=req.age,
+            sex=req.sex,
+            region=req.region,
+        )
         response_content = call_openai(messages)
         # The model should return raw JSON.  Parse it into a Python dict.
         data = json.loads(response_content)

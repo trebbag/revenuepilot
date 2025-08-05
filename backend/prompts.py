@@ -7,7 +7,9 @@ according to the RevenuePilot plan.  When integrating with the OpenAI API,
 call `openai.ChatCompletion.create` with the returned messages.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+
+from .guidelines import get_guidelines
 
 
 def build_beautify_prompt(text: str) -> List[Dict[str, str]]:
@@ -40,7 +42,12 @@ def build_beautify_prompt(text: str) -> List[Dict[str, str]]:
     ]
 
 
-def build_suggest_prompt(text: str) -> List[Dict[str, str]]:
+def build_suggest_prompt(
+    text: str,
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+    region: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """
     Construct a prompt for generating coding, compliance and differential
     suggestions.  The AI should parse the clinical note and produce a
@@ -61,9 +68,32 @@ def build_suggest_prompt(text: str) -> List[Dict[str, str]]:
         "- differentials: an array of plausible differential diagnoses suggested by the note. Limit to a maximum of five differentials and ensure they are consistent with the symptoms described.\n"
         "Return only valid JSON without any surrounding Markdown. Do not fabricate information beyond the note. If no suggestions apply to a category, return an empty array for that key."
     )
+    guideline_text = ""
+    try:
+        if age is not None or sex is not None or region is not None:
+            info = get_guidelines(age or 0, sex or "", region or "")
+            parts = []
+            if info.get("vaccinations"):
+                parts.append(
+                    "Vaccinations: " + ", ".join(info["vaccinations"])
+                )
+            if info.get("screenings"):
+                parts.append(
+                    "Screenings: " + ", ".join(info["screenings"])
+                )
+            if parts:
+                guideline_text = (
+                    "\n\nRelevant public health guidelines:\n" +
+                    "\n".join(f"- {p}" for p in parts)
+                )
+    except Exception:
+        guideline_text = ""
+
+    user_content = text + guideline_text
+
     return [
         {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
+        {"role": "user", "content": user_content},
     ]
 
 
