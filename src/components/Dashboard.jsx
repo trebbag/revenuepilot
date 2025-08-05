@@ -140,6 +140,22 @@ function Dashboard() {
           );
         })}
       </div>
+      {metrics.timeseries && (
+        <div className="timeseries" style={{ marginTop: '1rem' }}>
+          <h3>Daily Events</h3>
+          <ul>
+            {metrics.timeseries.daily?.map((d) => (
+              <li key={d.date}>{d.date}: {d.count}</li>
+            ))}
+          </ul>
+          <h3>Weekly Events</h3>
+          <ul>
+            {metrics.timeseries.weekly?.map((w) => (
+              <li key={w.week}>{w.week}: {w.count}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

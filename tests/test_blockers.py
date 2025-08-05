@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 # package).  If tests cannot import, ensure that `PYTHONPATH` includes
 # the repository root or install the package in editable mode.
 from backend import audio_processing
-from backend.main import app, deidentify
+from backend.main import app, deidentify, create_token
 
 
 client = TestClient(app)
@@ -53,27 +53,23 @@ def test_deidentify_removes_names_and_dates():
     assert "[PHONE]" in cleaned, "Phone numbers should be redacted"
 
 
-@pytest.mark.xfail(reason="Role‑based auth not implemented")
 def test_metrics_requires_authentication():
     """Access to metrics should be restricted to authenticated users.
 
-    Once a login system is added, unauthenticated requests to `/metrics`
-    should return HTTP 401 or 403.  Currently the endpoint is open to
-    anyone, so this test is marked xfail.
+    Unauthenticated requests to `/metrics` should return HTTP 401 or 403.
     """
     response = client.get("/metrics")
     assert response.status_code in {401, 403}
 
 
-@pytest.mark.xfail(reason="Dashboard charts not yet implemented")
 def test_metrics_contains_timeseries_data():
     """The metrics endpoint should return time‑series data for charts.
 
     After implementing analytics visualisation, `/metrics` should include
-    a `timeseries` key containing daily/weekly counts.  Until then, the
-    response only contains aggregate counts.
+    a `timeseries` key containing daily/weekly counts.
     """
-    response = client.get("/metrics")
+    token = create_token("tester", "admin")
+    response = client.get("/metrics", headers={"Authorization": f"Bearer {token}"})
     data = response.json()
     assert "timeseries" in data and data["timeseries"], "timeseries data missing"
 
