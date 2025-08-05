@@ -14,7 +14,7 @@ import io
 import tempfile
 from typing import Dict
 
-import openai
+from openai import OpenAI
 
 from .key_manager import get_api_key
 
@@ -41,14 +41,13 @@ def _transcribe_bytes(data: bytes) -> str:
 
     api_key = get_api_key()
     if api_key:
-        openai.api_key = api_key
+        client = OpenAI(api_key=api_key)
         try:
             with io.BytesIO(data) as buf:
-                resp = openai.Audio.transcriptions.create(
+                resp = client.audio.transcriptions.create(
                     model="whisper-1", file=buf
                 )
-            # ``resp`` may be a dict or an object depending on SDK version
-            text = resp["text"] if isinstance(resp, dict) else getattr(resp, "text", "")
+            text = getattr(resp, "text", "")
             if text:
                 return text.strip()
         except Exception:
@@ -101,7 +100,7 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
                     buf = io.BytesIO()
                     torchaudio.save(buf, waveform, sr, format="wav")
                     buf.seek(0)
-                    text = _transcribe_bytes(buf.read())
+                    text = simple_transcribe(buf.read())
                     if text:
                         speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
                 # Map first two speakers to provider/patient roles
@@ -115,7 +114,7 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
             pass
 
     # Fallback: single-speaker transcription
-    text = _transcribe_bytes(audio_bytes)
+    text = simple_transcribe(audio_bytes)
     return {"provider": text, "patient": ""}
 
 
@@ -126,4 +125,6 @@ def simple_transcribe(audio_bytes: bytes) -> str:
     the original public interface used elsewhere in the project.
     """
 
+    if not audio_bytes:
+        return ""
     return _transcribe_bytes(audio_bytes)
