@@ -13,13 +13,15 @@
 
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js",
-    "update-server": "node scripts/update-server.js"
+    "update-server": "node scripts/update-server.js",
+    "setup-env": "node scripts/setup-env.js"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-quill": "^2.0.0",
-    "electron-updater": "^6.3.0"
+    "electron-updater": "^6.3.0",
+    "dotenv": "^16.6.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",

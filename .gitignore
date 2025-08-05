@@ -19,6 +19,7 @@ Thumbs.db
 # Environment / secrets
 .env
 .env.*
+!.env.example
 # Database & analytics artifacts
 backend/analytics.db
 analytics.db
