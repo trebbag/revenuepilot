@@ -17,14 +17,14 @@ This document provides a high‑level overview of the components that make up th
 
 ### Backend (`backend/`)
 
-- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database (`analytics.db`) to persist events.
+- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
 - **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.
 - **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
 - **Audio processing** (`audio_processing.py`): Provides stubbed functions for diarisation and transcription.  They return empty strings and need to be implemented with real speech‑to‑text libraries (e.g. Whisper, pyannote).  This module demonstrates the expected API and highlights a current gap in functionality.
 
 ### Storage
 
-- **SQLite analytics database** (`backend/analytics.db`): A lightweight embedded database created on startup.  It stores rows of events with their type, timestamp and JSON‑encoded details.  The `/metrics` endpoint computes aggregates directly from this table.
+- **SQLite analytics database** (`analytics.db` in the user data directory): A lightweight embedded database created on startup.  It stores rows of events with their type, timestamp and JSON‑encoded details.  The `/metrics` endpoint computes aggregates directly from this table.
 - **API key file** (`backend/openai_key.txt`): When the user saves their OpenAI key in the settings UI, it is written to this file.  On startup, the backend loads it into the process environment.
 - **Client‑side storage**: Drafts, chart uploads and audio data are stored in the browser’s `localStorage` to avoid transmitting PHI.
 

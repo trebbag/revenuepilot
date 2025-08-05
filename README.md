@@ -80,12 +80,15 @@ app into an Electron shell for desktop deployment.
    npm run electron:build
    ```
 
+
    `electron:build` downloads icon assets and bundles the backend.  Set the
    following environment variables before running it:
+
 
   * `OPENAI_API_KEY` – API key consumed by the backend.
   * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
   * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
+
     Windows `.ico`, and macOS `.icns` icons.
   * `UPDATE_SERVER_URL` – feed URL for auto‑updates.  During development you
     can run `npm run update-server` to host the `dist/` directory and set
@@ -108,6 +111,7 @@ This serves the `dist/` directory on port 8080.  Point
 `UPDATE_SERVER_URL` at this URL when building.
 
 After packaging, run the output located in `dist/`:
+
 
    * **macOS** – open the generated `.dmg`/`.zip` or run `open dist/mac/RevenuePilot.app`.
    * **Windows** – execute `dist/RevenuePilot Setup.exe`.
