@@ -27,10 +27,12 @@ app into an Electron shell for desktop deployment.
 
    *Using the helper script*
 
-   A convenience script `start.sh` has been added to start both the FastAPI backend and the Vite frontend together.  From the project root run:
+   A convenience script `start.sh` (or `start.ps1` on Windows) has been added to start both the FastAPI backend and the Vite frontend together.  From the project root run:
 
    ```bash
-   ./start.sh
+   ./start.sh        # macOS/Linux
+   # or
+   .\start.ps1      # Windows PowerShell
    ```
 
    This launches the backend on port 8000 in the background and then starts the React development server.  You can view the app at the URL printed by Vite (usually `http://localhost:5173`).  When you stop the frontend (e.g. via `Ctrl+C`), the backend will be terminated automatically.
