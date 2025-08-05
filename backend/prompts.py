@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Optional
 import json
 import os
 from functools import lru_cache
+
+from .guidelines import get_guidelines
 try:
     import yaml
 except Exception:  # pragma: no cover - yaml is optional
@@ -84,6 +86,9 @@ def build_suggest_prompt(
     lang: str = "en",
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
+    age: Optional[int] = None,
+    sex: Optional[str] = None,
+    region: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """Build a suggestions prompt in the requested language."""
     default_instructions = {
@@ -107,6 +112,19 @@ def build_suggest_prompt(
         ),
     }
     instructions = _get_custom_instruction("suggest", lang, specialty, payer) or default_instructions.get(lang, default_instructions["en"])
+    user_content = text
+    if age is not None and sex and region:
+        try:
+            data = get_guidelines(age, sex, region)
+            tips: List[str] = []
+            if data.get("vaccinations"):
+                tips.extend(data["vaccinations"])
+            if data.get("screenings"):
+                tips.extend(data["screenings"])
+            if tips:
+                user_content = f"{text}\n\nConsider: " + ", ".join(tips)
+        except Exception:
+            pass
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": user_content},
