@@ -72,6 +72,10 @@ function App() {
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
+  // Demographic details used for public health suggestions
+  const [age, setAge] = useState('');
+  const [sex, setSex] = useState('');
+  const [region, setRegion] = useState('');
   // Suggestions fetched from the API
   const [suggestions, setSuggestions] = useState({
     codes: [],
@@ -381,6 +385,9 @@ function App() {
         chart: chartText,
         rules: settingsState.rules,
         audio: audioTranscript,
+        age: age ? parseInt(age, 10) : undefined,
+        sex,
+        region,
       })
         .then((data) => {
           setSuggestions(data);
@@ -393,7 +400,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText, audioTranscript]);
+  }, [draftText, audioTranscript, age, sex, region]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
@@ -456,6 +463,32 @@ function App() {
                 value={patientID}
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
+              />
+              <input
+                type="number"
+                placeholder="Age"
+                value={age}
+                onChange={(e) => setAge(e.target.value)}
+                className="demo-input"
+                style={{ width: '4rem' }}
+              />
+              <select
+                value={sex}
+                onChange={(e) => setSex(e.target.value)}
+                className="demo-input"
+              >
+                <option value="">Sex</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                type="text"
+                placeholder="Region"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                className="demo-input"
+                style={{ width: '6rem' }}
               />
               <select
                 onChange={(e) => {

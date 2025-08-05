@@ -78,6 +78,9 @@ export async function getSuggestions(text, context = {}) {
       payload.rules = context.rules;
     }
     if (context.audio) payload.audio = context.audio;
+    if (typeof context.age === 'number') payload.age = context.age;
+    if (context.sex) payload.sex = context.sex;
+    if (context.region) payload.region = context.region;
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
