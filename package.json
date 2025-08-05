@@ -25,7 +25,12 @@
   "build": {
     "appId": "com.revenuepilot.app",
     "productName": "RevenuePilot",
-    "files": ["dist/**/*", "electron/**/*"],
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "backend/**/*",
+      "python/**/*"
+    ],
     "directories": {
       "buildResources": "assets"
     },

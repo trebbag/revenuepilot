@@ -65,65 +65,6 @@ app into an Electron shell for desktop deployment.
 4. **Run the Electron shell**.  The project includes scripts to launch
    and package a desktop version:
 
-   ```bash
-   npm run electron:dev   # build the frontend and start Electron
-   npm run electron:build # generate a distributable with electron-builder
-   ```
-
-Vite outputs files to `electron/dist`, which `electron/main.js`
-loads when creating the Electron `BrowserWindow`.
-
-## Backend integration
-
-The desktop build includes a Python service that handles API requests and
-other backend tasks.  For development the service runs with `uvicorn`, but
-for distribution it should be bundled into a standalone executable
-(for example with [PyInstaller](https://pyinstaller.org/)).  The resulting
-binary can be placed in the Electron resources directory and launched from
-`electron/main.js` when the app starts.  This keeps the FastAPI server
-running alongside the renderer without requiring a separate Python
-installation on the target machine.
-
-## Release process
-
-1. **Run builds.**  Generate production assets and desktop installers:
-
-   ```bash
-   npm run build
-   npm run electron:build
-   ```
-
-2. **Code signing.**  Provide signing certificates via the environment
-   variables `CSC_LINK` (path or URL to the certificate) and
-   `CSC_KEY_PASSWORD` (the certificate password).  These are consumed by
-   `electron-builder` for Windows and macOS builds.
-
-3. **Upload to the update server.**  Distributables can be published using
-   `electron-builder`'s publishing step, which targets the generic provider
-   configured in `package.json` (`https://updates.example.com`).  The
-   `UPDATE_SERVER_URL` variable in `electron/main.js` should point to the
-   same URL so the auto‑updater can fetch new versions.
-
-4. **Tag the release.**  After a successful build, tag the commit and push
-   the tag upstream:
-
-   ```bash
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
-
-## CI/CD environment variables and secrets
-
-Automated pipelines should provide required configuration via environment
-variables or secret managers:
-
-* `OPENAI_API_KEY` – OpenAI access key for the Python backend.
-* `VITE_API_URL` – Backend URL for the frontend during builds.
-* `UPDATE_SERVER_URL` – Feed URL for `electron-updater`.
-* `CSC_LINK` / `CSC_KEY_PASSWORD` – Certificates for code signing.
-
-Store these values in your CI/CD platform's secret store and reference them
-in the workflow configuration rather than committing them to the repository.
 
 ## Structure
 
