@@ -12,13 +12,16 @@ deploying in production.
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+import jwt
 
 # Import prompt builders and OpenAI helper for LLM integration.
 # These imports are commented out above to avoid import errors when the
@@ -82,9 +85,66 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
+# ---------------------------------------------------------------------------
+# JWT authentication helpers
+# ---------------------------------------------------------------------------
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALGORITHM = "HS256"
+security = HTTPBearer()
+
+
+def create_token(username: str, role: str) -> str:
+    """Create a signed JWT for the given user and role."""
+    payload = {
+        "sub": username,
+        "role": role,
+        "exp": datetime.utcnow() + timedelta(hours=12),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Decode the provided JWT and return its payload."""
+    token = credentials.credentials
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+    return data
+
+
+def require_role(role: str):
+    """Dependency factory ensuring the current user has a given role."""
+    def checker(user=Depends(get_current_user)):
+        if user.get("role") != role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient privileges",
+            )
+        return user
+
+    return checker
+
 # Model for setting API key via API endpoint
 class ApiKeyModel(BaseModel):
     key: str
+
+
+class LoginModel(BaseModel):
+    username: str
+    role: str
+
+
+@app.post("/login")
+async def login(model: LoginModel) -> Dict[str, str]:
+    """Return a JWT for the provided user and role."""
+    token = create_token(model.username, model.role)
+    return {"access_token": token}
 
 
 class NoteRequest(BaseModel):
@@ -166,7 +226,7 @@ def deidentify(text: str) -> str:
 # production system you might want to restrict access, paginate results or
 # limit the number returned.  This endpoint is used by the frontend logs view.
 @app.get("/events")
-async def get_events() -> List[Dict[str, Any]]:
+async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]]:
     try:
         cursor = db_conn.cursor()
         cursor.execute("SELECT eventType, timestamp, details FROM events ORDER BY timestamp DESC LIMIT 200")
@@ -226,7 +286,7 @@ async def log_event(event: EventModel) -> Dict[str, str]:
 # as the average note length (in characters) if provided in event
 # details.
 @app.get("/metrics")
-async def get_metrics() -> Dict[str, Any]:
+async def get_metrics(user=Depends(require_role("admin"))) -> Dict[str, Any]:
     # Use the database to compute simple counts.  This avoids scanning the
     # in-memory list and ensures metrics persist across restarts.
     cursor = db_conn.cursor()
@@ -286,6 +346,15 @@ async def get_metrics() -> Dict[str, Any]:
         if duration >= 0:
             beautify_durations.append(duration)
     avg_beautify_time = sum(beautify_durations) / len(beautify_durations) if beautify_durations else 0
+    # Daily and weekly counts for charts
+    cursor.execute(
+        "SELECT DATE(timestamp, 'unixepoch') as day, COUNT(*) as cnt FROM events GROUP BY day ORDER BY day"
+    )
+    daily = [{"date": row["day"], "count": row["cnt"]} for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT strftime('%Y-%W', timestamp, 'unixepoch') as week, COUNT(*) as cnt FROM events GROUP BY week ORDER BY week"
+    )
+    weekly = [{"week": row["week"], "count": row["cnt"]} for row in cursor.fetchall()]
     return {
         'total_notes': total_notes,
         'total_beautify': total_beautify,
@@ -295,6 +364,7 @@ async def get_metrics() -> Dict[str, Any]:
         'total_audio': total_audio,
         'avg_note_length': avg_length,
         'avg_beautify_time': avg_beautify_time,
+        'timeseries': {'daily': daily, 'weekly': weekly},
     }
 
 

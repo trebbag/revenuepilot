@@ -127,7 +127,9 @@ export async function getMetrics() {
       avg_beautify_time: 0,
     };
   }
-  const resp = await fetch(`${baseUrl}/metrics`);
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await fetch(`${baseUrl}/metrics`, { headers });
   return await resp.json();
 }
 
