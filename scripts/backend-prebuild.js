@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
@@ -12,11 +12,24 @@ function run(cmd, args) {
   });
 }
 
+function resolvePython() {
+  if (process.env.PYTHON) return process.env.PYTHON;
+  const candidates = ['python3', 'python'];
+  for (const cmd of candidates) {
+    const result = spawnSync(cmd, ['--version'], { stdio: 'ignore' });
+    if (result.status === 0 && !result.error) {
+      return cmd;
+    }
+  }
+  throw new Error('No Python interpreter found. Set the PYTHON env variable.');
+}
+
 async function main() {
   const backendDir = path.join(__dirname, '..', 'backend');
   const venvDir = path.join(backendDir, 'venv');
 
-  await run('python', ['-m', 'venv', '--copies', '--clear', venvDir]);
+  const python = resolvePython();
+  await run(python, ['-m', 'venv', '--copies', '--clear', venvDir]);
 
   const pipPath = path.join(
     venvDir,
