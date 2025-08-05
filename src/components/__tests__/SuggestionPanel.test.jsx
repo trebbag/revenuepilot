@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { render, fireEvent, cleanup } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
+import '../../i18n.js';
 import SuggestionPanel from '../SuggestionPanel.jsx';
 
 afterEach(() => cleanup());

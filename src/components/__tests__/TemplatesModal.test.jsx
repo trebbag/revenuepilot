@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { render, fireEvent, cleanup } from '@testing-library/react';
 import { vi, test, expect, afterEach } from 'vitest';
+import '../../i18n.js';
 import TemplatesModal from '../TemplatesModal.jsx';
 
 vi.mock('../../api.js', () => ({

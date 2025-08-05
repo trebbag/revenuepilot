@@ -1,20 +1,22 @@
 // Suggestion panel rendering four expandable cards.  Clicking a suggestion
 // inserts it into the note editor via the onInsert callback.
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
-function SuggestionPanel({
-  suggestions,
-  loading,
-  className = '',
-  onInsert,
-}) {
-  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] }
-  const cards = [
-    { type: 'codes', key: 'codes', title: 'Codes & Rationale', items: suggestions?.codes || [] },
-    { type: 'compliance', key: 'compliance', title: 'Compliance Alerts', items: suggestions?.compliance || [] },
-    { type: 'public-health', key: 'publicHealth', title: 'Public Health', items: suggestions?.publicHealth || [] },
-    { type: 'differentials', key: 'differentials', title: 'Differentials', items: suggestions?.differentials || [] },
-  ];
+  function SuggestionPanel({
+    suggestions,
+    loading,
+    className = '',
+    onInsert,
+  }) {
+    const { t } = useTranslation();
+    // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] }
+    const cards = [
+      { type: 'codes', key: 'codes', title: t('suggestion.codes'), items: suggestions?.codes || [] },
+      { type: 'compliance', key: 'compliance', title: t('suggestion.compliance'), items: suggestions?.compliance || [] },
+      { type: 'public-health', key: 'publicHealth', title: t('suggestion.publicHealth'), items: suggestions?.publicHealth || [] },
+      { type: 'differentials', key: 'differentials', title: t('suggestion.differentials'), items: suggestions?.differentials || [] },
+    ];
 
   const [openState, setOpenState] = useState({
     codes: true,
@@ -28,20 +30,20 @@ function SuggestionPanel({
   };
 
   const renderItems = (items) => {
-    if (loading) {
-      return (
-        <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
-          Loading suggestions...
-        </li>
-      );
-    }
-    if (!items || items.length === 0) {
-      return (
-        <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
-          No suggestions yet
-        </li>
-      );
-    }
+      if (loading) {
+        return (
+          <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
+            {t('suggestion.loading')}
+          </li>
+        );
+      }
+      if (!items || items.length === 0) {
+        return (
+          <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
+            {t('suggestion.none')}
+          </li>
+        );
+      }
     return items.map((item, idx) => {
       if (typeof item === 'object' && item !== null && 'code' in item) {
         const text = item.rationale

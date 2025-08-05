@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
+import i18n from './i18n.js';
 import NoteEditor from './components/NoteEditor.jsx';
 import SuggestionPanel from './components/SuggestionPanel.jsx';
 import Dashboard from './components/Dashboard.jsx';
@@ -33,6 +35,7 @@ function App() {
   const [token, setToken] = useState(() =>
     typeof window !== 'undefined' ? localStorage.getItem('token') : null
   );
+  const { t } = useTranslation();
   // Track which tab is active: 'draft' or 'beautified'
   const [activeTab, setActiveTab] = useState('draft');
   // Store the beautified text once generated
@@ -95,6 +98,7 @@ function App() {
     enableCompliance: true,
     enablePublicHealth: true,
     enableDifferentials: true,
+    lang: 'en',
     // Array of custom clinical rules supplied by the user.  When non‑empty,
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
@@ -126,6 +130,7 @@ function App() {
         const remote = await getSettings();
         const merged = { ...defaultSettings, ...remote };
         setSettingsState(merged);
+        i18n.changeLanguage(merged.lang);
         if (typeof window !== 'undefined') {
           localStorage.setItem('settings', JSON.stringify(merged));
         }
@@ -135,6 +140,10 @@ function App() {
     }
     fetchSettings();
   }, [token]);
+
+  useEffect(() => {
+    i18n.changeLanguage(settingsState.lang);
+  }, [settingsState.lang]);
 
   // Templates for quick note creation
   const templates = [
@@ -195,7 +204,7 @@ function App() {
     // Strip HTML tags before sending the note to the backend.  ReactQuill
     // produces an HTML string; the backend expects plain text.
     const plain = stripHtml(draftText);
-    beautifyNote(plain)
+    beautifyNote(plain, settingsState.lang)
       .then((cleaned) => {
         setBeautified(cleaned);
         setActiveTab('beautified');
@@ -223,6 +232,7 @@ function App() {
     summarizeNote(plain, {
       chart: chartText,
       audio: audioTranscript,
+      lang: settingsState.lang,
     })
       .then((summary) => {
         setSummaryText(summary);
@@ -382,9 +392,7 @@ function App() {
         chart: chartText,
         rules: settingsState.rules,
         audio: audioTranscript,
-        age: age ? parseInt(age, 10) : undefined,
-        sex,
-        region,
+        lang: settingsState.lang,
       })
         .then((data) => {
           setSuggestions(data);
@@ -448,73 +456,34 @@ function App() {
       <div className={`content ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <header className="toolbar">
           {view !== 'note' ? (
-            <button onClick={() => setView('note')}>Back to Notes</button>
+            <button onClick={() => setView('note')}>{t('app.back')}</button>
           ) : (
-            <button onClick={() => setView('note')}>File</button>
+            <button onClick={() => setView('note')}>{t('app.file')}</button>
           )}
           {view === 'note' && (
             <>
               <input
                 type="text"
-                placeholder="Patient ID"
+                placeholder={t('app.patientId')}
                 value={patientID}
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
-              <input
-                type="number"
-                placeholder="Age"
-                value={age}
-                onChange={(e) => setAge(e.target.value)}
-                className="demo-input"
-                style={{ width: '4rem' }}
-              />
-              <select
-                value={sex}
-                onChange={(e) => setSex(e.target.value)}
-                className="demo-input"
-              >
-                <option value="">Sex</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-                <option value="other">Other</option>
-              </select>
-              <input
-                type="text"
-                placeholder="Region"
-                value={region}
-                onChange={(e) => setRegion(e.target.value)}
-                className="demo-input"
-                style={{ width: '6rem' }}
-              />
-              <select
-                onChange={(e) => {
-                  const idx = parseInt(e.target.value, 10);
-                  if (!isNaN(idx)) insertTemplate(templates[idx].content);
-                  e.target.selectedIndex = 0;
-                }}
-                className="template-select"
-              >
-                <option value="">Insert Template</option>
-                {templates.map((tpl, idx) => (
-                  <option key={tpl.name} value={idx}>
-                    {tpl.name}
-                  </option>
-                ))}
-              </select>
-
+              <button onClick={() => setShowTemplatesModal(true)}>
+                {t('app.templates')}
+              </button>
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}
               >
-                {loadingBeautify ? 'Beautifying…' : 'Beautify'}
+                {loadingBeautify ? t('app.beautifying') : t('app.beautify')}
               </button>
               <button
                 disabled={loadingSummary || !draftText.trim()}
                 onClick={handleSummarize}
                 style={{ marginLeft: '0.5rem' }}
               >
-                {loadingSummary ? 'Summarizing…' : 'Summarize'}
+                {loadingSummary ? t('app.summarizing') : t('app.summarize')}
               </button>
               <ClipboardExportButtons
                 beautified={beautified}
@@ -528,7 +497,7 @@ function App() {
                   logEvent('note_saved', { patientID, length: draftText.length }).catch(() => {});
                 }}
               >
-                Save Draft
+                {t('app.saveDraft')}
               </button>
               {/* Upload an exported chart (text or PDF) */}
               <input
@@ -543,7 +512,7 @@ function App() {
                   if (fileInputRef.current) fileInputRef.current.click();
                 }}
               >
-                {chartFileName ? 'Change Chart' : 'Upload Chart'}
+                {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
               </button>
               {chartFileName && (
                 <span style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}>
@@ -555,7 +524,7 @@ function App() {
                 onClick={() => setShowSuggestions((s) => !s)}
                 style={{ marginLeft: '0.5rem' }}
               >
-                {showSuggestions ? 'Hide Suggestions' : 'Show Suggestions'}
+                {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
               </button>
             </>
           )}
@@ -569,19 +538,19 @@ function App() {
                     className={activeTab === 'draft' ? 'tab active' : 'tab'}
                     onClick={() => setActiveTab('draft')}
                   >
-                    Original Note
+                    {t('app.originalNote')}
                   </button>
                   <button
                     className={beautified ? 'tab active' : 'tab disabled'}
                     onClick={() => beautified && setActiveTab('beautified')}
                   >
-                    Beautified Note
+                    {t('app.beautifiedNote')}
                   </button>
                 <button
                   className={summaryText ? (activeTab === 'summary' ? 'tab active' : 'tab') : 'tab disabled'}
                   onClick={() => summaryText && setActiveTab('summary')}
                 >
-                  Summary
+                  {t('app.summary')}
                 </button>
                 </div>
                 <div className="editor-area card">

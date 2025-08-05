@@ -1,5 +1,6 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
 import { useState, useEffect } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getMetrics } from '../api.js';
 import { Line, Bar, Pie } from 'react-chartjs-2';
 import {
@@ -27,9 +28,10 @@ ChartJS.register(
   Legend
 );
 
-function Dashboard() {
-  // Determine user role from JWT; only admins may view this component.
-  const token =
+  function Dashboard() {
+    const { t } = useTranslation();
+    // Determine user role from JWT; only admins may view this component.
+    const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   let role = null;
   if (token) {
@@ -39,9 +41,9 @@ function Dashboard() {
       role = null;
     }
   }
-  if (role !== 'admin') {
-    return <p>Access denied</p>;
-  }
+    if (role !== 'admin') {
+      return <p>{t('dashboard.accessDenied')}</p>;
+    }
 
   // Metrics returned from the API and filter state.
   const [metrics, setMetrics] = useState({});
@@ -57,73 +59,73 @@ function Dashboard() {
   // one decimal place; otherwise show zero.
   const cards = [
     {
-      title: 'Total Notes Created',
+      title: t('dashboard.cards.totalNotes'),
       baseline: 0,
       current: metrics.total_notes || 0,
       direction: 'higher',
     },
     {
-      title: 'Beautified Notes',
+      title: t('dashboard.cards.beautifiedNotes'),
       baseline: 0,
       current: metrics.total_beautify || 0,
       direction: 'higher',
     },
     {
-      title: 'Suggestions Requested',
+      title: t('dashboard.cards.suggestionsRequested'),
       baseline: 0,
       current: metrics.total_suggest || 0,
       direction: 'higher',
     },
     {
-      title: 'Summaries Generated',
+      title: t('dashboard.cards.summariesGenerated'),
       baseline: 0,
       current: metrics.total_summary || 0,
       direction: 'higher',
     },
     {
-      title: 'Chart Uploads',
+      title: t('dashboard.cards.chartUploads'),
       baseline: 0,
       current: metrics.total_chart_upload || 0,
       direction: 'higher',
     },
     {
-      title: 'Audio Recordings',
+      title: t('dashboard.cards.audioRecordings'),
       baseline: 0,
       current: metrics.total_audio || 0,
       direction: 'higher',
     },
     {
-      title: 'Average Note Length (chars)',
+      title: t('dashboard.cards.avgNoteLength'),
       baseline: 0,
       current: metrics.avg_note_length ? metrics.avg_note_length.toFixed(1) : 0,
       direction: 'higher',
     },
     {
-      title: 'Average Beautify Time (s)',
+      title: t('dashboard.cards.avgBeautifyTime'),
       baseline: 0,
       current: metrics.avg_beautify_time ? metrics.avg_beautify_time.toFixed(1) : 0,
       direction: 'lower',
     },
     {
-      title: 'Revenue per Visit',
+      title: t('dashboard.cards.revenuePerVisit'),
       baseline: 0,
       current: metrics.revenue_per_visit ? metrics.revenue_per_visit.toFixed(2) : 0,
       direction: 'higher',
     },
     {
-      title: 'Average Time to Close Note (s)',
+      title: t('dashboard.cards.avgCloseTime'),
       baseline: 0,
       current: metrics.avg_close_time ? metrics.avg_close_time.toFixed(1) : 0,
       direction: 'lower',
     },
     {
-      title: 'Denial Rate (%)',
+      title: t('dashboard.cards.denialRate'),
       baseline: 0,
       current: metrics.denial_rate ? (metrics.denial_rate * 100).toFixed(1) : 0,
       direction: 'lower',
     },
     {
-      title: 'Deficiency Rate (%)',
+      title: t('dashboard.cards.deficiencyRate'),
       baseline: 0,
       current: metrics.deficiency_rate ? (metrics.deficiency_rate * 100).toFixed(1) : 0,
       direction: 'lower',
@@ -200,53 +202,53 @@ function Dashboard() {
     ],
   };
 
-  const denialData = {
-    labels: Object.keys(metrics.denial_rates || {}),
-    datasets: [
-      {
-        label: 'Denial Rate (%)',
-        data: Object.values(metrics.denial_rates || {}).map((r) => r * 100),
-        backgroundColor: 'rgba(255, 159, 64, 0.6)',
-      },
-    ],
-  };
+    const denialData = {
+      labels: Object.keys(metrics.denial_rates || {}),
+      datasets: [
+        {
+          label: t('dashboard.denialRateLabel'),
+          data: Object.values(metrics.denial_rates || {}).map((r) => r * 100),
+          backgroundColor: 'rgba(255, 159, 64, 0.6)',
+        },
+      ],
+    };
   return (
-    <div className="dashboard">
-      <h2>Analytics Dashboard</h2>
-      <div className="filters" style={{ marginBottom: '1rem' }}>
-        <label>
-          Start
-          <input
-            type="date"
-            value={inputs.start}
-            onChange={(e) => setInputs({ ...inputs, start: e.target.value })}
-          />
-        </label>
-        <label style={{ marginLeft: '0.5rem' }}>
-          End
-          <input
-            type="date"
-            value={inputs.end}
-            onChange={(e) => setInputs({ ...inputs, end: e.target.value })}
-          />
-        </label>
-        <label style={{ marginLeft: '0.5rem' }}>
-          Clinician
-          <input
-            type="text"
-            value={inputs.clinician}
-            onChange={(e) =>
-              setInputs({ ...inputs, clinician: e.target.value })
-            }
-          />
-        </label>
-        <button
-          style={{ marginLeft: '0.5rem' }}
-          onClick={() => setFilters(inputs)}
-        >
-          Apply
-        </button>
-      </div>
+      <div className="dashboard">
+        <h2>{t('dashboard.title')}</h2>
+        <div className="filters" style={{ marginBottom: '1rem' }}>
+          <label>
+            {t('dashboard.start')}
+            <input
+              type="date"
+              value={inputs.start}
+              onChange={(e) => setInputs({ ...inputs, start: e.target.value })}
+            />
+          </label>
+          <label style={{ marginLeft: '0.5rem' }}>
+            {t('dashboard.end')}
+            <input
+              type="date"
+              value={inputs.end}
+              onChange={(e) => setInputs({ ...inputs, end: e.target.value })}
+            />
+          </label>
+          <label style={{ marginLeft: '0.5rem' }}>
+            {t('dashboard.clinician')}
+            <input
+              type="text"
+              value={inputs.clinician}
+              onChange={(e) =>
+                setInputs({ ...inputs, clinician: e.target.value })
+              }
+            />
+          </label>
+          <button
+            style={{ marginLeft: '0.5rem' }}
+            onClick={() => setFilters(inputs)}
+          >
+            {t('dashboard.apply')}
+          </button>
+        </div>
       <div className="metrics-grid">
         {cards.map((m) => {
           const change = computeChange(m);
@@ -267,9 +269,9 @@ function Dashboard() {
           }
           return (
             <div key={m.title} className="metric-card">
-              <h3>{m.title}</h3>
-              <p><strong>Baseline:</strong> {m.baseline}</p>
-              <p><strong>Current:</strong> {m.current}</p>
+                <h3>{m.title}</h3>
+                <p><strong>{t('dashboard.baseline')}</strong> {m.baseline}</p>
+                <p><strong>{t('dashboard.current')}</strong> {m.current}</p>
               {arrow && (
                 <p style={{ color: colour, fontWeight: 'bold' }}>{diffLabel}</p>
               )}
@@ -291,26 +293,26 @@ function Dashboard() {
       </div>
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
-          <h3>Daily Events</h3>
-          <Line data={dailyData} data-testid="daily-line" />
-          <h3 style={{ marginTop: '1rem' }}>Weekly Events</h3>
-          <Line data={weeklyData} data-testid="weekly-line" />
+            <h3>{t('dashboard.dailyEvents')}</h3>
+            <Line data={dailyData} data-testid="daily-line" />
+            <h3 style={{ marginTop: '1rem' }}>{t('dashboard.weeklyEvents')}</h3>
+            <Line data={weeklyData} data-testid="weekly-line" />
         </div>
       )}
 
       {metrics.coding_distribution &&
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
-            <h3>Coding Distribution</h3>
-            <Pie data={codingData} data-testid="codes-pie" />
+              <h3>{t('dashboard.codingDistribution')}</h3>
+              <Pie data={codingData} data-testid="codes-pie" />
           </div>
         )}
 
       {metrics.denial_rates &&
         Object.keys(metrics.denial_rates).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
-            <h3>Denial Rates</h3>
-            <Bar data={denialData} data-testid="denial-bar" />
+              <h3>{t('dashboard.denialRates')}</h3>
+              <Bar data={denialData} data-testid="denial-bar" />
           </div>
         )}
     </div>
