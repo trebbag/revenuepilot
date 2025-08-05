@@ -280,9 +280,23 @@ class SuggestionsResponse(BaseModel):
 # optional details (such as patient ID or note length).  The timestamp
 # is optional; if not provided the current UTC time is used.
 class EventModel(BaseModel):
+    """Schema for analytics events sent from the frontend.
+
+    In addition to a free-form ``details`` dictionary, several common
+    analytics fields are exposed explicitly so clients can supply structured
+    data without nesting.  These fields are merged back into ``details``
+    when the event is stored.
+    """
+
     eventType: str
     details: Optional[Dict[str, Any]] = None
     timestamp: Optional[float] = None
+    codes: Optional[List[str]] = None
+    revenue: Optional[float] = None
+    denial: Optional[bool] = None
+    timeToClose: Optional[float] = None
+    clinician: Optional[str] = None
+    deficiency: Optional[bool] = None
 
 
 def deidentify(text: str) -> str:
@@ -415,6 +429,21 @@ async def log_event(event: EventModel) -> Dict[str, str]:
         "details": event.details or {},
         "timestamp": event.timestamp or datetime.utcnow().timestamp(),
     }
+
+    # Merge structured fields into the details dict so downstream
+    # aggregation queries can rely on a consistent schema regardless of
+    # how the client supplied the data.
+    for key in [
+        "codes",
+        "revenue",
+        "denial",
+        "timeToClose",
+        "clinician",
+        "deficiency",
+    ]:
+        value = getattr(event, key)
+        if value is not None:
+            data["details"][key] = value
     events.append(data)
     # Persist the event to the SQLite database.  Serialize the details
     # dictionary as JSON for storage.  Use a simple INSERT statement
@@ -441,85 +470,195 @@ async def log_event(event: EventModel) -> Dict[str, str]:
 # as the average note length (in characters) if provided in event
 # details.
 @app.get("/metrics")
-async def get_metrics(user=Depends(require_role("admin"))) -> Dict[str, Any]:
-    # Use the database to compute simple counts.  This avoids scanning the
-    # in-memory list and ensures metrics persist across restarts.
+async def get_metrics(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    clinician: Optional[str] = None,
+    user=Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    """Aggregate analytics from logged events with optional filtering."""
+
     cursor = db_conn.cursor()
+
+    # Build dynamic WHERE clause for date and clinician filters.
+    conditions: List[str] = []
+    params: List[Any] = []
+    if start:
+        try:
+            start_ts = datetime.fromisoformat(start).timestamp()
+            conditions.append("timestamp >= ?")
+            params.append(start_ts)
+        except Exception:
+            pass
+    if end:
+        try:
+            end_ts = datetime.fromisoformat(end).timestamp()
+            conditions.append("timestamp <= ?")
+            params.append(end_ts)
+        except Exception:
+            pass
+    if clinician:
+        conditions.append("json_extract(details, '$.clinician') = ?")
+        params.append(clinician)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
     def count_events(*types: str) -> int:
         placeholders = ",".join(["?"] * len(types))
-        cursor.execute(f"SELECT COUNT(*) AS cnt FROM events WHERE eventType IN ({placeholders})", types)
+        query = f"SELECT COUNT(*) AS cnt FROM events {where_clause}"
+        args = list(params)
+        if types:
+            conj = " AND" if where_clause else " WHERE"
+            query += f"{conj} eventType IN ({placeholders})"
+            args.extend(types)
+        cursor.execute(query, args)
         row = cursor.fetchone()
         return row["cnt"] if row else 0
+
     total_notes = count_events("note_started", "note_saved")
     total_beautify = count_events("beautify")
     total_suggest = count_events("suggest")
     total_summary = count_events("summary")
     total_chart_upload = count_events("chart_upload")
     total_audio = count_events("audio_recorded")
-    # Compute average note length from stored details.  Extract the 'length'
-    # value from the JSON details field when present.
-    cursor.execute("SELECT details FROM events")
-    lengths = []
+
+    # Pull all details rows once to compute various aggregates.
+    cursor.execute(f"SELECT details FROM events {where_clause}", params)
+    lengths: List[float] = []
+    revenues: List[float] = []
+    close_times: List[float] = []
+    code_counts: Dict[str, int] = {}
+    denial_counts: Dict[str, List[int]] = {}
+    denial_totals = [0, 0]  # [total, denied]
+    deficiency_totals = [0, 0]  # [total, flagged]
     for row in cursor.fetchall():
         try:
-            det_json = row["details"]
-            det = json.loads(det_json)
-            length_val = det.get("length")
-            if isinstance(length_val, (int, float)):
-                lengths.append(length_val)
+            det = json.loads(row["details"] or "{}")
         except Exception:
-            continue
+            det = {}
+        length_val = det.get("length")
+        if isinstance(length_val, (int, float)):
+            lengths.append(length_val)
+        rev = det.get("revenue")
+        if isinstance(rev, (int, float)):
+            revenues.append(rev)
+        ttc = det.get("timeToClose")
+        if isinstance(ttc, (int, float)):
+            close_times.append(ttc)
+        codes = det.get("codes")
+        if isinstance(codes, list):
+            denial_flag = det.get("denial") if isinstance(det.get("denial"), bool) else None
+            for code in codes:
+                code_counts[code] = code_counts.get(code, 0) + 1
+                if denial_flag is not None:
+                    totals = denial_counts.get(code, [0, 0])
+                    totals[0] += 1
+                    if denial_flag:
+                        totals[1] += 1
+                    denial_counts[code] = totals
+        denial = det.get("denial")
+        if isinstance(denial, bool):
+            denial_totals[0] += 1
+            if denial:
+                denial_totals[1] += 1
+        deficiency = det.get("deficiency")
+        if isinstance(deficiency, bool):
+            deficiency_totals[0] += 1
+            if deficiency:
+                deficiency_totals[1] += 1
+
     avg_length = sum(lengths) / len(lengths) if lengths else 0
-    # Compute average beautify time by pulling relevant events from the database.
-    # We need to pair each beautify event with the most recent note_started event
-    # for the same patient ID.  Parse the patient ID from the JSON details.
-    cursor.execute("SELECT eventType, timestamp, details FROM events WHERE eventType IN ('note_started','beautify') ORDER BY timestamp")
+    avg_revenue = sum(revenues) / len(revenues) if revenues else 0
+    avg_close_time = sum(close_times) / len(close_times) if close_times else 0
+    denial_rates = {
+        code: (vals[1] / vals[0] if vals[0] else 0)
+        for code, vals in denial_counts.items()
+    }
+    overall_denial = (
+        denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
+    )
+    deficiency_rate = (
+        deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
+    )
+
+    # Average beautify time (existing logic) needs unfiltered events; reuse
+    # filtering when selecting from the database.
+    type_filter = "eventType IN ('note_started','beautify')"
+    event_where = f"{where_clause} AND {type_filter}" if where_clause else f"WHERE {type_filter}"
+    cursor.execute(
+        f"SELECT eventType, timestamp, details FROM events {event_where} ORDER BY timestamp",
+        params,
+    )
     db_events = []
     for row in cursor.fetchall():
         try:
-            details = json.loads(row["details"] or '{}')
+            details = json.loads(row["details"] or "{}")
         except Exception:
             details = {}
-        db_events.append({
-            'eventType': row['eventType'],
-            'timestamp': row['timestamp'],
-            'details': details,
-        })
+        db_events.append(
+            {
+                "eventType": row["eventType"],
+                "timestamp": row["timestamp"],
+                "details": details,
+            }
+        )
     beautify_durations = []
     for e in db_events:
-        if e['eventType'] != 'beautify':
+        if e["eventType"] != "beautify":
             continue
-        patient_id = e['details'].get('patientID') or e['details'].get('patientId') or e['details'].get('patient_id')
+        patient_id = (
+            e["details"].get("patientID")
+            or e["details"].get("patientId")
+            or e["details"].get("patient_id")
+        )
         if not patient_id:
             continue
-        # Find the most recent note_started before this beautify for same patient
-        prev = [ev for ev in db_events if ev['eventType'] == 'note_started' and ev['details'].get('patientID') == patient_id and ev['timestamp'] <= e['timestamp']]
+        prev = [
+            ev
+            for ev in db_events
+            if ev["eventType"] == "note_started"
+            and ev["details"].get("patientID") == patient_id
+            and ev["timestamp"] <= e["timestamp"]
+        ]
         if not prev:
             continue
-        latest_start = max(prev, key=lambda ev: ev['timestamp'])
-        duration = e['timestamp'] - latest_start['timestamp']
+        latest_start = max(prev, key=lambda ev: ev["timestamp"])
+        duration = e["timestamp"] - latest_start["timestamp"]
         if duration >= 0:
             beautify_durations.append(duration)
-    avg_beautify_time = sum(beautify_durations) / len(beautify_durations) if beautify_durations else 0
-    # Daily and weekly counts for charts
+    avg_beautify_time = (
+        sum(beautify_durations) / len(beautify_durations)
+        if beautify_durations
+        else 0
+    )
+
     cursor.execute(
-        "SELECT DATE(timestamp, 'unixepoch') as day, COUNT(*) as cnt FROM events GROUP BY day ORDER BY day"
+        f"SELECT DATE(timestamp, 'unixepoch') as day, COUNT(*) as cnt FROM events {where_clause} GROUP BY day ORDER BY day",
+        params,
     )
     daily = [{"date": row["day"], "count": row["cnt"]} for row in cursor.fetchall()]
     cursor.execute(
-        "SELECT strftime('%Y-%W', timestamp, 'unixepoch') as week, COUNT(*) as cnt FROM events GROUP BY week ORDER BY week"
+        f"SELECT strftime('%Y-%W', timestamp, 'unixepoch') as week, COUNT(*) as cnt FROM events {where_clause} GROUP BY week ORDER BY week",
+        params,
     )
     weekly = [{"week": row["week"], "count": row["cnt"]} for row in cursor.fetchall()]
+
     return {
-        'total_notes': total_notes,
-        'total_beautify': total_beautify,
-        'total_suggest': total_suggest,
-        'total_summary': total_summary,
-        'total_chart_upload': total_chart_upload,
-        'total_audio': total_audio,
-        'avg_note_length': avg_length,
-        'avg_beautify_time': avg_beautify_time,
-        'timeseries': {'daily': daily, 'weekly': weekly},
+        "total_notes": total_notes,
+        "total_beautify": total_beautify,
+        "total_suggest": total_suggest,
+        "total_summary": total_summary,
+        "total_chart_upload": total_chart_upload,
+        "total_audio": total_audio,
+        "avg_note_length": avg_length,
+        "avg_beautify_time": avg_beautify_time,
+        "avg_close_time": avg_close_time,
+        "revenue_per_visit": avg_revenue,
+        "coding_distribution": code_counts,
+        "denial_rate": overall_denial,
+        "denial_rates": denial_rates,
+        "deficiency_rate": deficiency_rate,
+        "timeseries": {"daily": daily, "weekly": weekly},
     }
 
 

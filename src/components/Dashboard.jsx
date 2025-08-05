@@ -1,13 +1,15 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
 import { useState, useEffect } from 'react';
 import { getMetrics } from '../api.js';
-import { Line } from 'react-chartjs-2';
+import { Line, Bar, Pie } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
+  ArcElement,
   Title,
   Tooltip,
   Legend,
@@ -18,21 +20,37 @@ ChartJS.register(
   LinearScale,
   PointElement,
   LineElement,
+  BarElement,
+  ArcElement,
   Title,
   Tooltip,
   Legend
 );
 
 function Dashboard() {
-  // Initialise metrics as an empty object so that property accesses
-  // return undefined rather than throwing.  Missing values will
-  // default to zero in the card definitions below.
+  // Determine user role from JWT; only admins may view this component.
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  let role = null;
+  if (token) {
+    try {
+      role = JSON.parse(atob(token.split('.')[1])).role;
+    } catch {
+      role = null;
+    }
+  }
+  if (role !== 'admin') {
+    return <p>Access denied</p>;
+  }
+
+  // Metrics returned from the API and filter state.
   const [metrics, setMetrics] = useState({});
+  const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
+  const [inputs, setInputs] = useState(filters);
 
   useEffect(() => {
-    // Fetch metrics from the backend on mount
-    getMetrics().then((data) => setMetrics(data));
-  }, []);
+    getMetrics(filters).then((data) => setMetrics(data));
+  }, [filters]);
 
   // Define display cards using the fetched metrics.  Missing values will
   // default to zero.  When numeric metrics are present, format them to
@@ -92,6 +110,24 @@ function Dashboard() {
       current: metrics.revenue_per_visit ? metrics.revenue_per_visit.toFixed(2) : 0,
       direction: 'higher',
     },
+    {
+      title: 'Average Time to Close Note (s)',
+      baseline: 0,
+      current: metrics.avg_close_time ? metrics.avg_close_time.toFixed(1) : 0,
+      direction: 'lower',
+    },
+    {
+      title: 'Denial Rate (%)',
+      baseline: 0,
+      current: metrics.denial_rate ? (metrics.denial_rate * 100).toFixed(1) : 0,
+      direction: 'lower',
+    },
+    {
+      title: 'Deficiency Rate (%)',
+      baseline: 0,
+      current: metrics.deficiency_rate ? (metrics.deficiency_rate * 100).toFixed(1) : 0,
+      direction: 'lower',
+    },
   ];
 
   /**
@@ -146,9 +182,71 @@ function Dashboard() {
       },
     ],
   };
+
+  const codingData = {
+    labels: Object.keys(metrics.coding_distribution || {}),
+    datasets: [
+      {
+        data: Object.values(metrics.coding_distribution || {}),
+        backgroundColor: [
+          '#FF6384',
+          '#36A2EB',
+          '#FFCE56',
+          '#4BC0C0',
+          '#9966FF',
+          '#FF9F40',
+        ],
+      },
+    ],
+  };
+
+  const denialData = {
+    labels: Object.keys(metrics.denial_rates || {}),
+    datasets: [
+      {
+        label: 'Denial Rate (%)',
+        data: Object.values(metrics.denial_rates || {}).map((r) => r * 100),
+        backgroundColor: 'rgba(255, 159, 64, 0.6)',
+      },
+    ],
+  };
   return (
     <div className="dashboard">
       <h2>Analytics Dashboard</h2>
+      <div className="filters" style={{ marginBottom: '1rem' }}>
+        <label>
+          Start
+          <input
+            type="date"
+            value={inputs.start}
+            onChange={(e) => setInputs({ ...inputs, start: e.target.value })}
+          />
+        </label>
+        <label style={{ marginLeft: '0.5rem' }}>
+          End
+          <input
+            type="date"
+            value={inputs.end}
+            onChange={(e) => setInputs({ ...inputs, end: e.target.value })}
+          />
+        </label>
+        <label style={{ marginLeft: '0.5rem' }}>
+          Clinician
+          <input
+            type="text"
+            value={inputs.clinician}
+            onChange={(e) =>
+              setInputs({ ...inputs, clinician: e.target.value })
+            }
+          />
+        </label>
+        <button
+          style={{ marginLeft: '0.5rem' }}
+          onClick={() => setFilters(inputs)}
+        >
+          Apply
+        </button>
+      </div>
       <div className="metrics-grid">
         {cards.map((m) => {
           const change = computeChange(m);
@@ -194,9 +292,9 @@ function Dashboard() {
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
           <h3>Daily Events</h3>
-          <Line data={dailyData} />
+          <Line data={dailyData} data-testid="daily-line" />
           <h3 style={{ marginTop: '1rem' }}>Weekly Events</h3>
-          <Line data={weeklyData} />
+          <Line data={weeklyData} data-testid="weekly-line" />
         </div>
       )}
 
@@ -204,13 +302,7 @@ function Dashboard() {
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
             <h3>Coding Distribution</h3>
-            <ul>
-              {Object.entries(metrics.coding_distribution).map(([code, val]) => (
-                <li key={code}>
-                  {code}: {val}
-                </li>
-              ))}
-            </ul>
+            <Pie data={codingData} data-testid="codes-pie" />
           </div>
         )}
 
@@ -218,13 +310,7 @@ function Dashboard() {
         Object.keys(metrics.denial_rates).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
             <h3>Denial Rates</h3>
-            <ul>
-              {Object.entries(metrics.denial_rates).map(([code, val]) => (
-                <li key={code}>
-                  {code}: {val}
-                </li>
-              ))}
-            </ul>
+            <Bar data={denialData} data-testid="denial-bar" />
           </div>
         )}
     </div>
