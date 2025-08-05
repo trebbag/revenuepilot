@@ -55,7 +55,11 @@ function Login({ onLoggedIn }) {
             />
           </label>
         </div>
-        {error && <p style={{ color: 'red' }}>{error}</p>}
+        {error && (
+          <p style={{ color: 'red' }} data-testid="login-error">
+            {error}
+          </p>
+        )}
         <button type="submit" disabled={loading}>
           {loading ? 'Logging in…' : 'Login'}
         </button>

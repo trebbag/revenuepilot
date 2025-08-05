@@ -37,6 +37,7 @@ from .audio_processing import simple_transcribe, diarize_and_transcribe
 
 import json
 import sqlite3
+import hashlib
 
 try:
     import scrubadub
@@ -139,6 +140,17 @@ db_conn.execute(
 )
 db_conn.commit()
 
+# Table for user accounts used in role-based authentication.
+db_conn.execute(
+    "CREATE TABLE IF NOT EXISTS users ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "username TEXT UNIQUE NOT NULL,"
+    "password_hash TEXT NOT NULL,"
+    "role TEXT NOT NULL"
+    ")"
+)
+db_conn.commit()
+
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
 # metrics computations.
@@ -209,19 +221,53 @@ class ApiKeyModel(BaseModel):
     key: str
 
 
+class RegisterModel(BaseModel):
+    username: str
+    password: str
+    role: str
+
+
 class LoginModel(BaseModel):
     username: str
-    role: str
+    password: str
 
 
 class SettingsModel(BaseModel):
     advanced_scrubber: bool
 
 
+def hash_password(password: str) -> str:
+    """Return a SHA-256 hash of the provided password."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+@app.post("/register")
+async def register(model: RegisterModel, user=Depends(require_role("admin"))):
+    """Create a new user. Only admins may register users."""
+    pwd_hash = hash_password(model.password)
+    try:
+        db_conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (model.username, pwd_hash, model.role),
+        )
+        db_conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    return {"status": "registered"}
+
+
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, str]:
-    """Return a JWT for the provided user and role."""
-    token = create_token(model.username, model.role)
+    """Validate credentials and return a JWT on success."""
+    row = db_conn.execute(
+        "SELECT password_hash, role FROM users WHERE username=?",
+        (model.username,),
+    ).fetchone()
+    if not row or hash_password(model.password) != row["password_hash"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+        )
+    token = create_token(model.username, row["role"])
     return {"access_token": token}
 
 
