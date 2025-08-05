@@ -25,3 +25,8 @@ analytics.db
 # Logs and coverage
 *.log
 coverage/
+
+# Electron icons
+assets/*.icns
+assets/*.ico
+assets/*.png
