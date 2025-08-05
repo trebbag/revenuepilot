@@ -10,10 +10,9 @@
  *
  * @param {string} username
  * @param {string} password
- * @param {string} role
  * @returns {Promise<string>} JWT access token
  */
-export async function login(username, password, role = 'admin') {
+export async function login(username, password) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -21,7 +20,7 @@ export async function login(username, password, role = 'admin') {
   const resp = await fetch(`${baseUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, role }),
+    body: JSON.stringify({ username, password }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
