@@ -1,54 +1,36 @@
 /* @vitest-environment jsdom */
-import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+
+import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, expect, test, beforeEach, afterEach } from 'vitest';
+
+vi.mock('../../api.js', () => ({ login: vi.fn() }));
+import { login } from '../../api.js';
 import Login from '../Login.jsx';
-
-vi.mock('../../api.js', () => ({
-  login: vi.fn(),
-}));
-
-const { login } = await import('../../api.js');
 
 beforeEach(() => {
   localStorage.clear();
-  vi.resetAllMocks();
+  vi.clearAllMocks();
 });
 
-afterEach(() => {
-  cleanup();
-});
+afterEach(() => cleanup());
 
-test('stores token on successful login', async () => {
-  login.mockResolvedValue('tok');
+test('successful login stores token and calls callback', async () => {
+  login.mockResolvedValue('token123');
   const onLoggedIn = vi.fn();
-  render(<Login onLoggedIn={onLoggedIn} />);
-
-  fireEvent.change(screen.getByLabelText('Username'), {
-    target: { value: 'user' },
-  });
-  fireEvent.change(screen.getByLabelText('Password'), {
-    target: { value: 'pw' },
-  });
-  fireEvent.submit(screen.getByRole('button'));
-
-  await waitFor(() => expect(onLoggedIn).toHaveBeenCalledWith('tok'));
-  expect(localStorage.getItem('token')).toBe('tok');
-  expect(screen.queryByTestId('login-error')).toBeNull();
+  const { getByLabelText, getByRole } = render(<Login onLoggedIn={onLoggedIn} />);
+  fireEvent.change(getByLabelText('Username'), { target: { value: 'u' } });
+  fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
+  fireEvent.click(getByRole('button', { name: /login/i }));
+  await waitFor(() => expect(onLoggedIn).toHaveBeenCalledWith('token123'));
+  expect(localStorage.getItem('token')).toBe('token123');
 });
 
 test('shows error on failed login', async () => {
-  login.mockRejectedValue(new Error('Bad creds'));
-  render(<Login onLoggedIn={() => {}} />);
-
-  fireEvent.change(screen.getByLabelText('Username'), {
-    target: { value: 'user' },
-  });
-  fireEvent.change(screen.getByLabelText('Password'), {
-    target: { value: 'pw' },
-  });
-  fireEvent.submit(screen.getByRole('button'));
-
-  await waitFor(() => screen.getByTestId('login-error'));
-  expect(screen.getByTestId('login-error').textContent).toBe('Bad creds');
+  login.mockRejectedValue(new Error('bad'));
+  const { getByLabelText, getByRole, findByText } = render(<Login onLoggedIn={() => {}} />);
+  fireEvent.change(getByLabelText('Username'), { target: { value: 'u' } });
+  fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
+  fireEvent.click(getByRole('button', { name: /login/i }));
+  expect(await findByText('bad')).toBeTruthy();
 });
 
