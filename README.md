@@ -92,18 +92,23 @@ app into an Electron shell for desktop deployment.
   file is read by the build scripts and should define:
 
 
-  * `OPENAI_API_KEY` – API key consumed by the backend.
-  * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
-  * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
+* `OPENAI_API_KEY` – API key consumed by the backend.
+* `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
+* `BACKEND_URL` – backend URL injected into the packaged Electron app.
+* `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
 
     Windows `.ico`, and macOS `.icns` icons.
-  * `UPDATE_SERVER_URL` – feed URL for auto‑updates.  For production releases
+* `UPDATE_SERVER_URL` – feed URL for auto‑updates.  For production releases
     you must set this to point at your update server.  During development you
     can run `npm run update-server` to host the `dist/` directory and set
     `UPDATE_SERVER_URL=http://localhost:8080`.  Local packaging works without
     it but auto‑updates will be disabled.
-  * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
+* Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
     Windows builds.
+
+The `BACKEND_URL` entry controls the API endpoint used by the packaged Electron
+app.  Adjust this before running `electron:build` if your backend is hosted
+somewhere other than `http://localhost:8000`.
 
   The build script warns if `UPDATE_SERVER_URL` is missing, so local builds
   may not receive updates.  It also warns when signing variables are not
