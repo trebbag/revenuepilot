@@ -45,6 +45,8 @@ app.whenReady().then(() => {
 
   if (process.env.UPDATE_SERVER_URL) {
     autoUpdater.setFeedURL({ url: process.env.UPDATE_SERVER_URL });
+  } else {
+    console.warn('UPDATE_SERVER_URL not set; auto-updates disabled.');
   }
   autoUpdater.checkForUpdatesAndNotify();
 
