@@ -185,6 +185,22 @@ function App() {
     setActiveTab('draft');
   };
 
+  // Insert a suggestion into the draft note.  Appends the text to the
+  // current draft and focuses the draft tab so the user can continue
+  // editing after inserting a suggestion.
+  const handleInsertSuggestion = (text) => {
+    setDraftText((prev) => {
+      const usesHtml = /<[^>]+>/.test(prev);
+      if (usesHtml) {
+        // Append as a new paragraph in the HTML string
+        return `${prev}<p>${text}</p>`;
+      }
+      const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
+      return `${prev}${prefix}${text}`;
+    });
+    setActiveTab('draft');
+  };
+
   /**
    * Handle upload of an exported medical chart.  Reads the file as text and
    * stores its contents in chartText.  Logs an event for analytics.  This
@@ -499,6 +515,7 @@ function App() {
                     suggestions={filtered}
                     loading={loadingSuggestions}
                     className={showSuggestions ? '' : 'collapsed'}
+                    onInsert={handleInsertSuggestion}
                   />
                 );
               })()}
