@@ -138,7 +138,16 @@ def deidentify(text: str) -> str:
         De‑identified text with sensitive information replaced by tokens.
     """
     # Remove phone numbers (e.g., 123-456-7890, (123) 456‑7890 or 1234567890)
-    text = re.sub(r"\b(?:\(\d{3}\)\s*)?\d{3}[-\.\s]?\d{3}[-\.\s]?\d{4}\b", "[PHONE]", text)
+    # The previous implementation anchored the pattern to a word boundary,
+    # which failed for numbers that began with a parenthesis like
+    # ``(123) 456-7890``.  By using a negative lookbehind for digits we
+    # allow punctuation or whitespace before the number while still
+    # preventing mid-number matches.
+    text = re.sub(
+        r"(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b",
+        "[PHONE]",
+        text,
+    )
     # Remove dates formatted as MM/DD/YYYY, M/D/YY or YYYY‑MM‑DD
     text = re.sub(r"\b(\d{1,2}/\d{1,2}/\d{2,4}|\d{4}-\d{1,2}-\d{1,2})\b", "[DATE]", text)
     # Remove email addresses
