@@ -17,6 +17,7 @@ import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
+import TemplatesModal from './components/TemplatesModal.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -69,6 +70,7 @@ function App() {
 
   // Control visibility of the suggestion panel (for sliding effect)
   const [showSuggestions, setShowSuggestions] = useState(true);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
@@ -146,6 +148,31 @@ function App() {
       name: 'Follow-up Visit Template',
       content:
         'Chief Complaint: \n\nInterval History: \n\nReview of Systems: \n\nPhysical Exam: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Paediatrics Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nGrowth Parameters: \n\nDevelopment: \n\nImmunisations: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Geriatrics Template',
+      content:
+        'Chief Complaint: \n\nFunctional Status: \n\nCognitive Assessment: \n\nMedications: \n\nSupport Systems: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Psychiatry Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nMental Status Exam: \n\nRisk Assessment: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Cardiology Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nCardiac Risk Factors: \n\nExam: \n\nDiagnostics: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Dermatology Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nSkin Exam: \n\nAssessment: \n\nPlan: ',
     },
   ];
 
@@ -427,21 +454,9 @@ function App() {
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
-              <select
-                onChange={(e) => {
-                  const idx = parseInt(e.target.value, 10);
-                  if (!isNaN(idx)) insertTemplate(templates[idx].content);
-                  e.target.selectedIndex = 0;
-                }}
-                className="template-select"
-              >
-                <option value="">Insert Template</option>
-                {templates.map((tpl, idx) => (
-                  <option key={tpl.name} value={idx}>
-                    {tpl.name}
-                  </option>
-                ))}
-              </select>
+              <button onClick={() => setShowTemplatesModal(true)}>
+                Templates
+              </button>
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}
@@ -575,6 +590,16 @@ function App() {
         {view === 'logs' && <Logs />}
         </div>
       </div>
+      {showTemplatesModal && (
+        <TemplatesModal
+          baseTemplates={templates}
+          onSelect={(content) => {
+            insertTemplate(content);
+            setShowTemplatesModal(false);
+          }}
+          onClose={() => setShowTemplatesModal(false)}
+        />
+      )}
     </div>
   );
 }

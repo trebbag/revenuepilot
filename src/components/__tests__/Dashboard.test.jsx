@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
-import React from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { render, waitFor, cleanup } from '@testing-library/react';
 import Dashboard from '../Dashboard.jsx';
-import { vi, beforeEach, test, expect } from 'vitest';
+import { vi, beforeEach, test, expect, afterEach } from 'vitest';
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
 
 vi.mock('react-chartjs-2', () => ({
   Line: (props) => <canvas {...props} />,
@@ -30,6 +31,10 @@ vi.mock('../../api.js', () => ({
   }),
 }));
 import { getMetrics } from '../../api.js';
+
+afterEach(() => {
+  cleanup();
+});
 
 const token = [
   btoa(JSON.stringify({ alg: 'none', typ: 'JWT' })),

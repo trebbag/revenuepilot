@@ -4,6 +4,7 @@
 import { useState } from 'react';
 import { setApiKey, saveSettings } from '../api.js';
 
+
 function Settings({ settings, updateSettings }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
@@ -15,6 +16,7 @@ function Settings({ settings, updateSettings }) {
     } catch (e) {
       console.error(e);
     }
+
   };
   const handleThemeChange = async (event) => {
     const updated = { ...settings, theme: event.target.value };
@@ -43,6 +45,7 @@ function Settings({ settings, updateSettings }) {
       setTimeout(() => setApiKeyStatus(''), 4000);
     }
   };
+
   return (
     <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
       <h2>Settings</h2>
@@ -155,6 +158,16 @@ function Settings({ settings, updateSettings }) {
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
         placeholder="e.g. Commercial payer X requires three ROS for 99214; Include time spent on counselling for CPT 99406"
       />
+      <h3>Templates</h3>
+      <ul>
+        {templates.map((tpl) => (
+          <li key={tpl.id}>
+            {tpl.name}{' '}
+            <button onClick={() => handleDeleteTemplate(tpl.id)}>Delete</button>
+          </li>
+        ))}
+        {templates.length === 0 && <li>No templates</li>}
+      </ul>
     </div>
   );
 }
