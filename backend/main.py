@@ -134,11 +134,6 @@ db_conn.execute(
 )
 db_conn.commit()
 
-# Store simple key/value settings.  Currently only used for advanced PHI scrubbing toggle.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-)
-db_conn.commit()
 
 # Table for user accounts used in role-based authentication.
 db_conn.execute(
@@ -151,6 +146,18 @@ db_conn.execute(
 )
 db_conn.commit()
 
+# Persisted user preferences for theme, enabled categories and custom rules.
+db_conn.execute(
+    "CREATE TABLE IF NOT EXISTS settings ("
+    "user_id INTEGER PRIMARY KEY,"
+    "theme TEXT NOT NULL,"
+    "categories TEXT NOT NULL,"
+    "rules TEXT NOT NULL,"
+    "FOREIGN KEY(user_id) REFERENCES users(id)"
+    ")"
+)
+db_conn.commit()
+
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
 # metrics computations.
@@ -159,17 +166,8 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
-# Determine whether the advanced scrubber is enabled either via environment variable
-# or persisted setting in the database.
+# Determine whether the advanced scrubber is enabled via environment variable.
 USE_ADVANCED_SCRUBBER = os.getenv("USE_ADVANCED_SCRUBBER", "false").lower() == "true"
-try:
-    row = db_conn.execute(
-        "SELECT value FROM settings WHERE key='advanced_scrubber'"
-    ).fetchone()
-    if row:
-        USE_ADVANCED_SCRUBBER = row["value"] == "true"
-except Exception:
-    pass
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -232,8 +230,15 @@ class LoginModel(BaseModel):
     password: str
 
 
-class SettingsModel(BaseModel):
-    advanced_scrubber: bool
+class UserSettings(BaseModel):
+    theme: str = "modern"
+    categories: Dict[str, bool] = {
+        "codes": True,
+        "compliance": True,
+        "publicHealth": True,
+        "differentials": True,
+    }
+    rules: List[str] = []
 
 
 def hash_password(password: str) -> str:
@@ -272,25 +277,43 @@ async def login(model: LoginModel) -> Dict[str, str]:
 
 
 @app.get("/settings")
-async def get_settings() -> Dict[str, bool]:
-    """Return current backend settings."""
-    return {"advanced_scrubber": USE_ADVANCED_SCRUBBER}
+async def get_user_settings(user=Depends(get_current_user)) -> Dict[str, Any]:
+    """Return the current user's saved settings or defaults if none exist."""
+    row = db_conn.execute(
+        "SELECT theme, categories, rules FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    if row:
+        return {
+            "theme": row["theme"],
+            "categories": json.loads(row["categories"]),
+            "rules": json.loads(row["rules"]),
+        }
+    return UserSettings().dict()
 
 
 @app.post("/settings")
-async def update_settings(model: SettingsModel) -> Dict[str, bool]:
-    """Persist backend settings such as the advanced scrubber toggle."""
-    global USE_ADVANCED_SCRUBBER
-    USE_ADVANCED_SCRUBBER = model.advanced_scrubber
-    try:
-        db_conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            ("advanced_scrubber", "true" if USE_ADVANCED_SCRUBBER else "false"),
-        )
-        db_conn.commit()
-    except Exception as exc:  # pragma: no cover - best effort
-        logging.warning("Failed to persist settings: %s", exc)
-    return {"advanced_scrubber": USE_ADVANCED_SCRUBBER}
+async def save_user_settings(model: UserSettings, user=Depends(get_current_user)) -> Dict[str, Any]:
+    """Persist settings for the authenticated user."""
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    db_conn.execute(
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules) VALUES (?, ?, ?, ?)",
+        (
+            row["id"],
+            model.theme,
+            json.dumps(model.categories),
+            json.dumps(model.rules),
+        ),
+    )
+    db_conn.commit()
+    return model.dict()
+
+
 
 
 class NoteRequest(BaseModel):
