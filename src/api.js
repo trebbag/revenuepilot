@@ -116,7 +116,7 @@ export async function getSuggestions(text, context = {}) {
  * @param {Blob} blob
  * @returns {Promise<string>}
  */
-export async function transcribeAudio(blob) {
+export async function transcribeAudio(blob, diarise = false) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -125,21 +125,23 @@ export async function transcribeAudio(blob) {
     const form = new FormData();
     form.append('file', blob, 'audio.webm');
     try {
-      const resp = await fetch(`${baseUrl}/transcribe`, {
+      const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
         method: 'POST',
         body: form,
       });
       const data = await resp.json();
-      if (typeof data === 'string') return data;
-      if (data.transcript) return data.transcript;
-      if (data.provider || data.patient)
-        return `${data.provider || ''} ${data.patient || ''}`.trim();
+      if (data.provider || data.patient) {
+        return { provider: data.provider || '', patient: data.patient || '' };
+      }
+      if (data.transcript) {
+        return { provider: data.transcript, patient: '' };
+      }
     } catch (err) {
       console.error('Transcription error', err);
     }
   }
   // Fallback placeholder when no backend is available
-  return `[transcribed ${blob.size} bytes]`;
+  return { provider: `[transcribed ${blob.size} bytes]`, patient: '' };
 }
 
 /**

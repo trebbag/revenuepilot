@@ -279,8 +279,9 @@ function App() {
         mediaRecorder.onstop = async () => {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           try {
-            const text = await transcribeAudio(blob);
-            setAudioTranscript(text);
+            const result = await transcribeAudio(blob, true);
+            const combined = `${result.provider || ''} ${result.patient || ''}`.trim();
+            setAudioTranscript(combined);
           } catch (err) {
             console.error('Transcription failed', err);
             setAudioTranscript('');
@@ -477,20 +478,6 @@ function App() {
                   {chartFileName}
                 </span>
               )}
-              {/* Record or stop audio recording */}
-              <button
-                onClick={handleRecordAudio}
-                style={{ marginLeft: '0.5rem' }}
-              >
-                {recording ? 'Stop Recording' : 'Record Audio'}
-              </button>
-              {audioTranscript && (
-                <span
-                  style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}
-                >
-                  Transcript: {audioTranscript}
-                </span>
-              )}
               {/* Toggle suggestion panel visibility */}
               <button
                 onClick={() => setShowSuggestions((s) => !s)}
@@ -531,6 +518,9 @@ function App() {
                       id="draft-input"
                       value={draftText}
                       onChange={handleDraftChange}
+                      onRecord={handleRecordAudio}
+                      recording={recording}
+                      transcript={audioTranscript}
                     />
                   ) : (
                     activeTab === 'beautified' ? (
