@@ -5,6 +5,12 @@ import { vi, beforeEach, test, expect, afterEach } from 'vitest';
 
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
+vi.mock('react-chartjs-2', () => ({
+  Line: (props) => <canvas {...props} />,
+  Bar: (props) => <canvas {...props} />,
+  Pie: (props) => <canvas {...props} />,
+}));
+
 vi.mock('../../api.js', () => ({
   getMetrics: vi.fn().mockResolvedValue({
     total_notes: 1,
@@ -24,6 +30,7 @@ vi.mock('../../api.js', () => ({
     timeseries: { daily: [{ date: '2024-01-01', count: 1 }], weekly: [{ week: '2024-01', count: 1 }] },
   }),
 }));
+import { getMetrics } from '../../api.js';
 
 afterEach(() => {
   cleanup();
@@ -36,14 +43,25 @@ const token = [
 ].join('.');
 
 beforeEach(() => {
+  localStorage.clear();
+  vi.clearAllMocks();
   localStorage.setItem('token', token);
 });
 
-test('renders charts', async () => {
+test('renders charts and calls API', async () => {
   render(<Dashboard />);
   await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  expect(getMetrics).toHaveBeenCalled();
   expect(document.querySelector('[data-testid="daily-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="weekly-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="codes-pie"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
+});
+
+test('denies access when user not admin', () => {
+  localStorage.setItem('token',
+    [btoa(JSON.stringify({ alg: 'none', typ: 'JWT' })), btoa(JSON.stringify({ role: 'user' })), ''].join('.')
+  );
+  const { getByText } = render(<Dashboard />);
+  expect(getByText('Access denied')).toBeTruthy();
 });
