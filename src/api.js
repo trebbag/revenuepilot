@@ -80,6 +80,40 @@ export async function getSuggestions(text, context = {}) {
 }
 
 /**
+ * Upload an audio ``Blob`` to the backend for transcription.
+ * Returns the text transcript or a placeholder if the backend is not
+ * configured or the request fails.
+ *
+ * @param {Blob} blob
+ * @returns {Promise<string>}
+ */
+export async function transcribeAudio(blob) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (baseUrl) {
+    const form = new FormData();
+    form.append('file', blob, 'audio.webm');
+    try {
+      const resp = await fetch(`${baseUrl}/transcribe`, {
+        method: 'POST',
+        body: form,
+      });
+      const data = await resp.json();
+      if (typeof data === 'string') return data;
+      if (data.transcript) return data.transcript;
+      if (data.provider || data.patient)
+        return `${data.provider || ''} ${data.patient || ''}`.trim();
+    } catch (err) {
+      console.error('Transcription error', err);
+    }
+  }
+  // Fallback placeholder when no backend is available
+  return `[transcribed ${blob.size} bytes]`;
+}
+
+/**
  * Log an analytics event.  Sends the event type and optional details to the
  * backend.  If no backend is configured, the call is a no-op.
  * @param {string} eventType

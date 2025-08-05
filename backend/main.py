@@ -15,7 +15,7 @@ import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -32,6 +32,7 @@ import jwt
 from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
 from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key
+from .audio_processing import simple_transcribe, diarize_and_transcribe
 
 import json
 import sqlite3
@@ -448,6 +449,22 @@ async def summarize(req: NoteRequest) -> Dict[str, str]:
         if len(cleaned) > 200:
             summary += "..."
     return {"summary": summary}
+
+
+@app.post("/transcribe")
+async def transcribe(file: UploadFile = File(...), diarize: bool = False) -> Dict[str, Any]:
+    """Transcribe uploaded audio.
+
+    The endpoint accepts an audio file (e.g. from the browser's
+    ``MediaRecorder`` API) and returns either a single transcript or, when
+    ``diarize`` is true, separate transcripts for provider and patient.
+    Actual transcription is delegated to :mod:`backend.audio_processing`.
+    """
+
+    audio_bytes = await file.read()
+    if diarize:
+        return diarize_and_transcribe(audio_bytes)
+    return {"transcript": simple_transcribe(audio_bytes)}
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
 # field "key" and stores it in a local file.  Also updates the

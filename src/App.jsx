@@ -5,8 +5,7 @@ import Dashboard from './components/Dashboard.jsx';
 import Logs from './components/Logs.jsx';
 import Help from './components/Help.jsx';
 import Settings from './components/Settings.jsx';
-import { beautifyNote, getSuggestions, logEvent } from './api.js';
-import { summarizeNote } from './api.js';
+import { beautifyNote, getSuggestions, logEvent, transcribeAudio, summarizeNote } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 
@@ -209,10 +208,10 @@ function App() {
 
   /**
    * Start or stop audio recording.  Uses the browser's MediaRecorder API to
-   * capture audio from the user's microphone.  When recording stops,
-   * a placeholder transcript is set; in a production app this would
-   * be replaced with a call to a speech‑to‑text service.  The audio
-   * blob is not persisted.
+   * capture audio from the user's microphone.  When recording stops the
+   * resulting ``Blob`` is uploaded to the backend ``/transcribe`` endpoint
+   * and the returned transcript stored in ``audioTranscript``.  The raw
+   * audio is never persisted locally.
    */
   const handleRecordAudio = async () => {
     if (!recording) {
@@ -224,10 +223,15 @@ function App() {
         mediaRecorder.ondataavailable = (e) => {
           if (e.data.size > 0) audioChunksRef.current.push(e.data);
         };
-        mediaRecorder.onstop = () => {
+        mediaRecorder.onstop = async () => {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          // TODO: send blob to backend for transcription; stub for now
-          setAudioTranscript('[Audio transcription unavailable in this demo]');
+          try {
+            const text = await transcribeAudio(blob);
+            setAudioTranscript(text);
+          } catch (err) {
+            console.error('Transcription failed', err);
+            setAudioTranscript('');
+          }
           if (patientID) {
             logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
           }
@@ -293,7 +297,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText]);
+  }, [draftText, audioTranscript]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
@@ -427,6 +431,13 @@ function App() {
               >
                 {recording ? 'Stop Recording' : 'Record Audio'}
               </button>
+              {audioTranscript && (
+                <span
+                  style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}
+                >
+                  Transcript: {audioTranscript}
+                </span>
+              )}
               {/* Toggle suggestion panel visibility */}
               <button
                 onClick={() => setShowSuggestions((s) => !s)}
