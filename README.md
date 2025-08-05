@@ -71,8 +71,9 @@ app into an Electron shell for desktop deployment.
    npm run electron:dev
    ```
 
-   This command builds the frontend and starts Electron along with the Python
-   backend so you can develop against the desktop shell.
+    This command builds the frontend, sets up the backend by running
+    `backend:prebuild`, and starts Electron along with the Python backend so
+    you can develop against the desktop shell.
 
   To create installers for macOS, Windows and Linux you first need to collect
   build-time environment variables.  Run the setup script and follow the
@@ -103,7 +104,10 @@ app into an Electron shell for desktop deployment.
     can run `npm run update-server` to host the `dist/` directory and set
     `UPDATE_SERVER_URL=http://localhost:8080`.  Local packaging works without
     it but auto‑updates will be disabled.
-* Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
+
+  * `PYTHON` – optional path to a Python interpreter. If unset, the build scripts
+    look for `python3` then `python`.
+  * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
     Windows builds.
 
 The `BACKEND_URL` entry controls the API endpoint used by the packaged Electron
