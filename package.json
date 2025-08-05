@@ -10,7 +10,7 @@
     "electron:dev": "npm run build && electron electron/main.js",
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && electron-builder -mwl",
     "fetch-icons": "node scripts/fetch-icons.js",
-    "backend:prebuild": "python -m venv backend/venv && backend/venv/bin/pip install -r backend/requirements.txt"
+    "backend:prebuild": "node scripts/backend-prebuild.js"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -28,10 +28,17 @@
     "appId": "com.revenuepilot.app",
     "productName": "RevenuePilot",
     "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "backend/**/*",
-      "backend/venv/**/*"
+      {
+        "from": "electron/dist",
+        "to": "dist",
+        "filter": ["**/*"]
+      },
+      "electron/main.js",
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
     ],
     "directories": {
       "buildResources": "assets"
