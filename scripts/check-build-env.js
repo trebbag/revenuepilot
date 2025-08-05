@@ -1,15 +1,16 @@
-
 require('dotenv').config();
 
-const required = ['UPDATE_SERVER_URL'];
+const required = [
+  'UPDATE_SERVER_URL',
+  'WIN_CSC_LINK',
+  'WIN_CSC_KEY_PASSWORD',
+  'CSC_LINK',
+  'CSC_KEY_PASSWORD',
+];
 
-const signing = ['CSC_LINK', 'CSC_KEY_PASSWORD'];
+const missing = required.filter(name => !process.env[name]);
 
-if (!process.env.UPDATE_SERVER_URL) {
-  console.warn('UPDATE_SERVER_URL not set; updates will be disabled.');
-}
-for (const name of signing) {
-  if (!process.env[name]) {
-    console.warn(`Signing variable ${name} not set; build may be unsigned.`);
-  }
+if (missing.length) {
+  console.error(`Missing required environment variables: ${missing.join(', ')}`);
+  process.exit(1);
 }

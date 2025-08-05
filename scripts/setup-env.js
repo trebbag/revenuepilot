@@ -13,6 +13,10 @@ const vars = [
   { name: 'ICON_ICO_URL', prompt: 'ICO icon URL' },
   { name: 'ICON_ICNS_URL', prompt: 'ICNS icon URL' },
   { name: 'UPDATE_SERVER_URL', prompt: 'Update server URL' },
+  { name: 'WIN_CSC_LINK', prompt: 'Windows code-signing certificate path' },
+  { name: 'WIN_CSC_KEY_PASSWORD', prompt: 'Windows certificate password' },
+  { name: 'CSC_LINK', prompt: 'macOS code-signing certificate path' },
+  { name: 'CSC_KEY_PASSWORD', prompt: 'macOS certificate password' },
 ];
 
 const rl = readline.createInterface({

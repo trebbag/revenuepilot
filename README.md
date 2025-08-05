@@ -89,34 +89,42 @@ app into an Electron shell for desktop deployment.
   npm run electron:build
   ```
 
-  `electron:build` downloads icon assets and bundles the backend.  The `.env`
-  file is read by the build scripts and should define:
-
+`electron:build` downloads icon assets and bundles the backend.  The `.env`
+file is read by the build scripts and should define:
 
 * `OPENAI_API_KEY` – API key consumed by the backend.
 * `VITE_API_URL` – URL for the backend API, usually `http://localhost:8000`.
-* `BACKEND_URL` – backend URL injected into the packaged Electron app.
 * `ICON_PNG_URL`, `ICON_ICO_URL`, `ICON_ICNS_URL` – URLs for 256×256 PNG,
+  Windows `.ico`, and macOS `.icns` icons.
+* `UPDATE_SERVER_URL` – feed URL for auto‑updates, e.g.
+  `https://updates.revenuepilot.com`.
+* `WIN_CSC_LINK` and `WIN_CSC_KEY_PASSWORD` – path and password to the
+  Windows Authenticode certificate.
+* `CSC_LINK` and `CSC_KEY_PASSWORD` – path and password to the macOS
+  Developer ID certificate.
 
-    Windows `.ico`, and macOS `.icns` icons.
-* `UPDATE_SERVER_URL` – feed URL for auto‑updates.  For production releases
-    you must set this to point at your update server.  During development you
-    can run `npm run update-server` to host the `dist/` directory and set
-    `UPDATE_SERVER_URL=http://localhost:8080`.  Local packaging works without
-    it but auto‑updates will be disabled.
 
-  * `PYTHON` – optional path to a Python interpreter. If unset, the build scripts
-    look for `python3` then `python`.
-  * Optional `CSC_LINK` and `CSC_KEY_PASSWORD` – signing certificate for
-    Windows builds.
+The build check fails if any of the above variables are missing.
 
-The `BACKEND_URL` entry controls the API endpoint used by the packaged Electron
-app.  Adjust this before running `electron:build` if your backend is hosted
-somewhere other than `http://localhost:8000`.
+### Code signing certificates
 
-  The build script warns if `UPDATE_SERVER_URL` is missing, so local builds
-  may not receive updates.  It also warns when signing variables are not
-  supplied.
+For production builds each platform must be signed:
+
+**Windows**
+
+1. Purchase an Authenticode certificate from a trusted CA.
+2. Export it as a `.p12`/`.pfx` file.
+3. Set `WIN_CSC_LINK` to the file path and `WIN_CSC_KEY_PASSWORD` to the
+   certificate password in `.env`.
+
+**macOS**
+
+1. Enrol in the Apple Developer Program and create a "Developer ID Application" certificate.
+2. Export the certificate as a `.p12` file.
+3. Configure `CSC_LINK` and `CSC_KEY_PASSWORD` in `.env`.
+
+Electron‑builder reads these variables during packaging.
+
 
 ### Update server
 
@@ -126,8 +134,9 @@ Run a minimal HTTP server to host built artifacts for auto‑update testing:
 npm run update-server
 ```
 
-This serves the `dist/` directory on port 8080.  Point
-`UPDATE_SERVER_URL` at this URL when building.
+This serves the `dist/` directory on port 8080. For production, deploy the
+contents of `dist/` to a publicly reachable server and set
+`UPDATE_SERVER_URL` to that address when building.
 
 After packaging, run the output located in `dist/`:
 
