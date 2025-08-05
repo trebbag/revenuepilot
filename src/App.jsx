@@ -11,12 +11,13 @@ import {
   logEvent,
   transcribeAudio,
   summarizeNote,
-  getServerSettings,
+  getSettings,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
+import TemplatesModal from './components/TemplatesModal.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -69,6 +70,7 @@ function App() {
 
   // Control visibility of the suggestion panel (for sliding effect)
   const [showSuggestions, setShowSuggestions] = useState(true);
+  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
@@ -97,7 +99,6 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
-    advancedScrubbing: false,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   // Load any previously saved settings from ``localStorage`` on first render.
@@ -113,56 +114,27 @@ function App() {
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('settings', JSON.stringify(newSettings));
+    }
   };
 
-  // Persist theme and suggestion category preferences whenever they change so
-  // they remain after a page reload or application restart.
   useEffect(() => {
-    const {
-      theme,
-      enableCodes,
-      enableCompliance,
-      enablePublicHealth,
-      enableDifferentials,
-      advancedScrubbing,
-    } = settingsState;
-    localStorage.setItem(
-      'settings',
-      JSON.stringify({
-        theme,
-        enableCodes,
-        enableCompliance,
-        enablePublicHealth,
-        enableDifferentials,
-        advancedScrubbing,
-      })
-    );
-  }, [
-    settingsState.theme,
-    settingsState.enableCodes,
-    settingsState.enableCompliance,
-    settingsState.enablePublicHealth,
-    settingsState.enableDifferentials,
-    settingsState.advancedScrubbing,
-  ]);
-
-  // Load server-controlled settings (e.g., advanced scrubbing) once on mount.
-  useEffect(() => {
-    async function fetchBackendSettings() {
+    if (!token) return;
+    async function fetchSettings() {
       try {
-        const server = await getServerSettings();
-        if (typeof server.advanced_scrubber === 'boolean') {
-          setSettingsState((s) => ({
-            ...s,
-            advancedScrubbing: server.advanced_scrubber,
-          }));
+        const remote = await getSettings();
+        const merged = { ...defaultSettings, ...remote };
+        setSettingsState(merged);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('settings', JSON.stringify(merged));
         }
       } catch (e) {
-        console.error('Failed to load server settings', e);
+        console.error('Failed to load settings', e);
       }
     }
-    fetchBackendSettings();
-  }, []);
+    fetchSettings();
+  }, [token]);
 
   // Templates for quick note creation
   const templates = [
@@ -180,6 +152,31 @@ function App() {
       name: 'Follow-up Visit Template',
       content:
         'Chief Complaint: \n\nInterval History: \n\nReview of Systems: \n\nPhysical Exam: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Paediatrics Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nGrowth Parameters: \n\nDevelopment: \n\nImmunisations: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Geriatrics Template',
+      content:
+        'Chief Complaint: \n\nFunctional Status: \n\nCognitive Assessment: \n\nMedications: \n\nSupport Systems: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Psychiatry Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nMental Status Exam: \n\nRisk Assessment: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Cardiology Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nCardiac Risk Factors: \n\nExam: \n\nDiagnostics: \n\nAssessment & Plan: ',
+    },
+    {
+      name: 'Dermatology Template',
+      content:
+        'Chief Complaint: \n\nHistory of Present Illness: \n\nSkin Exam: \n\nAssessment: \n\nPlan: ',
     },
   ];
 
@@ -505,6 +502,7 @@ function App() {
                   </option>
                 ))}
               </select>
+
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}
@@ -638,6 +636,16 @@ function App() {
         {view === 'logs' && <Logs />}
         </div>
       </div>
+      {showTemplatesModal && (
+        <TemplatesModal
+          baseTemplates={templates}
+          onSelect={(content) => {
+            insertTemplate(content);
+            setShowTemplatesModal(false);
+          }}
+          onClose={() => setShowTemplatesModal(false)}
+        />
+      )}
     </div>
   );
 }

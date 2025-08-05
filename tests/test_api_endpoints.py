@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,19 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT)"
     )
     db.execute(
-        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE settings (user_id INTEGER PRIMARY KEY, theme TEXT NOT NULL, categories TEXT NOT NULL, rules TEXT NOT NULL)"
+    )
+    pwd = hashlib.sha256(b"pw").hexdigest()
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("admin", pwd, "admin"),
+    )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("user", pwd, "user"),
     )
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
@@ -45,17 +58,34 @@ def test_login_and_settings(client):
     token = resp.json()["access_token"]
     assert token
 
-    resp = client.get("/settings")
+
+    resp = client.get("/settings", headers=auth_header(token))
     assert resp.status_code == 200
-    assert "advanced_scrubber" in resp.json()
+    assert resp.json()["theme"] == "modern"
 
-    resp = client.post("/settings", json={"advanced_scrubber": True})
-    assert resp.json()["advanced_scrubber"] is True
-    # reset to keep other tests deterministic
-    client.post("/settings", json={"advanced_scrubber": False})
+    new_settings = {
+        "theme": "dark",
+        "categories": {
+            "codes": False,
+            "compliance": True,
+            "publicHealth": True,
+            "differentials": True,
+        },
+        "rules": ["x"],
+    }
+    resp = client.post(
+        "/settings", json=new_settings, headers=auth_header(token)
+    )
+    assert resp.status_code == 200
 
-    resp = client.post("/settings", json={"advanced_scrubber": None})
-    assert resp.status_code == 422
+    resp = client.get("/settings", headers=auth_header(token))
+    data = resp.json()
+    assert data["theme"] == "dark"
+    assert data["categories"]["codes"] is False
+    assert data["rules"] == ["x"]
+
+    resp = client.get("/settings")
+    assert resp.status_code in {401, 403}
 
 
 def test_events_metrics_with_auth(client):
@@ -72,11 +102,13 @@ def test_events_metrics_with_auth(client):
     main.db_conn.commit()
     token_user = client.post(
         "/login", json={"username": "u", "password": "pw"}
+
     ).json()["access_token"]
     resp = client.get("/events", headers=auth_header(token_user))
     assert resp.status_code == 403
 
     # log event and fetch with admin
+
     main.db_conn.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("a", pwd, "admin"),

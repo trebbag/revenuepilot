@@ -2,16 +2,30 @@
 // Allows the user to toggle which suggestion categories are shown and switch colour themes.
 
 import { useState } from 'react';
-import { setApiKey, updateServerSettings } from '../api.js';
+import { setApiKey, saveSettings } from '../api.js';
+
 
 function Settings({ settings, updateSettings }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
-  const handleToggle = (key) => {
-    updateSettings({ ...settings, [key]: !settings[key] });
+  const handleToggle = async (key) => {
+    const updated = { ...settings, [key]: !settings[key] };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+
   };
-  const handleThemeChange = (event) => {
-    updateSettings({ ...settings, theme: event.target.value });
+  const handleThemeChange = async (event) => {
+    const updated = { ...settings, theme: event.target.value };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
   };
   const handleSaveKey = async () => {
     if (!apiKeyInput.trim()) return;
@@ -31,15 +45,7 @@ function Settings({ settings, updateSettings }) {
       setTimeout(() => setApiKeyStatus(''), 4000);
     }
   };
-  const handleAdvancedToggle = async () => {
-    const newVal = !settings.advancedScrubbing;
-    updateSettings({ ...settings, advancedScrubbing: newVal });
-    try {
-      await updateServerSettings({ advanced_scrubber: newVal });
-    } catch (e) {
-      console.error(e);
-    }
-  };
+
   return (
     <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
       <h2>Settings</h2>
@@ -73,15 +79,6 @@ function Settings({ settings, updateSettings }) {
         Modern Minimal
       </label>
 
-      <h3>Privacy</h3>
-      <label style={{ display: 'block' }}>
-        <input
-          type="checkbox"
-          checked={settings.advancedScrubbing}
-          onChange={handleAdvancedToggle}
-        />{' '}
-        Enable advanced PHI scrubbing
-      </label>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         <input
           type="radio"
@@ -144,14 +141,33 @@ function Settings({ settings, updateSettings }) {
       </p>
       <textarea
         value={(settings.rules || []).join('\n')}
-        onChange={(e) => {
-          const lines = e.target.value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-          updateSettings({ ...settings, rules: lines });
+        onChange={async (e) => {
+          const lines = e.target.value
+            .split(/\n+/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          const updated = { ...settings, rules: lines };
+          updateSettings(updated);
+          try {
+            await saveSettings(updated);
+          } catch (err) {
+            console.error(err);
+          }
         }}
         rows={5}
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
         placeholder="e.g. Commercial payer X requires three ROS for 99214; Include time spent on counselling for CPT 99406"
       />
+      <h3>Templates</h3>
+      <ul>
+        {templates.map((tpl) => (
+          <li key={tpl.id}>
+            {tpl.name}{' '}
+            <button onClick={() => handleDeleteTemplate(tpl.id)}>Delete</button>
+          </li>
+        ))}
+        {templates.length === 0 && <li>No templates</li>}
+      </ul>
     </div>
   );
 }
