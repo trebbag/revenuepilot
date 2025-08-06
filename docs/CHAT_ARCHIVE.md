@@ -40,7 +40,7 @@ The archive identifies several unfinished or missing capabilities that need prio
 - **Speech‑to‑text & diarisation:** `audio_processing.py` contains stubs; the roadmap calls for integrating Whisper or a similar model and adding a `/transcribe` endpoint.
 - **Advanced PHI scrubbing:** The current regex‑based de‑identifier misses names and dates in many formats.  An ML‑based scrubber or library such as Philter is suggested【565843205015217†screenshot】.
 - **Role‑based authentication:** There is no login or user management.  A simple JWT‑based auth system is proposed to distinguish clinicians from admins.
-- **Analytics visualisation:** The dashboard currently displays counts only.  Charts (e.g. time‑series graphs) should be implemented using a library like Chart.js.
+- **Analytics visualisation:** The dashboard now uses Chart.js to plot daily and weekly trends for notes, beautify actions and other key metrics.
 - **Packaging:** The project needs an Electron builder config, code signing and auto‑update pipeline before distribution【447379025536466†screenshot】.
 - **Unit & integration tests:** Very few tests exist.  A comprehensive test suite (backend with pytest, frontend with React Testing Library) is required【447379025536466†screenshot】.
 - **EHR integration (future):** A plan to post finished notes and codes to EHRs using FHIR is mentioned but not started.
