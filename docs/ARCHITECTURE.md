@@ -9,7 +9,7 @@ This document provides a high‑level overview of the components that make up th
 - **App shell** (`App.jsx`): Houses the main layout, view router and tab system.  It mounts the rich‑text editor, the suggestion panel, the dashboard, logs, settings and drafts views.  The app maintains React state for the current draft, beautified note, summary, patient ID and user settings.
 - **Rich‑text editor** (`NoteEditor.jsx`): Wraps `react‑quill` to provide a WYSIWYG editor for clinicians.  It exposes callbacks for changes and integrates with templates.  When the user presses _Beautify_ or _Summarize_, it sends the plain text to the backend via the API helpers.
 - **Suggestion panel** (`SuggestionPanel.jsx`): Displays coding suggestions, compliance prompts, public‑health reminders and differential diagnoses.  It listens for updates from the API and supports toggling individual categories via settings.
-- **Dashboard** (`Dashboard.jsx`): Queries the `/metrics` endpoint and renders aggregate counts and averages.  Future versions will visualise trends using charts.
+- **Dashboard** (`Dashboard.jsx`): Queries the `/metrics` endpoint and renders aggregate counts, averages and time‑series charts for key metrics using Chart.js.
 - **Logs** (`Logs.jsx`): Calls `/events` to stream recent events for debugging.  Shows event type, timestamp and any details.
 - **Settings** (`Settings.jsx`): Lets users select a theme, enable/disable suggestion categories, enter custom clinical rules and store the OpenAI API key.  Saving the key posts to `/apikey` which writes it to `backend/openai_key.txt`.
 - **Drafts** (`Drafts.jsx`): Saves drafts to `localStorage` using the patient ID as a key.  Users can switch patients and recall previous drafts.
