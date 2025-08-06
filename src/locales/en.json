@@ -3,6 +3,8 @@
     "copyBeautified": "Copy Beautified",
     "copySummary": "Copy Summary",
     "export": "Export",
+    "exportRtf": "Export RTF",
+    "exportPdf": "Export PDF",
     "beautifiedCopied": "Beautified copied",
     "summaryCopied": "Summary copied",
     "copyFailed": "Copy failed",
@@ -101,7 +103,8 @@
     "backToLogin": "Back",
     "resetSuccess": "Password reset, please login",
     "resetFailed": "Password reset failed",
-    "newPassword": "New Password"
+    "newPassword": "New Password",
+    "loginFailed": "Login failed"
   },
   "logs": {
     "title": "Event Log",
@@ -115,7 +118,15 @@
     "transcript": "Transcript:",
     "placeholder": "Type your clinical note here...",
     "undo": "Undo",
-    "redo": "Redo"
+    "redo": "Redo",
+    "audioUnsupported": "Audio recording not supported",
+    "transcriptionFailed": "Transcription failed",
+    "microphoneAccessDenied": "Microphone access denied",
+    "failedToLoadTranscript": "Failed to load transcript",
+    "insert": "Insert",
+    "loadingTranscript": "Loading transcript...",
+    "recording": "Recording...",
+    "transcribing": "Transcribing..."
   },
   "settings": {
     "title": "Settings",
@@ -145,7 +156,16 @@
     "invalidPromptTemplates": "Invalid template format",
     "english": "English",
     "spanish": "Spanish",
-    "region": "Region"
+    "region": "Region",
+    "regionPlaceholder": "e.g., US",
+    "specialties": {
+      "cardiology": "Cardiology",
+      "dermatology": "Dermatology"
+    },
+    "payers": {
+      "medicare": "Medicare",
+      "aetna": "Aetna"
+    }
   },
   "sidebar": {
     "notes": "Notes",
@@ -168,6 +188,7 @@
     "none": "No suggestions yet",
     "followUp": "Follow-Up",
     "addToCalendar": "Add to calendar",
+    "followUpAppointment": "Follow-up appointment",
     "upgradeTo": "Upgrade to",
     "upgradePath": "Upgrade path"
   },
@@ -180,6 +201,20 @@
     "close": "Close",
     "delete": "Delete",
     "edit": "Edit"
+  },
+  "adminUsers": {
+    "title": "Users",
+    "username": "Username",
+    "tempPassword": "Temp Password",
+    "role": "Role",
+    "invite": "Invite",
+    "update": "Update",
+    "delete": "Delete",
+    "colUsername": "Username",
+    "colRole": "Role",
+    "colActions": "Actions",
+    "newRolePrompt": "New role",
+    "confirmDelete": "Delete {{username}}?"
   },
   "app": {
     "back": "Back to Notes",

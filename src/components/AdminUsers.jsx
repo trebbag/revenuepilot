@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 function AdminUsers({ token }) {
+  const { t } = useTranslation();
   const [users, setUsers] = useState([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -44,7 +46,7 @@ function AdminUsers({ token }) {
   };
 
   const updateUser = async (u) => {
-    const newRole = prompt('New role', u.role);
+    const newRole = prompt(t('adminUsers.newRolePrompt'), u.role);
     if (!newRole) return;
     await fetch(`${baseUrl}/users/${u.username}`, {
       method: 'PUT',
@@ -58,7 +60,10 @@ function AdminUsers({ token }) {
   };
 
   const deleteUser = async (u) => {
-    if (!window.confirm(`Delete ${u.username}?`)) return;
+    if (
+      !window.confirm(t('adminUsers.confirmDelete', { username: u.username }))
+    )
+      return;
     await fetch(`${baseUrl}/users/${u.username}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -68,37 +73,37 @@ function AdminUsers({ token }) {
 
   return (
     <div className="admin-users" style={{ padding: '1rem' }}>
-      <h2>Users</h2>
+      <h2>{t('adminUsers.title')}</h2>
       <form onSubmit={invite} style={{ marginBottom: '1rem' }}>
         <input
           type="text"
-          placeholder="Username"
+          placeholder={t('adminUsers.username')}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           required
         />
         <input
           type="text"
-          placeholder="Temp Password"
+          placeholder={t('adminUsers.tempPassword')}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
         />
         <input
           type="text"
-          placeholder="Role"
+          placeholder={t('adminUsers.role')}
           value={role}
           onChange={(e) => setRole(e.target.value)}
           required
         />
-        <button type="submit">Invite</button>
+        <button type="submit">{t('adminUsers.invite')}</button>
       </form>
       <table>
         <thead>
           <tr>
-            <th>Username</th>
-            <th>Role</th>
-            <th>Actions</th>
+            <th>{t('adminUsers.colUsername')}</th>
+            <th>{t('adminUsers.colRole')}</th>
+            <th>{t('adminUsers.colActions')}</th>
           </tr>
         </thead>
         <tbody>
@@ -107,8 +112,12 @@ function AdminUsers({ token }) {
               <td>{u.username}</td>
               <td>{u.role}</td>
               <td>
-                <button onClick={() => updateUser(u)}>Update</button>
-                <button onClick={() => deleteUser(u)}>Delete</button>
+                <button onClick={() => updateUser(u)}>
+                  {t('adminUsers.update')}
+                </button>
+                <button onClick={() => deleteUser(u)}>
+                  {t('adminUsers.delete')}
+                </button>
               </td>
             </tr>
           ))}

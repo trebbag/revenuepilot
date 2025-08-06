@@ -26,6 +26,7 @@ const quillFormats = [
 ];
 
 function useAudioRecorder(onTranscribed) {
+  const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState('');
@@ -35,7 +36,7 @@ function useAudioRecorder(onTranscribed) {
   const startRecording = async () => {
     setError('');
     if (!navigator.mediaDevices || !window.MediaRecorder) {
-      setError('Audio recording not supported');
+      setError(t('noteEditor.audioUnsupported'));
       return;
     }
     try {
@@ -56,7 +57,7 @@ function useAudioRecorder(onTranscribed) {
           if (onTranscribed) onTranscribed(data, blob);
         } catch (err) {
           console.error('Transcription failed', err);
-          setError('Transcription failed');
+          setError(t('noteEditor.transcriptionFailed'));
         } finally {
           setTranscribing(false);
         }
@@ -65,7 +66,7 @@ function useAudioRecorder(onTranscribed) {
       setRecording(true);
     } catch (err) {
       console.error('Error accessing microphone', err);
-      setError('Microphone access denied');
+      setError(t('noteEditor.microphoneAccessDenied'));
     }
   };
 
@@ -146,7 +147,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       setSegments(data.segments || []);
       setFetchError(data.error || '');
     } catch (err) {
-      setFetchError('Failed to load transcript');
+      setFetchError(t('noteEditor.failedToLoadTranscript'));
     } finally {
       setLoadingTranscript(false);
     }
@@ -275,9 +276,15 @@ const NoteEditor = forwardRef(function NoteEditor(
           ? t('noteEditor.stopRecording')
           : t('noteEditor.recordAudio')}
       </button>
-      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+      {recording && (
+        <span style={{ marginLeft: '0.5rem' }}>
+          {t('noteEditor.recording')}
+        </span>
+      )}
       {transcribing && (
-        <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>
+        <span style={{ marginLeft: '0.5rem' }}>
+          {t('noteEditor.transcribing')}
+        </span>
       )}
     </div>
   );
@@ -302,7 +309,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             }}
           />
           <button type="button" onClick={() => insertText(transcript.provider)}>
-            Insert
+            {t('noteEditor.insert')}
           </button>
         </div>
       )}
@@ -323,7 +330,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             }}
           />
           <button type="button" onClick={() => insertText(transcript.patient)}>
-            Insert
+            {t('noteEditor.insert')}
           </button>
         </div>
       )}
@@ -401,7 +408,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         {(recorderError || fetchError) && (
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
-        {loadingTranscript && <p>Loading transcript...</p>}
+        {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
       </div>
     );
   }
@@ -431,7 +438,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       {(recorderError || fetchError) && (
         <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
       )}
-      {loadingTranscript && <p>Loading transcript...</p>}
+      {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
     </div>
   );
 });
