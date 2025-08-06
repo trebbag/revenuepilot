@@ -67,15 +67,49 @@ def _get_custom_instruction(
     """
 
     templates = _load_custom_templates()
+
+    def extract(section: Dict[str, Any]) -> Optional[str]:
+        entry = section.get(category, {})
+        if isinstance(entry, dict) and "examples" in entry:
+            entry = {k: v for k, v in entry.items() if k != "examples"}
+        return _resolve_lang(entry, lang)
+
     parts = []
-    parts.append(_resolve_lang(templates.get("default", {}).get(category), lang))
+    parts.append(extract(templates.get("default", {})))
     if specialty:
-        spec = templates.get("specialty", {}).get(specialty, {}).get(category)
-        parts.append(_resolve_lang(spec, lang))
+        parts.append(extract(templates.get("specialty", {}).get(specialty, {})))
     if payer:
-        pay = templates.get("payer", {}).get(payer, {}).get(category)
-        parts.append(_resolve_lang(pay, lang))
+        parts.append(extract(templates.get("payer", {}).get(payer, {})))
     return " ".join(p for p in parts if p)
+
+
+def _get_custom_examples(
+    category: str, lang: str, specialty: Optional[str], payer: Optional[str]
+) -> List[Dict[str, str]]:
+    """Return example message pairs for the given category."""
+
+    def collect(entry: Dict[str, Any]) -> List[Dict[str, str]]:
+        msgs: List[Dict[str, str]] = []
+        for ex in entry.get("examples", []) if isinstance(entry, dict) else []:
+            user = _resolve_lang(ex.get("user"), lang)
+            assistant = _resolve_lang(ex.get("assistant"), lang)
+            if user and assistant:
+                msgs.append({"role": "user", "content": user})
+                msgs.append({"role": "assistant", "content": assistant})
+        return msgs
+
+    templates = _load_custom_templates()
+    messages: List[Dict[str, str]] = []
+    messages.extend(collect(templates.get("default", {}).get(category, {})))
+    if specialty:
+        messages.extend(
+            collect(templates.get("specialty", {}).get(specialty, {}).get(category, {}))
+        )
+    if payer:
+        messages.extend(
+            collect(templates.get("payer", {}).get(payer, {}).get(category, {}))
+        )
+    return messages
 
 
 def build_beautify_prompt(
@@ -112,10 +146,10 @@ def build_beautify_prompt(
         instructions = f"{instructions} {extra}"
     if lang == "es":
         instructions = f"{instructions} Responde en español."
-    return [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
+    messages.extend(_get_custom_examples("beautify", lang, specialty, payer))
+    messages.append({"role": "user", "content": text})
+    return messages
 
 
 def build_suggest_prompt(
@@ -167,10 +201,10 @@ def build_suggest_prompt(
                 user_content = f"{text}\n\nConsider: " + ", ".join(tips)
         except Exception:
             pass
-    return [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": user_content},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
+    messages.extend(_get_custom_examples("suggest", lang, specialty, payer))
+    messages.append({"role": "user", "content": user_content})
+    return messages
 
 
 def build_summary_prompt(
@@ -199,7 +233,7 @@ def build_summary_prompt(
         instructions = f"{instructions} {extra}"
     if lang == "es":
         instructions = f"{instructions} Responde en español."
-    return [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
+    messages.extend(_get_custom_examples("summary", lang, specialty, payer))
+    messages.append({"role": "user", "content": text})
+    return messages

@@ -7,6 +7,9 @@ import i18n from '../i18n.js';
 import { setApiKey, saveSettings } from '../api.js';
 
 
+const SPECIALTIES = ['', 'cardiology', 'dermatology'];
+const PAYERS = ['', 'medicare', 'aetna'];
+
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
   const [apiKeyInput, setApiKeyInput] = useState('');
@@ -198,20 +201,30 @@ function Settings({ settings, updateSettings }) {
   </select>
 
       <h3>{t('settings.specialty')}</h3>
-      <input
-        type="text"
+      <select
         value={settings.specialty || ''}
         onChange={handleSpecialtyChange}
         style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
-      />
+      >
+        {SPECIALTIES.map((s) => (
+          <option key={s} value={s}>
+            {s || '--'}
+          </option>
+        ))}
+      </select>
 
       <h3>{t('settings.payer')}</h3>
-      <input
-        type="text"
+      <select
         value={settings.payer || ''}
         onChange={handlePayerChange}
         style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
-      />
+      >
+        {PAYERS.map((p) => (
+          <option key={p} value={p}>
+            {p || '--'}
+          </option>
+        ))}
+      </select>
 
       <h3>{t('settings.templates')}</h3>
       <ul>

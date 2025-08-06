@@ -1,21 +1,13 @@
 from backend import prompts
-from pathlib import Path
-import textwrap
-
 from typing import Iterator
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def reset_templates() -> Iterator[None]:
-    """Ensure no prompt template overrides leak between tests."""
-    tpl_path = Path(prompts.__file__).with_name("prompt_templates.yaml")
-    if tpl_path.exists():
-        tpl_path.unlink()
+    """Clear template cache between tests."""
     prompts._load_custom_templates.cache_clear()
     yield
-    if tpl_path.exists():
-        tpl_path.unlink()
     prompts._load_custom_templates.cache_clear()
 
 
@@ -43,34 +35,36 @@ def test_summary_prompt_language():
     assert "en español" in es[0]["content"]
 
 
-def test_specialty_and_payer_overrides(tmp_path):
-    tpl_path = Path(prompts.__file__).with_name("prompt_templates.yaml")
-    tpl_path.write_text(
-        textwrap.dedent(
-            """
-            default:
-              beautify:
-                en: "Base addendum"
-            specialty:
-              cardiology:
-                beautify:
-                  en: "Cardio extra"
-            payer:
-              medicare:
-                beautify:
-                  en: "Medicare extra"
-                suggest:
-                  en: "Follow Medicare coding rules"
-            """
-        )
+def test_specialty_and_payer_overrides():
+    beauty = prompts.build_beautify_prompt(
+        "note", lang="en", specialty="cardiology", payer="medicare"
     )
-    prompts._load_custom_templates.cache_clear()
-    beauty = prompts.build_beautify_prompt("note", lang="en", specialty="cardiology", payer="medicare")
     content = beauty[0]["content"]
     assert "clinical documentation specialist" in content
-    assert "Base addendum" in content
-    assert "Cardio extra" in content
-    assert "Medicare extra" in content
-    sugg = prompts.build_suggest_prompt("note", lang="en", payer="medicare")
-    assert "Follow Medicare coding rules" in sugg[0]["content"]
+    assert "Base instruction applied to all notes." in content
+    assert "Cardiology specific beautify instruction." in content
+    assert "Ensure documentation meets Medicare standards." in content
+    # Default and specialty examples should be included
+    texts = [m["content"] for m in beauty]
+    assert "Example raw note" in texts
+    assert "Cardio raw note" in texts
+
+    sugg = prompts.build_suggest_prompt(
+        "note", lang="en", specialty="cardiology", payer="medicare"
+    )
+    scontent = sugg[0]["content"]
+    assert "Cardiology specific suggestion instruction." in scontent
+    assert "Follow Medicare coding rules." in scontent
+    texts = [m["content"] for m in sugg]
+    assert "Example suggest note" in texts
+    assert "Medicare suggest note" in texts
+
+    summary = prompts.build_summary_prompt(
+        "note", lang="en", specialty="cardiology", payer="medicare"
+    )
+    sc = summary[0]["content"]
+    assert "Cardiology specific summary instruction." in sc
+    assert "Follow Medicare summary requirements." in sc
+    texts = [m["content"] for m in summary]
+    assert "Example summary note" in texts
 
