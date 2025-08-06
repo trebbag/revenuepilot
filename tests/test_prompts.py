@@ -46,7 +46,7 @@ def test_specialty_and_payer_overrides():
     assert "Ensure documentation meets Medicare standards." in content
     # Default and specialty examples should be included
     texts = [m["content"] for m in beauty]
-    assert "Example raw note" in texts
+    assert any("chief complaint: cough for 3 days" in t for t in texts)
     assert "Cardio raw note" in texts
 
     sugg = prompts.build_suggest_prompt(

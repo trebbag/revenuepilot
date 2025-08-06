@@ -1147,8 +1147,8 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
     """
     Beautify (reformat) a clinical note.  This endpoint de‑identifies the
     incoming note and then calls an LLM to rephrase it into a professional
-    format. If the model call fails, the cleaned text is uppercased as a
-    fallback.
+    format. If the model call fails, the cleaned text is returned with each
+    sentence capitalised as a fallback.
 
     Args:
         req: NoteRequest with a raw clinical note.
@@ -1161,22 +1161,24 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
 
         beautified = offline_beautify(cleaned, req.lang, req.specialty, req.payer)
         return {"beautified": beautified}
-    # Attempt to call the LLM to beautify the note.  If the call
+    # Attempt to call the LLM to beautify the note. If the call
     # fails for any reason (e.g., missing API key, network error), fall
-    # back to a simple uppercase transformation so the endpoint still
-    # returns something useful.
+    # back to returning the trimmed note with only the first letter of
+    # each sentence capitalised so the endpoint still returns something useful.
     try:
         messages = build_beautify_prompt(cleaned, req.lang, req.specialty, req.payer)
         response_content = call_openai(messages)
         # The assistant's reply is expected to contain only the
-        # beautified note text.  We strip any leading/trailing
+        # beautified note text. We strip any leading/trailing
         # whitespace to tidy the result.
         beautified = response_content.strip()
+        return {"beautified": beautified}
     except Exception as exc:
         # Log the exception and fall back to a basic transformation.
         print(f"Error during beautify LLM call: {exc}")
-        beautified = cleaned.upper()
-    return {"beautified": beautified}
+        sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
+        beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
+        return {"beautified": beautified, "error": str(exc)}
 
 
 @app.post("/suggest", response_model=SuggestionsResponse)
