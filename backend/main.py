@@ -496,6 +496,7 @@ class EventModel(BaseModel):
     compliance: Optional[List[str]] = None
     publicHealth: Optional[bool] = None
     satisfaction: Optional[int] = None
+    baseline: Optional[bool] = None
 
 
 class TemplateModel(BaseModel):
@@ -685,6 +686,7 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
         "compliance",
         "publicHealth",
         "satisfaction",
+        "baseline",
     ]:
         value = getattr(event, key)
         if value is not None:
@@ -827,16 +829,14 @@ async def get_metrics(
     clinician: Optional[str] = None,
     user=Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    """Aggregate analytics from logged events with optional filtering.
+    """Aggregate analytics separately for baseline and current events.
 
-    The endpoint now uses SQL aggregation to build daily and weekly
-    time‑series buckets directly within SQLite rather than iterating over
-    each event in Python.  This keeps the implementation reasonably
-    efficient even as the number of logged events grows."""
+    Events with ``baseline=true`` represent pre‑implementation metrics.
+    The response contains aggregates for both baseline and current periods
+    plus percentage improvement of current over baseline."""
 
     cursor = db_conn.cursor()
 
-    # Collect distinct clinicians for the frontend dropdown.
     cursor.execute(
         """
         SELECT DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician
@@ -846,69 +846,209 @@ async def get_metrics(
     )
     clinicians = [row["clinician"] for row in cursor.fetchall() if row["clinician"]]
 
-    # ------------------------------------------------------------------
-    # Build a WHERE clause based on optional query parameters
-    # ------------------------------------------------------------------
     def _parse_iso_ts(value: str) -> float | None:
-        """Best effort parse of an ISO date/datetime string to a timestamp."""
         try:
             return datetime.fromisoformat(value).timestamp()
         except Exception:
             return None
 
-    conditions: List[str] = []
-    params: List[Any] = []
+    base_conditions: List[str] = []
+    base_params: List[Any] = []
     if start:
-        start_ts = _parse_iso_ts(start)
-        if start_ts is not None:
-            conditions.append("timestamp >= ?")
-            params.append(start_ts)
+        ts = _parse_iso_ts(start)
+        if ts is not None:
+            base_conditions.append("timestamp >= ?")
+            base_params.append(ts)
     if end:
-        end_ts = _parse_iso_ts(end)
-        if end_ts is not None:
-            conditions.append("timestamp <= ?")
-            params.append(end_ts)
+        ts = _parse_iso_ts(end)
+        if ts is not None:
+            base_conditions.append("timestamp <= ?")
+            base_params.append(ts)
     if clinician:
-        conditions.append("json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.clinician') = ?")
-        params.append(clinician)
+        base_conditions.append(
+            "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?"
+        )
+        base_params.append(clinician)
 
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    baseline_cond = "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 1"
+    current_cond = "(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') IS NULL OR json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 0)"
 
-    # ------------------------------------------------------------------
-    # Aggregate overall totals/averages using SQL
-    # ------------------------------------------------------------------
-    totals_query = f"""
-        SELECT
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL))     AS avg_note_length,
-            AVG(revenue)     AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL))     AS avg_close_time,
-            AVG(satisfaction) AS avg_satisfaction,
-            AVG(public_health) AS public_health_rate
-        FROM events {where_clause}
-    """
-    cursor.execute(totals_query, params)
-    row = cursor.fetchone()
-    totals = dict(row) if row else {}
+    current_conditions = base_conditions + [current_cond]
+    baseline_conditions = base_conditions + [baseline_cond]
 
-    total_notes = totals.get("total_notes", 0) or 0
-    total_beautify = totals.get("total_beautify", 0) or 0
-    total_suggest = totals.get("total_suggest", 0) or 0
-    total_summary = totals.get("total_summary", 0) or 0
-    total_chart_upload = totals.get("total_chart_upload", 0) or 0
-    total_audio = totals.get("total_audio", 0) or 0
-    avg_length = totals.get("avg_note_length") or 0
-    avg_revenue = totals.get("revenue_per_visit") or 0
-    avg_close_time = totals.get("avg_close_time") or 0
+    where_current = f"WHERE {' AND '.join(current_conditions)}" if current_conditions else ""
+    where_baseline = f"WHERE {' AND '.join(baseline_conditions)}" if baseline_conditions else ""
 
-    # ------------------------------------------------------------------
-    # Build daily and weekly time series via SQL GROUP BY
-    # ------------------------------------------------------------------
+    def compute_basic(where_clause: str, params: List[Any], collect_timeseries: bool = False) -> Dict[str, Any]:
+        totals_query = f"""
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue)     AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                AVG(satisfaction) AS avg_satisfaction,
+                AVG(public_health) AS public_health_rate
+            FROM events {where_clause}
+        """
+        cursor.execute(totals_query, params)
+        row = cursor.fetchone()
+        totals = dict(row) if row else {}
+        metrics: Dict[str, Any] = {
+            "total_notes": totals.get("total_notes", 0) or 0,
+            "total_beautify": totals.get("total_beautify", 0) or 0,
+            "total_suggest": totals.get("total_suggest", 0) or 0,
+            "total_summary": totals.get("total_summary", 0) or 0,
+            "total_chart_upload": totals.get("total_chart_upload", 0) or 0,
+            "total_audio": totals.get("total_audio", 0) or 0,
+            "avg_note_length": totals.get("avg_note_length") or 0,
+            "revenue_per_visit": totals.get("revenue_per_visit") or 0,
+            "avg_close_time": totals.get("avg_close_time") or 0,
+        }
+
+        cursor.execute(
+            f"SELECT eventType, timestamp, details, codes, compliance_flags, public_health, satisfaction FROM events {where_clause} ORDER BY timestamp",
+            params,
+        )
+        rows = cursor.fetchall()
+        code_counts: Dict[str, int] = {}
+        denial_counts: Dict[str, List[int]] = {}
+        denial_totals = [0, 0]
+        deficiency_totals = [0, 0]
+        compliance_counts: Dict[str, int] = {}
+        public_health_totals = [0, 0]
+        satisfaction_sum = satisfaction_count = 0
+        beautify_time_sum = beautify_time_count = 0.0
+        beautify_daily: Dict[str, List[float]] = {} if collect_timeseries else {}
+        beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
+        last_start_for_patient: Dict[str, float] = {}
+
+        for r in rows:
+            evt = r["eventType"]
+            ts = r["timestamp"]
+            try:
+                details = json.loads(r["details"] or "{}")
+            except Exception:
+                details = {}
+
+            codes_val = r["codes"]
+            try:
+                codes = json.loads(codes_val) if codes_val else []
+            except Exception:
+                codes = []
+            if isinstance(codes, list):
+                denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
+                for code in codes:
+                    code_counts[code] = code_counts.get(code, 0) + 1
+                    if denial_flag is not None:
+                        totals_d = denial_counts.get(code, [0, 0])
+                        totals_d[0] += 1
+                        if denial_flag:
+                            totals_d[1] += 1
+                        denial_counts[code] = totals_d
+
+            comp_val = r["compliance_flags"]
+            try:
+                comp_list = json.loads(comp_val) if comp_val else []
+            except Exception:
+                comp_list = []
+            for flag in comp_list:
+                compliance_counts[flag] = compliance_counts.get(flag, 0) + 1
+
+            public_health = r["public_health"]
+            if isinstance(public_health, int):
+                public_health_totals[0] += 1
+                if public_health:
+                    public_health_totals[1] += 1
+
+            satisfaction = r["satisfaction"]
+            if isinstance(satisfaction, (int, float)):
+                satisfaction_sum += float(satisfaction)
+                satisfaction_count += 1
+
+            denial = details.get("denial")
+            if isinstance(denial, bool):
+                denial_totals[0] += 1
+                if denial:
+                    denial_totals[1] += 1
+
+            deficiency = details.get("deficiency")
+            if isinstance(deficiency, bool):
+                deficiency_totals[0] += 1
+                if deficiency:
+                    deficiency_totals[1] += 1
+
+            patient_id = (
+                details.get("patientID")
+                or details.get("patientId")
+                or details.get("patient_id")
+            )
+            if evt == "note_started" and patient_id:
+                last_start_for_patient[patient_id] = ts
+            if evt == "beautify" and patient_id and patient_id in last_start_for_patient:
+                duration = ts - last_start_for_patient[patient_id]
+                if duration >= 0:
+                    beautify_time_sum += duration
+                    beautify_time_count += 1
+                    if collect_timeseries:
+                        day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                        week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
+                        drec = beautify_daily.setdefault(day, [0.0, 0])
+                        drec[0] += duration
+                        drec[1] += 1
+                        wrec = beautify_weekly.setdefault(week, [0.0, 0])
+                        wrec[0] += duration
+                        wrec[1] += 1
+
+        avg_beautify_time = (
+            beautify_time_sum / beautify_time_count if beautify_time_count else 0
+        )
+        denial_rates = {c: (v[1] / v[0] if v[0] else 0) for c, v in denial_counts.items()}
+        overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
+        deficiency_rate = (
+            deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
+        )
+        public_health_rate = (
+            public_health_totals[1] / public_health_totals[0]
+            if public_health_totals[0]
+            else 0
+        )
+        avg_satisfaction = (
+            satisfaction_sum / satisfaction_count if satisfaction_count else 0
+        )
+
+        metrics.update(
+            {
+                "avg_beautify_time": avg_beautify_time,
+                "coding_distribution": code_counts,
+                "denial_rate": overall_denial,
+                "denial_rates": denial_rates,
+                "deficiency_rate": deficiency_rate,
+                "compliance_counts": compliance_counts,
+                "public_health_rate": public_health_rate,
+                "avg_satisfaction": avg_satisfaction,
+            }
+        )
+        if collect_timeseries:
+            metrics["beautify_daily"] = beautify_daily
+            metrics["beautify_weekly"] = beautify_weekly
+        return metrics
+
+    current_metrics = compute_basic(where_current, base_params, collect_timeseries=True)
+    baseline_metrics = compute_basic(where_baseline, base_params)
+
+    beautify_daily = current_metrics.pop("beautify_daily")
+    beautify_weekly = current_metrics.pop("beautify_weekly")
+    coding_distribution = current_metrics.pop("coding_distribution")
+    denial_rates = current_metrics.pop("denial_rates")
+    compliance_counts = current_metrics.pop("compliance_counts")
+    public_health_rate = current_metrics.pop("public_health_rate")
+    avg_satisfaction = current_metrics.pop("avg_satisfaction")
+
     daily_query = f"""
         SELECT
             date(datetime(timestamp, 'unixepoch')) AS date,
@@ -918,17 +1058,15 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
-        FROM events {where_clause}
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_current}
         GROUP BY date
         ORDER BY date
     """
-    cursor.execute(daily_query, params)
-    daily_list = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(daily_query, base_params)
+    daily_list = [dict(r) for r in cursor.fetchall()]
 
     weekly_query = f"""
         SELECT
@@ -939,48 +1077,16 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
-        FROM events {where_clause}
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_current}
         GROUP BY week
         ORDER BY week
     """
-    cursor.execute(weekly_query, params)
-    weekly_list = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(weekly_query, base_params)
+    weekly_list = [dict(r) for r in cursor.fetchall()]
 
-    # ------------------------------------------------------------------
-    # Additional aggregations that are easier in Python
-    # (e.g. denial rates, coding distribution, beautify time)
-    # ------------------------------------------------------------------
-    cursor.execute(
-        f"SELECT eventType, timestamp, details, codes, compliance_flags, public_health, satisfaction FROM events {where_clause} ORDER BY timestamp",
-        params,
-    )
-    rows = cursor.fetchall()
-
-    code_counts: Dict[str, int] = {}
-    denial_counts: Dict[str, List[int]] = {}
-    denial_totals = [0, 0]
-    deficiency_totals = [0, 0]
-    compliance_counts: Dict[str, int] = {}
-    public_health_totals = [0, 0]
-    satisfaction_sum = satisfaction_count = 0
-
-    beautify_time_sum = beautify_time_count = 0.0
-    beautify_daily: Dict[str, List[float]] = {}
-    beautify_weekly: Dict[str, List[float]] = {}
-    last_start_for_patient: Dict[str, float] = {}
-
-    for row in rows:
-        evt = row["eventType"]
-        ts = row["timestamp"]
-        try:
-            details = json.loads(row["details"] or "{}")
-        except Exception:
-            details = {}
 
         codes_val = row["codes"]
         try:
@@ -1069,37 +1175,34 @@ async def get_metrics(
         bt = beautify_weekly.get(entry["week"])
         entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
 
-    denial_rates = {
-        code: (v[1] / v[0] if v[0] else 0) for code, v in denial_counts.items()
+    def pct_change(b: float, c: float) -> float | None:
+        return ((c - b) / b * 100) if b else None
+
+    keys = [
+        "total_notes",
+        "total_beautify",
+        "total_suggest",
+        "total_summary",
+        "total_chart_upload",
+        "total_audio",
+        "avg_note_length",
+        "avg_beautify_time",
+        "avg_close_time",
+        "revenue_per_visit",
+        "denial_rate",
+        "deficiency_rate",
+    ]
+    improvement = {
+        k: pct_change(baseline_metrics.get(k, 0), current_metrics.get(k, 0))
+        for k in keys
     }
-    overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
-    deficiency_rate = (
-        deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
-    )
-    public_health_rate = (
-        public_health_totals[1] / public_health_totals[0]
-        if public_health_totals[0]
-        else 0
-    )
-    avg_satisfaction = (
-        satisfaction_sum / satisfaction_count if satisfaction_count else 0
-    )
 
     return {
-        "total_notes": total_notes,
-        "total_beautify": total_beautify,
-        "total_suggest": total_suggest,
-        "total_summary": total_summary,
-        "total_chart_upload": total_chart_upload,
-        "total_audio": total_audio,
-        "avg_note_length": avg_length,
-        "avg_beautify_time": avg_beautify_time,
-        "avg_close_time": avg_close_time,
-        "revenue_per_visit": avg_revenue,
-        "coding_distribution": code_counts,
-        "denial_rate": overall_denial,
+        "baseline": baseline_metrics,
+        "current": current_metrics,
+        "improvement": improvement,
+        "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
-        "deficiency_rate": deficiency_rate,
         "compliance_counts": compliance_counts,
         "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,

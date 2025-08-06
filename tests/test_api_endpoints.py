@@ -161,7 +161,7 @@ def test_events_metrics_with_auth(client):
 
     resp = client.get("/metrics", headers=auth_header(token_admin))
     assert resp.status_code == 200
-    assert resp.json()["total_notes"] >= 1
+    assert resp.json()["current"]["total_notes"] >= 1
 
 
 def test_export_to_ehr_requires_admin(client):
