@@ -71,6 +71,30 @@ test('saveSettings called when specialty and payer change', async () => {
   await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
 });
 
+test('changing region triggers saveSettings', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    specialty: '',
+    payer: '',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getByPlaceholderText } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  fireEvent.change(getByPlaceholderText('e.g., US'), { target: { value: 'US' } });
+  await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+  expect(updateSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ region: 'US' })
+  );
+});
+
 test('renders Spanish translations when lang is es', () => {
   const settings = {
     theme: 'modern',

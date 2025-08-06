@@ -1,5 +1,11 @@
 import requests
+import pytest
 from backend import public_health
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    public_health.clear_cache()
 
 
 class DummyResp:
@@ -57,4 +63,24 @@ def test_fetch_vaccination_recommendations_error(monkeypatch):
     monkeypatch.setattr(public_health.requests, "get", fake_get)
     result = public_health.fetch_vaccination_recommendations(40, "male", "US")
     assert result == []
+
+
+def test_caching_avoids_repeated_calls(monkeypatch):
+    calls = []
+
+    def fake_get(url, params=None, timeout=10):
+        calls.append(url)
+        if "vaccinations" in url:
+            return DummyResp({"vaccinations": ["Flu shot"]})
+        return DummyResp({"screenings": ["BP check"]})
+
+    public_health.clear_cache()
+    monkeypatch.setattr(public_health.requests, "get", fake_get)
+
+    first = public_health.get_public_health_suggestions(40, "male", "US")
+    second = public_health.get_public_health_suggestions(40, "male", "US")
+    assert first == ["Flu shot", "BP check"]
+    assert second == ["Flu shot", "BP check"]
+    # Only two API calls should have been made (one for each endpoint)
+    assert len(calls) == 2
 

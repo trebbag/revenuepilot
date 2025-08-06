@@ -16,8 +16,11 @@ import {
 } from '../api.js';
 
 
-const SPECIALTIES = ['', 'cardiology', 'dermatology', 'paediatrics', 'geriatrics'];
-const PAYERS = ['', 'medicare', 'medicaid', 'aetna'];
+
+const SPECIALTIES = ['', 'cardiology', 'dermatology'];
+const PAYERS = ['', 'medicare', 'aetna'];
+// Region/country codes are user-entered to keep the list flexible
+
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
@@ -213,6 +216,16 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleRegionChange = async (event) => {
+    const updated = { ...settings, region: event.target.value };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
       <h2>{t('settings.title')}</h2>
@@ -354,19 +367,16 @@ function Settings({ settings, updateSettings }) {
         ))}
       </select>
 
-      <h3>{t('settings.promptTemplates')}</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.promptTemplatesHelp')}</p>
-      {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
-      <textarea
-        value={promptText}
-        onChange={(e) => setPromptText(e.target.value)}
-        rows={10}
-        style={{ width: '100%', marginBottom: '0.5rem' }}
+
+      <h3>{t('settings.region')}</h3>
+      <input
+        type="text"
+        value={settings.region || ''}
+        onChange={handleRegionChange}
+        placeholder="e.g., US"
+        style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
       />
-      <input type="file" accept="application/json" onChange={handlePromptFile} />
-      <div style={{ marginTop: '0.5rem' }}>
-        <button onClick={handleSavePromptTemplates}>{t('settings.savePromptTemplates')}</button>
-      </div>
+
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
