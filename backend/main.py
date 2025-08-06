@@ -58,10 +58,12 @@ import sqlite3
 import hashlib
 from collections import deque
 
-from passlib.context import CryptContext
-
-# Password hashing context using bcrypt
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from .auth import (
+    authenticate_user,
+    hash_password,
+    register_user,
+    verify_password,
+)
 
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
@@ -363,7 +365,6 @@ class ApiKeyModel(BaseModel):
 class RegisterModel(BaseModel):
     username: str
     password: str
-    role: str
 
 
 class LoginModel(BaseModel):
@@ -426,34 +427,22 @@ class UserSettings(BaseModel):
                 continue
             cleaned.append(item)
         return cleaned
-
-
-def hash_password(password: str) -> str:
-    """Hash the provided password using bcrypt with a per-password salt."""
-    return pwd_context.hash(password)
-
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify a plain password against the stored hash."""
-    try:
-        return pwd_context.verify(password, hashed)
-    except Exception:
-        return False
-
-
 @app.post("/register")
-async def register(model: RegisterModel, user=Depends(require_role("admin"))):
-    """Create a new user. Only admins may register users."""
-    pwd_hash = hash_password(model.password)
+async def register(model: RegisterModel) -> Dict[str, Any]:
+    """Register a new user and immediately issue JWT tokens."""
     try:
-        db_conn.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (model.username, pwd_hash, model.role),
-        )
-        db_conn.commit()
+        _user_id = register_user(db_conn, model.username, model.password)
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=400, detail="Username already exists")
-    return {"status": "registered"}
+    access_token = create_access_token(model.username, "user")
+    refresh_token = create_refresh_token(model.username, "user")
+    settings = UserSettings().dict()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "settings": settings,
+    }
 
 
 @app.get("/users")
@@ -511,11 +500,8 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             detail="Account locked due to failed login attempts",
         )
 
-    row = db_conn.execute(
-        "SELECT password_hash, role FROM users WHERE username=?",
-        (model.username,),
-    ).fetchone()
-    if not row or not verify_password(model.password, row["password_hash"]):
+    auth = authenticate_user(db_conn, model.username, model.password)
+    if not auth:
         db_conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
             (time.time(), model.username, "failed_login", "invalid credentials"),
@@ -524,12 +510,31 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
-    access_token = create_access_token(model.username, row["role"])
-    refresh_token = create_refresh_token(model.username, row["role"])
+    user_id, role = auth
+    access_token = create_access_token(model.username, role)
+    refresh_token = create_refresh_token(model.username, role)
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        settings = {
+            "theme": settings_row["theme"],
+            "categories": json.loads(settings_row["categories"]),
+            "rules": json.loads(settings_row["rules"]),
+            "lang": settings_row["lang"],
+            "specialty": settings_row["specialty"],
+            "payer": settings_row["payer"],
+            "region": settings_row["region"] or "",
+            "useLocalModels": bool(settings_row["use_local_models"]),
+        }
+    else:
+        settings = UserSettings().dict()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "settings": settings,
     }
 
 

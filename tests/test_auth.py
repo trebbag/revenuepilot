@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main
+from backend import auth
 
 
 def setup_module(module):
@@ -20,30 +21,15 @@ def setup_module(module):
     main.db_conn.execute(
         'CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)'
     )
-    # Seed an initial admin user
-    admin_hash = main.hash_password('secret')
-    main.db_conn.execute(
-        'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-        ('admin', admin_hash, 'admin'),
-    )
-    main.db_conn.commit()
+    main.ensure_settings_table(main.db_conn)
+    auth.register_user(main.db_conn, 'admin', 'secret', 'admin')
 
 
 def test_register_and_login():
     client = TestClient(main.app)
-    # Login as admin
-    resp = client.post('/login', json={'username': 'admin', 'password': 'secret'})
-    assert resp.status_code == 200
-    admin_token = resp.json()['access_token']
-
     # Register a new regular user
-    resp = client.post(
-        '/register',
-        json={'username': 'alice', 'password': 'pw', 'role': 'user'},
-        headers={'Authorization': f'Bearer {admin_token}'},
-    )
+    resp = client.post('/register', json={'username': 'alice', 'password': 'pw'})
     assert resp.status_code == 200
-
     # New user can log in and receives token with correct role
     resp = client.post('/login', json={'username': 'alice', 'password': 'pw'})
     assert resp.status_code == 200
@@ -58,7 +44,7 @@ def test_register_and_login():
     ).fetchone()
     assert row is not None
     assert row['password_hash'].startswith('$2b$')
-    assert main.verify_password('pw', row['password_hash'])
+    assert auth.verify_password('pw', row['password_hash'])
 
 
 def test_role_enforcement():
@@ -86,12 +72,7 @@ def test_invalid_token_rejected():
 
 def test_login_lockout():
     client = TestClient(main.app)
-    admin_token = client.post('/login', json={'username': 'admin', 'password': 'secret'}).json()['access_token']
-    client.post(
-        '/register',
-        json={'username': 'charlie', 'password': 'pw', 'role': 'user'},
-        headers={'Authorization': f'Bearer {admin_token}'},
-    )
+    client.post('/register', json={'username': 'charlie', 'password': 'pw'})
     for _ in range(5):
         resp = client.post('/login', json={'username': 'charlie', 'password': 'bad'})
         assert resp.status_code == 401
@@ -107,11 +88,7 @@ def test_audit_endpoint():
     assert resp.status_code == 200
     data = resp.json()
     assert any(entry['action'] == 'failed_login' for entry in data)
-    client.post(
-        '/register',
-        json={'username': 'bob', 'password': 'pw', 'role': 'user'},
-        headers={'Authorization': f'Bearer {admin_token}'},
-    )
+    client.post('/register', json={'username': 'bob', 'password': 'pw'})
     user_token = client.post('/login', json={'username': 'bob', 'password': 'pw'}).json()['access_token']
     assert client.get('/audit', headers={'Authorization': f'Bearer {user_token}'}).status_code == 403
 
