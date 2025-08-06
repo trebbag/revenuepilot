@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main, prompts
+from backend import main, prompts, migrations
 
 
 @pytest.fixture
@@ -19,9 +19,7 @@ def client(monkeypatch, tmp_path):
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
-    db.execute(
-        "CREATE TABLE settings (user_id INTEGER PRIMARY KEY, theme TEXT NOT NULL, categories TEXT NOT NULL, rules TEXT NOT NULL)"
-    )
+    migrations.ensure_settings_table(db)
     pwd = hashlib.sha256(b"pw").hexdigest()
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
@@ -58,7 +56,9 @@ def test_login_and_settings(client):
 
     resp = client.get("/settings", headers=auth_header(token))
     assert resp.status_code == 200
-    assert resp.json()["theme"] == "modern"
+    data = resp.json()
+    assert data["theme"] == "modern"
+    assert data["lang"] == "en"
 
     new_settings = {
         "theme": "dark",
@@ -69,6 +69,7 @@ def test_login_and_settings(client):
             "differentials": True,
         },
         "rules": ["x"],
+        "lang": "es",
     }
     resp = client.post(
         "/settings", json=new_settings, headers=auth_header(token)
@@ -80,6 +81,7 @@ def test_login_and_settings(client):
     assert data["theme"] == "dark"
     assert data["categories"]["codes"] is False
     assert data["rules"] == ["x"]
+    assert data["lang"] == "es"
 
     resp = client.get("/settings")
     assert resp.status_code in {401, 403}

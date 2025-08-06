@@ -127,7 +127,7 @@ function App() {
     if (!token) return;
     async function fetchSettings() {
       try {
-        const remote = await getSettings();
+        const remote = await getSettings(token);
         const merged = { ...defaultSettings, ...remote };
         setSettingsState(merged);
         i18n.changeLanguage(merged.lang);
@@ -191,7 +191,18 @@ function App() {
 
   // If there is no JWT stored, show the login form instead of the main app
   if (!token) {
-    return <Login onLoggedIn={(tok) => setToken(tok)} />;
+    return (
+      <Login
+        onLoggedIn={(tok, settings) => {
+          setToken(tok);
+          if (settings) {
+            const merged = { ...defaultSettings, ...settings };
+            updateSettings(merged);
+            i18n.changeLanguage(merged.lang);
+          }
+        }}
+      />
+    );
   }
 
   // When the user clicks the Beautify button, run a placeholder transformation.

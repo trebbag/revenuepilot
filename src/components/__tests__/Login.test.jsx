@@ -16,13 +16,17 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 test('successful login stores token and calls callback', async () => {
-  login.mockResolvedValue('token123');
+  login.mockResolvedValue({ token: 'token123', settings: { theme: 'modern' } });
   const onLoggedIn = vi.fn();
-  const { getByLabelText, getByRole } = render(<Login onLoggedIn={onLoggedIn} />);
+  const { getByLabelText, getByRole } = render(
+    <Login onLoggedIn={onLoggedIn} />
+  );
   fireEvent.change(getByLabelText('Username'), { target: { value: 'u' } });
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
   fireEvent.click(getByRole('button', { name: /login/i }));
-  await waitFor(() => expect(onLoggedIn).toHaveBeenCalledWith('token123'));
+  await waitFor(() =>
+    expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern' })
+  );
   expect(localStorage.getItem('token')).toBe('token123');
 });
 
