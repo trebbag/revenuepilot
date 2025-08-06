@@ -9,6 +9,9 @@ implementing these features, update or remove the `xfail` markers.
 import os
 import json
 import pytest
+import subprocess
+import time
+from urllib.request import urlopen
 
 from fastapi.testclient import TestClient
 
@@ -96,3 +99,47 @@ def test_electron_packaging_configuration_present():
 
     build = pkg.get("build") or {}
     assert build.get("appId"), "electron-builder config missing"
+
+
+def test_electron_auto_update_and_backend_spawn_present():
+    """Electron main process should wire auto updates and spawn the FastAPI backend."""
+    main_path = os.path.join(os.path.dirname(__file__), "..", "electron", "main.js")
+    with open(main_path, encoding="utf-8") as f:
+        content = f.read()
+
+    assert "autoUpdater" in content, "auto-updater not referenced"
+    assert "checkForUpdatesAndNotify" in content, "auto-update not triggered"
+    assert "spawn(" in content and "uvicorn" in content, "backend spawn missing"
+
+
+def test_update_server_serves_files(tmp_path):
+    """The local update server script should serve packaged files over HTTP."""
+    server_script = os.path.join(os.path.dirname(__file__), "..", "scripts", "update-server.js")
+    assert os.path.exists(server_script), "update-server.js missing"
+
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    file_path = dist_dir / "hello.txt"
+    file_path.write_text("hi")
+
+    port = "18080"
+    env = {**os.environ, "UPDATE_SERVER_PORT": port, "UPDATE_DIR": str(dist_dir)}
+    proc = subprocess.Popen(["node", server_script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for _ in range(50):
+            try:
+                with urlopen(f"http://127.0.0.1:{port}/hello.txt") as resp:
+                    body = resp.read().decode()
+                    break
+            except Exception:
+                time.sleep(0.1)
+        else:
+            pytest.fail("update server did not start")
+
+        assert body == "hi"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
