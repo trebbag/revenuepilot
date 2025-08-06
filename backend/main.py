@@ -48,6 +48,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
+from .templates import DEFAULT_TEMPLATES
 from .templates import TemplateModel
 from .scheduling import recommend_follow_up, export_ics
 
@@ -1178,6 +1179,8 @@ class ExportRequest(BaseModel):
 
     note: str
     codes: List[str] = Field(default_factory=list)
+    patientId: Optional[str] = None
+    encounterId: Optional[str] = None
 
 
 @app.post("/export_to_ehr")
@@ -1194,7 +1197,9 @@ async def export_to_ehr(
     try:
         from . import ehr_integration
 
-        result = ehr_integration.post_note_and_codes(req.note, req.codes)
+        result = ehr_integration.post_note_and_codes(
+            req.note, req.codes, req.patientId, req.encounterId
+        )
     except Exception as exc:  # pragma: no cover - network failures
         raise HTTPException(status_code=502, detail=str(exc))
 
