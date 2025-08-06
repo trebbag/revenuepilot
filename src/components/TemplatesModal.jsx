@@ -1,13 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  getTemplates,
-  createTemplate,
-  updateTemplate,
-  deleteTemplate,
-} from '../api.js';
+import { getTemplates, createTemplate, updateTemplate, deleteTemplate } from '../api.js';
 
-function TemplatesModal({ baseTemplates, onSelect, onClose }) {
+function TemplatesModal({ baseTemplates, specialty, onSelect, onClose }) {
   const { t } = useTranslation();
   const [templates, setTemplates] = useState(baseTemplates);
   const [name, setName] = useState('');
@@ -28,7 +23,7 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
   }
 
   useEffect(() => {
-    getTemplates()
+    getTemplates(specialty)
       .then((data) => setTemplates([...baseTemplates, ...data]))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
@@ -39,7 +34,7 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
           setError(e.message);
         }
       });
-  }, [baseTemplates]);
+  }, [baseTemplates, specialty]);
 
   const handleSave = async () => {
     if (!name.trim() || !content.trim()) return;
@@ -48,12 +43,14 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
         const tpl = await updateTemplate(editingId, {
           name: name.trim(),
           content: content.trim(),
+          specialty,
         });
         setTemplates((prev) => prev.map((t) => (t.id === editingId ? tpl : t)));
       } else {
         const tpl = await createTemplate({
           name: name.trim(),
           content: content.trim(),
+          specialty,
         });
         setTemplates((prev) => [...prev, tpl]);
       }

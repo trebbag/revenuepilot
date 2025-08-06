@@ -46,11 +46,16 @@ def ensure_templates_table(conn: sqlite3.Connection) -> None:
     """Ensure the templates table exists for storing note templates."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS templates ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT," 
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "user TEXT,"
         "clinic TEXT,"
+        "specialty TEXT,"
         "name TEXT,"
         "content TEXT"
         ")"
     )
+    # Add missing columns for backwards compatibility
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(templates)")}
+    if "specialty" not in columns:
+        conn.execute("ALTER TABLE templates ADD COLUMN specialty TEXT")
     conn.commit()
