@@ -108,6 +108,30 @@ def test_metrics_aggregation():
     assert data['current']['denial_rate'] == 0
 
 
+def test_metrics_combined_filters():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    events = [
+        {"eventType": "note_closed", "timestamp": 1000, "clinician": "alice", "codes": ["99213"], "revenue": 100.0},
+        {"eventType": "note_closed", "timestamp": 2000, "clinician": "alice", "codes": ["99214"], "revenue": 200.0},
+        {"eventType": "note_closed", "timestamp": 2000, "clinician": "bob", "codes": ["99215"], "revenue": 300.0},
+    ]
+    token = main.create_token('logger', 'user')
+    for ev in events:
+        assert client.post('/event', json=ev, headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    admin_token = main.create_token('admin', 'admin')
+    start = datetime.utcfromtimestamp(1500).isoformat()
+    end = datetime.utcfromtimestamp(2500).isoformat()
+    resp = client.get(
+        '/metrics',
+        params={'start': start, 'end': end, 'clinician': 'alice'},
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    data = resp.json()
+    assert data['coding_distribution'] == {'99214': 1}
+    assert data['current']['revenue_per_visit'] == pytest.approx(200.0)
+
+
 def test_metrics_timeseries_and_range():
     client = TestClient(main.app)
     main.db_conn.execute('DELETE FROM events')

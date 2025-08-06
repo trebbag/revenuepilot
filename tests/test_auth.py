@@ -104,3 +104,15 @@ def test_audit_endpoint():
     )
     user_token = client.post('/login', json={'username': 'bob', 'password': 'pw'}).json()['access_token']
     assert client.get('/audit', headers={'Authorization': f'Bearer {user_token}'}).status_code == 403
+
+
+def test_refresh_token_flow():
+    client = TestClient(main.app)
+    resp = client.post('/login', json={'username': 'admin', 'password': 'secret'})
+    refresh_token = resp.json()['refresh_token']
+    resp2 = client.post('/refresh', json={'refresh_token': refresh_token})
+    assert resp2.status_code == 200
+    new_token = resp2.json()['access_token']
+    assert client.get('/metrics', headers={'Authorization': f'Bearer {new_token}'}).status_code == 200
+    bad = client.post('/refresh', json={'refresh_token': 'bad'})
+    assert bad.status_code == 401

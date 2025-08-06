@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   test: {
-    exclude: [...defaultExclude, 'e2e/**', 'src/__tests__/**', 'src/components/__tests__/NoteEditor.test.jsx'],
+    exclude: [...defaultExclude, 'e2e/**', 'src/components/__tests__/NoteEditor.test.jsx'],
     coverage: {
       reporter: ['text'],
       include: [
