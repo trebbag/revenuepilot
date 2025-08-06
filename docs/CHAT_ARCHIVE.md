@@ -18,7 +18,7 @@ The `rp_chats` archive contained a set of planning documents and business discus
 
 ## Key Design Choices
 
-- **Local de‑identification:** Before any LLM call, the note is scrubbed of phone numbers, dates, emails, SSNs, addresses and capitalised names using regular expressions.  This prevents PHI leakage【565843205015217†screenshot】.
+- **Local de‑identification:** Before any LLM call, the note is scrubbed of phone numbers, dates, emails, SSNs, addresses and capitalised names using optional ML‑based engines (Presidio, Philter or scrubadub) with a regex fallback.  This prevents PHI leakage【565843205015217†screenshot】.
 - **Prompt discipline:** System messages instruct the model to adhere to the SOAP structure, restrict output to JSON, limit the number of codes/differentials and avoid hallucination.  Custom clinical rules entered by the user are appended to the prompt.
 - **Per‑call API key lookup:** The OpenAI key is read from `openai_key.txt` on each request.  This avoids server restarts when the key changes and simplifies packaging.
 - **SQLite analytics:** A zero‑configuration database records events.  The roadmap notes that the design can later migrate to Postgres or Redis for scalability【565843205015217†screenshot】.
@@ -38,7 +38,6 @@ The `rp_chats` archive contained a set of planning documents and business discus
 The archive identifies several unfinished or missing capabilities that need prioritisation:
 
 - **Speech‑to‑text & diarisation:** `audio_processing.py` contains stubs; the roadmap calls for integrating Whisper or a similar model and adding a `/transcribe` endpoint.
-- **Advanced PHI scrubbing:** The current regex‑based de‑identifier misses names and dates in many formats.  An ML‑based scrubber or library such as Philter is suggested【565843205015217†screenshot】.
 - **Role‑based authentication:** There is no login or user management.  A simple JWT‑based auth system is proposed to distinguish clinicians from admins.
 - **Analytics visualisation:** The dashboard currently displays counts only.  Charts (e.g. time‑series graphs) should be implemented using a library like Chart.js.
 - **Packaging:** The project needs an Electron builder config, code signing and auto‑update pipeline before distribution【447379025536466†screenshot】.
