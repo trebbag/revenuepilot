@@ -120,6 +120,19 @@ function useAudioRecorder(onTranscribed) {
 }
 
 
+function NoteEditor({
+  id,
+  value,
+  onChange,
+  onRecord,
+  recording = false,
+  transcribing = false,
+  onTranscriptChange,
+  error = '',
+  mode = 'draft',
+}) {
+
+
 // Naive HTML stripping to extract plain text for the suggestions API.
 function stripHtml(html) {
   return html ? html.replace(/<[^>]+>/g, '') : '';
@@ -151,11 +164,15 @@ const NoteEditor = forwardRef(function NoteEditor(
   ref,
 ) {
 
+
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
   // controlled input in both modes.
   const [localValue, setLocalValue] = useState(value || '');
+  // History stack for beautified notes (up to 5 entries).
+  const [history, setHistory] = useState(value ? [value] : []);
+  const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
@@ -168,8 +185,25 @@ const NoteEditor = forwardRef(function NoteEditor(
   // ReactQuill the parent `value` prop is passed directly, so this
   // effect only runs for the fallback <textarea> case.
   useEffect(() => {
-    setLocalValue(value || '');
-  }, [value]);
+    if (mode === 'draft') {
+      setLocalValue(value || '');
+    }
+  }, [value, mode]);
+
+  // Track beautified history when in beautified mode.
+  useEffect(() => {
+    if (mode !== 'beautified') return;
+    setHistory((prev) => {
+      const current = historyIndex >= 0 ? prev[historyIndex] : undefined;
+      if (current === value) return prev;
+      const base = prev.slice(0, historyIndex + 1);
+      const appended = [...base, value];
+      const newHist = appended.slice(-5);
+      setHistoryIndex(newHist.length - 1);
+      return newHist;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, mode]);
 
   // Fetch user-defined templates on mount.
   useEffect(() => {
@@ -210,118 +244,79 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   useEffect(() => {
-    loadTranscript();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-
-  useEffect(() => {
-    if (!transcribing) {
+    if (mode === 'draft') {
       loadTranscript();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcribing]);
+  }, [mode]);
 
 
-  // Debounced suggestion fetching.  When the note value or template context
-  // changes, wait a short period before calling the /suggest endpoint.  This
-  // avoids firing a request on every keystroke.
   useEffect(() => {
-    const plain = stripHtml(value);
-    if (!plain.trim()) {
-      onSuggestions(emptySuggestions);
-      return;
+    if (mode === 'draft' && !transcribing) {
+      loadTranscript();
     }
-    onSuggestionsLoading(true);
-    const timer = setTimeout(() => {
-      getSuggestions(plain, { ...suggestionContext, template: templateContext })
-        .then((data) => {
-          onSuggestions(data);
-        })
-        .catch(() => {
-          // Swallow errors; logging handled upstream
-        })
-        .finally(() => {
-          onSuggestionsLoading(false);
-        });
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [value, templateContext, suggestionContext, onSuggestions, onSuggestionsLoading]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
 
-  const insertTemplate = (content) => {
-    if (ReactQuill && quillRef.current) {
-      const editor = quillRef.current.getEditor();
-      const range = editor.getSelection(true);
-      const pos = range ? range.index : editor.getLength();
-      editor.insertText(pos, content);
-      try {
-        editor.setSelection(pos + content.length);
-      } catch (e) {
-        // Ignore selection errors in non-browser environments (e.g. tests)
-      }
-      onChange(editor.root.innerHTML);
-    } else if (textareaRef.current) {
-      const textarea = textareaRef.current;
-      const start = textarea.selectionStart || 0;
-      const end = textarea.selectionEnd || 0;
-      const newVal =
-        localValue.slice(0, start) + content + localValue.slice(end);
-      setLocalValue(newVal);
-      onChange(newVal);
-      textarea.focus();
-      const cursor = start + content.length;
-      textarea.selectionStart = textarea.selectionEnd = cursor;
-    }
+  }, [transcribing, mode]);
+
+  const audioControls =
+    mode === 'draft' && (
+      <div style={{ marginBottom: '0.5rem' }}>
+        {onRecord && (
+          <button
+            type="button"
+            onClick={onRecord}
+            aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+          >
+            {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+          </button>
+        )}
+        {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+        {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
+      </div>
+    );
+
+  const handleUndo = () => {
+    setHistoryIndex((idx) => {
+      if (idx <= 0) return idx;
+      const newIndex = idx - 1;
+      onChange(history[newIndex]);
+      return newIndex;
+    });
   };
 
-  const handleTemplateSelect = (e) => {
-    const tplId = Number(e.target.value);
-    if (!tplId) return;
-    const tpl = templates.find((t) => t.id === tplId);
-    if (tpl) insertTemplate(tpl.content);
-    e.target.value = '';
+  const handleRedo = () => {
+    setHistoryIndex((idx) => {
+      if (idx >= history.length - 1) return idx;
+      const newIndex = idx + 1;
+      onChange(history[newIndex]);
+      return newIndex;
+    });
   };
 
-  const templateChooser = (
-    templates.length > 0 ? (
-      <select
-        aria-label={t('app.templates')}
-        defaultValue=""
-        onChange={handleTemplateSelect}
-        style={{ marginBottom: '0.5rem' }}
-      >
-        <option value="">{t('app.templates')}</option>
-        {templates.map((tpl) => (
-          <option key={tpl.id} value={tpl.id}>
-            {tpl.name}
-          </option>
-        ))}
-      </select>
-    ) : (
-      <select
-        aria-label={t('app.templates')}
-        disabled
-        style={{ marginBottom: '0.5rem' }}
-      >
-        <option>{t('settings.noTemplates')}</option>
-      </select>
-    )
-  );
+  if (mode === 'beautified') {
+    return (
+      <div style={{ width: '100%', height: '100%' }}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <button type="button" onClick={handleUndo} disabled={historyIndex <= 0}>
+            {t('noteEditor.undo')}
+          </button>
+          <button
+            type="button"
+            onClick={handleRedo}
+            disabled={historyIndex >= history.length - 1}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            {t('noteEditor.redo')}
+          </button>
+        </div>
+        <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
+          {history[historyIndex] || ''}
+        </div>
+      </div>
+    );
+  }
 
-
-  const audioControls = (
-    <div style={{ marginBottom: '0.5rem' }}>
-      <button
-        type="button"
-        onClick={toggleRecording}
-        aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-      >
-        {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-      </button>
-      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
-      {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
-    </div>
-  );
 
   // Expose an imperative method so the parent component can insert text at the
   // current cursor position when a suggestion is chosen.

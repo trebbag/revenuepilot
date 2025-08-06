@@ -551,12 +551,16 @@ function App() {
                       onSuggestionsLoading={setLoadingSuggestions}
 
                     />
+                  ) : activeTab === 'beautified' ? (
+                    <NoteEditor
+                      id="beautified-output"
+                      value={beautified}
+                      onChange={setBeautified}
+                      mode="beautified"
+                    />
                   ) : (
-                    activeTab === 'beautified' ? (
-                      <div className="beautified-view">{beautified}</div>
-                    ) : (
-                      <div className="beautified-view">{summaryText}</div>
-                    ))}
+                    <div className="beautified-view">{summaryText}</div>
+                  )}
                 </div>
               </div>
               {(() => {
