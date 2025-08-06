@@ -279,7 +279,7 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
  * Get coding and clinical suggestions based on the draft note.
  * The returned object has arrays for different suggestion types.
  * @param {string} text
- * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: string}>}  The differential score is a number between 0 and 1.
+ * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: {interval:string, ics?:string}}>}  The differential score is a number between 0 and 1.
 
 */
 export async function getSuggestions(text, context = {}) {
@@ -360,7 +360,7 @@ export async function getSuggestions(text, context = {}) {
       { diagnosis: 'Influenza', score: 0.6 },
       { diagnosis: 'Acute sinusitis', score: 0.4 },
     ],
-    followUp: '3 months',
+    followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' },
   };
 }
 

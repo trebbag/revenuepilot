@@ -34,7 +34,7 @@ function SuggestionPanel({
     }, 300);
     return () => clearTimeout(debounceRef.current);
   }, [text, fetchSuggestions]);
-  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics}|string }
+  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
   const cards = [];
   if (!settingsState || settingsState.enableCodes) {
     cards.push({
