@@ -104,7 +104,8 @@ function App() {
   const [templateContext, setTemplateContext] = useState('');
 
   // Track the current patient ID for draft saving
-  const [patientID, setPatientID] = useState('');
+    const [patientID, setPatientID] = useState('');
+    const [encounterID, setEncounterID] = useState('');
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
@@ -332,12 +333,20 @@ function App() {
       chart: chartText,
       audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
       lang: settingsState.summaryLang,
+      patientAge: age ? parseInt(age, 10) : undefined,
       specialty: settingsState.specialty,
       payer: settingsState.payer,
       useLocalModels: settingsState.useLocalModels,
     })
-      .then((summary) => {
-        setSummaryText(summary);
+      .then((data) => {
+        let combined = data.summary;
+        if (data.recommendations?.length) {
+          combined += `\n\n${data.recommendations.map((r) => `- ${r}`).join('\n')}`;
+        }
+        if (data.warnings?.length) {
+          combined += `\n\n${data.warnings.map((w) => `! ${w}`).join('\n')}`;
+        }
+        setSummaryText(combined);
         setActiveTab('summary');
         if (patientID) {
           const codes = suggestions.codes.map((c) => c.code);
@@ -549,6 +558,22 @@ function App() {
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
+              <select
+                value={settingsState.summaryLang}
+                onChange={(e) => setSettingsState({ ...settingsState, summaryLang: e.target.value })}
+                aria-label={t('app.patientLanguage')}
+              >
+                <option value="en">English</option>
+                <option value="es">Español</option>
+              </select>
+              <input
+                type="number"
+                placeholder={t('app.patientAge')}
+                value={age}
+                onChange={(e) => setAge(e.target.value)}
+                className="patient-age-input"
+                style={{ width: '4rem', marginLeft: '0.5rem' }}
+              />
               <button
                 onClick={() => setShowTemplatesModal(true)}
                 aria-label={t('app.templates')}
@@ -656,6 +681,7 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
+
                     <NoteEditor
                       ref={editorRef}
                       id="draft-input"
@@ -682,6 +708,7 @@ function App() {
                   ) : (
                     <div className="beautified-view">{summaryText}</div>
                   )}
+
                 </div>
               </div>
               {(() => {

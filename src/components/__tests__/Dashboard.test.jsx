@@ -1,10 +1,6 @@
 /* @vitest-environment jsdom */
 import { render, waitFor, cleanup, fireEvent } from '@testing-library/react';
-import Dashboard from '../Dashboard.jsx';
 import { vi, beforeEach, test, expect, afterEach } from 'vitest';
-import i18n from '../../i18n.js';
-
-HTMLCanvasElement.prototype.getContext = vi.fn();
 
 vi.mock('react-chartjs-2', () => ({
   Line: ({ data, ...props }) => (
@@ -13,9 +9,10 @@ vi.mock('react-chartjs-2', () => ({
   Bar: ({ data, ...props }) => (
     <canvas data-chart={JSON.stringify(data)} {...props} />
   ),
-  Pie: ({ data, ...props }) => (
-    <canvas data-chart={JSON.stringify(data)} {...props} />
-  ),
+}));
+
+vi.mock('jspdf', () => ({
+  default: vi.fn(() => ({ text: vi.fn(), save: vi.fn() })),
 }));
 
 vi.mock('../../api.js', () => ({
@@ -81,6 +78,12 @@ vi.mock('../../api.js', () => ({
     },
   }),
 }));
+
+import Dashboard from '../Dashboard.jsx';
+import i18n from '../../i18n.js';
+import jsPDF from 'jspdf';
+
+HTMLCanvasElement.prototype.getContext = vi.fn();
 import { getMetrics } from '../../api.js';
 
 afterEach(() => {
@@ -105,7 +108,7 @@ test('renders charts and calls API', async () => {
   expect(getMetrics).toHaveBeenCalled();
   expect(document.querySelector('[data-testid="daily-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="weekly-line"]')).toBeTruthy();
-  expect(document.querySelector('[data-testid="codes-pie"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="codes-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-def-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="revenue-line"]')).toBeTruthy();
@@ -184,4 +187,13 @@ test('exports metrics as CSV', async () => {
 
   clickSpy.mockRestore();
 
+});
+
+test('exports metrics as PDF', async () => {
+  const { getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  fireEvent.click(getByText('Export PDF'));
+  expect(jsPDF).toHaveBeenCalled();
+  const instance = jsPDF.mock.results[0].value;
+  expect(instance.save).toHaveBeenCalled();
 });
