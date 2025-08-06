@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from fastapi.testclient import TestClient
 import pytest
 import sqlite3
@@ -55,3 +56,39 @@ def test_metrics_aggregation():
     assert data['revenue_per_visit'] == pytest.approx(100.0)
     assert data['coding_distribution'] == {'99213': 1}
     assert data['denial_rate'] == 0
+
+
+def test_metrics_timeseries_and_range():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    ts1 = datetime(2024, 1, 1, 12, 0).timestamp()
+    ts2 = datetime(2024, 1, 8, 12, 0).timestamp()
+    events = [
+        {"eventType": "note_started", "timestamp": ts1, "details": json.dumps({"patientID": "p1", "length": 100})},
+        {"eventType": "beautify", "timestamp": ts1 + 60, "details": json.dumps({"patientID": "p1"})},
+        {"eventType": "suggest", "timestamp": ts1 + 120, "details": ""},
+        {"eventType": "summary", "timestamp": ts1 + 180, "details": ""},
+        {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": ""},
+        {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": ""},
+        {"eventType": "note_started", "timestamp": ts2, "details": json.dumps({"patientID": "p2", "length": 150})},
+    ]
+    for ev in events:
+        main.db_conn.execute(
+            "INSERT INTO events (eventType, timestamp, details) VALUES (?,?,?)",
+            (ev["eventType"], ev["timestamp"], ev.get("details", "")),
+        )
+    main.db_conn.commit()
+    token = main.create_token('tester', 'admin')
+    start = datetime.utcfromtimestamp(ts1 - 10).isoformat()
+    end = datetime.utcfromtimestamp(ts2 + 10).isoformat()
+    resp = client.get('/metrics', params={'start': start, 'end': end}, headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    daily = {d['date']: d for d in data['timeseries']['daily']}
+    assert daily['2024-01-01']['notes'] == 1
+    assert daily['2024-01-01']['beautify'] == 1
+    assert daily['2024-01-01']['suggest'] == 1
+    assert daily['2024-01-08']['notes'] == 1
+    # range filter
+    resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    assert data['total_notes'] == 1

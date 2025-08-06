@@ -633,7 +633,6 @@ async def get_metrics(
 
     cursor = db_conn.cursor()
 
-    # Build dynamic WHERE clause for date and clinician filters.
     conditions: List[str] = []
     params: List[Any] = []
     if start:
@@ -656,51 +655,119 @@ async def get_metrics(
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    def count_events(*types: str) -> int:
-        placeholders = ",".join(["?"] * len(types))
-        query = f"SELECT COUNT(*) AS cnt FROM events {where_clause}"
-        args = list(params)
-        if types:
-            conj = " AND" if where_clause else " WHERE"
-            query += f"{conj} eventType IN ({placeholders})"
-            args.extend(types)
-        cursor.execute(query, args)
-        row = cursor.fetchone()
-        return row["cnt"] if row else 0
+    cursor.execute(
+        f"SELECT eventType, timestamp, details FROM events {where_clause} ORDER BY timestamp",
+        params,
+    )
+    rows = cursor.fetchall()
 
-    total_notes = count_events("note_started", "note_saved")
-    total_beautify = count_events("beautify")
-    total_suggest = count_events("suggest")
-    total_summary = count_events("summary")
-    total_chart_upload = count_events("chart_upload")
-    total_audio = count_events("audio_recorded")
+    total_notes = total_beautify = total_suggest = 0
+    total_summary = total_chart_upload = total_audio = 0
 
-    # Pull all details rows once to compute various aggregates.
-    cursor.execute(f"SELECT details FROM events {where_clause}", params)
-    lengths: List[float] = []
-    revenues: List[float] = []
-    close_times: List[float] = []
     code_counts: Dict[str, int] = {}
     denial_counts: Dict[str, List[int]] = {}
-    denial_totals = [0, 0]  # [total, denied]
-    deficiency_totals = [0, 0]  # [total, flagged]
-    for row in cursor.fetchall():
+    denial_totals = [0, 0]
+    deficiency_totals = [0, 0]
+
+    length_sum = length_count = 0.0
+    revenue_sum = revenue_count = 0.0
+    close_sum = close_count = 0.0
+    beautify_time_sum = beautify_time_count = 0.0
+
+    daily: Dict[str, Dict[str, Any]] = {}
+    weekly: Dict[str, Dict[str, Any]] = {}
+    last_start_for_patient: Dict[str, float] = {}
+
+    for row in rows:
+        evt = row['eventType']
+        ts = row['timestamp']
         try:
-            det = json.loads(row["details"] or "{}")
+            details = json.loads(row['details'] or '{}')
         except Exception:
-            det = {}
-        length_val = det.get("length")
-        if isinstance(length_val, (int, float)):
-            lengths.append(length_val)
-        rev = det.get("revenue")
+            details = {}
+
+        day = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
+        week = datetime.utcfromtimestamp(ts).strftime('%Y-%W')
+        for bucket, key, label in ((daily, day, 'date'), (weekly, week, 'week')):
+            if key not in bucket:
+                bucket[key] = {
+                    label: key,
+                    'notes': 0,
+                    'beautify': 0,
+                    'suggest': 0,
+                    'summary': 0,
+                    'chart_upload': 0,
+                    'audio': 0,
+                    'length_sum': 0.0,
+                    'length_count': 0,
+                    'revenue_sum': 0.0,
+                    'revenue_count': 0,
+                    'close_sum': 0.0,
+                    'close_count': 0,
+                    'beautify_time_sum': 0.0,
+                    'beautify_time_count': 0,
+                }
+
+        def incr(b):
+            if evt in ('note_started', 'note_saved'):
+                b['notes'] += 1
+            elif evt == 'beautify':
+                b['beautify'] += 1
+            elif evt == 'suggest':
+                b['suggest'] += 1
+            elif evt == 'summary':
+                b['summary'] += 1
+            elif evt == 'chart_upload':
+                b['chart_upload'] += 1
+            elif evt == 'audio_recorded':
+                b['audio'] += 1
+
+        incr(daily[day])
+        incr(weekly[week])
+
+        if evt in ('note_started', 'note_saved'):
+            total_notes += 1
+        elif evt == 'beautify':
+            total_beautify += 1
+        elif evt == 'suggest':
+            total_suggest += 1
+        elif evt == 'summary':
+            total_summary += 1
+        elif evt == 'chart_upload':
+            total_chart_upload += 1
+        elif evt == 'audio_recorded':
+            total_audio += 1
+
+        length = details.get('length')
+        if isinstance(length, (int, float)):
+            length_sum += length
+            length_count += 1
+            daily[day]['length_sum'] += length
+            daily[day]['length_count'] += 1
+            weekly[week]['length_sum'] += length
+            weekly[week]['length_count'] += 1
+
+        rev = details.get('revenue')
         if isinstance(rev, (int, float)):
-            revenues.append(rev)
-        ttc = det.get("timeToClose")
+            revenue_sum += rev
+            revenue_count += 1
+            daily[day]['revenue_sum'] += rev
+            daily[day]['revenue_count'] += 1
+            weekly[week]['revenue_sum'] += rev
+            weekly[week]['revenue_count'] += 1
+
+        ttc = details.get('timeToClose')
         if isinstance(ttc, (int, float)):
-            close_times.append(ttc)
-        codes = det.get("codes")
+            close_sum += ttc
+            close_count += 1
+            daily[day]['close_sum'] += ttc
+            daily[day]['close_count'] += 1
+            weekly[week]['close_sum'] += ttc
+            weekly[week]['close_count'] += 1
+
+        codes = details.get('codes')
         if isinstance(codes, list):
-            denial_flag = det.get("denial") if isinstance(det.get("denial"), bool) else None
+            denial_flag = details.get('denial') if isinstance(details.get('denial'), bool) else None
             for code in codes:
                 code_counts[code] = code_counts.get(code, 0) + 1
                 if denial_flag is not None:
@@ -709,112 +776,72 @@ async def get_metrics(
                     if denial_flag:
                         totals[1] += 1
                     denial_counts[code] = totals
-        denial = det.get("denial")
+
+        denial = details.get('denial')
         if isinstance(denial, bool):
             denial_totals[0] += 1
             if denial:
                 denial_totals[1] += 1
-        deficiency = det.get("deficiency")
+        deficiency = details.get('deficiency')
         if isinstance(deficiency, bool):
             deficiency_totals[0] += 1
             if deficiency:
                 deficiency_totals[1] += 1
 
-    avg_length = sum(lengths) / len(lengths) if lengths else 0
-    avg_revenue = sum(revenues) / len(revenues) if revenues else 0
-    avg_close_time = sum(close_times) / len(close_times) if close_times else 0
-    denial_rates = {
-        code: (vals[1] / vals[0] if vals[0] else 0)
-        for code, vals in denial_counts.items()
-    }
-    overall_denial = (
-        denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
-    )
-    deficiency_rate = (
-        deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
-    )
+        patient_id = details.get('patientID') or details.get('patientId') or details.get('patient_id')
+        if evt == 'note_started' and patient_id:
+            last_start_for_patient[patient_id] = ts
+        if evt == 'beautify' and patient_id and patient_id in last_start_for_patient:
+            duration = ts - last_start_for_patient[patient_id]
+            if duration >= 0:
+                beautify_time_sum += duration
+                beautify_time_count += 1
+                daily[day]['beautify_time_sum'] += duration
+                daily[day]['beautify_time_count'] += 1
+                weekly[week]['beautify_time_sum'] += duration
+                weekly[week]['beautify_time_count'] += 1
 
-    # Average beautify time (existing logic) needs unfiltered events; reuse
-    # filtering when selecting from the database.
-    type_filter = "eventType IN ('note_started','beautify')"
-    event_where = f"{where_clause} AND {type_filter}" if where_clause else f"WHERE {type_filter}"
-    cursor.execute(
-        f"SELECT eventType, timestamp, details FROM events {event_where} ORDER BY timestamp",
-        params,
-    )
-    db_events = []
-    for row in cursor.fetchall():
-        try:
-            details = json.loads(row["details"] or "{}")
-        except Exception:
-            details = {}
-        db_events.append(
-            {
-                "eventType": row["eventType"],
-                "timestamp": row["timestamp"],
-                "details": details,
-            }
-        )
-    beautify_durations = []
-    for e in db_events:
-        if e["eventType"] != "beautify":
-            continue
-        patient_id = (
-            e["details"].get("patientID")
-            or e["details"].get("patientId")
-            or e["details"].get("patient_id")
-        )
-        if not patient_id:
-            continue
-        prev = [
-            ev
-            for ev in db_events
-            if ev["eventType"] == "note_started"
-            and ev["details"].get("patientID") == patient_id
-            and ev["timestamp"] <= e["timestamp"]
-        ]
-        if not prev:
-            continue
-        latest_start = max(prev, key=lambda ev: ev["timestamp"])
-        duration = e["timestamp"] - latest_start["timestamp"]
-        if duration >= 0:
-            beautify_durations.append(duration)
-    avg_beautify_time = (
-        sum(beautify_durations) / len(beautify_durations)
-        if beautify_durations
-        else 0
-    )
+    avg_length = length_sum / length_count if length_count else 0
+    avg_revenue = revenue_sum / revenue_count if revenue_count else 0
+    avg_close_time = close_sum / close_count if close_count else 0
+    avg_beautify_time = beautify_time_sum / beautify_time_count if beautify_time_count else 0
+    denial_rates = {code: (v[1] / v[0] if v[0] else 0) for code, v in denial_counts.items()}
+    overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
+    deficiency_rate = deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
 
-    cursor.execute(
-        f"SELECT DATE(timestamp, 'unixepoch') as day, COUNT(*) as cnt FROM events {where_clause} GROUP BY day ORDER BY day",
-        params,
-    )
-    daily = [{"date": row["day"], "count": row["cnt"]} for row in cursor.fetchall()]
-    cursor.execute(
-        f"SELECT strftime('%Y-%W', timestamp, 'unixepoch') as week, COUNT(*) as cnt FROM events {where_clause} GROUP BY week ORDER BY week",
-        params,
-    )
-    weekly = [{"week": row["week"], "count": row["cnt"]} for row in cursor.fetchall()]
+    def finalize(bucket: Dict[str, Dict[str, Any]]):
+        out = []
+        for key in sorted(bucket.keys()):
+            entry = bucket[key]
+            entry['avg_note_length'] = entry['length_sum'] / entry['length_count'] if entry['length_count'] else 0
+            entry['revenue_per_visit'] = entry['revenue_sum'] / entry['revenue_count'] if entry['revenue_count'] else 0
+            entry['avg_beautify_time'] = entry['beautify_time_sum'] / entry['beautify_time_count'] if entry['beautify_time_count'] else 0
+            entry['avg_close_time'] = entry['close_sum'] / entry['close_count'] if entry['close_count'] else 0
+            for k in ['length_sum','length_count','revenue_sum','revenue_count','close_sum','close_count','beautify_time_sum','beautify_time_count']:
+                entry.pop(k, None)
+            out.append(entry)
+        return out
+
+    daily_list = finalize(daily)
+    weekly_list = finalize(weekly)
 
     return {
-        "total_notes": total_notes,
-        "total_beautify": total_beautify,
-        "total_suggest": total_suggest,
-        "total_summary": total_summary,
-        "total_chart_upload": total_chart_upload,
-        "total_audio": total_audio,
-        "avg_note_length": avg_length,
-        "avg_beautify_time": avg_beautify_time,
-        "avg_close_time": avg_close_time,
-        "revenue_per_visit": avg_revenue,
-        "coding_distribution": code_counts,
-        "denial_rate": overall_denial,
-        "denial_rates": denial_rates,
-        "deficiency_rate": deficiency_rate,
-        "timeseries": {"daily": daily, "weekly": weekly},
+        'total_notes': total_notes,
+        'total_beautify': total_beautify,
+        'total_suggest': total_suggest,
+        'total_summary': total_summary,
+        'total_chart_upload': total_chart_upload,
+        'total_audio': total_audio,
+        'avg_note_length': avg_length,
+        'avg_beautify_time': avg_beautify_time,
+        'avg_close_time': avg_close_time,
+        'revenue_per_visit': avg_revenue,
+        'coding_distribution': code_counts,
+        'denial_rate': overall_denial,
+        'denial_rates': denial_rates,
+        'deficiency_rate': deficiency_rate,
+        'timeseries': {'daily': daily_list, 'weekly': weekly_list},
     }
-
-
 @app.post("/summarize")
 async def summarize(req: NoteRequest) -> Dict[str, str]:
     """

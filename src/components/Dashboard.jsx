@@ -161,26 +161,88 @@ ChartJS.register(
     };
   };
 
+  const dailyLabels = metrics.timeseries?.daily?.map((d) => d.date) || [];
   const dailyData = {
-    labels: metrics.timeseries?.daily?.map((d) => d.date) || [],
+    labels: dailyLabels,
     datasets: [
       {
-        label: 'Events',
-        data: metrics.timeseries?.daily?.map((d) => d.count) || [],
-        borderColor: 'rgba(54, 162, 235, 1)',
-        backgroundColor: 'rgba(54, 162, 235, 0.2)',
+        label: t('dashboard.cards.totalNotes'),
+        data: metrics.timeseries?.daily?.map((d) => d.notes || 0) || [],
+        borderColor: 'rgba(54,162,235,1)',
+        backgroundColor: 'rgba(54,162,235,0.2)',
+      },
+      {
+        label: t('dashboard.cards.beautifiedNotes'),
+        data: metrics.timeseries?.daily?.map((d) => d.beautify || 0) || [],
+        borderColor: 'rgba(255,99,132,1)',
+        backgroundColor: 'rgba(255,99,132,0.2)',
+      },
+      {
+        label: t('dashboard.cards.suggestionsRequested'),
+        data: metrics.timeseries?.daily?.map((d) => d.suggest || 0) || [],
+        borderColor: 'rgba(75,192,192,1)',
+        backgroundColor: 'rgba(75,192,192,0.2)',
+      },
+      {
+        label: t('dashboard.cards.summariesGenerated'),
+        data: metrics.timeseries?.daily?.map((d) => d.summary || 0) || [],
+        borderColor: 'rgba(153,102,255,1)',
+        backgroundColor: 'rgba(153,102,255,0.2)',
+      },
+      {
+        label: t('dashboard.cards.chartUploads'),
+        data: metrics.timeseries?.daily?.map((d) => d.chart_upload || 0) || [],
+        borderColor: 'rgba(255,159,64,1)',
+        backgroundColor: 'rgba(255,159,64,0.2)',
+      },
+      {
+        label: t('dashboard.cards.audioRecordings'),
+        data: metrics.timeseries?.daily?.map((d) => d.audio || 0) || [],
+        borderColor: 'rgba(0,0,0,1)',
+        backgroundColor: 'rgba(0,0,0,0.2)',
       },
     ],
   };
 
+  const weeklyLabels = metrics.timeseries?.weekly?.map((w) => w.week) || [];
   const weeklyData = {
-    labels: metrics.timeseries?.weekly?.map((w) => w.week) || [],
+    labels: weeklyLabels,
     datasets: [
       {
-        label: 'Events',
-        data: metrics.timeseries?.weekly?.map((w) => w.count) || [],
-        borderColor: 'rgba(255, 99, 132, 1)',
-        backgroundColor: 'rgba(255, 99, 132, 0.2)',
+        label: t('dashboard.cards.totalNotes'),
+        data: metrics.timeseries?.weekly?.map((w) => w.notes || 0) || [],
+        borderColor: 'rgba(54,162,235,1)',
+        backgroundColor: 'rgba(54,162,235,0.2)',
+      },
+      {
+        label: t('dashboard.cards.beautifiedNotes'),
+        data: metrics.timeseries?.weekly?.map((w) => w.beautify || 0) || [],
+        borderColor: 'rgba(255,99,132,1)',
+        backgroundColor: 'rgba(255,99,132,0.2)',
+      },
+      {
+        label: t('dashboard.cards.suggestionsRequested'),
+        data: metrics.timeseries?.weekly?.map((w) => w.suggest || 0) || [],
+        borderColor: 'rgba(75,192,192,1)',
+        backgroundColor: 'rgba(75,192,192,0.2)',
+      },
+      {
+        label: t('dashboard.cards.summariesGenerated'),
+        data: metrics.timeseries?.weekly?.map((w) => w.summary || 0) || [],
+        borderColor: 'rgba(153,102,255,1)',
+        backgroundColor: 'rgba(153,102,255,0.2)',
+      },
+      {
+        label: t('dashboard.cards.chartUploads'),
+        data: metrics.timeseries?.weekly?.map((w) => w.chart_upload || 0) || [],
+        borderColor: 'rgba(255,159,64,1)',
+        backgroundColor: 'rgba(255,159,64,0.2)',
+      },
+      {
+        label: t('dashboard.cards.audioRecordings'),
+        data: metrics.timeseries?.weekly?.map((w) => w.audio || 0) || [],
+        borderColor: 'rgba(0,0,0,1)',
+        backgroundColor: 'rgba(0,0,0,0.2)',
       },
     ],
   };
