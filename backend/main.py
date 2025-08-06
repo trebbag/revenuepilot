@@ -61,8 +61,6 @@ except Exception:  # pragma: no cover - library is optional
 
 try:
     from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
-    from presidio_anonymizer import AnonymizerEngine
-    from presidio_anonymizer.entities import OperatorConfig
     from presidio_analyzer.nlp_engine import NlpEngineProvider
 
     _provider = NlpEngineProvider(
@@ -90,34 +88,10 @@ try:
     )
     _analyzer.registry.add_recognizer(_ssn_recognizer)
 
-    _health_id_pattern = Pattern(
-        "health_id", r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b", 0.5
-    )
-    _health_id_recognizer = PatternRecognizer(
-        supported_entity="HEALTH_INSURANCE_ID", patterns=[_health_id_pattern]
-    )
-    _analyzer.registry.add_recognizer(_health_id_recognizer)
-
-    _vehicle_pattern = Pattern(
-        "vehicle", r"\b[A-Z]{2,3}[- ]?\d{3,4}\b", 0.5
-    )
-    _vehicle_recognizer = PatternRecognizer(
-        supported_entity="VEHICLE_ID", patterns=[_vehicle_pattern]
-    )
-    _analyzer.registry.add_recognizer(_vehicle_recognizer)
-
-    _dob_pattern = Pattern(
-        "dob", r"\bDOB[:\s-]*\d{1,2}/\d{1,2}/\d{2,4}\b", 0.5
-    )
-    _dob_recognizer = PatternRecognizer(supported_entity="DOB", patterns=[_dob_pattern])
-    _analyzer.registry.add_recognizer(_dob_recognizer)
-
-    _anonymizer = AnonymizerEngine()
     _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     _PRESIDIO_AVAILABLE = False
     _analyzer = None  # type: ignore
-    _anonymizer = None  # type: ignore
 
 try:  # pragma: no cover - optional dependency
     from philter.philter import Philter as _Philter
@@ -128,10 +102,13 @@ except Exception:
     _PHILTER_AVAILABLE = False
     _philter = None  # type: ignore
 
-# Select the PHI scrubbing backend. ``presidio`` and ``philter`` are supported
-# when installed.  ``auto`` (default) prefers Presidio and falls back to
-# Philter, then simple regex replacements if neither is available.
-_DEID_ENGINE = os.getenv("DEID_ENGINE", "auto").lower()
+# Select the PHI scrubbing backend. Options: ``presidio``, ``philter``,
+# ``scrubadub`` or ``regex``. The default is the lightweight regex scrubber.
+_DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
+
+# When ``DEID_HASH_TOKENS`` is true (default), placeholders include a short
+# hash of the removed content instead of the raw value.
+_HASH_TOKENS = os.getenv("DEID_HASH_TOKENS", "true").lower() in {"1", "true", "yes"}
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
@@ -541,91 +518,74 @@ class TemplateModel(BaseModel):
 def deidentify(text: str) -> str:
     """Redact common protected health information from ``text``.
 
-    The helper uses ``scrubadub`` when available and augments it with
-    explicit regular expressions so that the most frequent identifiers are
-    consistently replaced with bracketed placeholders.
+    Each removed span is replaced with a placeholder of the form
+    ``[TOKEN:VALUE]`` where ``TOKEN`` is the detected entity type and
+    ``VALUE`` is either the raw text or a short hash depending on the
+    ``DEID_HASH_TOKENS`` flag.
 
     Args:
         text: Raw note text potentially containing PHI.
     Returns:
-        The cleaned text with sensitive spans replaced by tokens such as
-        ``[NAME]`` or ``[PHONE]``.
+        The cleaned text with sensitive spans replaced by informative
+        placeholders.
     """
+
+    def _placeholder(token: str, value: str) -> str:
+        rep = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8] if _HASH_TOKENS else value
+        return f"[{token}:{rep}]"
+
     engine = _DEID_ENGINE
-    backends: List[str] = []
-    if engine == "presidio":
-        backends.append("presidio")
-    elif engine == "philter":
-        backends.append("philter")
-    else:  # auto
-        backends.extend(["presidio", "philter"])
 
-    for backend_name in backends:
-        if backend_name == "presidio" and _PRESIDIO_AVAILABLE:
-            try:
-                entities = [
-                    "PERSON",
-                    "PHONE_NUMBER",
-                    "EMAIL_ADDRESS",
-                    "US_SSN",
-                    "DATE_TIME",
-                    "ADDRESS",
-                    "HEALTH_INSURANCE_ID",
-                    "VEHICLE_ID",
-                    "DOB",
-                ]
-                results = _analyzer.analyze(text=text, language="en", entities=entities)
-                token_map = {
-                    "PERSON": "NAME",
-                    "PHONE_NUMBER": "PHONE",
-                    "EMAIL_ADDRESS": "EMAIL",
-                    "US_SSN": "SSN",
-                    "DATE_TIME": "DATE",
-                    "ADDRESS": "ADDRESS",
-                    "HEALTH_INSURANCE_ID": "HEALTH_ID",
-                    "VEHICLE_ID": "VEHICLE",
-                    "DOB": "DOB",
-                }
-                operators = {
-                    r.entity_type: OperatorConfig(
-                        "replace",
-                        {"new_value": f"[{token_map.get(r.entity_type, r.entity_type)}]"},
-                    )
-                    for r in results
-                }
-                text = _anonymizer.anonymize(
-                    text=text, analyzer_results=results, operators=operators
-                ).text
-                return text
-            except Exception as exc:  # pragma: no cover - best effort
-                logging.warning("Advanced scrubber failed: %s", exc)
-        elif backend_name == "philter" and _PHILTER_AVAILABLE:
-            try:
-                # Philter replaces detected PHI with the literal "**PHI**".
-                if hasattr(_philter, "philter"):
-                    text = _philter.philter(text)
-                elif hasattr(_philter, "filter"):
-                    text = _philter.filter(text)
-                text = text.replace("**PHI**", "[PHI]")
-                return text
-            except Exception as exc:  # pragma: no cover - best effort
-                logging.warning("Philter failed: %s", exc)
-        else:
-            # Requested backend not available; move to next.
-            continue
+    if engine == "presidio" and _PRESIDIO_AVAILABLE:
 
-    if _SCRUBBER_AVAILABLE:
         try:
-            text = scrubadub.clean(text, replace_with="placeholder")
-            text = re.sub(
-                r"\{\{([A-Z_]+?)(?:-\d+)?\}\}",
-                lambda m: f"[{m.group(1)}]",
-                text,
-            )
-            text = text.replace("[SOCIAL_SECURITY_NUMBER]", "[SSN]")
+            entities = [
+                "PERSON",
+                "PHONE_NUMBER",
+                "EMAIL_ADDRESS",
+                "US_SSN",
+                "DATE_TIME",
+                "ADDRESS",
+            ]
+            results = _analyzer.analyze(text=text, language="en", entities=entities)
+            token_map = {
+                "PERSON": "NAME",
+                "PHONE_NUMBER": "PHONE",
+                "EMAIL_ADDRESS": "EMAIL",
+                "US_SSN": "SSN",
+                "DATE_TIME": "DATE",
+                "ADDRESS": "ADDRESS",
+            }
+            for r in sorted(results, key=lambda r: r.start, reverse=True):
+                token = token_map.get(r.entity_type, r.entity_type)
+                value = text[r.start : r.end]
+                text = text[: r.start] + _placeholder(token, value) + text[r.end :]
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Advanced scrubber failed: %s", exc)
+    elif engine == "philter" and _PHILTER_AVAILABLE:
+        try:
+            # Philter replaces detected PHI with the literal "**PHI**".
+            if hasattr(_philter, "philter"):
+                text = _philter.philter(text)
+            elif hasattr(_philter, "filter"):
+                text = _philter.filter(text)
+            text = text.replace("**PHI**", _placeholder("PHI", "PHI"))
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Philter failed: %s", exc)
+    elif engine == "scrubadub" and _SCRUBBER_AVAILABLE:
+        try:
+            scrubber = scrubadub.Scrubber()
+            filths = list(scrubber.iter_filth(text))
+            for filth in sorted(filths, key=lambda f: f.beg, reverse=True):
+                token = filth.__class__.__name__.replace("Filth", "").upper()
+                text = text[: filth.beg] + _placeholder(token, filth.text) + text[filth.end :]
+            return text
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("scrubadub failed: %s", exc)
 
+    # Fallback to regex-based scrubbing
     month = (
         "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
         "Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
@@ -677,7 +637,7 @@ def deidentify(text: str) -> str:
     ]
 
     for token, pattern in patterns:
-        text = pattern.sub(f"[{token}]", text)
+        text = pattern.sub(lambda m: _placeholder(token, m.group(0)), text)
 
     return text
 
