@@ -13,6 +13,9 @@ def test_register_endpoint(monkeypatch):
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
+    db.execute(
+        "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
+    )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
 

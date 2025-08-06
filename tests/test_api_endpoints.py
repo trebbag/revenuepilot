@@ -19,6 +19,9 @@ def client(monkeypatch, tmp_path):
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
+    db.execute(
+        "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
+    )
     migrations.ensure_settings_table(db)
     pwd = hashlib.sha256(b"pw").hexdigest()
     db.execute(

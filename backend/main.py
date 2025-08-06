@@ -12,10 +12,11 @@ import logging
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -197,6 +198,18 @@ db_conn.execute(
 )
 db_conn.commit()
 
+# Table recording failed logins and administrative actions for auditing.
+db_conn.execute(
+    "CREATE TABLE IF NOT EXISTS audit_log ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    "timestamp REAL NOT NULL,"
+    "username TEXT,"
+    "action TEXT NOT NULL,"
+    "details TEXT"
+    ")"
+)
+db_conn.commit()
+
 
 # Persisted user preferences for theme, enabled categories and custom rules.
 # Ensure the table exists and contains the latest schema (including ``lang``).
@@ -270,8 +283,17 @@ def require_role(role: str):
     still permitting administrators to perform regular user actions.
     """
 
-    def checker(credentials: HTTPAuthorizationCredentials = Depends(security)):
-        return get_current_user(credentials, required_role=role)
+    def checker(
+        request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+    ):
+        data = get_current_user(credentials, required_role=role)
+        if role == "admin":
+            db_conn.execute(
+                "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+                (time.time(), data["sub"], "admin_action", request.url.path),
+            )
+            db_conn.commit()
+        return data
 
     return checker
 
@@ -337,11 +359,26 @@ async def register(model: RegisterModel, user=Depends(require_role("admin"))):
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, str]:
     """Validate credentials and return a JWT on success."""
+    cutoff = time.time() - 15 * 60
+    recent_failures = db_conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
+        (model.username, cutoff),
+    ).fetchone()[0]
+    if recent_failures >= 5:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail="Account locked due to failed login attempts",
+        )
     row = db_conn.execute(
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
     if not row or hash_password(model.password) != row["password_hash"]:
+        db_conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+            (time.time(), model.username, "failed_login", "invalid credentials"),
+        )
+        db_conn.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
@@ -367,6 +404,14 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
     )
     db_conn.commit()
     return {"status": "password reset"}
+
+
+@app.get("/audit")
+async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, Any]]:
+    rows = db_conn.execute(
+        "SELECT timestamp, username, action, details FROM audit_log ORDER BY timestamp DESC"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/settings")
