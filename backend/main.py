@@ -90,6 +90,28 @@ try:
     )
     _analyzer.registry.add_recognizer(_ssn_recognizer)
 
+    _health_id_pattern = Pattern(
+        "health_id", r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b", 0.5
+    )
+    _health_id_recognizer = PatternRecognizer(
+        supported_entity="HEALTH_INSURANCE_ID", patterns=[_health_id_pattern]
+    )
+    _analyzer.registry.add_recognizer(_health_id_recognizer)
+
+    _vehicle_pattern = Pattern(
+        "vehicle", r"\b[A-Z]{2,3}[- ]?\d{3,4}\b", 0.5
+    )
+    _vehicle_recognizer = PatternRecognizer(
+        supported_entity="VEHICLE_ID", patterns=[_vehicle_pattern]
+    )
+    _analyzer.registry.add_recognizer(_vehicle_recognizer)
+
+    _dob_pattern = Pattern(
+        "dob", r"\bDOB[:\s-]*\d{1,2}/\d{1,2}/\d{2,4}\b", 0.5
+    )
+    _dob_recognizer = PatternRecognizer(supported_entity="DOB", patterns=[_dob_pattern])
+    _analyzer.registry.add_recognizer(_dob_recognizer)
+
     _anonymizer = AnonymizerEngine()
     _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
@@ -538,6 +560,9 @@ def deidentify(text: str) -> str:
                     "US_SSN",
                     "DATE_TIME",
                     "ADDRESS",
+                    "HEALTH_INSURANCE_ID",
+                    "VEHICLE_ID",
+                    "DOB",
                 ]
                 results = _analyzer.analyze(text=text, language="en", entities=entities)
                 token_map = {
@@ -547,6 +572,9 @@ def deidentify(text: str) -> str:
                     "US_SSN": "SSN",
                     "DATE_TIME": "DATE",
                     "ADDRESS": "ADDRESS",
+                    "HEALTH_INSURANCE_ID": "HEALTH_ID",
+                    "VEHICLE_ID": "VEHICLE",
+                    "DOB": "DOB",
                 }
                 operators = {
                     r.entity_type: OperatorConfig(
@@ -598,6 +626,10 @@ def deidentify(text: str) -> str:
         r"|\+\d{1,3}[-\.\s]?\d{1,4}[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
         re.IGNORECASE,
     )
+    dob_pattern = re.compile(
+        r"\bDOB[:\s-]*\d{1,2}/\d{1,2}/\d{2,4}\b",
+        re.IGNORECASE,
+    )
     date_pattern = re.compile(
         rf"\b("  # start group
         r"\d{1,2}/\d{1,2}/\d{2,4}"
@@ -609,6 +641,11 @@ def deidentify(text: str) -> str:
     )
     email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
     ssn_pattern = re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b")
+    health_id_pattern = re.compile(
+        r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b",
+        re.IGNORECASE,
+    )
+    vehicle_pattern = re.compile(r"\b[A-Z]{2,3}[- ]?\d{3,4}\b")
     address_pattern = re.compile(
         r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)?\b",
         re.IGNORECASE,
@@ -619,9 +656,12 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
+        ("HEALTH_ID", health_id_pattern),
+        ("VEHICLE", vehicle_pattern),
         ("ADDRESS", address_pattern),
         ("NAME", name_pattern),
     ]
