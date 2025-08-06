@@ -1,57 +1,35 @@
-// A rich text editor component for clinical notes.
-//
-// This component wraps the ReactQuill editor from the `react-quill` package.
-// When the package is installed (via `npm install react-quill`), it will
-// render a full-featured WYSIWYG editor that produces HTML as its value.  If
-// ReactQuill fails to import (e.g. before packages are installed), the
-// component will gracefully fall back to a simple <textarea> so that
-// development can proceed without breaking the UI.
-
-
 import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript, getSuggestions } from '../api.js';
-
-import { useEffect, useState, useRef } from 'react';
-import { fetchLastTranscript, getTemplates } from '../api.js';
-import { fetchLastTranscript, transcribeAudio } from '../api.js';
-
+import { fetchLastTranscript, getTemplates, transcribeAudio } from '../api.js';
 
 let ReactQuill;
 try {
-  // Dynamically require ReactQuill to avoid breaking when the package is
-  // missing in this environment.  When running locally after installing
-  // dependencies, this will succeed and load the rich text editor.
-  // eslint-disable-next-line global-require
   ReactQuill = require('react-quill');
-  // Import the default Quill snow theme styles.  Without this import the
-  // editor will render without styling.  The CSS file is only loaded
-  // when ReactQuill is available.
   require('react-quill/dist/quill.snow.css');
 } catch (err) {
   ReactQuill = null;
 }
 
-// Formats and modules allowed in the editor. The toolbar provides headings,
-// basic formatting, lists and code blocks.
-const quillFormats = [
-  'header',
-  'bold',
-  'italic',
-  'underline',
-  'list',
-  'bullet',
-  'code-block',
-];
+const quillFormats = ['header', 'bold', 'italic', 'underline', 'list', 'bullet'];
 
-const quillModules = {
-  toolbar: [
-    [{ header: [1, 2, false] }],
-    ['bold', 'italic', 'underline'],
-    [{ list: 'ordered' }, { list: 'bullet' }],
-    ['code-block'],
-  ],
-};
+function QuillToolbar({ toolbarId }) {
+  return (
+    <div id={toolbarId} className="ql-toolbar ql-snow">
+      <span className="ql-formats">
+        <select className="ql-header" defaultValue="" aria-label="Heading">
+          <option value="1">H1</option>
+          <option value="2">H2</option>
+          <option value="">Normal</option>
+        </select>
+        <button className="ql-bold" aria-label="Bold" />
+        <button className="ql-italic" aria-label="Italic" />
+        <button className="ql-underline" aria-label="Underline" />
+        <button className="ql-list" value="ordered" aria-label="Ordered List" />
+        <button className="ql-list" value="bullet" aria-label="Bullet List" />
+      </span>
+    </div>
+  );
+}
 
 function useAudioRecorder(onTranscribed) {
   const [recording, setRecording] = useState(false);
@@ -79,9 +57,7 @@ function useAudioRecorder(onTranscribed) {
         setTranscribing(true);
         try {
           const data = await transcribeAudio(blob, true);
-          if (onTranscribed) {
-            onTranscribed(data);
-          }
+          if (onTranscribed) onTranscribed(data, blob);
         } catch (err) {
           console.error('Transcription failed', err);
           setError('Transcription failed');
@@ -101,96 +77,50 @@ function useAudioRecorder(onTranscribed) {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== 'inactive') {
       recorder.stop();
-      if (recorder.stream) {
-        recorder.stream.getTracks().forEach((track) => track.stop());
-      }
+      if (recorder.stream) recorder.stream.getTracks().forEach((t) => t.stop());
     }
     setRecording(false);
   };
 
   const toggleRecording = () => {
-    if (recording) {
-      stopRecording();
-    } else {
-      startRecording();
-    }
+    if (recording) stopRecording();
+    else startRecording();
   };
 
   return { recording, transcribing, error, toggleRecording };
 }
-
-
-function NoteEditor({
-  id,
-  value,
-  onChange,
-  onRecord,
-  recording = false,
-  transcribing = false,
-  onTranscriptChange,
-  error = '',
-  mode = 'draft',
-}) {
-
-
-// Naive HTML stripping to extract plain text for the suggestions API.
-function stripHtml(html) {
-  return html ? html.replace(/<[^>]+>/g, '') : '';
-}
-
-const emptySuggestions = {
-  codes: [],
-  compliance: [],
-  publicHealth: [],
-  differentials: [],
-  followUp: null,
-};
 
 const NoteEditor = forwardRef(function NoteEditor(
   {
     id,
     value,
     onChange,
-    onRecord,
-    recording = false,
-    transcribing = false,
     onTranscriptChange,
-    error = '',
-    templateContext = '',
-    suggestionContext = {},
-    onSuggestions = () => {},
-    onSuggestionsLoading = () => {},
+    mode = 'draft',
+    ...rest
   },
   ref,
 ) {
-
-
   const { t } = useTranslation();
-  // Maintain a local state for the editor's HTML value when using the
-  // fallback <textarea>.  This allows the component to behave as a
-  // controlled input in both modes.
   const [localValue, setLocalValue] = useState(value || '');
-  // History stack for beautified notes (up to 5 entries).
   const [history, setHistory] = useState(value ? [value] : []);
   const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
+  const [segments, setSegments] = useState([]);
+  const [audioUrl, setAudioUrl] = useState('');
+  const [currentSpeaker, setCurrentSpeaker] = useState('');
+  const [templates, setTemplates] = useState([]);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
+  const audioRef = useRef(null);
 
-
-  // Keep the internal state in sync with the parent value.  When using
-  // ReactQuill the parent `value` prop is passed directly, so this
-  // effect only runs for the fallback <textarea> case.
   useEffect(() => {
-    if (mode === 'draft') {
-      setLocalValue(value || '');
-    }
+    if (mode === 'draft') setLocalValue(value || '');
   }, [value, mode]);
 
-  // Track beautified history when in beautified mode.
   useEffect(() => {
     if (mode !== 'beautified') return;
     setHistory((prev) => {
@@ -205,37 +135,24 @@ const NoteEditor = forwardRef(function NoteEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, mode]);
 
-  // Fetch user-defined templates on mount.
   useEffect(() => {
     let mounted = true;
     getTemplates()
-      .then((tpls) => {
-        if (mounted) setTemplates(tpls);
-      })
-      .catch(() => {
-        if (mounted) setTemplates([]);
-      });
+      .then((tpls) => mounted && setTemplates(tpls))
+      .catch(() => mounted && setTemplates([]));
     return () => {
       mounted = false;
     };
   }, []);
-
-  // Handler for changes from the fallback <textarea>.
-  const handleTextAreaChange = (e) => {
-    const newVal = e.target.value;
-    setLocalValue(newVal);
-    onChange(newVal);
-  };
 
   const loadTranscript = async () => {
     setLoadingTranscript(true);
     setFetchError('');
     try {
       const data = await fetchLastTranscript();
-      setTranscript(data);
-      if (onTranscriptChange) {
-        onTranscriptChange(data);
-      }
+      setTranscript({ provider: data.provider || '', patient: data.patient || '' });
+      if (onTranscriptChange) onTranscriptChange(data);
+      setSegments(data.segments || []);
     } catch (err) {
       setFetchError('Failed to load transcript');
     } finally {
@@ -244,37 +161,138 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   useEffect(() => {
-    if (mode === 'draft') {
-      loadTranscript();
-    }
+    if (mode === 'draft') loadTranscript();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
+  const handleTextAreaChange = (e) => {
+    const newVal = e.target.value;
+    setLocalValue(newVal);
+    onChange(newVal);
+  };
 
-  useEffect(() => {
-    if (mode === 'draft' && !transcribing) {
-      loadTranscript();
+  const insertText = (text) => {
+    if (ReactQuill && quillRef.current) {
+      const quill = quillRef.current.getEditor();
+      const range = quill.getSelection(true);
+      const index = range ? range.index : quill.getLength();
+      quill.insertText(index, text);
+      try {
+        quill.setSelection(index + text.length);
+      } catch (e) {
+        // Ignore selection errors in test environments
+      }
+      onChange(quill.root.innerHTML);
+    } else if (textAreaRef.current) {
+      const el = textAreaRef.current;
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const newVal = `${localValue.slice(0, start)}${text}${localValue.slice(end)}`;
+      setLocalValue(newVal);
+      onChange(newVal);
+      setTimeout(() => { el.selectionStart = el.selectionEnd = start + text.length; }, 0);
+    } else {
+      const newVal = `${localValue}${text}`;
+      setLocalValue(newVal);
+      onChange(newVal);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  };
 
-  }, [transcribing, mode]);
+  useImperativeHandle(ref, () => ({ insertAtCursor: insertText }));
 
-  const audioControls =
-    mode === 'draft' && (
-      <div style={{ marginBottom: '0.5rem' }}>
-        {onRecord && (
-          <button
-            type="button"
-            onClick={onRecord}
-            aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-          >
-            {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+  const handleTemplateSelect = (e) => {
+    const tpl = templates.find((t) => String(t.id) === e.target.value);
+    if (tpl) insertText(tpl.content);
+    e.target.value = '';
+  };
+
+  const { recording, transcribing, error: recorderError, toggleRecording } = useAudioRecorder(
+    (data, blob) => {
+      setTranscript({ provider: data.provider || '', patient: data.patient || '' });
+      setSegments(data.segments || []);
+      if (onTranscriptChange) onTranscriptChange(data);
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        const url = URL.createObjectURL(blob);
+        setAudioUrl(url);
+      } else {
+        setAudioUrl('');
+      }
+    },
+  );
+
+  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+
+  const handleTimeUpdate = () => {
+    if (!segments.length || !audioRef.current) return;
+    const t = audioRef.current.currentTime;
+    const seg = segments.find((s) => t >= s.start && t <= s.end);
+    if (seg) setCurrentSpeaker(seg.speaker);
+  };
+
+  const templateChooser = templates.length ? (
+    <select aria-label={t('app.templates')} defaultValue="" onChange={handleTemplateSelect} style={{ marginBottom: '0.5rem' }}>
+      <option value="">{t('app.templates')}</option>
+      {templates.map((tpl) => (
+        <option key={tpl.id} value={tpl.id}>
+          {tpl.name}
+        </option>
+      ))}
+    </select>
+  ) : (
+    <select aria-label={t('app.templates')} disabled style={{ marginBottom: '0.5rem' }}>
+      <option>{t('settings.noTemplates')}</option>
+    </select>
+  );
+
+  const audioControls = (
+    <div style={{ marginBottom: '0.5rem' }}>
+      <button
+        type="button"
+        onClick={toggleRecording}
+        aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+      >
+        {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+      </button>
+      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+      {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
+    </div>
+  );
+
+  const transcriptControls = (transcript.provider || transcript.patient) && (
+    <div style={{ marginTop: '0.5rem' }}>
+      <strong>{t('noteEditor.transcript')}</strong>
+      {transcript.provider !== undefined && (
+        <div style={{ marginTop: '0.25rem' }}>
+          <label>
+            <strong>Provider:</strong>
+          </label>
+          <textarea
+            value={transcript.provider}
+            onChange={(e) => setTranscript((prev) => ({ ...prev, provider: e.target.value }))}
+            style={{ width: '100%', backgroundColor: currentSpeaker === 'provider' ? '#fff3cd' : undefined }}
+          />
+          <button type="button" onClick={() => insertText(transcript.provider)}>
+            Insert
           </button>
-        )}
-        {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
-        {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
-      </div>
-    );
+        </div>
+      )}
+      {transcript.patient !== undefined && (
+        <div style={{ marginTop: '0.25rem' }}>
+          <label>
+            <strong>Patient:</strong>
+          </label>
+          <textarea
+            value={transcript.patient}
+            onChange={(e) => setTranscript((prev) => ({ ...prev, patient: e.target.value }))}
+            style={{ width: '100%', backgroundColor: currentSpeaker === 'patient' ? '#fff3cd' : undefined }}
+          />
+          <button type="button" onClick={() => insertText(transcript.patient)}>
+            Insert
+          </button>
+        </div>
+      )}
+    </div>
+  );
 
   const handleUndo = () => {
     setHistoryIndex((idx) => {
@@ -317,39 +335,10 @@ const NoteEditor = forwardRef(function NoteEditor(
     );
   }
 
-
-  // Expose an imperative method so the parent component can insert text at the
-  // current cursor position when a suggestion is chosen.
-  useImperativeHandle(ref, () => ({
-    insertAtCursor: (text) => {
-      if (ReactQuill && quillRef.current) {
-        const quill = quillRef.current.getEditor();
-        const range = quill.getSelection(true);
-        const index = range ? range.index : quill.getLength();
-        quill.insertText(index, text);
-        quill.setSelection(index + text.length);
-      } else if (textAreaRef.current) {
-        const el = textAreaRef.current;
-        const start = el.selectionStart;
-        const end = el.selectionEnd;
-        const newVal = `${localValue.slice(0, start)}${text}${localValue.slice(end)}`;
-        setLocalValue(newVal);
-        onChange(newVal);
-        setTimeout(() => {
-          el.selectionStart = el.selectionEnd = start + text.length;
-        }, 0);
-      } else {
-        const newVal = `${localValue}${text}`;
-        setLocalValue(newVal);
-        onChange(newVal);
-      }
-    },
-  }));
-
-  // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
+    const toolbarId = `${id || 'editor'}-toolbar`;
+    const modules = { toolbar: { container: `#${toolbarId}` } };
     return (
-
       <div style={{ height: '100%', width: '100%' }}>
         {audioControls}
         {templateChooser}
@@ -361,71 +350,54 @@ const NoteEditor = forwardRef(function NoteEditor(
           value={value}
           modules={modules}
           formats={quillFormats}
-          // ReactQuill's onChange passes the new HTML string as the first
-          // argument.  We ignore the other args (delta, source, editor) and
-          // forward the HTML string to the parent onChange.
           onChange={(content) => onChange(content)}
           style={{ height: '100%', width: '100%' }}
         />
-
-        {(transcript.provider || transcript.patient) && (
-          <div style={{ marginTop: '0.5rem' }}>
-            <strong>{t('noteEditor.transcript')}</strong>
-            {transcript.provider && (
-              <p>
-                <strong>Provider:</strong> {transcript.provider}
-              </p>
-            )}
-            {transcript.patient && (
-              <p>
-                <strong>Patient:</strong> {transcript.patient}
-              </p>
-            )}
-          </div>
+        {audioUrl && (
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            controls
+            onTimeUpdate={handleTimeUpdate}
+            style={{ width: '100%', marginTop: '0.5rem' }}
+          />
         )}
+        {transcriptControls}
         {(recorderError || fetchError) && (
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
         {loadingTranscript && <p>Loading transcript...</p>}
-      </>
+      </div>
     );
   }
-  return (
 
+  return (
     <div style={{ width: '100%', height: '100%' }}>
       {audioControls}
       {templateChooser}
       <textarea
-
         ref={textAreaRef}
-
         id={id}
         value={localValue}
         onChange={handleTextAreaChange}
         style={{ width: '100%', height: '100%', padding: '0.5rem' }}
         placeholder={t('noteEditor.placeholder')}
       />
-
-      {(transcript.provider || transcript.patient) && (
-        <div style={{ marginTop: '0.5rem' }}>
-          <strong>{t('noteEditor.transcript')}</strong>
-          {transcript.provider && (
-            <p>
-              <strong>Provider:</strong> {transcript.provider}
-            </p>
-          )}
-          {transcript.patient && (
-            <p>
-              <strong>Patient:</strong> {transcript.patient}
-            </p>
-          )}
-        </div>
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          controls
+          onTimeUpdate={handleTimeUpdate}
+          style={{ width: '100%', marginTop: '0.5rem' }}
+        />
       )}
+      {transcriptControls}
       {(recorderError || fetchError) && (
         <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
       )}
       {loadingTranscript && <p>Loading transcript...</p>}
-    </>
+    </div>
   );
 });
 
