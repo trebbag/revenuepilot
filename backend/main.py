@@ -1833,10 +1833,21 @@ async def suggest(
             req.sex,
             req.region,
         )
+        public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
+        extra_ph = public_health_api.get_public_health_suggestions(
+            req.age, req.sex, req.region
+        )
+        if extra_ph:
+            existing = {p.recommendation for p in public_health}
+            for rec in extra_ph:
+                if rec not in existing:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=None)
+                    )
         return SuggestionsResponse(
             codes=[CodeSuggestion(**c) for c in data["codes"]],
             compliance=data["compliance"],
-            publicHealth=[PublicHealthSuggestion(**p) for p in data["publicHealth"]],
+            publicHealth=public_health,
             differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
         )
     # Try to call the LLM to generate structured suggestions.  The prompt

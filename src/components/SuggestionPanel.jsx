@@ -11,6 +11,7 @@ function SuggestionPanel({
   onInsert,
 }) {
   const { t } = useTranslation();
+  const [showPublicHealth, setShowPublicHealth] = useState(true);
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics}|string }
   const cards = [];
   if (!settingsState || settingsState.enableCodes) {
@@ -47,7 +48,7 @@ function SuggestionPanel({
       type: 'public-health',
       key: 'publicHealth',
       title: t('suggestion.publicHealth'),
-      items,
+      items: showPublicHealth ? items : [],
     });
   }
   if (!settingsState || settingsState.enableDifferentials) {
@@ -243,6 +244,19 @@ function SuggestionPanel({
             onClick={() => toggleCard(key)}
           >
             <strong>{title}</strong>
+            {type === 'public-health' && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowPublicHealth((prev) => !prev);
+                }}
+                style={{ marginLeft: '0.5em', fontSize: '0.8em' }}
+              >
+                {showPublicHealth
+                  ? t('app.hideSuggestions')
+                  : t('app.showSuggestions')}
+              </button>
+            )}
             <span style={{ float: 'right' }}>
               {openState[key] ? '\u25BC' : '\u25B2'}
             </span>
