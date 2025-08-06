@@ -210,6 +210,16 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleModelChange = async (key, value) => {
+    const updated = { ...settings, [key]: value };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div
       className="settings-page"
@@ -254,6 +264,52 @@ function Settings({ settings, updateSettings }) {
       <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
         {t('settings.useLocalModelsHelp')}
       </p>
+
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.beautifyModel')}
+        <input
+          type="text"
+          value={settings.beautifyModel || ''}
+          onChange={(e) => handleModelChange('beautifyModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.suggestModel')}
+        <input
+          type="text"
+          value={settings.suggestModel || ''}
+          onChange={(e) => handleModelChange('suggestModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.summarizeModel')}
+        <input
+          type="text"
+          value={settings.summarizeModel || ''}
+          onChange={(e) => handleModelChange('summarizeModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
 
       <h3>{t('settings.theme')}</h3>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>

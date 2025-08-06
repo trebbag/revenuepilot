@@ -188,7 +188,10 @@
       "aetna": "Aetna"
     },
     "useLocalModels": "Enable local models",
-    "useLocalModelsHelp": "Use downloaded models when offline instead of placeholders."
+    "useLocalModelsHelp": "Use downloaded models when offline instead of placeholders.",
+    "beautifyModel": "Beautify model path",
+    "suggestModel": "Suggest model path",
+    "summarizeModel": "Summarize model path"
   },
   "sidebar": {
     "notes": "Notes",
