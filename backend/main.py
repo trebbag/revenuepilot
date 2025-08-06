@@ -206,9 +206,15 @@ def get_current_user(
 
 
 def require_role(role: str):
-    """Dependency factory ensuring the current user has a given role."""
+    """Dependency factory ensuring the current user has a given role.
+
+    Users with the ``admin`` role are allowed to access any endpoint that
+    specifies a less privileged role.  This keeps the checks simple while
+    still permitting administrators to perform regular user actions.
+    """
+
     def checker(user=Depends(get_current_user)):
-        if user.get("role") != role:
+        if user.get("role") not in (role, "admin"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient privileges",
@@ -281,7 +287,7 @@ async def login(model: LoginModel) -> Dict[str, str]:
 
 
 @app.get("/settings")
-async def get_user_settings(user=Depends(get_current_user)) -> Dict[str, Any]:
+async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     try:
         row = db_conn.execute(
@@ -305,7 +311,7 @@ async def get_user_settings(user=Depends(get_current_user)) -> Dict[str, Any]:
 
 
 @app.post("/settings")
-async def save_user_settings(model: UserSettings, user=Depends(get_current_user)) -> Dict[str, Any]:
+async def save_user_settings(model: UserSettings, user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Persist settings for the authenticated user."""
     row = db_conn.execute(
         "SELECT id FROM users WHERE username=?",
@@ -576,7 +582,7 @@ async def log_event(event: EventModel) -> Dict[str, str]:
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(get_current_user)) -> List[TemplateModel]:
+def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
     """Return custom templates for the current user and clinic."""
 
     clinic = user.get("clinic")
@@ -589,7 +595,7 @@ def get_templates(user=Depends(get_current_user)) -> List[TemplateModel]:
 
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(get_current_user)) -> TemplateModel:
+def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
     """Create a new custom template for the user."""
 
     clinic = user.get("clinic")
@@ -604,7 +610,7 @@ def create_template(tpl: TemplateModel, user=Depends(get_current_user)) -> Templ
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(get_current_user)) -> Dict[str, str]:
+def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
     """Delete a custom template owned by the current user."""
 
     cursor = db_conn.cursor()

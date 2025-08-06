@@ -43,3 +43,9 @@ def test_delete_template():
     assert resp.status_code == 200
     resp = client.get('/templates', headers={'Authorization': f'Bearer {token}'})
     assert all(t['id'] != tpl_id for t in resp.json())
+
+
+def test_templates_require_auth():
+    client = TestClient(main.app)
+    resp = client.get('/templates')
+    assert resp.status_code in {401, 403}
