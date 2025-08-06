@@ -11,11 +11,13 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
+  getPromptTemplates,
+  savePromptTemplates,
 } from '../api.js';
 
 
-const SPECIALTIES = ['', 'cardiology', 'dermatology'];
-const PAYERS = ['', 'medicare', 'aetna'];
+const SPECIALTIES = ['', 'cardiology', 'dermatology', 'paediatrics', 'geriatrics'];
+const PAYERS = ['', 'medicare', 'medicaid', 'aetna'];
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
@@ -26,6 +28,8 @@ function Settings({ settings, updateSettings }) {
   const [tplContent, setTplContent] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [tplError, setTplError] = useState(null);
+  const [promptText, setPromptText] = useState('');
+  const [promptError, setPromptError] = useState(null);
 
   useEffect(() => {
     getTemplates()
@@ -37,6 +41,17 @@ function Settings({ settings, updateSettings }) {
           window.location.href = '/';
         } else {
           setTplError(e.message);
+        }
+      });
+    getPromptTemplates()
+      .then((data) => setPromptText(JSON.stringify(data, null, 2)))
+      .catch((e) => {
+        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert('Access denied');
+          localStorage.removeItem('token');
+          window.location.href = '/';
+        } else {
+          setPromptError(e.message);
         }
       });
   }, []);
@@ -52,6 +67,41 @@ function Settings({ settings, updateSettings }) {
         window.location.href = '/';
       } else {
         setTplError(e.message);
+      }
+    }
+  };
+
+  const handlePromptFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      setPromptText(evt.target.result);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSavePromptTemplates = async () => {
+    let data;
+    try {
+      data = JSON.parse(promptText);
+      if (typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('invalid');
+      }
+    } catch (err) {
+      setPromptError(t('settings.invalidPromptTemplates'));
+      return;
+    }
+    try {
+      await savePromptTemplates(data);
+      setPromptError(null);
+    } catch (e) {
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      } else {
+        setPromptError(e.message);
       }
     }
   };
@@ -303,6 +353,20 @@ function Settings({ settings, updateSettings }) {
           </option>
         ))}
       </select>
+
+      <h3>{t('settings.promptTemplates')}</h3>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.promptTemplatesHelp')}</p>
+      {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
+      <textarea
+        value={promptText}
+        onChange={(e) => setPromptText(e.target.value)}
+        rows={10}
+        style={{ width: '100%', marginBottom: '0.5rem' }}
+      />
+      <input type="file" accept="application/json" onChange={handlePromptFile} />
+      <div style={{ marginTop: '0.5rem' }}>
+        <button onClick={handleSavePromptTemplates}>{t('settings.savePromptTemplates')}</button>
+      </div>
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}

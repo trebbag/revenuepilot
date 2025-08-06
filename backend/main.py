@@ -30,6 +30,7 @@ import jwt
 # installed and `OPENAI_API_KEY` is set in your environment before
 # deploying.
 from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
+from . import prompts as prompt_utils
 from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
@@ -655,6 +656,36 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
     except Exception as exc:
         print(f"Error inserting event into database: {exc}")
     return {"status": "logged"}
+
+
+def _validate_prompt_templates(data: Dict[str, Any]) -> None:
+    """Ensure prompt template structure is a mapping of mappings."""
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Template must be a JSON object")
+    for key in ("default", "specialty", "payer"):
+        if key in data and not isinstance(data[key], dict):
+            raise HTTPException(status_code=400, detail=f"'{key}' section must be an object")
+
+
+@app.get("/prompt-templates", response_model=Dict[str, Any])
+def get_prompt_templates(user=Depends(require_role("admin"))) -> Dict[str, Any]:
+    """Return the current prompt templates file."""
+    path = os.path.join(os.path.dirname(__file__), "prompt_templates.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+@app.post("/prompt-templates", response_model=Dict[str, Any])
+def save_prompt_templates(data: Dict[str, Any], user=Depends(require_role("admin"))) -> Dict[str, Any]:
+    """Validate and persist prompt templates supplied by an admin user."""
+    _validate_prompt_templates(data)
+    path = os.path.join(os.path.dirname(__file__), "prompt_templates.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    prompt_utils._load_custom_templates.cache_clear()
+    return data
 
 
 @app.get("/templates", response_model=List[TemplateModel])

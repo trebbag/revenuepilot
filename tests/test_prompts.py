@@ -78,3 +78,29 @@ def test_guideline_tips_added(monkeypatch):
     user_msg = msgs[-1]["content"]
     assert "Flu" in user_msg and "BP" in user_msg
 
+
+def test_additional_specialties_and_payers():
+    beauty = prompts.build_beautify_prompt(
+        "note", lang="en", specialty="paediatrics", payer="medicaid"
+    )
+    content = beauty[0]["content"]
+    assert "Paediatrics specific beautify instruction." in content
+    assert "Ensure documentation meets Medicaid requirements." in content
+
+    sugg = prompts.build_suggest_prompt(
+        "note", lang="en", specialty="geriatrics", payer="aetna"
+    )
+    scontent = sugg[0]["content"]
+    assert "Geriatrics specific suggestion instruction." in scontent
+    assert "Follow Aetna coding rules." in scontent
+
+
+def test_fallback_to_default_when_override_missing():
+    beauty = prompts.build_beautify_prompt(
+        "note", lang="en", specialty="unknown", payer="unknown"
+    )
+    content = beauty[0]["content"]
+    assert "Base instruction applied to all notes." in content
+    assert "Cardiology specific beautify instruction." not in content
+    assert "Ensure documentation meets Medicare standards." not in content
+
