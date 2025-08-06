@@ -7,9 +7,9 @@
 // component will gracefully fall back to a simple <textarea> so that
 // development can proceed without breaking the UI.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript } from '../api.js';
+import { fetchLastTranscript, transcribeAudio } from '../api.js';
 let ReactQuill;
 try {
   // Dynamically require ReactQuill to avoid breaking when the package is
@@ -50,15 +50,77 @@ function QuillToolbar({ toolbarId }) {
   );
 }
 
+function useAudioRecorder(onTranscribed) {
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [error, setError] = useState('');
+  const mediaRecorderRef = useRef(null);
+  const audioChunksRef = useRef([]);
+
+  const startRecording = async () => {
+    setError('');
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      setError('Audio recording not supported');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      mediaRecorder.onstop = async () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        setTranscribing(true);
+        try {
+          const data = await transcribeAudio(blob, true);
+          if (onTranscribed) {
+            onTranscribed(data);
+          }
+        } catch (err) {
+          console.error('Transcription failed', err);
+          setError('Transcription failed');
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      mediaRecorder.start();
+      setRecording(true);
+    } catch (err) {
+      console.error('Error accessing microphone', err);
+      setError('Microphone access denied');
+    }
+  };
+
+  const stopRecording = () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop();
+      if (recorder.stream) {
+        recorder.stream.getTracks().forEach((track) => track.stop());
+      }
+    }
+    setRecording(false);
+  };
+
+  const toggleRecording = () => {
+    if (recording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
+
+  return { recording, transcribing, error, toggleRecording };
+}
+
 function NoteEditor({
   id,
   value,
   onChange,
-  onRecord,
-  recording = false,
-  transcribing = false,
   onTranscriptChange,
-  error = '',
 }) {
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
@@ -68,6 +130,18 @@ function NoteEditor({
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
+
+  const {
+    recording,
+    transcribing,
+    error: recorderError,
+    toggleRecording,
+  } = useAudioRecorder((data) => {
+    setTranscript(data);
+    if (onTranscriptChange) {
+      onTranscriptChange(data);
+    }
+  });
 
   // Keep the internal state in sync with the parent value.  When using
   // ReactQuill the parent `value` prop is passed directly, so this
@@ -104,24 +178,15 @@ function NoteEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (!transcribing) {
-      loadTranscript();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcribing]);
-
   const audioControls = (
     <div style={{ marginBottom: '0.5rem' }}>
-      {onRecord && (
-        <button
-          type="button"
-          onClick={onRecord}
-          aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-        >
-          {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={toggleRecording}
+        aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+      >
+        {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+      </button>
       {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
       {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
     </div>
@@ -162,8 +227,8 @@ function NoteEditor({
             )}
           </div>
         )}
-        {(error || fetchError) && (
-          <p style={{ color: 'red' }}>{error || fetchError}</p>
+        {(recorderError || fetchError) && (
+          <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
         {loadingTranscript && <p>Loading transcript...</p>}
       </div>
@@ -194,8 +259,8 @@ function NoteEditor({
           )}
         </div>
       )}
-      {(error || fetchError) && (
-        <p style={{ color: 'red' }}>{error || fetchError}</p>
+      {(recorderError || fetchError) && (
+        <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
       )}
       {loadingTranscript && <p>Loading transcript...</p>}
     </div>
