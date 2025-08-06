@@ -60,7 +60,20 @@ export async function getSettings(token) {
     headers: { Authorization: `Bearer ${auth}` },
   });
   if (!resp.ok) throw new Error('Failed to fetch settings');
-  return await resp.json();
+  const data = await resp.json();
+  const categories = data.categories || {};
+  return {
+    theme: data.theme,
+    enableCodes: categories.codes !== false,
+    enableCompliance: categories.compliance !== false,
+    enablePublicHealth: categories.publicHealth !== false,
+    enableDifferentials: categories.differentials !== false,
+    rules: data.rules || [],
+    lang: data.lang || 'en',
+    specialty: data.specialty || '',
+    payer: data.payer || '',
+    region: data.region || '',
+  };
 }
 
 /**
@@ -78,13 +91,27 @@ export async function saveSettings(settings, token) {
   const auth =
     token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
+  const payload = {
+    theme: settings.theme,
+    categories: {
+      codes: settings.enableCodes,
+      compliance: settings.enableCompliance,
+      publicHealth: settings.enablePublicHealth,
+      differentials: settings.enableDifferentials,
+    },
+    rules: settings.rules || [],
+    lang: settings.lang || 'en',
+    specialty: settings.specialty || null,
+    payer: settings.payer || null,
+    region: settings.region || '',
+  };
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify(settings),
+    body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error('Failed to save settings');
   return await resp.json();
