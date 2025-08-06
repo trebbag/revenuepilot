@@ -15,6 +15,7 @@ import {
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
+const API_KEY_REGEX = /^sk-(?:proj-)?[A-Za-z0-9]{16,}$/;
 // Region/country codes are user-entered to keep the list flexible
 
 function Settings({ settings, updateSettings }) {
@@ -113,9 +114,16 @@ function Settings({ settings, updateSettings }) {
     }
   };
   const handleSaveKey = async () => {
-    if (!apiKeyInput.trim()) return;
+    const trimmed = apiKeyInput.trim();
+    if (!trimmed) return;
+    if (!API_KEY_REGEX.test(trimmed)) {
+      setApiKeyStatus(t('settings.invalidApiKey'));
+      setApiKeyInput('');
+      setTimeout(() => setApiKeyStatus(''), 4000);
+      return;
+    }
     try {
-      const res = await setApiKey(apiKeyInput.trim());
+      const res = await setApiKey(trimmed);
       // The backend returns {status: 'saved'} on success or an
       // object with a message on failure.  Display the appropriate
       // status message.

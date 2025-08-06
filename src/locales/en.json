@@ -144,6 +144,7 @@
     "apiKey": "OpenAI API Key",
     "apiKeyHelp": "Enter your OpenAI API key here. The key will be stored securely on your machine and used by the backend to call the language model. You can update it at any time.",
     "saveKey": "Save Key",
+    "invalidApiKey": "Invalid API key format",
     "theme": "Theme",
     "modern": "Modern Minimal",
     "dark": "Dark Elegance",

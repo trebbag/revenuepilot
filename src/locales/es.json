@@ -144,6 +144,7 @@
     "apiKey": "Clave de API de OpenAI",
     "apiKeyHelp": "Introduzca aquí su clave de API de OpenAI. La clave se almacenará de forma segura en su máquina y será utilizada por el backend para llamar al modelo de lenguaje. Puede actualizarla en cualquier momento.",
     "saveKey": "Guardar clave",
+    "invalidApiKey": "Formato de clave de API inválido",
     "theme": "Tema",
     "modern": "Minimal moderno",
     "dark": "Elegancia oscura",
