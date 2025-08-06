@@ -55,6 +55,7 @@ def beautify(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
     use_local: Optional[bool] = None,
+    model_path: Optional[str] = None,
 ) -> str:
     """Beautify ``text`` via llama.cpp or deterministic placeholder."""
 
@@ -62,7 +63,11 @@ def beautify(
         use_local = _use_local()
 
     if use_local:
-        model = os.getenv("LOCAL_BEAUTIFY_MODEL") or os.getenv("LOCAL_LLM_MODEL")
+        model = (
+            model_path
+            or os.getenv("LOCAL_BEAUTIFY_MODEL")
+            or os.getenv("LOCAL_LLM_MODEL")
+        )
         if model and os.path.exists(model):
             try:
                 llm = _get_llama(model)
@@ -91,6 +96,7 @@ def summarize(
     payer: Optional[str] = None,
     patient_age: Optional[int] = None,
     use_local: Optional[bool] = None,
+    model_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Summarise ``text`` with a local model or deterministic placeholder."""
 
@@ -98,7 +104,7 @@ def summarize(
         use_local = _use_local()
 
     if use_local:
-        model = os.getenv("LOCAL_SUMMARIZE_MODEL")
+        model = model_path or os.getenv("LOCAL_SUMMARIZE_MODEL")
         if model:
             try:
                 pipe = _get_pipeline("summarization", model)
@@ -130,6 +136,7 @@ def suggest(
     sex: Optional[str] = None,
     region: Optional[str] = None,
     use_local: Optional[bool] = None,
+    model_path: Optional[str] = None,
 ) -> Dict[str, List]:
     """Return suggestions via a local model or deterministic placeholder."""
 
@@ -137,14 +144,20 @@ def suggest(
         use_local = _use_local()
 
     if use_local:
-        model = os.getenv("LOCAL_SUGGEST_MODEL") or os.getenv("LOCAL_LLM_MODEL")
+        model = (
+            model_path
+            or os.getenv("LOCAL_SUGGEST_MODEL")
+            or os.getenv("LOCAL_LLM_MODEL")
+        )
         if model and os.path.exists(model):
             try:
                 llm = _get_llama(model)
                 prompt = (
                     "You are a medical coding assistant. Given the clinical note "
                     "below, reply with JSON containing keys codes, compliance, "
-                    "publicHealth and differentials.\n\nNote:\n" + text.strip() + "\n\nJSON:"
+                    "publicHealth and differentials.\n\nNote:\n"
+                    + text.strip()
+                    + "\n\nJSON:"
                 )
                 out = llm(
                     prompt,

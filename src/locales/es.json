@@ -188,7 +188,10 @@
       "aetna": "Aetna"
     },
     "useLocalModels": "Activar modelos locales",
-    "useLocalModelsHelp": "Usar modelos descargados sin conexión en lugar de marcadores de posición."
+    "useLocalModelsHelp": "Usar modelos descargados sin conexión en lugar de marcadores de posición.",
+    "beautifyModel": "Ruta del modelo de embellecimiento",
+    "suggestModel": "Ruta del modelo de sugerencias",
+    "summarizeModel": "Ruta del modelo de resumen"
   },
   "sidebar": {
     "notes": "Notas",

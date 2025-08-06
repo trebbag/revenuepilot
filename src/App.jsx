@@ -142,6 +142,9 @@ function App() {
     useLocalModels: false,
     agencies: ['CDC', 'WHO'],
     template: null,
+    beautifyModel: '',
+    suggestModel: '',
+    summarizeModel: '',
   };
   // User settings controlling theme and which suggestion categories are enabled.
   const [settingsState, setSettingsState] = useState(defaultSettings);
@@ -191,6 +194,7 @@ function App() {
     region: settingsState.region,
     useLocalModels: settingsState.useLocalModels,
     agencies: settingsState.agencies,
+    suggestModel: settingsState.suggestModel,
   };
 
   useEffect(() => {
@@ -289,6 +293,7 @@ function App() {
       specialty: settingsState.specialty,
       payer: settingsState.payer,
       useLocalModels: settingsState.useLocalModels,
+      beautifyModel: settingsState.beautifyModel,
     })
       .then((cleaned) => {
         setBeautified(cleaned);
@@ -339,6 +344,7 @@ function App() {
       specialty: settingsState.specialty,
       payer: settingsState.payer,
       useLocalModels: settingsState.useLocalModels,
+      summarizeModel: settingsState.summarizeModel,
     })
       .then((data) => {
         let combined = data.summary;

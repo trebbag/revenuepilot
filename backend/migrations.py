@@ -62,6 +62,13 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     if "template" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN template INTEGER")
 
+    if "beautify_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN beautify_model TEXT")
+    if "suggest_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN suggest_model TEXT")
+    if "summarize_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN summarize_model TEXT")
+
 
     conn.commit()
 
