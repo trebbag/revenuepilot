@@ -63,8 +63,12 @@ function App() {
   // Audio transcript extracted from a recorded visit.  Recording is
   // optional; when present, the transcript is appended to the note to
   // enrich suggestions.  The recording itself is not stored; only the
-  // text is used.
-  const [audioTranscript, setAudioTranscript] = useState('');
+  // text is used.  When diarisation is enabled we keep provider and
+  // patient segments separately so the UI can display them individually.
+  const [audioTranscript, setAudioTranscript] = useState({
+    provider: '',
+    patient: '',
+  });
   const [recording, setRecording] = useState(false);
   // References for MediaRecorder and audio chunks
   const mediaRecorderRef = useRef(null);
@@ -202,7 +206,7 @@ function App() {
     const plain = stripHtml(draftText);
     summarizeNote(plain, {
       chart: chartText,
-      audio: audioTranscript,
+      audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
       lang: settingsState.lang,
     })
       .then((summary) => {
@@ -304,11 +308,13 @@ function App() {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           try {
             const result = await transcribeAudio(blob, true);
-            const combined = `${result.provider || ''} ${result.patient || ''}`.trim();
-            setAudioTranscript(combined);
+            setAudioTranscript({
+              provider: result.provider || '',
+              patient: result.patient || '',
+            });
           } catch (err) {
             console.error('Transcription failed', err);
-            setAudioTranscript('');
+            setAudioTranscript({ provider: '', patient: '' });
           }
           if (patientID) {
             logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
@@ -362,7 +368,7 @@ function App() {
       getSuggestions(plain, {
         chart: chartText,
         rules: settingsState.rules,
-        audio: audioTranscript,
+        audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
         lang: settingsState.lang,
         age: age ? parseInt(age, 10) : undefined,
         sex,
@@ -379,7 +385,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText, audioTranscript, age, sex, settingsState.region]);
+  }, [draftText, audioTranscript.provider, audioTranscript.patient, age, sex, settingsState.region]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
@@ -537,9 +543,15 @@ function App() {
                         onRecord={handleRecordAudio}
                         recording={recording}
                       />
-                      {audioTranscript && (
+                      {(audioTranscript.provider || audioTranscript.patient) && (
                         <div className="transcript-display">
-                          <strong>{t('noteEditor.transcript')}</strong> {audioTranscript}
+                          <strong>{t('noteEditor.transcript')}</strong>
+                          {audioTranscript.provider && (
+                            <div><em>Provider:</em> {audioTranscript.provider}</div>
+                          )}
+                          {audioTranscript.patient && (
+                            <div><em>Patient:</em> {audioTranscript.patient}</div>
+                          )}
                         </div>
                       )}
                     </>
