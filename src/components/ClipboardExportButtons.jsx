@@ -76,8 +76,8 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
     return (codes || []).reduce((sum, c) => sum + (map[c.code || c] || 0), 0);
   };
 
+  const exportRtf = async () => {
 
-    const exportRtf = async () => {
     try {
       const ipcRenderer = window.require
         ? window.require('electron').ipcRenderer

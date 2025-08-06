@@ -44,6 +44,6 @@ def suggest(
             {"recommendation": "offline public health", "reason": "offline reason"}
         ],
         "differentials": [
-            {"diagnosis": "offline differential", "score": 50}
+            {"diagnosis": "offline differential", "score": 0.5}
         ],
     }
