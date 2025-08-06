@@ -126,7 +126,8 @@
     "insert": "Insertar",
     "loadingTranscript": "Cargando transcripción...",
     "recording": "Grabando...",
-    "transcribing": "Transcribiendo..."
+    "transcribing": "Transcribiendo...",
+    "segments": "Segmentos"
   },
   "settings": {
     "title": "Configuración",

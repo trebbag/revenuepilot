@@ -261,7 +261,13 @@ const NoteEditor = forwardRef(function NoteEditor(
     </select>
   );
 
-  const audioControls = (
+  const recordingSupported =
+    typeof window !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    navigator.mediaDevices &&
+    window.MediaRecorder;
+
+  const audioControls = recordingSupported ? (
     <div style={{ marginBottom: '0.5rem' }}>
       <button
         type="button"
@@ -287,6 +293,10 @@ const NoteEditor = forwardRef(function NoteEditor(
         </span>
       )}
     </div>
+  ) : (
+    <p style={{ marginBottom: '0.5rem' }}>
+      {t('noteEditor.audioUnsupported')}
+    </p>
   );
 
   const transcriptControls = (transcript.provider || transcript.patient) && (
@@ -336,6 +346,27 @@ const NoteEditor = forwardRef(function NoteEditor(
       )}
     </div>
   );
+
+  const segmentList =
+    segments.length > 0 ? (
+      <div style={{ marginTop: '0.5rem' }}>
+        <strong>{t('noteEditor.segments')}</strong>
+        <ul style={{ paddingLeft: '1.25rem' }}>
+          {segments.map((s, i) => (
+            <li
+              // eslint-disable-next-line react/no-array-index-key
+              key={i}
+              style={{
+                backgroundColor:
+                  currentSpeaker === s.speaker ? '#fff3cd' : undefined,
+              }}
+            >
+              <strong>{s.speaker}:</strong> {s.text}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
 
   const handleUndo = () => {
     setHistoryIndex((idx) => {
@@ -404,6 +435,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             style={{ width: '100%', marginTop: '0.5rem' }}
           />
         )}
+        {segmentList}
         {transcriptControls}
         {(recorderError || fetchError) && (
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
@@ -434,6 +466,7 @@ const NoteEditor = forwardRef(function NoteEditor(
           style={{ width: '100%', marginTop: '0.5rem' }}
         />
       )}
+      {segmentList}
       {transcriptControls}
       {(recorderError || fetchError) && (
         <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
