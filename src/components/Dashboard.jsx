@@ -25,13 +25,13 @@ ChartJS.register(
   ArcElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
 );
 
-  function Dashboard() {
-    const { t } = useTranslation();
-    // Determine user role from JWT; only admins may view this component.
-    const token =
+function Dashboard() {
+  const { t } = useTranslation();
+  // Determine user role from JWT; only admins may view this component.
+  const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   let role = null;
   if (token) {
@@ -136,59 +136,84 @@ ChartJS.register(
     {
       key: 'avg_note_length',
       title: t('dashboard.cards.avgNoteLength'),
-      baseline: metrics.baseline?.avg_note_length ? metrics.baseline.avg_note_length.toFixed(1) : 0,
-      current: metrics.current?.avg_note_length ? metrics.current.avg_note_length.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_note_length
+        ? metrics.baseline.avg_note_length.toFixed(1)
+        : 0,
+      current: metrics.current?.avg_note_length
+        ? metrics.current.avg_note_length.toFixed(1)
+        : 0,
       improvement: metrics.improvement?.avg_note_length,
       direction: 'higher',
     },
     {
       key: 'avg_beautify_time',
       title: t('dashboard.cards.avgBeautifyTime'),
-      baseline: metrics.baseline?.avg_beautify_time ? metrics.baseline.avg_beautify_time.toFixed(1) : 0,
-      current: metrics.current?.avg_beautify_time ? metrics.current.avg_beautify_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_beautify_time
+        ? metrics.baseline.avg_beautify_time.toFixed(1)
+        : 0,
+      current: metrics.current?.avg_beautify_time
+        ? metrics.current.avg_beautify_time.toFixed(1)
+        : 0,
       improvement: metrics.improvement?.avg_beautify_time,
       direction: 'lower',
     },
     {
       key: 'revenue_per_visit',
       title: t('dashboard.cards.revenuePerVisit'),
-      baseline: metrics.baseline?.revenue_per_visit ? metrics.baseline.revenue_per_visit.toFixed(2) : 0,
-      current: metrics.current?.revenue_per_visit ? metrics.current.revenue_per_visit.toFixed(2) : 0,
+      baseline: metrics.baseline?.revenue_per_visit
+        ? metrics.baseline.revenue_per_visit.toFixed(2)
+        : 0,
+      current: metrics.current?.revenue_per_visit
+        ? metrics.current.revenue_per_visit.toFixed(2)
+        : 0,
       improvement: metrics.improvement?.revenue_per_visit,
       direction: 'higher',
     },
     {
       key: 'avg_close_time',
       title: t('dashboard.cards.avgCloseTime'),
-      baseline: metrics.baseline?.avg_close_time ? metrics.baseline.avg_close_time.toFixed(1) : 0,
-      current: metrics.current?.avg_close_time ? metrics.current.avg_close_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_close_time
+        ? metrics.baseline.avg_close_time.toFixed(1)
+        : 0,
+      current: metrics.current?.avg_close_time
+        ? metrics.current.avg_close_time.toFixed(1)
+        : 0,
       improvement: metrics.improvement?.avg_close_time,
       direction: 'lower',
     },
     {
       key: 'denial_rate',
       title: t('dashboard.cards.denialRate'),
-      baseline: metrics.baseline?.denial_rate ? (metrics.baseline.denial_rate * 100).toFixed(1) : 0,
-      current: metrics.current?.denial_rate ? (metrics.current.denial_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.denial_rate
+        ? (metrics.baseline.denial_rate * 100).toFixed(1)
+        : 0,
+      current: metrics.current?.denial_rate
+        ? (metrics.current.denial_rate * 100).toFixed(1)
+        : 0,
       improvement: metrics.improvement?.denial_rate,
       direction: 'lower',
     },
     {
       key: 'deficiency_rate',
       title: t('dashboard.cards.deficiencyRate'),
-      baseline: metrics.baseline?.deficiency_rate ? (metrics.baseline.deficiency_rate * 100).toFixed(1) : 0,
-      current: metrics.current?.deficiency_rate ? (metrics.current.deficiency_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.deficiency_rate
+        ? (metrics.baseline.deficiency_rate * 100).toFixed(1)
+        : 0,
+      current: metrics.current?.deficiency_rate
+        ? (metrics.current.deficiency_rate * 100).toFixed(1)
+        : 0,
       improvement: metrics.improvement?.deficiency_rate,
       direction: 'lower',
     },
     {
       title: t('dashboard.cards.avgSatisfaction'),
       baseline: 0,
-      current: metrics.avg_satisfaction ? metrics.avg_satisfaction.toFixed(1) : 0,
+      current: metrics.avg_satisfaction
+        ? metrics.avg_satisfaction.toFixed(1)
+        : 0,
       direction: 'higher',
     },
   ];
-
 
   const exportCSV = () => {
     const rows = [];
@@ -208,7 +233,8 @@ ChartJS.register(
       'deficiency_rate',
     ];
     topLevel.forEach((k) => {
-      if (metrics.current && k in metrics.current) rows.push([k, metrics.current[k]]);
+      if (metrics.current && k in metrics.current)
+        rows.push([k, metrics.current[k]]);
     });
     const daily = metrics.timeseries?.daily || [];
     rows.push([]);
@@ -290,28 +316,32 @@ ChartJS.register(
       },
       {
         label: t('dashboard.cards.avgNoteLength'),
-        data: metrics.timeseries?.daily?.map((d) => d.avg_note_length || 0) || [],
+        data:
+          metrics.timeseries?.daily?.map((d) => d.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
         backgroundColor: 'rgba(99,255,132,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.avgBeautifyTime'),
-        data: metrics.timeseries?.daily?.map((d) => d.avg_beautify_time || 0) || [],
+        data:
+          metrics.timeseries?.daily?.map((d) => d.avg_beautify_time || 0) || [],
         borderColor: 'rgba(255,205,86,1)',
         backgroundColor: 'rgba(255,205,86,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.revenuePerVisit'),
-        data: metrics.timeseries?.daily?.map((d) => d.revenue_per_visit || 0) || [],
+        data:
+          metrics.timeseries?.daily?.map((d) => d.revenue_per_visit || 0) || [],
         borderColor: 'rgba(201,90,90,1)',
         backgroundColor: 'rgba(201,90,90,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.avgCloseTime'),
-        data: metrics.timeseries?.daily?.map((d) => d.avg_close_time || 0) || [],
+        data:
+          metrics.timeseries?.daily?.map((d) => d.avg_close_time || 0) || [],
         borderColor: 'rgba(100,100,255,1)',
         backgroundColor: 'rgba(100,100,255,0.2)',
         yAxisID: 'y1',
@@ -385,28 +415,34 @@ ChartJS.register(
       },
       {
         label: t('dashboard.cards.avgNoteLength'),
-        data: metrics.timeseries?.weekly?.map((w) => w.avg_note_length || 0) || [],
+        data:
+          metrics.timeseries?.weekly?.map((w) => w.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
         backgroundColor: 'rgba(99,255,132,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.avgBeautifyTime'),
-        data: metrics.timeseries?.weekly?.map((w) => w.avg_beautify_time || 0) || [],
+        data:
+          metrics.timeseries?.weekly?.map((w) => w.avg_beautify_time || 0) ||
+          [],
         borderColor: 'rgba(255,205,86,1)',
         backgroundColor: 'rgba(255,205,86,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.revenuePerVisit'),
-        data: metrics.timeseries?.weekly?.map((w) => w.revenue_per_visit || 0) || [],
+        data:
+          metrics.timeseries?.weekly?.map((w) => w.revenue_per_visit || 0) ||
+          [],
         borderColor: 'rgba(201,90,90,1)',
         backgroundColor: 'rgba(201,90,90,0.2)',
         yAxisID: 'y1',
       },
       {
         label: t('dashboard.cards.avgCloseTime'),
-        data: metrics.timeseries?.weekly?.map((w) => w.avg_close_time || 0) || [],
+        data:
+          metrics.timeseries?.weekly?.map((w) => w.avg_close_time || 0) || [],
         borderColor: 'rgba(100,100,255,1)',
         backgroundColor: 'rgba(100,100,255,0.2)',
         yAxisID: 'y1',
@@ -444,10 +480,6 @@ ChartJS.register(
   };
 
   const emCodes = ['99212', '99213', '99214', '99215'];
-  const totalCodes = emCodes.reduce(
-    (sum, c) => sum + (metrics.coding_distribution?.[c] || 0),
-    0
-  );
   const codePieData = {
     labels: emCodes,
     datasets: [
@@ -461,13 +493,18 @@ ChartJS.register(
     plugins: { tooltip: { enabled: true }, legend: { display: true } },
   };
   const denialDefData = {
-    labels: [t('dashboard.cards.denialRate'), t('dashboard.cards.deficiencyRate')],
+    labels: [
+      t('dashboard.cards.denialRate'),
+      t('dashboard.cards.deficiencyRate'),
+    ],
     datasets: [
       {
         label: t('dashboard.rate'),
         data: [
           metrics.current?.denial_rate ? metrics.current.denial_rate * 100 : 0,
-          metrics.current?.deficiency_rate ? metrics.current.deficiency_rate * 100 : 0,
+          metrics.current?.deficiency_rate
+            ? metrics.current.deficiency_rate * 100
+            : 0,
         ],
         backgroundColor: ['rgba(255,159,64,0.6)', 'rgba(75, 192, 192, 0.6)'],
       },
@@ -489,7 +526,6 @@ ChartJS.register(
     ],
   };
 
-
   const gapEntries = metrics.top_compliance
     ? metrics.top_compliance
     : Object.entries(metrics.compliance_counts || {})
@@ -505,70 +541,67 @@ ChartJS.register(
         backgroundColor: 'rgba(54, 162, 235, 0.6)',
       },
     ],
+  };
 
   const denialOptions = {
     plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: { y: { beginAtZero: true, max: 100 } },
-
   };
   return (
-      <div className="dashboard">
-        <h2>{t('dashboard.title')}</h2>
-        {error && <p style={{ color: 'red' }}>{error}</p>}
-        <div className="filters" style={{ marginBottom: '1rem' }}>
-          <label>
-            {t('dashboard.range')}
-            <select
-              value={inputs.range}
-              onChange={(e) => setInputs({ ...inputs, range: e.target.value })}
-            >
-              <option value="">{t('dashboard.customRange')}</option>
-              <option value="7">7 {t('dashboard.days')}</option>
-              <option value="30">30 {t('dashboard.days')}</option>
-            </select>
-          </label>
-          <label style={{ marginLeft: '0.5rem' }}>
-            {t('dashboard.start')}
-            <input
-              type="date"
-              value={inputs.start}
-              onChange={(e) => setInputs({ ...inputs, start: e.target.value })}
-            />
-          </label>
-          <label style={{ marginLeft: '0.5rem' }}>
-            {t('dashboard.end')}
-            <input
-              type="date"
-              value={inputs.end}
-              onChange={(e) => setInputs({ ...inputs, end: e.target.value })}
-            />
-          </label>
-          <label style={{ marginLeft: '0.5rem' }}>
-            {t('dashboard.clinician')}
-            <select
-              value={inputs.clinician}
-              onChange={(e) =>
-                setInputs({ ...inputs, clinician: e.target.value })
-              }
-            >
-              <option value="">{t('dashboard.allClinicians')}</option>
-              {(metrics.clinicians || []).map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            style={{ marginLeft: '0.5rem' }}
-            onClick={applyFilters}
+    <div className="dashboard">
+      <h2>{t('dashboard.title')}</h2>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+      <div className="filters" style={{ marginBottom: '1rem' }}>
+        <label>
+          {t('dashboard.range')}
+          <select
+            value={inputs.range}
+            onChange={(e) => setInputs({ ...inputs, range: e.target.value })}
           >
-            {t('dashboard.apply')}
-          </button>
-          <button style={{ marginLeft: '0.5rem' }} onClick={exportCSV}>
-            {t('export')}
-          </button>
-        </div>
+            <option value="">{t('dashboard.customRange')}</option>
+            <option value="7">7 {t('dashboard.days')}</option>
+            <option value="30">30 {t('dashboard.days')}</option>
+          </select>
+        </label>
+        <label style={{ marginLeft: '0.5rem' }}>
+          {t('dashboard.start')}
+          <input
+            type="date"
+            value={inputs.start}
+            onChange={(e) => setInputs({ ...inputs, start: e.target.value })}
+          />
+        </label>
+        <label style={{ marginLeft: '0.5rem' }}>
+          {t('dashboard.end')}
+          <input
+            type="date"
+            value={inputs.end}
+            onChange={(e) => setInputs({ ...inputs, end: e.target.value })}
+          />
+        </label>
+        <label style={{ marginLeft: '0.5rem' }}>
+          {t('dashboard.clinician')}
+          <select
+            value={inputs.clinician}
+            onChange={(e) =>
+              setInputs({ ...inputs, clinician: e.target.value })
+            }
+          >
+            <option value="">{t('dashboard.allClinicians')}</option>
+            {(metrics.clinicians || []).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button style={{ marginLeft: '0.5rem' }} onClick={applyFilters}>
+          {t('dashboard.apply')}
+        </button>
+        <button style={{ marginLeft: '0.5rem' }} onClick={exportCSV}>
+          {t('export')}
+        </button>
+      </div>
       <table className="metrics-table">
         <thead>
           <tr>
@@ -583,12 +616,13 @@ ChartJS.register(
             const pct = m.improvement;
             const effective =
               pct != null ? (m.direction === 'lower' ? -pct : pct) : null;
-            const arrow =
-              effective > 0 ? '↑' : effective < 0 ? '↓' : '';
+            const arrow = effective > 0 ? '↑' : effective < 0 ? '↓' : '';
             const colour =
               effective > 0 ? '#2E7D32' : effective < 0 ? '#E57373' : 'inherit';
             const diffLabel =
-              effective != null ? `${arrow} ${Math.abs(effective).toFixed(1)}%` : '';
+              effective != null
+                ? `${arrow} ${Math.abs(effective).toFixed(1)}%`
+                : '';
             return (
               <tr key={m.title}>
                 <td>{m.title}</td>
@@ -602,10 +636,18 @@ ChartJS.register(
       </table>
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
-            <h3>{t('dashboard.dailyEvents')}</h3>
-            <Line data={dailyData} options={dailyOptions} data-testid="daily-line" />
-            <h3 style={{ marginTop: '1rem' }}>{t('dashboard.weeklyEvents')}</h3>
-            <Line data={weeklyData} options={weeklyOptions} data-testid="weekly-line" />
+          <h3>{t('dashboard.dailyEvents')}</h3>
+          <Line
+            data={dailyData}
+            options={dailyOptions}
+            data-testid="daily-line"
+          />
+          <h3 style={{ marginTop: '1rem' }}>{t('dashboard.weeklyEvents')}</h3>
+          <Line
+            data={weeklyData}
+            options={weeklyOptions}
+            data-testid="weekly-line"
+          />
         </div>
       )}
 
@@ -645,13 +687,16 @@ ChartJS.register(
           </div>
         )}
 
-      {metrics.denial_rates &&
-        Object.keys(metrics.denial_rates).length > 0 && (
-          <div style={{ marginTop: '1rem' }}>
-              <h3>{t('dashboard.denialRates')}</h3>
-              <Bar data={denialData} options={denialOptions} data-testid="denial-bar" />
-          </div>
-        )}
+      {metrics.denial_rates && Object.keys(metrics.denial_rates).length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>{t('dashboard.denialRates')}</h3>
+          <Bar
+            data={denialData}
+            options={denialOptions}
+            data-testid="denial-bar"
+          />
+        </div>
+      )}
 
       {gapEntries.length > 0 && (
         <div style={{ marginTop: '1rem' }}>

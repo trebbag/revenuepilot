@@ -1,40 +1,29 @@
-
-import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
+import {
+  useEffect,
+  useState,
+  useRef,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchLastTranscript, getTemplates, transcribeAudio } from '../api.js';
 
 let ReactQuill;
 try {
-
   ReactQuill = require('react-quill');
   require('react-quill/dist/quill.snow.css');
 } catch (err) {
   ReactQuill = null;
 }
 
-
-const quillFormats = ['header', 'bold', 'italic', 'underline', 'list', 'bullet'];
-
-
-function QuillToolbar({ toolbarId }) {
-  return (
-    <div id={toolbarId} className="ql-toolbar ql-snow">
-      <span className="ql-formats">
-        <select className="ql-header" defaultValue="" aria-label="Heading">
-          <option value="1">H1</option>
-          <option value="2">H2</option>
-          <option value="">Normal</option>
-        </select>
-        <button className="ql-bold" aria-label="Bold" />
-        <button className="ql-italic" aria-label="Italic" />
-        <button className="ql-underline" aria-label="Underline" />
-        <button className="ql-list" value="ordered" aria-label="Ordered List" />
-        <button className="ql-list" value="bullet" aria-label="Bullet List" />
-      </span>
-    </div>
-  );
-}
-
+const quillFormats = [
+  'header',
+  'bold',
+  'italic',
+  'underline',
+  'list',
+  'bullet',
+];
 
 function useAudioRecorder(onTranscribed) {
   const [recording, setRecording] = useState(false);
@@ -96,16 +85,7 @@ function useAudioRecorder(onTranscribed) {
 }
 
 const NoteEditor = forwardRef(function NoteEditor(
-
-  {
-    id,
-    value,
-    onChange,
-    onTranscriptChange,
-    mode = 'draft',
-    ...rest
-
-  },
+  { id, value, onChange, onTranscriptChange, mode = 'draft' },
   ref,
 ) {
   const { t } = useTranslation();
@@ -124,7 +104,6 @@ const NoteEditor = forwardRef(function NoteEditor(
   const textAreaRef = useRef(null);
   const audioRef = useRef(null);
 
-
   useEffect(() => {
     if (mode === 'draft') setLocalValue(value || '');
   }, [value, mode]);
@@ -140,7 +119,6 @@ const NoteEditor = forwardRef(function NoteEditor(
       setHistoryIndex(newHist.length - 1);
       return newHist;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, mode]);
 
   let mounted = true;
@@ -158,11 +136,13 @@ const NoteEditor = forwardRef(function NoteEditor(
     setFetchError('');
     try {
       const data = await fetchLastTranscript();
-      setTranscript({ provider: data.provider || '', patient: data.patient || '' });
+      setTranscript({
+        provider: data.provider || '',
+        patient: data.patient || '',
+      });
       if (onTranscriptChange) onTranscriptChange(data);
       setSegments(data.segments || []);
     } catch (err) {
-
       setFetchError('Failed to load transcript');
     } finally {
       setLoadingTranscript(false);
@@ -171,7 +151,6 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   useEffect(() => {
     if (mode === 'draft') loadTranscript();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
   const handleTextAreaChange = (e) => {
@@ -199,7 +178,9 @@ const NoteEditor = forwardRef(function NoteEditor(
       const newVal = `${localValue.slice(0, start)}${text}${localValue.slice(end)}`;
       setLocalValue(newVal);
       onChange(newVal);
-      setTimeout(() => { el.selectionStart = el.selectionEnd = start + text.length; }, 0);
+      setTimeout(() => {
+        el.selectionStart = el.selectionEnd = start + text.length;
+      }, 0);
     } else {
       const newVal = `${localValue}${text}`;
       setLocalValue(newVal);
@@ -215,21 +196,35 @@ const NoteEditor = forwardRef(function NoteEditor(
     e.target.value = '';
   };
 
-  const { recording, transcribing, error: recorderError, toggleRecording } = useAudioRecorder(
-    (data, blob) => {
-      setTranscript({ provider: data.provider || '', patient: data.patient || '' });
-      setSegments(data.segments || []);
-      if (onTranscriptChange) onTranscriptChange(data);
-      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-        const url = URL.createObjectURL(blob);
-        setAudioUrl(url);
-      } else {
-        setAudioUrl('');
-      }
-    },
-  );
+  const {
+    recording,
+    transcribing,
+    error: recorderError,
+    toggleRecording,
+  } = useAudioRecorder((data, blob) => {
+    setTranscript({
+      provider: data.provider || '',
+      patient: data.patient || '',
+    });
+    setSegments(data.segments || []);
+    if (onTranscriptChange) onTranscriptChange(data);
+    if (
+      typeof URL !== 'undefined' &&
+      typeof URL.createObjectURL === 'function'
+    ) {
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+    } else {
+      setAudioUrl('');
+    }
+  });
 
-  useEffect(() => () => { if (audioUrl) URL.revokeObjectURL(audioUrl); }, [audioUrl]);
+  useEffect(
+    () => () => {
+      if (audioUrl) URL.revokeObjectURL(audioUrl);
+    },
+    [audioUrl],
+  );
 
   const handleTimeUpdate = () => {
     if (!segments.length || !audioRef.current) return;
@@ -239,7 +234,12 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   const templateChooser = templates.length ? (
-    <select aria-label={t('app.templates')} defaultValue="" onChange={handleTemplateSelect} style={{ marginBottom: '0.5rem' }}>
+    <select
+      aria-label={t('app.templates')}
+      defaultValue=""
+      onChange={handleTemplateSelect}
+      style={{ marginBottom: '0.5rem' }}
+    >
       <option value="">{t('app.templates')}</option>
       {templates.map((tpl) => (
         <option key={tpl.id} value={tpl.id}>
@@ -248,7 +248,11 @@ const NoteEditor = forwardRef(function NoteEditor(
       ))}
     </select>
   ) : (
-    <select aria-label={t('app.templates')} disabled style={{ marginBottom: '0.5rem' }}>
+    <select
+      aria-label={t('app.templates')}
+      disabled
+      style={{ marginBottom: '0.5rem' }}
+    >
       <option>{t('settings.noTemplates')}</option>
     </select>
   );
@@ -258,12 +262,20 @@ const NoteEditor = forwardRef(function NoteEditor(
       <button
         type="button"
         onClick={toggleRecording}
-        aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+        aria-label={
+          recording
+            ? t('noteEditor.stopRecording')
+            : t('noteEditor.recordAudio')
+        }
       >
-        {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+        {recording
+          ? t('noteEditor.stopRecording')
+          : t('noteEditor.recordAudio')}
       </button>
       {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
-      {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
+      {transcribing && (
+        <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>
+      )}
     </div>
   );
 
@@ -277,8 +289,14 @@ const NoteEditor = forwardRef(function NoteEditor(
           </label>
           <textarea
             value={transcript.provider}
-            onChange={(e) => setTranscript((prev) => ({ ...prev, provider: e.target.value }))}
-            style={{ width: '100%', backgroundColor: currentSpeaker === 'provider' ? '#fff3cd' : undefined }}
+            onChange={(e) =>
+              setTranscript((prev) => ({ ...prev, provider: e.target.value }))
+            }
+            style={{
+              width: '100%',
+              backgroundColor:
+                currentSpeaker === 'provider' ? '#fff3cd' : undefined,
+            }}
           />
           <button type="button" onClick={() => insertText(transcript.provider)}>
             Insert
@@ -292,8 +310,14 @@ const NoteEditor = forwardRef(function NoteEditor(
           </label>
           <textarea
             value={transcript.patient}
-            onChange={(e) => setTranscript((prev) => ({ ...prev, patient: e.target.value }))}
-            style={{ width: '100%', backgroundColor: currentSpeaker === 'patient' ? '#fff3cd' : undefined }}
+            onChange={(e) =>
+              setTranscript((prev) => ({ ...prev, patient: e.target.value }))
+            }
+            style={{
+              width: '100%',
+              backgroundColor:
+                currentSpeaker === 'patient' ? '#fff3cd' : undefined,
+            }}
           />
           <button type="button" onClick={() => insertText(transcript.patient)}>
             Insert
@@ -325,7 +349,11 @@ const NoteEditor = forwardRef(function NoteEditor(
     return (
       <div style={{ width: '100%', height: '100%' }}>
         <div style={{ marginBottom: '0.5rem' }}>
-          <button type="button" onClick={handleUndo} disabled={historyIndex <= 0}>
+          <button
+            type="button"
+            onClick={handleUndo}
+            disabled={historyIndex <= 0}
+          >
             {t('noteEditor.undo')}
           </button>
           <button
@@ -345,8 +373,6 @@ const NoteEditor = forwardRef(function NoteEditor(
   }
 
   if (ReactQuill) {
-    const toolbarId = `${id || 'editor'}-toolbar`;
-    const modules = { toolbar: { container: `#${toolbarId}` } };
     return (
       <div style={{ height: '100%', width: '100%' }}>
         {audioControls}
@@ -356,9 +382,7 @@ const NoteEditor = forwardRef(function NoteEditor(
           id={id}
           theme="snow"
           value={value}
-          modules={quillModules}
           formats={quillFormats}
-          onChange={(content) => onChange(content)}
           style={{ height: '100%', width: '100%' }}
         />
         {audioUrl && (
@@ -369,7 +393,6 @@ const NoteEditor = forwardRef(function NoteEditor(
             onTimeUpdate={handleTimeUpdate}
             style={{ width: '100%', marginTop: '0.5rem' }}
           />
-
         )}
         {transcriptControls}
         {(recorderError || fetchError) && (
@@ -400,7 +423,6 @@ const NoteEditor = forwardRef(function NoteEditor(
           onTimeUpdate={handleTimeUpdate}
           style={{ width: '100%', marginTop: '0.5rem' }}
         />
-
       )}
       {transcriptControls}
       {(recorderError || fetchError) && (
@@ -409,6 +431,6 @@ const NoteEditor = forwardRef(function NoteEditor(
       {loadingTranscript && <p>Loading transcript...</p>}
     </div>
   );
-}
+});
 
-export default forwardRef(NoteEditor);
+export default NoteEditor;

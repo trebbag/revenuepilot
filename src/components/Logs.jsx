@@ -16,11 +16,11 @@ function formatTimestamp(ts) {
   }
 }
 
-  export default function Logs() {
-    const { t } = useTranslation();
-    const [events, setEvents] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState(null);
+export default function Logs() {
+  const { t } = useTranslation();
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     // Fetch events when component mounts
@@ -45,22 +45,34 @@ function formatTimestamp(ts) {
   }, []);
 
   return (
-      <div className="logs-page" style={{ padding: '1rem', overflowY: 'auto' }}>
-        <h2>{t('logs.title')}</h2>
-        <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('logs.intro')}</p>
-        {error && <p style={{ color: 'red' }}>{error}</p>}
-        {loading ? (
-          <p>{t('logs.loading')}</p>
-        ) : events.length === 0 ? (
-          <p>{t('logs.none')}</p>
-        ) : (
-        <div style={{ border: '1px solid var(--disabled)', borderRadius: '4px', padding: '0.5rem', maxHeight: '60vh', overflowY: 'scroll' }}>
+    <div className="logs-page" style={{ padding: '1rem', overflowY: 'auto' }}>
+      <h2>{t('logs.title')}</h2>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('logs.intro')}</p>
+      {error && <p style={{ color: 'red' }}>{error}</p>}
+      {loading ? (
+        <p>{t('logs.loading')}</p>
+      ) : events.length === 0 ? (
+        <p>{t('logs.none')}</p>
+      ) : (
+        <div
+          style={{
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            padding: '0.5rem',
+            maxHeight: '60vh',
+            overflowY: 'scroll',
+          }}
+        >
           {events.map((ev, idx) => (
             <div key={idx} style={{ marginBottom: '0.5rem' }}>
               <div style={{ fontWeight: 'bold' }}>{ev.eventType}</div>
-              <div style={{ fontSize: '0.8rem', color: '#6B7280' }}>{formatTimestamp(ev.timestamp)}</div>
+              <div style={{ fontSize: '0.8rem', color: '#6B7280' }}>
+                {formatTimestamp(ev.timestamp)}
+              </div>
               {ev.details && Object.keys(ev.details).length > 0 && (
-                <pre style={{ fontSize: '0.8rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(ev.details, null, 2)}</pre>
+                <pre style={{ fontSize: '0.8rem', whiteSpace: 'pre-wrap' }}>
+                  {JSON.stringify(ev.details, null, 2)}
+                </pre>
               )}
             </div>
           ))}

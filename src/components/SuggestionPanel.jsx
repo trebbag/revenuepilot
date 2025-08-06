@@ -3,29 +3,54 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-  function SuggestionPanel({
-    suggestions,
-    settingsState,
-    loading,
-    className = '',
-    onInsert,
-  }) {
-    const { t } = useTranslation();
-    // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: string }
-    const cards = [];
-    if (!settingsState || settingsState.enableCodes) {
-      cards.push({ type: 'codes', key: 'codes', title: t('suggestion.codes'), items: suggestions?.codes || [] });
-    }
-    if (!settingsState || settingsState.enableCompliance) {
-      cards.push({ type: 'compliance', key: 'compliance', title: t('suggestion.compliance'), items: suggestions?.compliance || [] });
-    }
-    if (!settingsState || settingsState.enablePublicHealth) {
-      cards.push({ type: 'public-health', key: 'publicHealth', title: t('suggestion.publicHealth'), items: suggestions?.publicHealth || [] });
-    }
-    if (!settingsState || settingsState.enableDifferentials) {
-      cards.push({ type: 'differentials', key: 'differentials', title: t('suggestion.differentials'), items: suggestions?.differentials || [] });
-    }
-    cards.push({ type: 'follow-up', key: 'followUp', title: t('suggestion.followUp'), items: suggestions?.followUp ? [suggestions.followUp] : [] });
+function SuggestionPanel({
+  suggestions,
+  settingsState,
+  loading,
+  className = '',
+  onInsert,
+}) {
+  const { t } = useTranslation();
+  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: string }
+  const cards = [];
+  if (!settingsState || settingsState.enableCodes) {
+    cards.push({
+      type: 'codes',
+      key: 'codes',
+      title: t('suggestion.codes'),
+      items: suggestions?.codes || [],
+    });
+  }
+  if (!settingsState || settingsState.enableCompliance) {
+    cards.push({
+      type: 'compliance',
+      key: 'compliance',
+      title: t('suggestion.compliance'),
+      items: suggestions?.compliance || [],
+    });
+  }
+  if (!settingsState || settingsState.enablePublicHealth) {
+    cards.push({
+      type: 'public-health',
+      key: 'publicHealth',
+      title: t('suggestion.publicHealth'),
+      items: suggestions?.publicHealth || [],
+    });
+  }
+  if (!settingsState || settingsState.enableDifferentials) {
+    cards.push({
+      type: 'differentials',
+      key: 'differentials',
+      title: t('suggestion.differentials'),
+      items: suggestions?.differentials || [],
+    });
+  }
+  cards.push({
+    type: 'follow-up',
+    key: 'followUp',
+    title: t('suggestion.followUp'),
+    items: suggestions?.followUp ? [suggestions.followUp] : [],
+  });
 
   const [openState, setOpenState] = useState({
     codes: true,
@@ -40,23 +65,25 @@ import { useTranslation } from 'react-i18next';
   };
 
   const renderItems = (items, type) => {
-      if (loading) {
-        return (
-          <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
-            {t('suggestion.loading')}
-          </li>
-        );
-      }
-      if (!items || items.length === 0) {
-        return (
-          <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
-            {t('suggestion.none')}
-          </li>
-        );
-      }
+    if (loading) {
+      return (
+        <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
+          {t('suggestion.loading')}
+        </li>
+      );
+    }
+    if (!items || items.length === 0) {
+      return (
+        <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
+          {t('suggestion.none')}
+        </li>
+      );
+    }
     return items.map((item, idx) => {
       if (type === 'codes' && typeof item === 'object' && item !== null) {
-        const text = item.rationale ? `${item.code} — ${item.rationale}` : item.code;
+        const text = item.rationale
+          ? `${item.code} — ${item.rationale}`
+          : item.code;
         return (
           <li
             key={idx}
@@ -67,19 +94,35 @@ import { useTranslation } from 'react-i18next';
             <strong>{item.code}</strong>
             {item.rationale ? ` — ${item.rationale}` : ''}
             {item.upgrade_to && (
-              <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#555' }}>
+              <span
+                style={{
+                  marginLeft: '0.5em',
+                  fontSize: '0.85em',
+                  color: '#555',
+                }}
+              >
                 {t('suggestion.upgradeTo')} {item.upgrade_to}
               </span>
             )}
             {item.upgradePath && (
-              <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#555' }}>
+              <span
+                style={{
+                  marginLeft: '0.5em',
+                  fontSize: '0.85em',
+                  color: '#555',
+                }}
+              >
                 {t('suggestion.upgradePath')} {item.upgradePath}
               </span>
             )}
           </li>
         );
       }
-      if (type === 'public-health' && typeof item === 'object' && item !== null) {
+      if (
+        type === 'public-health' &&
+        typeof item === 'object' &&
+        item !== null
+      ) {
         return (
           <li
             key={idx}
@@ -89,12 +132,18 @@ import { useTranslation } from 'react-i18next';
           >
             {item.recommendation}
             {item.reason && (
-              <div style={{ fontStyle: 'italic', color: '#555' }}>{item.reason}</div>
+              <div style={{ fontStyle: 'italic', color: '#555' }}>
+                {item.reason}
+              </div>
             )}
           </li>
         );
       }
-      if (type === 'differentials' && typeof item === 'object' && item !== null) {
+      if (
+        type === 'differentials' &&
+        typeof item === 'object' &&
+        item !== null
+      ) {
         const isValidScore =
           typeof item.score === 'number' &&
           !Number.isNaN(item.score) &&
@@ -105,7 +154,9 @@ import { useTranslation } from 'react-i18next';
         return (
           <li
             key={idx}
-            title={pct !== null ? `${item.diagnosis} — ${pct}%` : item.diagnosis}
+            title={
+              pct !== null ? `${item.diagnosis} — ${pct}%` : item.diagnosis
+            }
             style={{ cursor: 'pointer' }}
             onClick={() => onInsert && onInsert(item.diagnosis)}
           >
@@ -154,7 +205,8 @@ import { useTranslation } from 'react-i18next';
     if (unit.startsWith('day')) date.setDate(start.getDate() + value);
     else if (unit.startsWith('week')) date.setDate(start.getDate() + 7 * value);
     else if (unit.startsWith('month')) date.setMonth(start.getMonth() + value);
-    else if (unit.startsWith('year')) date.setFullYear(start.getFullYear() + value);
+    else if (unit.startsWith('year'))
+      date.setFullYear(start.getFullYear() + value);
     const fmt = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
     const dt = fmt(date);
     const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:Follow-up appointment\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;

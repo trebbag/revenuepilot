@@ -20,8 +20,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, confloat
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, confloat
 
 
 import jwt
@@ -1257,77 +1256,6 @@ async def get_metrics(
     weekly_list = [dict(r) for r in cursor.fetchall()]
 
 
-        codes_val = row["codes"]
-        try:
-            codes = json.loads(codes_val) if codes_val else []
-        except Exception:
-            codes = []
-        if isinstance(codes, list):
-            denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
-            for code in codes:
-                code_counts[code] = code_counts.get(code, 0) + 1
-                if denial_flag is not None:
-                    totals = denial_counts.get(code, [0, 0])
-                    totals[0] += 1
-                    if denial_flag:
-                        totals[1] += 1
-                    denial_counts[code] = totals
-
-        comp_val = row["compliance_flags"]
-        try:
-            comp_list = json.loads(comp_val) if comp_val else []
-        except Exception:
-            comp_list = []
-        for flag in comp_list:
-            compliance_counts[flag] = compliance_counts.get(flag, 0) + 1
-
-        public_health = row["public_health"]
-        if isinstance(public_health, int):
-            public_health_totals[0] += 1
-            if public_health:
-                public_health_totals[1] += 1
-
-        satisfaction = row["satisfaction"]
-        if isinstance(satisfaction, (int, float)):
-            satisfaction_sum += float(satisfaction)
-            satisfaction_count += 1
-
-        denial = details.get("denial")
-        if isinstance(denial, bool):
-            denial_totals[0] += 1
-            if denial:
-                denial_totals[1] += 1
-
-        deficiency = details.get("deficiency")
-        if isinstance(deficiency, bool):
-            deficiency_totals[0] += 1
-            if deficiency:
-                deficiency_totals[1] += 1
-
-        patient_id = (
-            details.get("patientID")
-            or details.get("patientId")
-            or details.get("patient_id")
-        )
-        if evt == "note_started" and patient_id:
-            last_start_for_patient[patient_id] = ts
-        if evt == "beautify" and patient_id and patient_id in last_start_for_patient:
-            duration = ts - last_start_for_patient[patient_id]
-            if duration >= 0:
-                beautify_time_sum += duration
-                beautify_time_count += 1
-                day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-                week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
-                daily_rec = beautify_daily.setdefault(day, [0.0, 0])
-                daily_rec[0] += duration
-                daily_rec[1] += 1
-                weekly_rec = beautify_weekly.setdefault(week, [0.0, 0])
-                weekly_rec[0] += duration
-                weekly_rec[1] += 1
-
-    avg_beautify_time = (
-        beautify_time_sum / beautify_time_count if beautify_time_count else 0
-    )
 
     top_compliance = [
         {"gap": k, "count": v}

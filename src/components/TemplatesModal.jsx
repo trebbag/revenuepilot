@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getTemplates, createTemplate, updateTemplate, deleteTemplate } from '../api.js';
+import {
+  getTemplates,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+} from '../api.js';
 
 function TemplatesModal({ baseTemplates, onSelect, onClose }) {
   const { t } = useTranslation();
@@ -40,10 +45,16 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
     if (!name.trim() || !content.trim()) return;
     try {
       if (editingId) {
-        const tpl = await updateTemplate(editingId, { name: name.trim(), content: content.trim() });
+        const tpl = await updateTemplate(editingId, {
+          name: name.trim(),
+          content: content.trim(),
+        });
         setTemplates((prev) => prev.map((t) => (t.id === editingId ? tpl : t)));
       } else {
-        const tpl = await createTemplate({ name: name.trim(), content: content.trim() });
+        const tpl = await createTemplate({
+          name: name.trim(),
+          content: content.trim(),
+        });
         setTemplates((prev) => [...prev, tpl]);
       }
       setName('');
@@ -83,58 +94,67 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
 
   return (
     <div className="modal-overlay">
-        <div className="modal card">
-          <h3>{t('templatesModal.title')}</h3>
-          {error && <p style={{ color: 'red' }}>{error}</p>}
-          <ul>
-            {templates.map((tpl) => (
-              <li key={tpl.id || tpl.name}>
-                <button
-                  onClick={() => onSelect(tpl.content)}
-                  style={{ margin: '0.25rem 0' }}
-                >
-                  {tpl.name}
-                </button>
-                {(tpl.id || isAdmin) && (
-                  <>
-                    <button onClick={() => handleEdit(tpl)} style={{ marginLeft: '0.25rem' }}>
-                      {t('templatesModal.edit')}
+      <div className="modal card">
+        <h3>{t('templatesModal.title')}</h3>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
+        <ul>
+          {templates.map((tpl) => (
+            <li key={tpl.id || tpl.name}>
+              <button
+                onClick={() => onSelect(tpl.content)}
+                style={{ margin: '0.25rem 0' }}
+              >
+                {tpl.name}
+              </button>
+              {(tpl.id || isAdmin) && (
+                <>
+                  <button
+                    onClick={() => handleEdit(tpl)}
+                    style={{ marginLeft: '0.25rem' }}
+                  >
+                    {t('templatesModal.edit')}
+                  </button>
+                  {tpl.id && (
+                    <button
+                      onClick={() => handleDelete(tpl.id)}
+                      style={{ marginLeft: '0.25rem' }}
+                    >
+                      {t('templatesModal.delete')}
                     </button>
-                    {tpl.id && (
-                      <button onClick={() => handleDelete(tpl.id)} style={{ marginLeft: '0.25rem' }}>
-                        {t('templatesModal.delete')}
-                      </button>
-                    )}
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
-          <h4>{t('templatesModal.create')}</h4>
-          <input
-            type="text"
-            placeholder={t('templatesModal.name')}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            style={{ width: '100%', marginBottom: '0.5rem' }}
-          />
-          <textarea
-            placeholder={t('templatesModal.content')}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            rows={4}
-            style={{ width: '100%' }}
-          />
-          <div style={{ marginTop: '0.5rem' }}>
-            <button onClick={handleSave} disabled={!name.trim() || !content.trim()}>
-              {t('templatesModal.save')}
-            </button>
-            <button onClick={onClose} style={{ marginLeft: '0.5rem' }}>
-              {t('templatesModal.close')}
-            </button>
-          </div>
+                  )}
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+        <h4>{t('templatesModal.create')}</h4>
+        <input
+          type="text"
+          placeholder={t('templatesModal.name')}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          style={{ width: '100%', marginBottom: '0.5rem' }}
+        />
+        <textarea
+          placeholder={t('templatesModal.content')}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          rows={4}
+          style={{ width: '100%' }}
+        />
+        <div style={{ marginTop: '0.5rem' }}>
+          <button
+            onClick={handleSave}
+            disabled={!name.trim() || !content.trim()}
+          >
+            {t('templatesModal.save')}
+          </button>
+          <button onClick={onClose} style={{ marginLeft: '0.5rem' }}>
+            {t('templatesModal.close')}
+          </button>
         </div>
       </div>
+    </div>
   );
 }
 

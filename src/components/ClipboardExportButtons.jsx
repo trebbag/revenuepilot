@@ -3,18 +3,23 @@ import { useTranslation } from 'react-i18next';
 import { logEvent } from '../api.js';
 import html2pdf from 'html2pdf.js';
 
-function ClipboardExportButtons({ beautified, summary, patientID, suggestions = {} }) {
+function ClipboardExportButtons({
+  beautified,
+  summary,
+  patientID,
+  suggestions = {},
+}) {
   const { t } = useTranslation();
   const [feedback, setFeedback] = useState('');
 
   const copy = async (text, type) => {
     try {
-        await navigator.clipboard.writeText(text);
-        setFeedback(
-          type === 'beautified'
-            ? t('clipboard.beautifiedCopied')
-            : t('clipboard.summaryCopied')
-        );
+      await navigator.clipboard.writeText(text);
+      setFeedback(
+        type === 'beautified'
+          ? t('clipboard.beautifiedCopied')
+          : t('clipboard.summaryCopied'),
+      );
       if (patientID) {
         logEvent('copy', {
           patientID,
@@ -28,7 +33,7 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
       }
       setTimeout(() => setFeedback(''), 2000);
     } catch {
-        setFeedback(t('clipboard.copyFailed'));
+      setFeedback(t('clipboard.copyFailed'));
     }
   };
 
@@ -38,8 +43,8 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
         ? window.require('electron').ipcRenderer
         : null;
       if (!ipcRenderer) return;
-        await ipcRenderer.invoke('export-note', { beautified, summary });
-        setFeedback(t('clipboard.exported'));
+      await ipcRenderer.invoke('export-note', { beautified, summary });
+      setFeedback(t('clipboard.exported'));
       if (patientID) {
         logEvent('export', {
           patientID,
@@ -53,19 +58,16 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
       }
       setTimeout(() => setFeedback(''), 2000);
     } catch {
-        setFeedback(t('clipboard.exportFailed'));
+      setFeedback(t('clipboard.exportFailed'));
     }
   };
 
-
-
   const calcRevenue = (codes = []) => {
-    const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
+    const map = { 99212: 50, 99213: 75, 99214: 110, 99215: 160 };
     return (codes || []).reduce((sum, c) => sum + (map[c.code || c] || 0), 0);
   };
 
   const exportRtf = async () => {
-
     try {
       const ipcRenderer = window.require
         ? window.require('electron').ipcRenderer
@@ -105,26 +107,28 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
     } catch {
       setFeedback(t('clipboard.exportFailed'));
     }
-
   };
 
   return (
     <>
-        <button disabled={!beautified} onClick={() => copy(beautified, 'beautified')}>
-          {t('clipboard.copyBeautified')}
-        </button>
-        <button disabled={!summary} onClick={() => copy(summary, 'summary')}>
-          {t('clipboard.copySummary')}
-        </button>
-        <button disabled={!beautified && !summary} onClick={exportNote}>
-          {t('clipboard.export')}
-        </button>
-        <button disabled={!beautified && !summary} onClick={exportRtf}>
-          {t('clipboard.exportRtf')}
-        </button>
-        <button disabled={!beautified} onClick={exportPdf}>
-          {t('clipboard.exportPdf')}
-        </button>
+      <button
+        disabled={!beautified}
+        onClick={() => copy(beautified, 'beautified')}
+      >
+        {t('clipboard.copyBeautified')}
+      </button>
+      <button disabled={!summary} onClick={() => copy(summary, 'summary')}>
+        {t('clipboard.copySummary')}
+      </button>
+      <button disabled={!beautified && !summary} onClick={exportNote}>
+        {t('clipboard.export')}
+      </button>
+      <button disabled={!beautified && !summary} onClick={exportRtf}>
+        {t('clipboard.exportRtf')}
+      </button>
+      <button disabled={!beautified} onClick={exportPdf}>
+        {t('clipboard.exportPdf')}
+      </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
     </>
   );
