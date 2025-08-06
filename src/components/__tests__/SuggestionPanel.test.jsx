@@ -121,6 +121,28 @@ test('renders differential scores as percentages', () => {
   expect(getByText('Flu — 42%')).toBeTruthy();
 });
 
+test('debounces backend calls on rapid input', async () => {
+  vi.useFakeTimers();
+  const fetchSuggestions = vi.fn();
+  const baseProps = {
+    suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] },
+    settingsState: null,
+    fetchSuggestions,
+  };
+  const { rerender } = render(
+    <SuggestionPanel {...baseProps} text="a" />,
+  );
+  // Simulate rapid consecutive updates
+  rerender(<SuggestionPanel {...baseProps} text="ab" />);
+  rerender(<SuggestionPanel {...baseProps} text="abc" />);
+  // No call should happen until the debounce period elapses
+  expect(fetchSuggestions).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(300);
+  expect(fetchSuggestions).toHaveBeenCalledTimes(1);
+  expect(fetchSuggestions).toHaveBeenCalledWith('abc');
+  vi.useRealTimers();
+});
+
 test('handles missing or invalid differential scores gracefully', () => {
   const { getByText, queryByText } = render(
     <SuggestionPanel
