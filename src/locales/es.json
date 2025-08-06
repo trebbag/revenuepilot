@@ -16,6 +16,7 @@
   "saved": "Guardado",
   "templateManager": "Gestor de plantillas",
   "ehrExport": "Exportar a EHR",
+  "ehrAuthFailed": "Autenticación EHR fallida",
   "survey": {
     "title": "Encuesta rápida",
     "question": "¿Qué tan confiado está en la documentación de hoy?",

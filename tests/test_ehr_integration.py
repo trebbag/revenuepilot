@@ -7,8 +7,9 @@ from backend import main, migrations, ehr_integration
 
 
 class DummyResp:
-    def __init__(self, data):
+    def __init__(self, data, status=200):
         self._data = data
+        self.status_code = status
 
     def raise_for_status(self):
         pass
@@ -64,7 +65,34 @@ def test_posts_bundle_to_fhir(monkeypatch, client):
         headers=auth_header(token),
     )
     assert resp.status_code == 200
+    assert resp.json()["status"] == "exported"
     assert calls and calls[0]["url"] == "http://fhir.test/Bundle"
     bundle = calls[0]["json"]
     assert bundle["entry"][0]["resource"]["valueString"] == "Example note"
     assert bundle["entry"][1]["resource"]["code"]["coding"][0]["code"] == "A1"
+
+
+def test_reports_auth_errors(monkeypatch, client):
+    token = client.post("/login", json={"username": "admin", "password": "pw"}).json()["access_token"]
+
+    class DummyAuthResp:
+        status_code = 401
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {}
+
+    def fake_post(url, json=None, timeout=10):
+        return DummyAuthResp()
+
+    monkeypatch.setattr(ehr_integration.requests, "post", fake_post)
+
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "auth_error"

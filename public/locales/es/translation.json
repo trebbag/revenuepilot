@@ -16,6 +16,7 @@
   "saved": "Guardado",
   "templateManager": "Gestor de plantillas",
   "ehrExport": "Exportar a EHR",
+  "ehrAuthFailed": "Autenticación EHR fallida",
   "dashboard": {
     "accessDenied": "Acceso denegado",
     "title": "Panel de análisis",
