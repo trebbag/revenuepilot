@@ -10,7 +10,6 @@ import Settings from './components/Settings.jsx';
 import {
   beautifyNote,
   logEvent,
-  transcribeAudio,
   summarizeNote,
   getSettings,
 } from './api.js';
@@ -67,6 +66,7 @@ function App() {
     provider: '',
     patient: '',
   });
+
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState('');
@@ -74,6 +74,7 @@ function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const editorRef = useRef(null);
+
   // Track whether the sidebar is collapsed
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -354,57 +355,6 @@ function App() {
     reader.readAsText(file);
   };
 
-  /**
-   * Start or stop audio recording.  Uses the browser's MediaRecorder API to
-   * capture audio from the user's microphone.  When recording stops the
-   * resulting ``Blob`` is uploaded to the backend ``/transcribe`` endpoint
-   * and the returned transcript stored in ``audioTranscript``.  The raw
-   * audio is never persisted locally.
-   */
-  const handleRecordAudio = async () => {
-    if (!recording) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-        mediaRecorder.onstop = async () => {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          setTranscribing(true);
-          try {
-            await transcribeAudio(blob, true);
-            setTranscriptionError('');
-          } catch (err) {
-            if (err.message === 'Unauthorized') {
-              handleUnauthorized();
-            } else {
-              console.error('Transcription failed', err);
-              setTranscriptionError('Transcription failed');
-            }
-          } finally {
-            setTranscribing(false);
-          }
-          if (patientID) {
-            logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
-          }
-        };
-        mediaRecorder.start();
-        setRecording(true);
-      } catch (err) {
-        console.error('Error accessing microphone', err);
-        setTranscriptionError('Error accessing microphone');
-      }
-    } else {
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.stop();
-      }
-      setRecording(false);
-    }
-  };
 
   const handleTranscriptChange = (data) => {
     setAudioTranscript({
@@ -593,15 +543,13 @@ function App() {
                       id="draft-input"
                       value={draftText}
                       onChange={handleDraftChange}
-                      onRecord={handleRecordAudio}
-                      recording={recording}
-                      transcribing={transcribing}
                       onTranscriptChange={handleTranscriptChange}
                       error={transcriptionError}
                       templateContext={templateContext}
                       suggestionContext={suggestionContext}
                       onSuggestions={handleSuggestions}
                       onSuggestionsLoading={setLoadingSuggestions}
+
                     />
                   ) : (
                     activeTab === 'beautified' ? (
