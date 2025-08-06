@@ -171,8 +171,16 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
-# Determine whether the advanced scrubber is enabled via environment variable.
-USE_ADVANCED_SCRUBBER = os.getenv("USE_ADVANCED_SCRUBBER", "false").lower() == "true"
+# Determine whether the advanced scrubber is enabled.  If the environment
+# variable ``USE_ADVANCED_SCRUBBER`` is explicitly set, respect it.  Otherwise
+# automatically enable advanced scrubbing when either Presidio or Philter is
+# available.  This makes the richer recognizers the default behaviour without
+# requiring any configuration.
+_env_flag = os.getenv("USE_ADVANCED_SCRUBBER")
+if _env_flag is None:
+    USE_ADVANCED_SCRUBBER = _PRESIDIO_AVAILABLE or _PHILTER_AVAILABLE
+else:  # pragma: no cover - environment override is rarely used in tests
+    USE_ADVANCED_SCRUBBER = _env_flag.lower() == "true"
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -524,8 +532,8 @@ def deidentify(text: str) -> str:
         rf"\b("  # start group
         r"\d{1,2}/\d{1,2}/\d{2,4}"
         r"|\d{4}-\d{1,2}-\d{1,2}"
-        rf"|{month}\s+\d{{1,2}},?\s+\d{{2,4}}"
-        rf"|\d{{1,2}}\s+{month}\s+\d{{2,4}}"
+        rf"|{month}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{2,4}}"
+        rf"|\d{{1,2}}(?:st|nd|rd|th)?\s+{month}\s+\d{{2,4}}"
         r")\b",
         re.IGNORECASE,
     )
@@ -535,7 +543,9 @@ def deidentify(text: str) -> str:
         r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
         re.IGNORECASE,
     )
-    name_pattern = re.compile(r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.))+\b")
+    name_pattern = re.compile(
+        r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.|[a-z]{2,3}))*\s+[A-Z][a-z]+\b"
+    )
 
     patterns = [
         ("PHONE", phone_pattern),
