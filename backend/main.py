@@ -55,7 +55,6 @@ from .scheduling import recommend_follow_up, export_ics
 import json
 import sqlite3
 import hashlib
-from collections import deque
 
 from .auth import (
     authenticate_user,
