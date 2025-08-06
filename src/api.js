@@ -4,9 +4,9 @@
 // operations with dummy data.
 
 /**
- * Authenticate a user and retrieve a JWT from the backend. After a
+ * Authenticate a user and retrieve JWT access and refresh tokens from the backend. After a
  * successful login the user's persisted settings are also fetched.
- * Both the token and settings are returned to the caller so they can be
+ * Both tokens and settings are returned to the caller so they can be
  * stored in application state or cached in localStorage. Throws an error
  * when authentication fails.
  *
@@ -30,6 +30,7 @@ export async function login(username, password) {
   }
   const data = await resp.json();
   const token = data.access_token;
+  const refreshToken = data.refresh_token;
   // Fetch persisted settings after successful login
   let settings = null;
   try {
@@ -38,7 +39,25 @@ export async function login(username, password) {
   } catch (e) {
     console.error('Failed to fetch settings', e);
   }
-  return { token, settings };
+  return { token, refreshToken, settings };
+}
+
+/**
+ * Exchange a refresh token for a new access token.
+ * @param {string} refreshToken
+ */
+export async function refreshAccessToken(refreshToken) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await fetch(`${baseUrl}/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!resp.ok) throw new Error('Failed to refresh token');
+  return await resp.json();
 }
 
 /**

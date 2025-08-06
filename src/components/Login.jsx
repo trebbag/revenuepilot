@@ -21,9 +21,10 @@ function Login({ onLoggedIn }) {
     setError(null);
     setLoading(true);
     try {
-      const { token, settings } = await login(username, password);
+      const { token, refreshToken, settings } = await login(username, password);
       if (typeof window !== 'undefined') {
         localStorage.setItem('token', token);
+        localStorage.setItem('refreshToken', refreshToken);
       }
       onLoggedIn(token, settings);
     } catch (err) {

@@ -150,6 +150,8 @@
     "logs": "Registros",
     "settings": "Configuración",
     "help": "Ayuda",
+    "users": "Usuarios",
+    "logout": "Cerrar sesión",
     "expand": "Expandir barra lateral",
     "collapse": "Contraer barra lateral"
   },
