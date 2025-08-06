@@ -243,6 +243,9 @@ such as multi‑word names, several date formats, phone numbers, addresses,
 emails and Social Security numbers, replacing them with bracketed tokens
 like `[NAME]` or `[DATE]`.  Unusual formats or non‑English text may not be
 fully scrubbed, so manual review remains necessary for sensitive data.
+Set the environment variable `DEID_ENGINE` to `presidio` or `philter` to
+explicitly choose a PHI scrubbing backend.  When unset, Presidio is used when
+available, falling back to Philter and then simple regexes.
 
 These steps will transform the scaffold into a fully operational clinical
 documentation assistant.
