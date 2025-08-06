@@ -109,7 +109,9 @@ If the flag is unset or the libraries are missing, a simpler regex-based scrubbe
   ```
 
   It serves the `dist/` directory on port 8080 and can be used as a target
-  for the auto‑update feed during development.
+  for the auto‑update feed during development. See
+  [docs/DESKTOP_BUILD.md](docs/DESKTOP_BUILD.md) for a full walkthrough of
+  packaging, signing and update testing.
 
 `electron:build` downloads icon assets and bundles the backend.  The `.env`
 file is read by the build scripts and should define:

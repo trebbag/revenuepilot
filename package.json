@@ -39,6 +39,7 @@
   "build": {
     "appId": "com.revenuepilot.app",
     "productName": "RevenuePilot",
+    "asar": true,
     "files": [
       {
         "from": "electron/dist",
