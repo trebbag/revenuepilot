@@ -43,17 +43,18 @@ def _transcribe_bytes(data: bytes) -> str:
 
     api_key = get_api_key()
     if api_key:
-        client = OpenAI(api_key=api_key)
         try:
+            client = OpenAI(api_key=api_key)
             with io.BytesIO(data) as buf:
                 resp = client.audio.transcriptions.create(
                     model="whisper-1", file=buf
                 )
-            text = getattr(resp, "text", "")
+            text = getattr(resp, "text", "") if resp else ""
             if text:
                 return text.strip()
         except Exception:
-            # Fall back to placeholder below
+            # Any failure is handled by fallbacks below so callers still
+            # receive a deterministic placeholder rather than an empty string.
             pass
 
     try:  # Last-resort attempt: interpret bytes as UTF-8 text
@@ -137,8 +138,8 @@ def simple_transcribe(audio_bytes: bytes) -> str:
         text = _transcribe_bytes(audio_bytes)
     except Exception:
         text = ""
-    if text:
-        return text
+    if text.strip():
+        return text.strip()
     try:  # Last resort: attempt to decode raw bytes as UTF-8
         decoded = audio_bytes.decode("utf-8").strip()
         if decoded:
