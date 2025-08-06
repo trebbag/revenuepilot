@@ -339,6 +339,32 @@ export async function getSuggestions(text, context = {}) {
 }
 
 /**
+ * Request a follow-up schedule recommendation from the backend.
+ * @param {string} text Note text
+ * @param {string[]} codes Optional billing codes
+ * @returns {Promise<{interval:string|null, ics:string|null}>}
+ */
+export async function scheduleFollowUp(text, codes = []) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/schedule`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ text, codes }),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  return await resp.json();
+}
+
+/**
  * Upload an audio ``Blob`` to the backend for transcription.
  * Returns the text transcript or a placeholder if the backend is not
  * configured or the request fails.
