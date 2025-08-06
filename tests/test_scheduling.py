@@ -20,6 +20,12 @@ def test_recommend_follow_up_fallback(monkeypatch):
     codes = ["E11.9"]
     assert scheduling.recommend_follow_up(note, codes) == "3 months"
 
+
+def test_code_specific_intervals():
+    note = "Upper respiratory infection"
+    codes = ["J06.9"]
+    assert scheduling.recommend_follow_up(note, codes, use_llm=False) == "2 weeks"
+
 def test_export_ics():
     ics = scheduling.export_ics("2 weeks")
     assert "BEGIN:VCALENDAR" in ics

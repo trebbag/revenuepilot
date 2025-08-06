@@ -169,6 +169,8 @@
     "back": "Back to Notes",
     "file": "File",
     "patientId": "Patient ID",
+    "patientLanguage": "Patient language",
+    "patientAge": "Patient age",
     "templates": "Templates",
     "beautifying": "Beautifying…",
     "beautify": "Beautify",

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 
 _PIPELINES = {}
@@ -70,8 +70,9 @@ def summarize(
     lang: str = "en",
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
+    patient_age: Optional[int] = None,
     use_local: Optional[bool] = None,
-) -> str:
+) -> Dict[str, Any]:
     """Summarise ``text`` with a local model or deterministic placeholder."""
 
     if use_local is None:
@@ -83,11 +84,22 @@ def summarize(
             try:
                 pipe = _get_pipeline("summarization", model)
                 result = pipe(text)[0]
-                return result.get("summary_text", "").strip() or result.get("generated_text", "").strip()
+                summary_text = result.get("summary_text", "").strip() or result.get(
+                    "generated_text", ""
+                ).strip()
+                return {
+                    "summary": summary_text,
+                    "recommendations": [],
+                    "warnings": [],
+                }
             except Exception:
                 pass
     snippet = text.strip()[:50]
-    return f"Summary (offline): {snippet}"
+    return {
+        "summary": f"Summary (offline): {snippet}",
+        "recommendations": [],
+        "warnings": [],
+    }
 
 
 def suggest(

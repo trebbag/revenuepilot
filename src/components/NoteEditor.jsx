@@ -91,10 +91,21 @@ function useAudioRecorder(onTranscribed) {
 }
 
 const NoteEditor = forwardRef(function NoteEditor(
-  { id, value, onChange, onTranscriptChange, mode = 'draft' },
+  {
+    id,
+    value,
+    onChange,
+    onTranscriptChange,
+    mode = 'draft',
+    codes = [],
+    patientId = '',
+    encounterId = '',
+    role = '',
+  },
   ref,
 ) {
   const { t } = useTranslation();
+  const isAdmin = role === 'admin';
   const [localValue, setLocalValue] = useState(value || '');
   const [history, setHistory] = useState(value ? [value] : []);
   const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
@@ -400,7 +411,13 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const handleExportEhr = async () => {
     try {
-      const res = await exportToEhr(value, [], true);
+      const res = await exportToEhr(
+        value,
+        codes,
+        patientId,
+        encounterId,
+        true,
+      );
       if (res.status === 'exported') {
         setEhrFeedback(t('clipboard.exported'));
       } else if (res.status === 'auth_error') {
@@ -433,17 +450,21 @@ const NoteEditor = forwardRef(function NoteEditor(
           >
             {t('noteEditor.redo')}
           </button>
-          <button
-            type="button"
-            onClick={handleExportEhr}
-            style={{ marginLeft: '0.5rem' }}
-          >
-            {t('ehrExport')}
-          </button>
-          {ehrFeedback && (
-            <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
-          )}
-        </div>
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleExportEhr}
+                  style={{ marginLeft: '0.5rem' }}
+                >
+                  {t('ehrExport')}
+                </button>
+                {ehrFeedback && (
+                  <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
+                )}
+              </>
+            )}
+          </div>
         <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
           {history[historyIndex] || ''}
         </div>

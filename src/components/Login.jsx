@@ -96,6 +96,8 @@ function Login({ onLoggedIn }) {
             >
               <option value="en">{t('settings.english')}</option>
               <option value="es">{t('settings.spanish')}</option>
+              <option value="fr">{t('settings.french')}</option>
+              <option value="de">{t('settings.german')}</option>
             </select>
           </label>
         </div>

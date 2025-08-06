@@ -2,15 +2,21 @@
   "default": {
     "beautify": {
       "en": "Base instruction applied to all notes. Focus on clarity, avoid duplicating information or adding disclaimers, and remove filler words.",
+      "fr": "Instruction de base appliquée à toutes les notes. Concentrez-vous sur la clarté, évitez de dupliquer les informations ou d'ajouter des avertissements, et supprimez les mots superflus.",
+      "de": "Grundlegende Anweisung, die auf alle Notizen angewendet wird. Konzentrieren Sie sich auf Klarheit, vermeiden Sie doppelte Informationen oder Haftungsausschlüsse und entfernen Sie Füllwörter.",
       "examples": [
         {
           "user": {
             "en": "chief complaint: cough for 3 days. vitals t 37.8C hr 80. no known allergies.",
-            "es": "motivo de consulta: tos desde hace 3 días. signos vitales t 37,8C fc 80. sin alergias conocidas."
+            "es": "motivo de consulta: tos desde hace 3 días. signos vitales t 37,8C fc 80. sin alergias conocidas.",
+            "fr": "motif de consultation : toux depuis 3 jours. signes vitaux t 37,8C fc 80. pas d'allergies connues.",
+            "de": "Vorstellungsgrund: Husten seit 3 Tagen. Vitalzeichen T 37,8C HF 80. Keine bekannten Allergien."
           },
           "assistant": {
             "en": "Subjective:\n- Cough for 3 days\nObjective:\n- Temp 37.8 C, HR 80\nAssessment:\n- Acute cough\nPlan:\n- Rest and fluids",
-            "es": "Subjetivo:\n- Tos desde hace 3 días\nObjetivo:\n- Temp 37,8 C, FC 80\nEvaluación:\n- Tos aguda\nPlan:\n- Reposo e hidratación"
+            "es": "Subjetivo:\n- Tos desde hace 3 días\nObjetivo:\n- Temp 37,8 C, FC 80\nEvaluación:\n- Tos aguda\nPlan:\n- Reposo e hidratación",
+            "fr": "Subjectif:\n- Toux depuis 3 jours\nObjectif:\n- Temp 37,8 C, FC 80\nÉvaluation:\n- Toux aiguë\nPlan:\n- Repos et hydratation",
+            "de": "Subjektiv:\n- Husten seit 3 Tagen\nObjektiv:\n- Temp 37,8 C, HF 80\nBeurteilung:\n- Akuter Husten\nPlan:\n- Ruhe und Flüssigkeit"
           }
         }
       ]
@@ -36,16 +42,16 @@
   },
   "specialty_modifiers": {
     "cardiology": {
-      "en": "Remember to include cardiac-specific terminology and avoid extraneous detail.",
-      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios."
+      "en": "Remember to include cardiac-specific terminology and avoid extraneous detail. Emphasise cholesterol screening and lipid management when appropriate.",
+      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios. Destaca el control del colesterol y el manejo de lípidos cuando sea apropiado."
     },
     "paediatrics": {
-      "en": "Adjust tone for pediatric cases and use family-friendly language."
+      "en": "Adjust tone for pediatric cases and use family-friendly language. Include immunisation schedules and vaccine reminders where relevant."
     }
   },
   "payer_modifiers": {
     "medicare": {
-      "en": "Apply Medicare reimbursement guidelines and reference relevant policy."
+      "en": "Apply Medicare reimbursement guidelines and reference relevant policy. Highlight preventive services covered under Medicare."
     }
   },
   "specialty": {
@@ -60,7 +66,7 @@
         ]
       },
       "suggest": {
-        "en": "Cardiology specific suggestion instruction."
+        "en": "Cardiology specific suggestion instruction. Emphasise cholesterol screening and lipid management."
       },
       "summary": {
         "en": "Cardiology specific summary instruction."
@@ -71,7 +77,7 @@
         "en": "Paediatrics specific beautify instruction."
       },
       "suggest": {
-        "en": "Paediatrics specific suggestion instruction."
+        "en": "Paediatrics specific suggestion instruction. Include immunisation schedules and age-appropriate preventative care."
       },
       "summary": {
         "en": "Paediatrics specific summary instruction."
@@ -95,7 +101,7 @@
         "en": "Ensure documentation meets Medicare standards."
       },
       "suggest": {
-        "en": "Follow Medicare coding rules.",
+        "en": "Follow Medicare coding rules. Ensure recommendations align with Medicare coverage policies.",
         "examples": [
           {
             "user": "Medicare suggest note",

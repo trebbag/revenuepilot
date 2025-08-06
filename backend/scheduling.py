@@ -14,36 +14,31 @@ from typing import Iterable, Optional
 
 from .openai_client import call_openai
 
-CHRONIC_KEYWORDS = {
-    "chronic",
-    "diabetes",
-    "hypertension",
-    "asthma",
+CODE_INTERVALS = {
+    "E11": "3 months",
+    "I10": "3 months",
+    "J45": "3 months",
+    "J06": "2 weeks",
+    "S93": "2 weeks",
 }
-CHRONIC_CODE_PREFIXES = {"E11", "I10", "J45"}
 
+CHRONIC_KEYWORDS = {"chronic", "diabetes", "hypertension", "asthma"}
 ACUTE_KEYWORDS = {"sprain", "acute", "infection", "injury"}
-ACUTE_CODE_PREFIXES = {"S93", "J06"}
-
-
-def _has_prefix(codes: Iterable[str], prefixes: Iterable[str]) -> bool:
-    prefixes = tuple(prefixes)
-    return any(str(code).upper().startswith(prefixes) for code in codes)
-
 
 def _heuristic_follow_up(note: str, codes: Iterable[str]) -> Optional[str]:
     """Return a follow-up interval using simple keyword rules."""
     lower = note.lower() if note else ""
     codes = [c.upper() for c in codes if c]
 
-    if _has_prefix(codes, CHRONIC_CODE_PREFIXES) or any(
-        kw in lower for kw in CHRONIC_KEYWORDS
-    ):
+    for code in codes:
+        for prefix, interval in CODE_INTERVALS.items():
+            if code.startswith(prefix):
+                return interval
+
+    if any(kw in lower for kw in CHRONIC_KEYWORDS):
         return "3 months"
 
-    if _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
-        kw in lower for kw in ACUTE_KEYWORDS
-    ):
+    if any(kw in lower for kw in ACUTE_KEYWORDS):
         return "2 weeks"
 
     return None

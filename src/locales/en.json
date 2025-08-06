@@ -169,6 +169,8 @@
     "invalidPromptTemplates": "Invalid template format",
     "english": "English",
     "spanish": "Spanish",
+    "french": "French",
+    "german": "German",
     "region": "Region",
     "regionPlaceholder": "e.g., US",
     "specialties": {
@@ -235,6 +237,8 @@
     "back": "Back to Notes",
     "file": "File",
     "patientId": "Patient ID",
+    "patientLanguage": "Patient language",
+    "patientAge": "Patient age",
     "templates": "Templates",
     "beautifying": "Beautifying…",
     "beautify": "Beautify",

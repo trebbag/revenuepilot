@@ -830,9 +830,19 @@ export async function setApiKey(key) {
 /**
  * Export a note to an EHR system. Requires an admin token.
  * @param {string} note
+ * @param {string[]} [codes]
+ * @param {string} [patientId]
+ * @param {string} [encounterId]
  * @param {string} [token]
  */
-export async function exportToEhr(note, codes = [], direct = false, token) {
+export async function exportToEhr(
+  note,
+  codes = [],
+  patientId = '',
+  encounterId = '',
+  direct = false,
+  token,
+) {
   // ``direct`` acts as a frontend toggle. When false the function resolves
   // immediately without contacting the backend so the caller can simply copy
   // the note manually. This keeps the UI logic straightforward while allowing
@@ -855,7 +865,7 @@ export async function exportToEhr(note, codes = [], direct = false, token) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify({ note, codes }),
+    body: JSON.stringify({ note, codes, patientId, encounterId }),
   });
   if (!resp.ok) throw new Error('Export failed');
   return await resp.json();
@@ -878,6 +888,7 @@ export async function summarizeNote(text, context = {}) {
   if (baseUrl) {
     const payload = { text };
     if (context.lang) payload.lang = context.lang;
+    if (context.patientAge != null) payload.patientAge = context.patientAge;
     if (context.chart) payload.chart = context.chart;
     if (context.audio) payload.audio = context.audio;
     if (context.specialty) payload.specialty = context.specialty;
@@ -902,14 +913,18 @@ export async function summarizeNote(text, context = {}) {
         throw new Error('Unauthorized');
       }
       const data = await resp.json();
-      return data.summary || '';
+      return {
+        summary: data.summary || '',
+        recommendations: data.recommendations || [],
+        warnings: data.warnings || [],
+      };
     } catch (err) {
       console.error('Error summarizing note:', err);
       // fall through to stub behaviour
     }
   }
   // fallback: return the first sentence or first 200 characters
-  if (!text) return '';
+  if (!text) return { summary: '', recommendations: [], warnings: [] };
   // Try to extract the first sentence by splitting on period; otherwise truncate
   const sentences = text.split(/\.(\s|$)/);
   let summary = sentences[0];
@@ -920,7 +935,7 @@ export async function summarizeNote(text, context = {}) {
     summary = summary.trim();
     if (!summary.endsWith('...')) summary += '...';
   }
-  return summary;
+  return { summary, recommendations: [], warnings: [] };
 }
 
 /**
