@@ -28,12 +28,26 @@ def test_metrics_empty_returns_zeros():
     token = main.create_token('admin', 'admin')
     resp = client.get('/metrics', headers={'Authorization': f'Bearer {token}'})
     data = resp.json()
-    assert data['total_notes'] == 0
+    assert data['current']['total_notes'] == 0
+    assert data['baseline']['total_notes'] == 0
     assert data['coding_distribution'] == {}
+    assert data['compliance_counts'] == {}
+    assert data['top_compliance'] == []
 
 def test_metrics_aggregation():
     client = TestClient(main.app)
     events = [
+        {
+            "eventType": "note_closed",
+            "timestamp": 500,
+            "clinician": "carol",
+            "codes": ["99212"],
+            "revenue": 50.0,
+            "denial": False,
+            "deficiency": False,
+            "timeToClose": 80.0,
+            "baseline": True,
+        },
         {
             "eventType": "note_closed",
             "timestamp": 1000,
@@ -54,6 +68,16 @@ def test_metrics_aggregation():
             "deficiency": True,
             "timeToClose": 120.0,
         },
+        {
+            "eventType": "suggest",
+            "timestamp": 1500,
+            "compliance": ["Missing ROS", "Incomplete history"],
+        },
+        {
+            "eventType": "suggest",
+            "timestamp": 2500,
+            "compliance": ["Missing ROS"],
+        },
     ]
     token = main.create_token('logger', 'user')
     for ev in events:
@@ -65,20 +89,23 @@ def test_metrics_aggregation():
     admin_token = main.create_token('tester', 'admin')
     resp = client.get('/metrics', headers={'Authorization': f'Bearer {admin_token}'})
     data = resp.json()
-    assert data['revenue_per_visit'] == pytest.approx(150.0)
+    assert data['current']['revenue_per_visit'] == pytest.approx(150.0)
+    assert data['baseline']['revenue_per_visit'] == pytest.approx(50.0)
+    assert data['improvement']['revenue_per_visit'] == pytest.approx(200.0)
     assert data['coding_distribution']['99213'] == 1
     assert data['coding_distribution']['99214'] == 1
-    assert data['denial_rate'] == pytest.approx(0.5)
-    assert data['deficiency_rate'] == pytest.approx(0.5)
-    assert data['avg_close_time'] == pytest.approx(90.0)
+    assert data['current']['denial_rate'] == pytest.approx(0.5)
+    assert data['current']['deficiency_rate'] == pytest.approx(0.5)
+    assert data['current']['avg_close_time'] == pytest.approx(90.0)
+
     # Filter by clinician
     resp = client.get(
         '/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {admin_token}'}
     )
     data = resp.json()
-    assert data['revenue_per_visit'] == pytest.approx(100.0)
+    assert data['current']['revenue_per_visit'] == pytest.approx(100.0)
     assert data['coding_distribution'] == {'99213': 1}
-    assert data['denial_rate'] == 0
+    assert data['current']['denial_rate'] == 0
 
 
 def test_metrics_timeseries_and_range():
@@ -94,6 +121,7 @@ def test_metrics_timeseries_and_range():
         {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": json.dumps({})},
         {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": json.dumps({})},
         {"eventType": "note_started", "timestamp": ts2, "details": json.dumps({"patientID": "p2", "length": 150})},
+        {"eventType": "note_closed", "timestamp": ts1 + 360, "details": json.dumps({"denial": True, "deficiency": True})},
     ]
     for ev in events:
         main.db_conn.execute(
@@ -110,11 +138,13 @@ def test_metrics_timeseries_and_range():
     assert daily['2024-01-01']['notes'] == 1
     assert daily['2024-01-01']['beautify'] == 1
     assert daily['2024-01-01']['suggest'] == 1
+    assert daily['2024-01-01']['denials'] == 1
+    assert daily['2024-01-01']['deficiencies'] == 1
     assert daily['2024-01-08']['notes'] == 1
     # range filter
     resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})
     data = resp.json()
-    assert data['total_notes'] == 1
+    assert data['current']['total_notes'] == 1
 
 
 def test_timeseries_always_present():
@@ -128,3 +158,16 @@ def test_timeseries_always_present():
     assert 'weekly' in data['timeseries']
     assert isinstance(data['timeseries']['daily'], list)
     assert isinstance(data['timeseries']['weekly'], list)
+
+
+def test_survey_endpoint_and_avg_rating():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    main.db_conn.commit()
+    user_token = main.create_token('survey_user', 'user')
+    resp = client.post('/survey', json={'rating': 4, 'feedback': 'ok'}, headers={'Authorization': f'Bearer {user_token}'})
+    assert resp.status_code == 200
+    admin_token = main.create_token('admin_user', 'admin')
+    resp = client.get('/metrics', headers={'Authorization': f'Bearer {admin_token}'})
+    data = resp.json()
+    assert data['avg_satisfaction'] == pytest.approx(4.0)

@@ -1,7 +1,7 @@
 // Sidebar navigation component.  Provides top-level navigation and a collapse toggle.
 import { useTranslation } from 'react-i18next';
 
-function Sidebar({ collapsed, toggleCollapsed, onNavigate }) {
+function Sidebar({ collapsed, toggleCollapsed, onNavigate, role, onLogout }) {
   const { t } = useTranslation();
   const items = [
     { key: 'note', label: t('sidebar.notes') },
@@ -11,6 +11,9 @@ function Sidebar({ collapsed, toggleCollapsed, onNavigate }) {
     { key: 'settings', label: t('sidebar.settings') },
     { key: 'help', label: t('sidebar.help') },
   ];
+  if (role === 'admin') {
+    items.splice(3, 0, { key: 'admin-users', label: t('sidebar.users') });
+  }
   return (
     <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <button
@@ -26,6 +29,7 @@ function Sidebar({ collapsed, toggleCollapsed, onNavigate }) {
             {item.label}
           </button>
         ))}
+        <button onClick={onLogout}>{t('sidebar.logout')}</button>
       </nav>
     </div>
   );

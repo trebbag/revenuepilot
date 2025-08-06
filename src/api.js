@@ -4,9 +4,9 @@
 // operations with dummy data.
 
 /**
- * Authenticate a user and retrieve a JWT from the backend. After a
+ * Authenticate a user and retrieve JWT access and refresh tokens from the backend. After a
  * successful login the user's persisted settings are also fetched.
- * Both the token and settings are returned to the caller so they can be
+ * Both tokens and settings are returned to the caller so they can be
  * stored in application state or cached in localStorage. Throws an error
  * when authentication fails.
  *
@@ -30,6 +30,7 @@ export async function login(username, password) {
   }
   const data = await resp.json();
   const token = data.access_token;
+  const refreshToken = data.refresh_token;
   // Fetch persisted settings after successful login
   let settings = null;
   try {
@@ -38,7 +39,25 @@ export async function login(username, password) {
   } catch (e) {
     console.error('Failed to fetch settings', e);
   }
-  return { token, settings };
+  return { token, refreshToken, settings };
+}
+
+/**
+ * Exchange a refresh token for a new access token.
+ * @param {string} refreshToken
+ */
+export async function refreshAccessToken(refreshToken) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await fetch(`${baseUrl}/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!resp.ok) throw new Error('Failed to refresh token');
+  return await resp.json();
 }
 
 /**
@@ -283,17 +302,21 @@ export async function transcribeAudio(blob, diarise = false) {
       }
       const data = await resp.json();
       if (data.provider || data.patient) {
-        return { provider: data.provider || '', patient: data.patient || '' };
+        return {
+          provider: data.provider || '',
+          patient: data.patient || '',
+          segments: data.segments || [],
+        };
       }
       if (data.transcript) {
-        return { provider: data.transcript, patient: '' };
+        return { provider: data.transcript, patient: '', segments: data.segments || [] };
       }
     } catch (err) {
       console.error('Transcription error', err);
     }
   }
   // Fallback placeholder when no backend is available
-  return { provider: `[transcribed ${blob.size} bytes]`, patient: '' };
+  return { provider: `[transcribed ${blob.size} bytes]`, patient: '', segments: [] };
 }
 
 /**
@@ -314,12 +337,16 @@ export async function fetchLastTranscript() {
         throw new Error('Unauthorized');
       }
       const data = await resp.json();
-      return { provider: data.provider || '', patient: data.patient || '' };
+      return {
+        provider: data.provider || '',
+        patient: data.patient || '',
+        segments: data.segments || [],
+      };
     } catch (err) {
       console.error('fetchLastTranscript error', err);
     }
   }
-  return { provider: '', patient: '' };
+  return { provider: '', patient: '', segments: [] };
 }
 
 /**
@@ -358,6 +385,35 @@ export async function logEvent(eventType, details = {}) {
 }
 
 /**
+ * Submit a satisfaction survey to the backend.
+ * @param {number} rating 1-5 star rating
+ * @param {string} feedback Optional free-text feedback
+ */
+export async function submitSurvey(rating, feedback = '') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return;
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${baseUrl}/survey`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ rating, feedback }),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+  } catch (err) {
+    console.error('Failed to submit survey', err);
+  }
+}
+
+/**
  * Fetch aggregated metrics from the backend.  Returns stubbed metrics
  * when no backend is configured.
  * @returns {Promise<object>}
@@ -370,23 +426,41 @@ export async function getMetrics(filters = {}) {
   if (!baseUrl) {
     // Return stub metrics
     return {
-      total_notes: 0,
-      total_beautify: 0,
-      total_suggest: 0,
-      total_summary: 0,
-      total_chart_upload: 0,
-      total_audio: 0,
-      avg_note_length: 0,
-      avg_beautify_time: 0,
-      avg_close_time: 0,
-      revenue_per_visit: 0,
+      baseline: {
+        total_notes: 0,
+        total_beautify: 0,
+        total_suggest: 0,
+        total_summary: 0,
+        total_chart_upload: 0,
+        total_audio: 0,
+        avg_note_length: 0,
+        avg_beautify_time: 0,
+        avg_close_time: 0,
+        revenue_per_visit: 0,
+        denial_rate: 0,
+        deficiency_rate: 0,
+      },
+      current: {
+        total_notes: 0,
+        total_beautify: 0,
+        total_suggest: 0,
+        total_summary: 0,
+        total_chart_upload: 0,
+        total_audio: 0,
+        avg_note_length: 0,
+        avg_beautify_time: 0,
+        avg_close_time: 0,
+        revenue_per_visit: 0,
+        denial_rate: 0,
+        deficiency_rate: 0,
+      },
+      improvement: {},
       coding_distribution: {},
-      denial_rate: 0,
       denial_rates: {},
-      deficiency_rate: 0,
+      compliance_counts: {},
       avg_satisfaction: 0,
       public_health_rate: 0,
-      compliance_counts: {},
+
       clinicians: [],
       timeseries: { daily: [], weekly: [] },
     };

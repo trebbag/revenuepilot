@@ -62,8 +62,6 @@ except Exception:  # pragma: no cover - library is optional
 
 try:
     from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
-    from presidio_anonymizer import AnonymizerEngine
-    from presidio_anonymizer.entities import OperatorConfig
     from presidio_analyzer.nlp_engine import NlpEngineProvider
 
     _provider = NlpEngineProvider(
@@ -91,12 +89,10 @@ try:
     )
     _analyzer.registry.add_recognizer(_ssn_recognizer)
 
-    _anonymizer = AnonymizerEngine()
     _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     _PRESIDIO_AVAILABLE = False
     _analyzer = None  # type: ignore
-    _anonymizer = None  # type: ignore
 
 try:  # pragma: no cover - optional dependency
     from philter.philter import Philter as _Philter
@@ -107,10 +103,13 @@ except Exception:
     _PHILTER_AVAILABLE = False
     _philter = None  # type: ignore
 
-# Select the PHI scrubbing backend. ``presidio`` and ``philter`` are supported
-# when installed.  ``auto`` (default) prefers Presidio and falls back to
-# Philter, then simple regex replacements if neither is available.
-_DEID_ENGINE = os.getenv("DEID_ENGINE", "auto").lower()
+# Select the PHI scrubbing backend. Options: ``presidio``, ``philter``,
+# ``scrubadub`` or ``regex``. The default is the lightweight regex scrubber.
+_DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
+
+# When ``DEID_HASH_TOKENS`` is true (default), placeholders include a short
+# hash of the removed content instead of the raw value.
+_HASH_TOKENS = os.getenv("DEID_HASH_TOKENS", "true").lower() in {"1", "true", "yes"}
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
@@ -138,7 +137,7 @@ events: List[Dict[str, Any]] = []
 # Last audio transcript returned by the ``/transcribe`` endpoint.  This is a
 # simple in-memory store so the frontend can fetch or re-use the most recent
 # transcript without re-uploading the audio.  It is reset on server restart.
-last_transcript: Dict[str, str] = {"provider": "", "patient": ""}
+last_transcript: Dict[str, Any] = {"provider": "", "patient": "", "segments": []}
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
@@ -239,19 +238,38 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
+# Short-lived access tokens (minutes) and longer lived refresh tokens (days)
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-def create_token(username: str, role: str, clinic: str | None = None) -> str:
-    """Create a signed JWT for the given user and role.
 
-    Optionally include a clinic identifier so templates can be scoped per clinic."""
+def create_access_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Create a signed JWT access token for the given user."""
     payload = {
         "sub": username,
         "role": role,
-        "exp": datetime.utcnow() + timedelta(hours=12),
+        "type": "access",
+        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     if clinic is not None:
         payload["clinic"] = clinic
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_refresh_token(username: str, role: str) -> str:
+    """Create a refresh token with a longer expiry."""
+    payload = {
+        "sub": username,
+        "role": role,
+        "type": "refresh",
+        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Backward compatible wrapper returning an access token."""
+    return create_access_token(username, role, clinic)
 
 
 def get_current_user(
@@ -313,6 +331,10 @@ class LoginModel(BaseModel):
     password: str
 
 
+class RefreshModel(BaseModel):
+    refresh_token: str
+
+
 class ResetPasswordModel(BaseModel):
     """Schema used when a user wishes to reset their password."""
     username: str
@@ -356,6 +378,45 @@ async def register(model: RegisterModel, user=Depends(require_role("admin"))):
     return {"status": "registered"}
 
 
+@app.get("/users")
+async def list_users(user=Depends(require_role("admin"))) -> List[Dict[str, str]]:
+    """Return all registered users (admin only)."""
+    rows = db_conn.execute("SELECT username, role FROM users").fetchall()
+    return [{"username": r["username"], "role": r["role"]} for r in rows]
+
+
+class UpdateUserModel(BaseModel):
+    role: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.put("/users/{username}")
+async def update_user(username: str, model: UpdateUserModel, user=Depends(require_role("admin"))):
+    """Update a user's role or password."""
+    fields = []
+    values: List[Any] = []
+    if model.role:
+        fields.append("role=?")
+        values.append(model.role)
+    if model.password:
+        fields.append("password_hash=?")
+        values.append(hash_password(model.password))
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    values.append(username)
+    db_conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE username=?", values)
+    db_conn.commit()
+    return {"status": "updated"}
+
+
+@app.delete("/users/{username}")
+async def delete_user(username: str, user=Depends(require_role("admin"))):
+    """Remove a user account."""
+    db_conn.execute("DELETE FROM users WHERE username=?", (username,))
+    db_conn.commit()
+    return {"status": "deleted"}
+
+
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, str]:
     """Validate credentials and return a JWT on success."""
@@ -369,6 +430,7 @@ async def login(model: LoginModel) -> Dict[str, str]:
             status_code=status.HTTP_423_LOCKED,
             detail="Account locked due to failed login attempts",
         )
+
     row = db_conn.execute(
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
@@ -382,8 +444,26 @@ async def login(model: LoginModel) -> Dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
-    token = create_token(model.username, row["role"])
-    return {"access_token": token}
+    access_token = create_access_token(model.username, row["role"])
+    refresh_token = create_refresh_token(model.username, row["role"])
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
+
+
+@app.post("/refresh")
+async def refresh(model: RefreshModel) -> Dict[str, Any]:
+    """Issue a new access token given a valid refresh token."""
+    try:
+        data = jwt.decode(model.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("type") != "refresh":
+            raise jwt.PyJWTError()
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
+    return {"access_token": access_token, "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60}
 
 
 @app.post("/reset-password")
@@ -541,6 +621,16 @@ class EventModel(BaseModel):
     compliance: Optional[List[str]] = None
     publicHealth: Optional[bool] = None
     satisfaction: Optional[int] = None
+    baseline: Optional[bool] = None
+
+
+class SurveyModel(BaseModel):
+    """Schema for clinician feedback after completing a note."""
+
+    rating: int = Field(..., ge=1, le=5)
+    feedback: Optional[str] = None
+    patientID: Optional[str] = None
+    clinician: Optional[str] = None
 
 
 class TemplateModel(BaseModel):
@@ -554,85 +644,74 @@ class TemplateModel(BaseModel):
 def deidentify(text: str) -> str:
     """Redact common protected health information from ``text``.
 
-    The helper uses ``scrubadub`` when available and augments it with
-    explicit regular expressions so that the most frequent identifiers are
-    consistently replaced with bracketed placeholders.
+    Each removed span is replaced with a placeholder of the form
+    ``[TOKEN:VALUE]`` where ``TOKEN`` is the detected entity type and
+    ``VALUE`` is either the raw text or a short hash depending on the
+    ``DEID_HASH_TOKENS`` flag.
 
     Args:
         text: Raw note text potentially containing PHI.
     Returns:
-        The cleaned text with sensitive spans replaced by tokens such as
-        ``[NAME]`` or ``[PHONE]``.
+        The cleaned text with sensitive spans replaced by informative
+        placeholders.
     """
+
+    def _placeholder(token: str, value: str) -> str:
+        rep = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8] if _HASH_TOKENS else value
+        return f"[{token}:{rep}]"
+
     engine = _DEID_ENGINE
-    backends: List[str] = []
-    if engine == "presidio":
-        backends.append("presidio")
-    elif engine == "philter":
-        backends.append("philter")
-    else:  # auto
-        backends.extend(["presidio", "philter"])
 
-    for backend_name in backends:
-        if backend_name == "presidio" and _PRESIDIO_AVAILABLE:
-            try:
-                entities = [
-                    "PERSON",
-                    "PHONE_NUMBER",
-                    "EMAIL_ADDRESS",
-                    "US_SSN",
-                    "DATE_TIME",
-                    "ADDRESS",
-                ]
-                results = _analyzer.analyze(text=text, language="en", entities=entities)
-                token_map = {
-                    "PERSON": "NAME",
-                    "PHONE_NUMBER": "PHONE",
-                    "EMAIL_ADDRESS": "EMAIL",
-                    "US_SSN": "SSN",
-                    "DATE_TIME": "DATE",
-                    "ADDRESS": "ADDRESS",
-                }
-                operators = {
-                    r.entity_type: OperatorConfig(
-                        "replace",
-                        {"new_value": f"[{token_map.get(r.entity_type, r.entity_type)}]"},
-                    )
-                    for r in results
-                }
-                text = _anonymizer.anonymize(
-                    text=text, analyzer_results=results, operators=operators
-                ).text
-                return text
-            except Exception as exc:  # pragma: no cover - best effort
-                logging.warning("Advanced scrubber failed: %s", exc)
-        elif backend_name == "philter" and _PHILTER_AVAILABLE:
-            try:
-                # Philter replaces detected PHI with the literal "**PHI**".
-                if hasattr(_philter, "philter"):
-                    text = _philter.philter(text)
-                elif hasattr(_philter, "filter"):
-                    text = _philter.filter(text)
-                text = text.replace("**PHI**", "[PHI]")
-                return text
-            except Exception as exc:  # pragma: no cover - best effort
-                logging.warning("Philter failed: %s", exc)
-        else:
-            # Requested backend not available; move to next.
-            continue
+    if engine == "presidio" and _PRESIDIO_AVAILABLE:
 
-    if _SCRUBBER_AVAILABLE:
         try:
-            text = scrubadub.clean(text, replace_with="placeholder")
-            text = re.sub(
-                r"\{\{([A-Z_]+?)(?:-\d+)?\}\}",
-                lambda m: f"[{m.group(1)}]",
-                text,
-            )
-            text = text.replace("[SOCIAL_SECURITY_NUMBER]", "[SSN]")
+            entities = [
+                "PERSON",
+                "PHONE_NUMBER",
+                "EMAIL_ADDRESS",
+                "US_SSN",
+                "DATE_TIME",
+                "ADDRESS",
+            ]
+            results = _analyzer.analyze(text=text, language="en", entities=entities)
+            token_map = {
+                "PERSON": "NAME",
+                "PHONE_NUMBER": "PHONE",
+                "EMAIL_ADDRESS": "EMAIL",
+                "US_SSN": "SSN",
+                "DATE_TIME": "DATE",
+                "ADDRESS": "ADDRESS",
+            }
+            for r in sorted(results, key=lambda r: r.start, reverse=True):
+                token = token_map.get(r.entity_type, r.entity_type)
+                value = text[r.start : r.end]
+                text = text[: r.start] + _placeholder(token, value) + text[r.end :]
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Advanced scrubber failed: %s", exc)
+    elif engine == "philter" and _PHILTER_AVAILABLE:
+        try:
+            # Philter replaces detected PHI with the literal "**PHI**".
+            if hasattr(_philter, "philter"):
+                text = _philter.philter(text)
+            elif hasattr(_philter, "filter"):
+                text = _philter.filter(text)
+            text = text.replace("**PHI**", _placeholder("PHI", "PHI"))
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Philter failed: %s", exc)
+    elif engine == "scrubadub" and _SCRUBBER_AVAILABLE:
+        try:
+            scrubber = scrubadub.Scrubber()
+            filths = list(scrubber.iter_filth(text))
+            for filth in sorted(filths, key=lambda f: f.beg, reverse=True):
+                token = filth.__class__.__name__.replace("Filth", "").upper()
+                text = text[: filth.beg] + _placeholder(token, filth.text) + text[filth.end :]
+            return text
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("scrubadub failed: %s", exc)
 
+    # Fallback to regex-based scrubbing
     month = (
         "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
         "Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
@@ -641,6 +720,10 @@ def deidentify(text: str) -> str:
     phone_pattern = re.compile(
         r"(?:(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b"
         r"|\+\d{1,3}[-\.\s]?\d{1,4}[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
+        re.IGNORECASE,
+    )
+    dob_pattern = re.compile(
+        r"\bDOB[:\s-]*\d{1,2}/\d{1,2}/\d{2,4}\b",
         re.IGNORECASE,
     )
     date_pattern = re.compile(
@@ -654,6 +737,11 @@ def deidentify(text: str) -> str:
     )
     email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
     ssn_pattern = re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b")
+    health_id_pattern = re.compile(
+        r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b",
+        re.IGNORECASE,
+    )
+    vehicle_pattern = re.compile(r"\b[A-Z]{2,3}[- ]?\d{3,4}\b")
     address_pattern = re.compile(
         r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)?\b",
         re.IGNORECASE,
@@ -664,15 +752,18 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
+        ("HEALTH_ID", health_id_pattern),
+        ("VEHICLE", vehicle_pattern),
         ("ADDRESS", address_pattern),
         ("NAME", name_pattern),
     ]
 
     for token, pattern in patterns:
-        text = pattern.sub(f"[{token}]", text)
+        text = pattern.sub(lambda m: _placeholder(token, m.group(0)), text)
 
     return text
 
@@ -730,6 +821,7 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
         "compliance",
         "publicHealth",
         "satisfaction",
+        "baseline",
     ]:
         value = getattr(event, key)
         if value is not None:
@@ -758,6 +850,40 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
     except Exception as exc:
         print(f"Error inserting event into database: {exc}")
     return {"status": "logged"}
+
+
+@app.post("/survey")
+async def submit_survey(survey: SurveyModel, user=Depends(require_role("user"))) -> Dict[str, str]:
+    """Record a satisfaction survey with optional free-text feedback."""
+
+    ts = datetime.utcnow().timestamp()
+    details = {
+        "satisfaction": survey.rating,
+        "feedback": survey.feedback or "",
+    }
+    if survey.patientID:
+        details["patientID"] = survey.patientID
+    if survey.clinician:
+        details["clinician"] = survey.clinician
+    events.append({"eventType": "survey", "details": details, "timestamp": ts})
+    try:
+        db_conn.execute(
+            "INSERT INTO events (eventType, timestamp, details, revenue, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "survey",
+                ts,
+                json.dumps(details, ensure_ascii=False),
+                None,
+                None,
+                None,
+                None,
+                survey.rating,
+            ),
+        )
+        db_conn.commit()
+    except Exception as exc:
+        print(f"Error inserting survey into database: {exc}")
+    return {"status": "recorded"}
 
 
 def _validate_prompt_templates(data: Dict[str, Any]) -> None:
@@ -872,16 +998,14 @@ async def get_metrics(
     clinician: Optional[str] = None,
     user=Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    """Aggregate analytics from logged events with optional filtering.
+    """Aggregate analytics separately for baseline and current events.
 
-    The endpoint now uses SQL aggregation to build daily and weekly
-    time‑series buckets directly within SQLite rather than iterating over
-    each event in Python.  This keeps the implementation reasonably
-    efficient even as the number of logged events grows."""
+    Events with ``baseline=true`` represent pre‑implementation metrics.
+    The response contains aggregates for both baseline and current periods
+    plus percentage improvement of current over baseline."""
 
     cursor = db_conn.cursor()
 
-    # Collect distinct clinicians for the frontend dropdown.
     cursor.execute(
         """
         SELECT DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician
@@ -891,69 +1015,209 @@ async def get_metrics(
     )
     clinicians = [row["clinician"] for row in cursor.fetchall() if row["clinician"]]
 
-    # ------------------------------------------------------------------
-    # Build a WHERE clause based on optional query parameters
-    # ------------------------------------------------------------------
     def _parse_iso_ts(value: str) -> float | None:
-        """Best effort parse of an ISO date/datetime string to a timestamp."""
         try:
             return datetime.fromisoformat(value).timestamp()
         except Exception:
             return None
 
-    conditions: List[str] = []
-    params: List[Any] = []
+    base_conditions: List[str] = []
+    base_params: List[Any] = []
     if start:
-        start_ts = _parse_iso_ts(start)
-        if start_ts is not None:
-            conditions.append("timestamp >= ?")
-            params.append(start_ts)
+        ts = _parse_iso_ts(start)
+        if ts is not None:
+            base_conditions.append("timestamp >= ?")
+            base_params.append(ts)
     if end:
-        end_ts = _parse_iso_ts(end)
-        if end_ts is not None:
-            conditions.append("timestamp <= ?")
-            params.append(end_ts)
+        ts = _parse_iso_ts(end)
+        if ts is not None:
+            base_conditions.append("timestamp <= ?")
+            base_params.append(ts)
     if clinician:
-        conditions.append("json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.clinician') = ?")
-        params.append(clinician)
+        base_conditions.append(
+            "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?"
+        )
+        base_params.append(clinician)
 
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    baseline_cond = "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 1"
+    current_cond = "(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') IS NULL OR json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 0)"
 
-    # ------------------------------------------------------------------
-    # Aggregate overall totals/averages using SQL
-    # ------------------------------------------------------------------
-    totals_query = f"""
-        SELECT
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL))     AS avg_note_length,
-            AVG(revenue)     AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL))     AS avg_close_time,
-            AVG(satisfaction) AS avg_satisfaction,
-            AVG(public_health) AS public_health_rate
-        FROM events {where_clause}
-    """
-    cursor.execute(totals_query, params)
-    row = cursor.fetchone()
-    totals = dict(row) if row else {}
+    current_conditions = base_conditions + [current_cond]
+    baseline_conditions = base_conditions + [baseline_cond]
 
-    total_notes = totals.get("total_notes", 0) or 0
-    total_beautify = totals.get("total_beautify", 0) or 0
-    total_suggest = totals.get("total_suggest", 0) or 0
-    total_summary = totals.get("total_summary", 0) or 0
-    total_chart_upload = totals.get("total_chart_upload", 0) or 0
-    total_audio = totals.get("total_audio", 0) or 0
-    avg_length = totals.get("avg_note_length") or 0
-    avg_revenue = totals.get("revenue_per_visit") or 0
-    avg_close_time = totals.get("avg_close_time") or 0
+    where_current = f"WHERE {' AND '.join(current_conditions)}" if current_conditions else ""
+    where_baseline = f"WHERE {' AND '.join(baseline_conditions)}" if baseline_conditions else ""
 
-    # ------------------------------------------------------------------
-    # Build daily and weekly time series via SQL GROUP BY
-    # ------------------------------------------------------------------
+    def compute_basic(where_clause: str, params: List[Any], collect_timeseries: bool = False) -> Dict[str, Any]:
+        totals_query = f"""
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue)     AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                AVG(satisfaction) AS avg_satisfaction,
+                AVG(public_health) AS public_health_rate
+            FROM events {where_clause}
+        """
+        cursor.execute(totals_query, params)
+        row = cursor.fetchone()
+        totals = dict(row) if row else {}
+        metrics: Dict[str, Any] = {
+            "total_notes": totals.get("total_notes", 0) or 0,
+            "total_beautify": totals.get("total_beautify", 0) or 0,
+            "total_suggest": totals.get("total_suggest", 0) or 0,
+            "total_summary": totals.get("total_summary", 0) or 0,
+            "total_chart_upload": totals.get("total_chart_upload", 0) or 0,
+            "total_audio": totals.get("total_audio", 0) or 0,
+            "avg_note_length": totals.get("avg_note_length") or 0,
+            "revenue_per_visit": totals.get("revenue_per_visit") or 0,
+            "avg_close_time": totals.get("avg_close_time") or 0,
+        }
+
+        cursor.execute(
+            f"SELECT eventType, timestamp, details, codes, compliance_flags, public_health, satisfaction FROM events {where_clause} ORDER BY timestamp",
+            params,
+        )
+        rows = cursor.fetchall()
+        code_counts: Dict[str, int] = {}
+        denial_counts: Dict[str, List[int]] = {}
+        denial_totals = [0, 0]
+        deficiency_totals = [0, 0]
+        compliance_counts: Dict[str, int] = {}
+        public_health_totals = [0, 0]
+        satisfaction_sum = satisfaction_count = 0
+        beautify_time_sum = beautify_time_count = 0.0
+        beautify_daily: Dict[str, List[float]] = {} if collect_timeseries else {}
+        beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
+        last_start_for_patient: Dict[str, float] = {}
+
+        for r in rows:
+            evt = r["eventType"]
+            ts = r["timestamp"]
+            try:
+                details = json.loads(r["details"] or "{}")
+            except Exception:
+                details = {}
+
+            codes_val = r["codes"]
+            try:
+                codes = json.loads(codes_val) if codes_val else []
+            except Exception:
+                codes = []
+            if isinstance(codes, list):
+                denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
+                for code in codes:
+                    code_counts[code] = code_counts.get(code, 0) + 1
+                    if denial_flag is not None:
+                        totals_d = denial_counts.get(code, [0, 0])
+                        totals_d[0] += 1
+                        if denial_flag:
+                            totals_d[1] += 1
+                        denial_counts[code] = totals_d
+
+            comp_val = r["compliance_flags"]
+            try:
+                comp_list = json.loads(comp_val) if comp_val else []
+            except Exception:
+                comp_list = []
+            for flag in comp_list:
+                compliance_counts[flag] = compliance_counts.get(flag, 0) + 1
+
+            public_health = r["public_health"]
+            if isinstance(public_health, int):
+                public_health_totals[0] += 1
+                if public_health:
+                    public_health_totals[1] += 1
+
+            satisfaction = r["satisfaction"]
+            if isinstance(satisfaction, (int, float)):
+                satisfaction_sum += float(satisfaction)
+                satisfaction_count += 1
+
+            denial = details.get("denial")
+            if isinstance(denial, bool):
+                denial_totals[0] += 1
+                if denial:
+                    denial_totals[1] += 1
+
+            deficiency = details.get("deficiency")
+            if isinstance(deficiency, bool):
+                deficiency_totals[0] += 1
+                if deficiency:
+                    deficiency_totals[1] += 1
+
+            patient_id = (
+                details.get("patientID")
+                or details.get("patientId")
+                or details.get("patient_id")
+            )
+            if evt == "note_started" and patient_id:
+                last_start_for_patient[patient_id] = ts
+            if evt == "beautify" and patient_id and patient_id in last_start_for_patient:
+                duration = ts - last_start_for_patient[patient_id]
+                if duration >= 0:
+                    beautify_time_sum += duration
+                    beautify_time_count += 1
+                    if collect_timeseries:
+                        day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                        week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
+                        drec = beautify_daily.setdefault(day, [0.0, 0])
+                        drec[0] += duration
+                        drec[1] += 1
+                        wrec = beautify_weekly.setdefault(week, [0.0, 0])
+                        wrec[0] += duration
+                        wrec[1] += 1
+
+        avg_beautify_time = (
+            beautify_time_sum / beautify_time_count if beautify_time_count else 0
+        )
+        denial_rates = {c: (v[1] / v[0] if v[0] else 0) for c, v in denial_counts.items()}
+        overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
+        deficiency_rate = (
+            deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
+        )
+        public_health_rate = (
+            public_health_totals[1] / public_health_totals[0]
+            if public_health_totals[0]
+            else 0
+        )
+        avg_satisfaction = (
+            satisfaction_sum / satisfaction_count if satisfaction_count else 0
+        )
+
+        metrics.update(
+            {
+                "avg_beautify_time": avg_beautify_time,
+                "coding_distribution": code_counts,
+                "denial_rate": overall_denial,
+                "denial_rates": denial_rates,
+                "deficiency_rate": deficiency_rate,
+                "compliance_counts": compliance_counts,
+                "public_health_rate": public_health_rate,
+                "avg_satisfaction": avg_satisfaction,
+            }
+        )
+        if collect_timeseries:
+            metrics["beautify_daily"] = beautify_daily
+            metrics["beautify_weekly"] = beautify_weekly
+        return metrics
+
+    current_metrics = compute_basic(where_current, base_params, collect_timeseries=True)
+    baseline_metrics = compute_basic(where_baseline, base_params)
+
+    beautify_daily = current_metrics.pop("beautify_daily")
+    beautify_weekly = current_metrics.pop("beautify_weekly")
+    coding_distribution = current_metrics.pop("coding_distribution")
+    denial_rates = current_metrics.pop("denial_rates")
+    compliance_counts = current_metrics.pop("compliance_counts")
+    public_health_rate = current_metrics.pop("public_health_rate")
+    avg_satisfaction = current_metrics.pop("avg_satisfaction")
+
     daily_query = f"""
         SELECT
             date(datetime(timestamp, 'unixepoch')) AS date,
@@ -963,15 +1227,15 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_clause}
+        FROM events {where_current}
         GROUP BY date
         ORDER BY date
     """
-    cursor.execute(daily_query, params)
-    daily_list = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(daily_query, base_params)
+    daily_list = [dict(r) for r in cursor.fetchall()]
 
     weekly_query = f"""
         SELECT
@@ -982,46 +1246,16 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_clause}
+        FROM events {where_current}
         GROUP BY week
         ORDER BY week
     """
-    cursor.execute(weekly_query, params)
-    weekly_list = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(weekly_query, base_params)
+    weekly_list = [dict(r) for r in cursor.fetchall()]
 
-    # ------------------------------------------------------------------
-    # Additional aggregations that are easier in Python
-    # (e.g. denial rates, coding distribution, beautify time)
-    # ------------------------------------------------------------------
-    cursor.execute(
-        f"SELECT eventType, timestamp, details, codes, compliance_flags, public_health, satisfaction FROM events {where_clause} ORDER BY timestamp",
-        params,
-    )
-    rows = cursor.fetchall()
-
-    code_counts: Dict[str, int] = {}
-    denial_counts: Dict[str, List[int]] = {}
-    denial_totals = [0, 0]
-    deficiency_totals = [0, 0]
-    compliance_counts: Dict[str, int] = {}
-    public_health_totals = [0, 0]
-    satisfaction_sum = satisfaction_count = 0
-
-    beautify_time_sum = beautify_time_count = 0.0
-    beautify_daily: Dict[str, List[float]] = {}
-    beautify_weekly: Dict[str, List[float]] = {}
-    last_start_for_patient: Dict[str, float] = {}
-
-    for row in rows:
-        evt = row["eventType"]
-        ts = row["timestamp"]
-        try:
-            details = json.loads(row["details"] or "{}")
-        except Exception:
-            details = {}
 
         codes_val = row["codes"]
         try:
@@ -1095,6 +1329,13 @@ async def get_metrics(
         beautify_time_sum / beautify_time_count if beautify_time_count else 0
     )
 
+    top_compliance = [
+        {"gap": k, "count": v}
+        for k, v in sorted(
+            compliance_counts.items(), key=lambda item: item[1], reverse=True
+        )[:5]
+    ]
+
     # attach beautify averages to the SQL-produced time series
     for entry in daily_list:
         bt = beautify_daily.get(entry["date"])
@@ -1103,38 +1344,36 @@ async def get_metrics(
         bt = beautify_weekly.get(entry["week"])
         entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
 
-    denial_rates = {
-        code: (v[1] / v[0] if v[0] else 0) for code, v in denial_counts.items()
+    def pct_change(b: float, c: float) -> float | None:
+        return ((c - b) / b * 100) if b else None
+
+    keys = [
+        "total_notes",
+        "total_beautify",
+        "total_suggest",
+        "total_summary",
+        "total_chart_upload",
+        "total_audio",
+        "avg_note_length",
+        "avg_beautify_time",
+        "avg_close_time",
+        "revenue_per_visit",
+        "denial_rate",
+        "deficiency_rate",
+    ]
+    improvement = {
+        k: pct_change(baseline_metrics.get(k, 0), current_metrics.get(k, 0))
+        for k in keys
     }
-    overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
-    deficiency_rate = (
-        deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
-    )
-    public_health_rate = (
-        public_health_totals[1] / public_health_totals[0]
-        if public_health_totals[0]
-        else 0
-    )
-    avg_satisfaction = (
-        satisfaction_sum / satisfaction_count if satisfaction_count else 0
-    )
 
     return {
-        "total_notes": total_notes,
-        "total_beautify": total_beautify,
-        "total_suggest": total_suggest,
-        "total_summary": total_summary,
-        "total_chart_upload": total_chart_upload,
-        "total_audio": total_audio,
-        "avg_note_length": avg_length,
-        "avg_beautify_time": avg_beautify_time,
-        "avg_close_time": avg_close_time,
-        "revenue_per_visit": avg_revenue,
-        "coding_distribution": code_counts,
-        "denial_rate": overall_denial,
+        "baseline": baseline_metrics,
+        "current": current_metrics,
+        "improvement": improvement,
+        "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
-        "deficiency_rate": deficiency_rate,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "clinicians": clinicians,
@@ -1184,7 +1423,7 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
 @app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...), diarise: bool = False, user=Depends(require_role("user"))
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Transcribe uploaded audio.
 
     The endpoint accepts an audio file (e.g. from the browser's
@@ -1199,7 +1438,12 @@ async def transcribe(
     if diarise:
         result = diarize_and_transcribe(audio_bytes)
     else:
-        result = {"provider": simple_transcribe(audio_bytes), "patient": ""}
+        text = simple_transcribe(audio_bytes)
+        result = {
+            "provider": text,
+            "patient": "",
+            "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
+        }
     # Store the most recent transcript so other endpoints or subsequent
     # requests can reuse it without reprocessing the audio.
     last_transcript.update(result)
@@ -1207,7 +1451,7 @@ async def transcribe(
 
 
 @app.get("/transcribe")
-async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, str]:
+async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the most recent audio transcript.
 
     This endpoint allows the frontend to retrieve the last transcript
