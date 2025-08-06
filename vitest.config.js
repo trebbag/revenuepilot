@@ -6,6 +6,7 @@ export default defineConfig({
   test: {
     exclude: [...defaultExclude, 'e2e/**', 'src/components/__tests__/NoteEditor.test.jsx'],
     coverage: {
+      enabled: true,
       reporter: ['text'],
       include: [
         'src/components/ClipboardExportButtons.jsx',
@@ -17,6 +18,10 @@ export default defineConfig({
         'src/components/SuggestionPanel.jsx',
         'src/components/TemplatesModal.jsx'
       ],
+      lines: 70,
+      functions: 50,
+      branches: 50,
+      statements: 70,
     },
   },
 });

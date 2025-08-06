@@ -163,3 +163,18 @@ test('applies quick range filter', async () => {
   expect(getMetrics).toHaveBeenLastCalledWith({ start, end, clinician: '' });
 
 });
+
+test('exports metrics as CSV', async () => {
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(() => {});
+  global.URL.createObjectURL = vi.fn(() => 'blob:mock');
+  global.URL.revokeObjectURL = vi.fn();
+
+  const { getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  fireEvent.click(getByText('Export'));
+  expect(clickSpy).toHaveBeenCalled();
+
+  clickSpy.mockRestore();
+});

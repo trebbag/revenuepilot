@@ -57,6 +57,11 @@ def test_endpoints_require_auth(client):
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
 
 
+def test_get_transcribe_requires_auth(client):
+    resp = client.get('/transcribe')
+    assert resp.status_code in {401, 403}
+
+
 def test_login_and_settings(client):
     pwd = main.hash_password("pw")
     main.db_conn.execute(
@@ -208,6 +213,25 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "exported"
+
+
+def test_export_to_ehr_handles_failure(client, monkeypatch):
+    token_admin = client.post(
+        "/login", json={"username": "admin", "password": "pw"}
+    ).json()["access_token"]
+
+    def boom(note, codes):  # noqa: ARG002
+        raise RuntimeError("fail")
+
+    monkeypatch.setattr(ehr_integration, "post_note_and_codes", boom)
+
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header(token_admin),
+    )
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "fail"
 
 
 def test_summarize_and_fallback(client, monkeypatch):

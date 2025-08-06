@@ -49,3 +49,11 @@ test('shows diarised output when available', async () => {
   await findByText(/Provider:/);
   await findByText(/Patient:/);
 });
+
+test('displays error when transcript load fails', async () => {
+  fetchLastTranscript.mockRejectedValue(new Error('boom'));
+  const { findByText } = render(
+    <NoteEditor id="n3" value="" onChange={() => {}} />
+  );
+  await findByText('Failed to load transcript');
+});
