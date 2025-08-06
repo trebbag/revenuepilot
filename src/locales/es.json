@@ -75,6 +75,10 @@
     "none": "No hay borradores guardados.",
     "delete": "Eliminar borrador"
   },
+  "followUp": {
+    "recommend": "Recomendar",
+    "placeholder": "p. ej., 2 semanas"
+  },
   "help": {
     "welcomeTitle": "Bienvenido a RevenuePilot",
     "intro": "Esta guía rápida le mostrará los fundamentos del uso de la aplicación RevenuePilot. Ya sea que esté creando su primera nota clínica o revisando analíticas, la aplicación está diseñada para asistirle en cada paso.",
@@ -114,7 +118,8 @@
     "title": "Registro de eventos",
     "intro": "Este registro muestra acciones recientes capturadas por la aplicación. Úselo para verificar que eventos como creación de notas, embellecimiento, sugerencias, resúmenes, cargas de gráficos y grabaciones de audio se están registrando y procesando.",
     "loading": "Cargando…",
-    "none": "No se han registrado eventos."
+    "none": "No se han registrado eventos.",
+    "fetchFailed": "Error al cargar los eventos"
   },
   "auditLog": {
     "title": "Registro de auditoría",
@@ -123,7 +128,8 @@
     "action": "Acción",
     "details": "Detalles",
     "loading": "Cargando…",
-    "none": "Sin entradas de auditoría"
+    "none": "Sin entradas de auditoría",
+    "fetchError": "Error al cargar el registro de auditoría"
   },
   "noteEditor": {
     "stopRecording": "Detener grabación",
@@ -148,6 +154,7 @@
     "apiKeyHelp": "Introduzca aquí su clave de API de OpenAI. La clave se almacenará de forma segura en su máquina y será utilizada por el backend para llamar al modelo de lenguaje. Puede actualizarla en cualquier momento.",
     "saveKey": "Guardar clave",
     "invalidApiKey": "Formato de clave de API inválido",
+    "apiKeyPlaceholder": "sk-... (p. ej., sk-proj-...)",
     "theme": "Tema",
     "modern": "Minimal moderno",
     "dark": "Elegancia oscura",

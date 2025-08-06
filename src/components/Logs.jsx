@@ -35,7 +35,7 @@ export default function Logs() {
           localStorage.removeItem('token');
           window.location.href = '/';
         } else {
-          setError(err.message);
+          setError(t('logs.fetchFailed'));
         }
       } finally {
         setLoading(false);

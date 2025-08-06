@@ -3,6 +3,7 @@ import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
 import FollowUpScheduler from '../FollowUpScheduler.jsx';
 import * as api from '../../api.js';
+import i18n from '../../i18n.js';
 
 afterEach(() => {
   cleanup();
@@ -17,10 +18,14 @@ test('fetches recommendation and provides calendar link', async () => {
   const { getByText, getByPlaceholderText } = render(
     <FollowUpScheduler note="note" codes={["E11"]} />
   );
-  fireEvent.click(getByText('Recommend'));
+  fireEvent.click(getByText(i18n.t('followUp.recommend')));
   await waitFor(() =>
-    expect(getByPlaceholderText('e.g., 2 weeks').value).toBe('2 weeks')
+    expect(
+      getByPlaceholderText(i18n.t('followUp.placeholder')).value,
+    ).toBe('2 weeks'),
   );
-  const href = getByText('Add to calendar').getAttribute('href');
+  const href = getByText(i18n.t('suggestion.addToCalendar')).getAttribute(
+    'href',
+  );
   expect(href).toContain('text/calendar');
 });

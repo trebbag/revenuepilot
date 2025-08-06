@@ -75,6 +75,10 @@
     "none": "No drafts saved.",
     "delete": "Delete draft"
   },
+  "followUp": {
+    "recommend": "Recommend",
+    "placeholder": "e.g., 2 weeks"
+  },
   "help": {
     "welcomeTitle": "Welcome to RevenuePilot",
     "intro": "This short guide will walk you through the basics of using the RevenuePilot app. Whether you’re creating your first clinical note or reviewing analytics, the app is designed to assist you at every step.",
@@ -114,7 +118,8 @@
     "title": "Event Log",
     "intro": "This log shows recent actions captured by the app. Use it to verify that events such as note creation, beautification, suggestions, summaries, chart uploads and audio recordings are being logged and processed.",
     "loading": "Loading…",
-    "none": "No events recorded yet."
+    "none": "No events recorded yet.",
+    "fetchFailed": "Failed to load events"
   },
   "auditLog": {
     "title": "Audit Log",
@@ -123,7 +128,8 @@
     "action": "Action",
     "details": "Details",
     "loading": "Loading…",
-    "none": "No audit entries"
+    "none": "No audit entries",
+    "fetchError": "Failed to load audit log"
   },
   "noteEditor": {
     "stopRecording": "Stop Recording",
@@ -148,6 +154,7 @@
     "apiKeyHelp": "Enter your OpenAI API key here. The key will be stored securely on your machine and used by the backend to call the language model. You can update it at any time.",
     "saveKey": "Save Key",
     "invalidApiKey": "Invalid API key format",
+    "apiKeyPlaceholder": "sk-... (e.g., sk-proj-...)",
     "theme": "Theme",
     "modern": "Modern Minimal",
     "dark": "Dark Elegance",
