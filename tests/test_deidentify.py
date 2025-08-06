@@ -21,6 +21,7 @@ import backend.main as bm
         ("SSN 123-45-6789", "[SSN:", "123-45-6789"),
         ("SSN 123456789", "[SSN:", "123456789"),
         ("Contact maria.cruz@example.com", "[EMAIL:", "maria.cruz@example.com"),
+
     ],
 )
 

@@ -86,107 +86,109 @@ ChartJS.register(
   // one decimal place; otherwise show zero.
   const cards = [
     {
+      key: 'total_notes',
       title: t('dashboard.cards.totalNotes'),
-      baseline: 0,
-      current: metrics.total_notes || 0,
+      baseline: metrics.baseline?.total_notes || 0,
+      current: metrics.current?.total_notes || 0,
+      improvement: metrics.improvement?.total_notes,
       direction: 'higher',
     },
     {
+      key: 'total_beautify',
       title: t('dashboard.cards.beautifiedNotes'),
-      baseline: 0,
-      current: metrics.total_beautify || 0,
+      baseline: metrics.baseline?.total_beautify || 0,
+      current: metrics.current?.total_beautify || 0,
+      improvement: metrics.improvement?.total_beautify,
       direction: 'higher',
     },
     {
+      key: 'total_suggest',
       title: t('dashboard.cards.suggestionsRequested'),
-      baseline: 0,
-      current: metrics.total_suggest || 0,
+      baseline: metrics.baseline?.total_suggest || 0,
+      current: metrics.current?.total_suggest || 0,
+      improvement: metrics.improvement?.total_suggest,
       direction: 'higher',
     },
     {
+      key: 'total_summary',
       title: t('dashboard.cards.summariesGenerated'),
-      baseline: 0,
-      current: metrics.total_summary || 0,
+      baseline: metrics.baseline?.total_summary || 0,
+      current: metrics.current?.total_summary || 0,
+      improvement: metrics.improvement?.total_summary,
       direction: 'higher',
     },
     {
+      key: 'total_chart_upload',
       title: t('dashboard.cards.chartUploads'),
-      baseline: 0,
-      current: metrics.total_chart_upload || 0,
+      baseline: metrics.baseline?.total_chart_upload || 0,
+      current: metrics.current?.total_chart_upload || 0,
+      improvement: metrics.improvement?.total_chart_upload,
       direction: 'higher',
     },
     {
+      key: 'total_audio',
       title: t('dashboard.cards.audioRecordings'),
-      baseline: 0,
-      current: metrics.total_audio || 0,
+      baseline: metrics.baseline?.total_audio || 0,
+      current: metrics.current?.total_audio || 0,
+      improvement: metrics.improvement?.total_audio,
       direction: 'higher',
     },
     {
+      key: 'avg_note_length',
       title: t('dashboard.cards.avgNoteLength'),
-      baseline: 0,
-      current: metrics.avg_note_length ? metrics.avg_note_length.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_note_length ? metrics.baseline.avg_note_length.toFixed(1) : 0,
+      current: metrics.current?.avg_note_length ? metrics.current.avg_note_length.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_note_length,
       direction: 'higher',
     },
     {
+      key: 'avg_beautify_time',
       title: t('dashboard.cards.avgBeautifyTime'),
-      baseline: 0,
-      current: metrics.avg_beautify_time ? metrics.avg_beautify_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_beautify_time ? metrics.baseline.avg_beautify_time.toFixed(1) : 0,
+      current: metrics.current?.avg_beautify_time ? metrics.current.avg_beautify_time.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_beautify_time,
       direction: 'lower',
     },
     {
+      key: 'revenue_per_visit',
       title: t('dashboard.cards.revenuePerVisit'),
-      baseline: 0,
-      current: metrics.revenue_per_visit ? metrics.revenue_per_visit.toFixed(2) : 0,
+      baseline: metrics.baseline?.revenue_per_visit ? metrics.baseline.revenue_per_visit.toFixed(2) : 0,
+      current: metrics.current?.revenue_per_visit ? metrics.current.revenue_per_visit.toFixed(2) : 0,
+      improvement: metrics.improvement?.revenue_per_visit,
       direction: 'higher',
     },
     {
+      key: 'avg_close_time',
       title: t('dashboard.cards.avgCloseTime'),
-      baseline: 0,
-      current: metrics.avg_close_time ? metrics.avg_close_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_close_time ? metrics.baseline.avg_close_time.toFixed(1) : 0,
+      current: metrics.current?.avg_close_time ? metrics.current.avg_close_time.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_close_time,
       direction: 'lower',
     },
     {
+      key: 'denial_rate',
       title: t('dashboard.cards.denialRate'),
-      baseline: 0,
-      current: metrics.denial_rate ? (metrics.denial_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.denial_rate ? (metrics.baseline.denial_rate * 100).toFixed(1) : 0,
+      current: metrics.current?.denial_rate ? (metrics.current.denial_rate * 100).toFixed(1) : 0,
+      improvement: metrics.improvement?.denial_rate,
       direction: 'lower',
     },
     {
+      key: 'deficiency_rate',
       title: t('dashboard.cards.deficiencyRate'),
-      baseline: 0,
-      current: metrics.deficiency_rate ? (metrics.deficiency_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.deficiency_rate ? (metrics.baseline.deficiency_rate * 100).toFixed(1) : 0,
+      current: metrics.current?.deficiency_rate ? (metrics.current.deficiency_rate * 100).toFixed(1) : 0,
+      improvement: metrics.improvement?.deficiency_rate,
       direction: 'lower',
+    },
+    {
+      title: t('dashboard.cards.avgSatisfaction'),
+      baseline: 0,
+      current: metrics.avg_satisfaction ? metrics.avg_satisfaction.toFixed(1) : 0,
+      direction: 'higher',
     },
   ];
 
-  /**
-   * Try to parse a numeric value from strings like "$150", "12%", "48h" or "3.0".
-   * Returns NaN if parsing fails. Strips common symbols like $,% and h.
-   */
-  const parseNumeric = (value) => {
-    // Convert the value to a string first; this prevents errors when
-    // numbers are passed in (e.g., 0) which do not have a replace method.
-    const cleaned = String(value).replace(/[^0-9.]/g, '');
-    return parseFloat(cleaned);
-  };
-
-  /**
-   * Determine improvement or decline for a metric.  Returns an object with
-   * direction ('up' or 'down' or null) and magnitude (absolute difference).
-   */
-  const computeChange = (metric) => {
-    if (metric.direction === 'none') return { dir: null, diff: null };
-    const baseVal = parseNumeric(metric.baseline);
-    const curVal = parseNumeric(metric.current);
-    if (isNaN(baseVal) || isNaN(curVal)) return { dir: null, diff: null };
-    const diff = curVal - baseVal;
-    // For metrics where lower is better, invert the sign
-    const effectiveDiff = metric.direction === 'lower' ? -diff : diff;
-    return {
-      dir: effectiveDiff > 0 ? 'up' : effectiveDiff < 0 ? 'down' : null,
-      diff: Math.abs(diff),
-    };
-  };
 
   const exportCSV = () => {
     const rows = [];
@@ -202,10 +204,11 @@ ChartJS.register(
       'avg_close_time',
       'revenue_per_visit',
       'denial_rate',
+      'avg_satisfaction',
       'deficiency_rate',
     ];
     topLevel.forEach((k) => {
-      if (k in metrics) rows.push([k, metrics[k]]);
+      if (metrics.current && k in metrics.current) rows.push([k, metrics.current[k]]);
     });
     const daily = metrics.timeseries?.daily || [];
     rows.push([]);
@@ -274,6 +277,18 @@ ChartJS.register(
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
       {
+        label: t('dashboard.denials'),
+        data: metrics.timeseries?.daily?.map((d) => d.denials || 0) || [],
+        borderColor: 'rgba(255,0,0,1)',
+        backgroundColor: 'rgba(255,0,0,0.2)',
+      },
+      {
+        label: t('dashboard.deficiencies'),
+        data: metrics.timeseries?.daily?.map((d) => d.deficiencies || 0) || [],
+        borderColor: 'rgba(0,128,0,1)',
+        backgroundColor: 'rgba(0,128,0,0.2)',
+      },
+      {
         label: t('dashboard.cards.avgNoteLength'),
         data: metrics.timeseries?.daily?.map((d) => d.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
@@ -305,6 +320,7 @@ ChartJS.register(
   };
 
   const dailyOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: {
       y: { beginAtZero: true },
       y1: {
@@ -356,6 +372,18 @@ ChartJS.register(
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
       {
+        label: t('dashboard.denials'),
+        data: metrics.timeseries?.weekly?.map((w) => w.denials || 0) || [],
+        borderColor: 'rgba(255,0,0,1)',
+        backgroundColor: 'rgba(255,0,0,0.2)',
+      },
+      {
+        label: t('dashboard.deficiencies'),
+        data: metrics.timeseries?.weekly?.map((w) => w.deficiencies || 0) || [],
+        borderColor: 'rgba(0,128,0,1)',
+        backgroundColor: 'rgba(0,128,0,0.2)',
+      },
+      {
         label: t('dashboard.cards.avgNoteLength'),
         data: metrics.timeseries?.weekly?.map((w) => w.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
@@ -387,6 +415,7 @@ ChartJS.register(
   };
 
   const weeklyOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: {
       y: { beginAtZero: true },
       y1: {
@@ -409,26 +438,27 @@ ChartJS.register(
       },
     ],
   };
+  const revenueLineOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true } },
+  };
 
   const emCodes = ['99212', '99213', '99214', '99215'];
   const totalCodes = emCodes.reduce(
     (sum, c) => sum + (metrics.coding_distribution?.[c] || 0),
     0
   );
-  const codeBarData = {
-    labels: ['E/M'],
-    datasets: emCodes.map((c, idx) => ({
-      label: c,
-      data: [
-        totalCodes
-          ? ((metrics.coding_distribution?.[c] || 0) / totalCodes) * 100
-          : 0,
-      ],
-      backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'][idx],
-    })),
+  const codePieData = {
+    labels: emCodes,
+    datasets: [
+      {
+        data: emCodes.map((c) => metrics.coding_distribution?.[c] || 0),
+        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'],
+      },
+    ],
   };
-  const codeBarOptions = {
-    scales: { x: { stacked: true, max: 100 }, y: { stacked: true, beginAtZero: true } },
+  const codePieOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
   };
   const denialDefData = {
     labels: [t('dashboard.cards.denialRate'), t('dashboard.cards.deficiencyRate')],
@@ -436,14 +466,17 @@ ChartJS.register(
       {
         label: t('dashboard.rate'),
         data: [
-          metrics.denial_rate ? metrics.denial_rate * 100 : 0,
-          metrics.deficiency_rate ? metrics.deficiency_rate * 100 : 0,
+          metrics.current?.denial_rate ? metrics.current.denial_rate * 100 : 0,
+          metrics.current?.deficiency_rate ? metrics.current.deficiency_rate * 100 : 0,
         ],
         backgroundColor: ['rgba(255,159,64,0.6)', 'rgba(75, 192, 192, 0.6)'],
       },
     ],
   };
-  const rateOptions = { scales: { y: { beginAtZero: true, max: 100 } } };
+  const rateOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true, max: 100 } },
+  };
 
   const denialData = {
     labels: Object.keys(metrics.denial_rates || {}),
@@ -454,6 +487,29 @@ ChartJS.register(
         backgroundColor: 'rgba(255, 159, 64, 0.6)',
       },
     ],
+  };
+
+
+  const gapEntries = metrics.top_compliance
+    ? metrics.top_compliance
+    : Object.entries(metrics.compliance_counts || {})
+        .map(([gap, count]) => ({ gap, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+  const gapData = {
+    labels: gapEntries.map((g) => g.gap),
+    datasets: [
+      {
+        label: t('dashboard.gapCountLabel'),
+        data: gapEntries.map((g) => g.count),
+        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+      },
+    ],
+
+  const denialOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true, max: 100 } },
+
   };
   return (
       <div className="dashboard">
@@ -524,10 +580,15 @@ ChartJS.register(
         </thead>
         <tbody>
           {cards.map((m) => {
-            const change = computeChange(m);
-            const arrow = change.dir === 'up' ? '↑' : change.dir === 'down' ? '↓' : '';
-            const colour = change.dir === 'up' ? '#2E7D32' : change.dir === 'down' ? '#E57373' : 'inherit';
-            const diffLabel = change.diff != null ? `${arrow} ${change.diff}` : '';
+            const pct = m.improvement;
+            const effective =
+              pct != null ? (m.direction === 'lower' ? -pct : pct) : null;
+            const arrow =
+              effective > 0 ? '↑' : effective < 0 ? '↓' : '';
+            const colour =
+              effective > 0 ? '#2E7D32' : effective < 0 ? '#E57373' : 'inherit';
+            const diffLabel =
+              effective != null ? `${arrow} ${Math.abs(effective).toFixed(1)}%` : '';
             return (
               <tr key={m.title}>
                 <td>{m.title}</td>
@@ -553,14 +614,15 @@ ChartJS.register(
           <h3>{t('dashboard.revenueOverTime')}</h3>
           <Line
             data={revenueLineData}
-            options={{ scales: { y: { beginAtZero: true } } }}
+            options={revenueLineOptions}
             data-testid="revenue-line"
           />
         </div>
       )}
 
-      {typeof metrics.denial_rate === 'number' &&
-        typeof metrics.deficiency_rate === 'number' && (
+      {metrics.current &&
+        typeof metrics.current.denial_rate === 'number' &&
+        typeof metrics.current.deficiency_rate === 'number' && (
           <div style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.denialDefRates')}</h3>
             <Bar
@@ -575,10 +637,10 @@ ChartJS.register(
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.codeDistribution')}</h3>
-            <Bar
-              data={codeBarData}
-              options={codeBarOptions}
-              data-testid="codes-bar"
+            <Pie
+              data={codePieData}
+              options={codePieOptions}
+              data-testid="codes-pie"
             />
           </div>
         )}
@@ -587,9 +649,20 @@ ChartJS.register(
         Object.keys(metrics.denial_rates).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
               <h3>{t('dashboard.denialRates')}</h3>
-              <Bar data={denialData} data-testid="denial-bar" />
+              <Bar data={denialData} options={denialOptions} data-testid="denial-bar" />
           </div>
         )}
+
+      {gapEntries.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>{t('dashboard.documentationGaps')}</h3>
+          <Bar
+            data={gapData}
+            options={{ scales: { y: { beginAtZero: true } } }}
+            data-testid="gaps-bar"
+          />
+        </div>
+      )}
     </div>
   );
 }

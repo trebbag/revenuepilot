@@ -13,8 +13,9 @@ performed so callers always receive predictable output.
 from __future__ import annotations
 
 import io
+import os
 import tempfile
-from typing import Dict
+from typing import Any, Dict
 
 from openai import OpenAI
 
@@ -30,6 +31,20 @@ except Exception:  # pragma: no cover - dependency may be missing
     _DIARISATION_AVAILABLE = False
 
 
+_LOCAL_MODEL: Any | None = None
+
+
+def _load_local_model() -> Any:  # pragma: no cover - heavy optional dependency
+    """Lazily load and cache the Whisper model for offline use."""
+    global _LOCAL_MODEL
+    if _LOCAL_MODEL is None:
+        import whisper  # type: ignore
+
+        model_name = os.getenv("WHISPER_MODEL", "base")
+        _LOCAL_MODEL = whisper.load_model(model_name)
+    return _LOCAL_MODEL
+
+
 def _transcribe_bytes(data: bytes) -> str:
     """Helper that attempts to transcribe ``data`` using Whisper.
 
@@ -41,8 +56,22 @@ def _transcribe_bytes(data: bytes) -> str:
     if not data:
         return ""
 
+    offline = os.getenv("OFFLINE_TRANSCRIBE", "").lower() == "true"
+    if offline:
+        try:
+            model = _load_local_model()
+            with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+                tmp.write(data)
+                tmp.flush()
+                result = model.transcribe(tmp.name)
+            text = result.get("text", "")
+            if text:
+                return text.strip()
+        except Exception:
+            pass
+
     api_key = get_api_key()
-    if api_key:
+    if api_key and not offline:
         try:
             client = OpenAI(api_key=api_key)
             with io.BytesIO(data) as buf:
@@ -67,26 +96,20 @@ def _transcribe_bytes(data: bytes) -> str:
     return f"[transcribed {len(data)} bytes]"
 
 
-def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
+def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
     """Transcribe audio and attempt speaker diarisation.
 
-    The function first tries to separate speakers using
-    ``pyannote.audio``'s pretrained diarisation pipeline.  Each detected
-    speaker segment is then sent to Whisper for transcription.  Because
-    diarisation requires heavy optional dependencies, the function
-    automatically falls back to a simple single-speaker transcription
-    when those libraries or models are unavailable.
-
-    Args:
-        audio_bytes: Raw audio data from a recording.
-    Returns:
-        Dictionary mapping ``provider`` and ``patient`` to their
-        respective transcripts.  When diarisation fails, the ``provider``
-        key contains the full transcription and ``patient`` is empty.
+    When diarisation succeeds the return value contains provider and
+    patient transcripts along with a ``segments`` list describing who is
+    speaking at each time.  Each segment is a dictionary with ``start``
+    and ``end`` times in seconds and a ``speaker`` key whose value is
+    either ``"provider"`` or ``"patient"``.  If diarisation is not
+    available or fails, a single segment covering the whole recording is
+    returned with the entire transcription under ``provider``.
     """
 
     if not audio_bytes:
-        return {"provider": "", "patient": ""}
+        return {"provider": "", "patient": "", "segments": []}
 
     if _DIARISATION_AVAILABLE:
         try:
@@ -98,20 +121,47 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
                 diarization = pipeline(tmp.name)
                 audio = Audio()
                 speaker_text: Dict[str, str] = {}
+                raw_segments = []
                 for turn, _, speaker in diarization.itertracks(yield_label=True):
                     waveform, sr = audio.crop(tmp.name, turn)
                     buf = io.BytesIO()
                     torchaudio.save(buf, waveform, sr, format="wav")
                     buf.seek(0)
                     text = simple_transcribe(buf.read())
+                    raw_segments.append({
+                        "speaker": speaker,
+                        "start": float(getattr(turn, "start", 0.0)),
+                        "end": float(getattr(turn, "end", 0.0)),
+                        "text": text,
+                    })
                     if text:
                         speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
                 # Map first two speakers to provider/patient roles
                 speakers = sorted(speaker_text.keys())
-                provider = speaker_text.get(speakers[0], "").strip() if speakers else ""
-                patient = speaker_text.get(speakers[1], "").strip() if len(speakers) > 1 else ""
+                provider_key = speakers[0] if speakers else None
+                patient_key = speakers[1] if len(speakers) > 1 else None
+                provider = speaker_text.get(provider_key, "").strip() if provider_key else ""
+                patient = speaker_text.get(patient_key, "").strip() if patient_key else ""
+                mapped_segments = []
+                for seg in raw_segments:
+                    if seg["speaker"] == provider_key:
+                        role = "provider"
+                    elif seg["speaker"] == patient_key:
+                        role = "patient"
+                    else:
+                        role = seg["speaker"]
+                    mapped_segments.append({
+                        "speaker": role,
+                        "start": seg["start"],
+                        "end": seg["end"],
+                        "text": seg["text"],
+                    })
                 if provider or patient:
-                    return {"provider": provider, "patient": patient}
+                    return {
+                        "provider": provider,
+                        "patient": patient,
+                        "segments": mapped_segments,
+                    }
         except Exception:
             # Any failure falls through to simple transcription below
             pass
@@ -122,7 +172,11 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, str]:
         # Ensure a deterministic placeholder is returned when transcription
         # ultimately fails so callers always receive some text.
         text = f"[transcribed {len(audio_bytes)} bytes]"
-    return {"provider": text, "patient": ""}
+    return {
+        "provider": text,
+        "patient": "",
+        "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
+    }
 
 
 def simple_transcribe(audio_bytes: bytes) -> str:

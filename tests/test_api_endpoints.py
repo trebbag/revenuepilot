@@ -50,6 +50,7 @@ def test_endpoints_require_auth(client):
         in {401, 403}
     )
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
+    assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
 
 
@@ -161,7 +162,7 @@ def test_events_metrics_with_auth(client):
 
     resp = client.get("/metrics", headers=auth_header(token_admin))
     assert resp.status_code == 200
-    assert resp.json()["total_notes"] >= 1
+    assert resp.json()["current"]["total_notes"] >= 1
 
 
 def test_export_to_ehr_requires_admin(client):
@@ -235,7 +236,16 @@ def test_summarize_spanish_language(client, monkeypatch):
 def test_transcribe_endpoint(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
     monkeypatch.setattr(
-        main, "diarize_and_transcribe", lambda b: {"provider": "p", "patient": "q"}
+        main,
+        "diarize_and_transcribe",
+        lambda b: {
+            "provider": "p",
+            "patient": "q",
+            "segments": [
+                {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+                {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+            ],
+        },
     )
     token = main.create_token("u", "user")
     resp = client.post(
@@ -248,7 +258,14 @@ def test_transcribe_endpoint(client, monkeypatch):
         files={"file": ("a.wav", b"bytes")},
         headers=auth_header(token),
     )
-    assert resp.json() == {"provider": "p", "patient": "q"}
+    assert resp.json() == {
+        "provider": "p",
+        "patient": "q",
+        "segments": [
+            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+            {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+        ],
+    }
 
     resp = client.post("/transcribe", headers=auth_header(token))
     assert resp.status_code == 422
@@ -257,7 +274,16 @@ def test_transcribe_endpoint(client, monkeypatch):
 def test_get_last_transcript(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
     monkeypatch.setattr(
-        main, "diarize_and_transcribe", lambda b: {"provider": "p", "patient": "q"}
+        main,
+        "diarize_and_transcribe",
+        lambda b: {
+            "provider": "p",
+            "patient": "q",
+            "segments": [
+                {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+                {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+            ],
+        },
     )
     token = main.create_token("u", "user")
     # First call without diarisation
@@ -267,7 +293,13 @@ def test_get_last_transcript(client, monkeypatch):
         headers=auth_header(token),
     )
     resp = client.get("/transcribe", headers=auth_header(token))
-    assert resp.json() == {"provider": "hello", "patient": ""}
+    assert resp.json() == {
+        "provider": "hello",
+        "patient": "",
+        "segments": [
+            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
+        ],
+    }
 
     # Now call with diarisation and ensure both parts returned
     client.post(
@@ -276,7 +308,14 @@ def test_get_last_transcript(client, monkeypatch):
         headers=auth_header(token),
     )
     resp = client.get("/transcribe", headers=auth_header(token))
-    assert resp.json() == {"provider": "p", "patient": "q"}
+    assert resp.json() == {
+        "provider": "p",
+        "patient": "q",
+        "segments": [
+            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+            {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+        ],
+    }
 
 
 def test_apikey_validation(client, monkeypatch):
