@@ -2,7 +2,8 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getMetrics } from '../api.js';
-import { Line, Bar, Pie } from 'react-chartjs-2';
+import { Line, Bar } from 'react-chartjs-2';
+import jsPDF from 'jspdf';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -10,7 +11,6 @@ import {
   PointElement,
   LineElement,
   BarElement,
-  ArcElement,
   Title,
   Tooltip,
   Legend,
@@ -22,7 +22,6 @@ ChartJS.register(
   PointElement,
   LineElement,
   BarElement,
-  ArcElement,
   Title,
   Tooltip,
   Legend,
@@ -262,6 +261,16 @@ function Dashboard() {
     URL.revokeObjectURL(url);
   };
 
+  const exportPDF = () => {
+    const doc = new jsPDF();
+    let y = 10;
+    cards.forEach((c) => {
+      doc.text(`${c.title}: ${c.current}`, 10, y);
+      y += 10;
+    });
+    doc.save('metrics.pdf');
+  };
+
   const dailyLabels = metrics.timeseries?.daily?.map((d) => d.date) || [];
   const dailyData = {
     labels: dailyLabels,
@@ -344,6 +353,15 @@ function Dashboard() {
           metrics.timeseries?.daily?.map((d) => d.avg_close_time || 0) || [],
         borderColor: 'rgba(100,100,255,1)',
         backgroundColor: 'rgba(100,100,255,0.2)',
+        yAxisID: 'y1',
+      },
+      {
+        label: t('dashboard.cards.denialRate'),
+        data:
+          metrics.timeseries?.daily?.map((d) => (d.denial_rate || 0) * 100) ||
+          [],
+        borderColor: 'rgba(255,99,71,1)',
+        backgroundColor: 'rgba(255,99,71,0.2)',
         yAxisID: 'y1',
       },
     ],
@@ -447,6 +465,15 @@ function Dashboard() {
         backgroundColor: 'rgba(100,100,255,0.2)',
         yAxisID: 'y1',
       },
+      {
+        label: t('dashboard.cards.denialRate'),
+        data:
+          metrics.timeseries?.weekly?.map((w) => (w.denial_rate || 0) * 100) ||
+          [],
+        borderColor: 'rgba(255,99,71,1)',
+        backgroundColor: 'rgba(255,99,71,0.2)',
+        yAxisID: 'y1',
+      },
     ],
   };
 
@@ -484,17 +511,19 @@ function Dashboard() {
   };
 
   const emCodes = ['99212', '99213', '99214', '99215'];
-  const codePieData = {
+  const codeBarData = {
     labels: emCodes,
     datasets: [
       {
+        label: t('dashboard.codeDistribution'),
         data: emCodes.map((c) => metrics.coding_distribution?.[c] || 0),
-        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'],
+        backgroundColor: 'rgba(54,162,235,0.6)',
       },
     ],
   };
-  const codePieOptions = {
-    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+  const codeBarOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: false } },
+    scales: { y: { beginAtZero: true } },
   };
   const denialDefData = {
     labels: [
@@ -605,6 +634,9 @@ function Dashboard() {
         <button style={{ marginLeft: '0.5rem' }} onClick={exportCSV}>
           {t('export')}
         </button>
+        <button style={{ marginLeft: '0.5rem' }} onClick={exportPDF}>
+          {t('clipboard.exportPdf')}
+        </button>
       </div>
       <table className="metrics-table">
         <thead>
@@ -691,10 +723,10 @@ function Dashboard() {
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.codeDistribution')}</h3>
-            <Pie
-              data={codePieData}
-              options={codePieOptions}
-              data-testid="codes-pie"
+            <Bar
+              data={codeBarData}
+              options={codeBarOptions}
+              data-testid="codes-bar"
             />
           </div>
         )}
