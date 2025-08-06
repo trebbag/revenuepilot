@@ -1,6 +1,5 @@
 import json
 import sqlite3
-import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +22,7 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
     )
     migrations.ensure_settings_table(db)
-    pwd = hashlib.sha256(b"pw").hexdigest()
+    pwd = main.hash_password("pw")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", pwd, "admin"),

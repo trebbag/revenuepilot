@@ -1,5 +1,4 @@
 import sqlite3
-import hashlib
 from fastapi.testclient import TestClient
 
 from backend import main
@@ -21,7 +20,7 @@ def setup_module(module):
     )
     main.ensure_settings_table(db)
     # Seed admin user
-    admin_hash = hashlib.sha256(b"secret").hexdigest()
+    admin_hash = main.hash_password("secret")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", admin_hash, "admin"),
