@@ -73,3 +73,36 @@ def test_beautify_soap_headings_and_content(client, monkeypatch):
         "advise rest",
     ]:
         assert piece in cleaned
+
+
+def test_beautify_fallback_on_error(client, monkeypatch):
+    """When the LLM call fails, the endpoint should capitalize sentences and return an error."""
+
+    def boom(msgs):
+        raise RuntimeError("api down")
+
+    monkeypatch.setattr(main, "call_openai", boom)
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/beautify",
+        json={"text": "first sentence. second sentence."},
+        headers=auth_header(token),
+    )
+    data = resp.json()
+    assert data["beautified"] == "First sentence. Second sentence."
+    assert "error" in data
+
+
+def test_beautify_trims_response_whitespace(client, monkeypatch):
+    """Leading and trailing whitespace from the model response should be stripped."""
+
+    def fake_call(msgs):
+        return "  Cleaned note with space.  "
+
+    monkeypatch.setattr(main, "call_openai", fake_call)
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/beautify", json={"text": "messy"}, headers=auth_header(token)
+    )
+    data = resp.json()
+    assert data["beautified"] == "Cleaned note with space."
