@@ -1,17 +1,29 @@
 import sqlite3
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main
 
+OLD_DB = None
+
 
 def setup_module(module):
     """Set up in-memory DB with templates table."""
+    global OLD_DB
+    OLD_DB = main.db_conn
     main.db_conn = sqlite3.connect(":memory:", check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     main.db_conn.execute(
         "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, specialty TEXT, payer TEXT, name TEXT, content TEXT)"
     )
     main.db_conn.commit()
+
+
+def teardown_module(module):
+    """Restore original database connection after tests complete."""
+    global OLD_DB
+    main.db_conn.close()
+    main.db_conn = OLD_DB
 
 
 def test_builtin_templates_available():
@@ -22,15 +34,36 @@ def test_builtin_templates_available():
     assert {"pediatrics", "geriatrics", "psychiatry"} <= specs
 
 
-def test_builtin_template_filter():
+@pytest.mark.parametrize("spec", ["pediatrics", "geriatrics", "psychiatry"])
+def test_builtin_template_filter(spec):
     client = TestClient(main.app)
     token = main.create_token("alice", "user", clinic="clinic1")
     resp = client.get(
-        "/templates?specialty=psychiatry",
+        f"/templates?specialty={spec}",
         headers={"Authorization": f"Bearer {token}"},
     )
     data = resp.json()
-    assert data and all(t["specialty"] == "psychiatry" for t in data)
+    assert data and all(t["specialty"] == spec for t in data)
+
+
+@pytest.mark.parametrize("spec", ["pediatrics", "geriatrics", "psychiatry"])
+def test_insert_and_retrieve_per_specialty(spec):
+    client = TestClient(main.app)
+    token = main.create_token("alice", "user", clinic="clinic1")
+    resp = client.post(
+        "/templates",
+        json={"name": "Custom", "content": "Note", "specialty": spec},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    tpl_id = resp.json()["id"]
+    resp = client.get(
+        f"/templates?specialty={spec}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    data = resp.json()
+    assert any(t["id"] == tpl_id for t in data)
+    assert all(t["specialty"] == spec for t in data)
 
 
 def test_builtin_template_payer_filter():

@@ -8,7 +8,13 @@ import {
   getPromptTemplates,
 } from '../api.js';
 
-function TemplatesModal({ baseTemplates, specialty, payer, onSelect, onClose }) {
+function TemplatesModal({
+  baseTemplates,
+  specialty,
+  payer,
+  onSelect,
+  onClose,
+}) {
   const { t } = useTranslation();
   const [templates, setTemplates] = useState(baseTemplates);
   const [name, setName] = useState('');
@@ -133,9 +139,13 @@ function TemplatesModal({ baseTemplates, specialty, payer, onSelect, onClose }) 
         <h3>{t('templatesModal.title')}</h3>
         {error && <p style={{ color: 'red' }}>{error}</p>}
         {isAdmin && (
-          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <div
+            style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}
+          >
             <div style={{ flex: 1 }}>
-              <label style={{ display: 'block' }}>{t('settings.specialty')}</label>
+              <label style={{ display: 'block' }}>
+                {t('settings.specialty')}
+              </label>
               <select
                 value={selectedSpecialty}
                 onChange={(e) => setSelectedSpecialty(e.target.value)}
@@ -164,36 +174,47 @@ function TemplatesModal({ baseTemplates, specialty, payer, onSelect, onClose }) 
             </div>
           </div>
         )}
-        <ul>
-          {templates.map((tpl) => (
-            <li key={tpl.id || tpl.name}>
-              <button
-                onClick={() => onSelect(tpl.content)}
-                style={{ margin: '0.25rem 0' }}
-              >
-                {tpl.name}
-              </button>
-              {(tpl.id || isAdmin) && (
-                <>
+        {Object.entries(
+          templates.reduce((acc, tpl) => {
+            const spec = tpl.specialty || 'General';
+            (acc[spec] = acc[spec] || []).push(tpl);
+            return acc;
+          }, {}),
+        ).map(([spec, group]) => (
+          <div key={spec}>
+            <h4>{spec}</h4>
+            <ul>
+              {group.map((tpl) => (
+                <li key={tpl.id || tpl.name}>
                   <button
-                    onClick={() => handleEdit(tpl)}
-                    style={{ marginLeft: '0.25rem' }}
+                    onClick={() => onSelect(tpl.content)}
+                    style={{ margin: '0.25rem 0' }}
                   >
-                    {t('templatesModal.edit')}
+                    {tpl.name}
                   </button>
-                  {tpl.id && (
-                    <button
-                      onClick={() => handleDelete(tpl.id)}
-                      style={{ marginLeft: '0.25rem' }}
-                    >
-                      {t('templatesModal.delete')}
-                    </button>
+                  {(tpl.id || isAdmin) && (
+                    <>
+                      <button
+                        onClick={() => handleEdit(tpl)}
+                        style={{ marginLeft: '0.25rem' }}
+                      >
+                        {t('templatesModal.edit')}
+                      </button>
+                      {tpl.id && (
+                        <button
+                          onClick={() => handleDelete(tpl.id)}
+                          style={{ marginLeft: '0.25rem' }}
+                        >
+                          {t('templatesModal.delete')}
+                        </button>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
         <h4>{t('templatesModal.create')}</h4>
         <input
           type="text"
