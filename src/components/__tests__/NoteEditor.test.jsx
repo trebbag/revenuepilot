@@ -120,9 +120,15 @@ test('supports undo beyond five beautified entries', () => {
 });
 
 test('EHR export button triggers API call', async () => {
-  const { getByText } = render(
-    <NoteEditor id="e" value="Some" onChange={() => {}} mode="beautified" />,
-  );
+    const { getByText } = render(
+      <NoteEditor
+        id="e"
+        value="Some"
+        onChange={() => {}}
+        mode="beautified"
+        role="admin"
+      />,
+    );
   fireEvent.click(getByText('EHR Export'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });

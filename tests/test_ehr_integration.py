@@ -52,24 +52,36 @@ def test_posts_bundle_to_fhir(monkeypatch, client):
 
     calls = []
 
-    def fake_post(url, json=None, timeout=10):
-        calls.append({"url": url, "json": json})
+    def fake_post(url, json=None, headers=None, timeout=10):
+        calls.append({"url": url, "json": json, "headers": headers})
         return DummyResp({"id": "bundle1"})
 
     monkeypatch.setattr(ehr_integration.requests, "post", fake_post)
     monkeypatch.setattr(ehr_integration, "FHIR_SERVER_URL", "http://fhir.test")
+    monkeypatch.setattr(ehr_integration, "get_ehr_token", lambda: "tok123")
 
     resp = client.post(
         "/export_to_ehr",
-        json={"note": "Example note", "codes": ["A1"]},
+        json={
+            "note": "Example note",
+            "codes": ["A1"],
+            "patientId": "p1",
+            "encounterId": "e1",
+        },
         headers=auth_header(token),
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "exported"
     assert calls and calls[0]["url"] == "http://fhir.test/Bundle"
+    assert calls[0]["headers"]["Authorization"] == "Bearer tok123"
     bundle = calls[0]["json"]
-    assert bundle["entry"][0]["resource"]["valueString"] == "Example note"
-    assert bundle["entry"][1]["resource"]["code"]["coding"][0]["code"] == "A1"
+    types = {entry["resource"]["resourceType"] for entry in bundle["entry"]}
+    assert {"Observation", "DocumentReference", "Claim"}.issubset(types)
+    claim = next(e for e in bundle["entry"] if e["resource"]["resourceType"] == "Claim")
+    assert (
+        claim["resource"]["item"][0]["productOrService"]["coding"][0]["code"]
+        == "A1"
+    )
 
 
 def test_reports_auth_errors(monkeypatch, client):
@@ -84,10 +96,11 @@ def test_reports_auth_errors(monkeypatch, client):
         def json(self):
             return {}
 
-    def fake_post(url, json=None, timeout=10):
+    def fake_post(url, json=None, headers=None, timeout=10):
         return DummyAuthResp()
 
     monkeypatch.setattr(ehr_integration.requests, "post", fake_post)
+    monkeypatch.setattr(ehr_integration, "get_ehr_token", lambda: None)
 
     resp = client.post(
         "/export_to_ehr",
