@@ -422,17 +422,30 @@ class NoteRequest(BaseModel):
 
 
 class CodeSuggestion(BaseModel):
-    """Represents a single coding suggestion with rationale."""
+    """Represents a single coding suggestion with rationale and upgrade."""
     code: str
     rationale: Optional[str] = None
+    upgrade_to: Optional[str] = None
+
+
+class PublicHealthSuggestion(BaseModel):
+    """Preventative care recommendation with supporting reason."""
+    recommendation: str
+    reason: Optional[str] = None
+
+
+class DifferentialSuggestion(BaseModel):
+    """Potential differential diagnosis with likelihood score."""
+    diagnosis: str
+    score: Optional[float] = None
 
 
 class SuggestionsResponse(BaseModel):
     """Schema for the suggestions returned to the frontend."""
     codes: List[CodeSuggestion]
     compliance: List[str]
-    publicHealth: List[str]
-    differentials: List[str]
+    publicHealth: List[PublicHealthSuggestion]
+    differentials: List[DifferentialSuggestion]
     followUp: Optional[str] = None
 
 
@@ -1210,8 +1223,8 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         return SuggestionsResponse(
             codes=[CodeSuggestion(**c) for c in data["codes"]],
             compliance=data["compliance"],
-            publicHealth=data["publicHealth"],
-            differentials=data["differentials"],
+            publicHealth=[PublicHealthSuggestion(**p) for p in data["publicHealth"]],
+            differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
         )
     # Try to call the LLM to generate structured suggestions.  The prompt
     # instructs the model to return JSON with keys codes, compliance,
@@ -1233,23 +1246,64 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         data = json.loads(response_content)
         # Convert codes list of dicts into CodeSuggestion objects.  Provide
         # defaults for missing fields.
-        codes_list = []
+        codes_list: List[CodeSuggestion] = []
         for item in data.get("codes", []):
             code_str = item.get("code") or item.get("Code") or ""
             rationale = item.get("rationale") or item.get("Rationale") or None
+            upgrade = item.get("upgrade_to") or item.get("upgradeTo") or None
             if code_str:
-                codes_list.append(CodeSuggestion(code=code_str, rationale=rationale))
-        # Extract other categories, ensuring they are lists of strings.
+                codes_list.append(
+                    CodeSuggestion(code=code_str, rationale=rationale, upgrade_to=upgrade)
+                )
+        # Extract compliance as list of strings
         compliance = [str(x) for x in data.get("compliance", [])]
-        public_health_raw = data.get("publicHealth", data.get("public_health", []))
-        public_health = [str(x) for x in public_health_raw]
-        diffs = [str(x) for x in data.get("differentials", [])]
+        # Public health objects
+        public_health: List[PublicHealthSuggestion] = []
+        for item in data.get("publicHealth", data.get("public_health", [])):
+            if isinstance(item, dict):
+                rec = item.get("recommendation") or item.get("Recommendation") or ""
+                reason = item.get("reason") or item.get("Reason") or None
+                if rec:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=reason)
+                    )
+            else:
+                public_health.append(
+                    PublicHealthSuggestion(recommendation=str(item), reason=None)
+                )
+        # Differential diagnoses with scores
+        diffs: List[DifferentialSuggestion] = []
+        for item in data.get("differentials", []):
+            if isinstance(item, dict):
+                diag = item.get("diagnosis") or item.get("Diagnosis") or ""
+                score = item.get("score")
+                score_val: Optional[float] = None
+                if isinstance(score, (int, float)):
+                    score_val = float(score)
+                elif isinstance(score, str):
+                    try:
+                        score_val = float(score.strip().rstrip("%"))
+                    except Exception:
+                        score_val = None
+                if diag:
+                    diffs.append(
+                        DifferentialSuggestion(diagnosis=diag, score=score_val)
+                    )
+            else:
+                diffs.append(
+                    DifferentialSuggestion(diagnosis=str(item), score=None)
+                )
         # Augment public health suggestions with external guidelines
         extra_ph = public_health_api.get_public_health_suggestions(
             req.age, req.sex, req.region
         )
         if extra_ph:
-            public_health = list(dict.fromkeys(public_health + extra_ph))
+            existing = {p.recommendation for p in public_health}
+            for rec in extra_ph:
+                if rec not in existing:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=None)
+                    )
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
@@ -1265,61 +1319,100 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         # Log error and use rule-based fallback suggestions.
         print(f"Error during suggest LLM call or parsing JSON: {exc}")
         lower = cleaned.lower()
-        codes = []
-        compliance = []
-        public_health = []
-        diffs = []
+        codes: List[CodeSuggestion] = []
+        compliance: List[str] = []
+        public_health: List[PublicHealthSuggestion] = []
+        diffs: List[DifferentialSuggestion] = []
         # Respiratory symptoms
         if any(keyword in lower for keyword in ["cough", "fever", "cold", "sore throat"]):
             codes.append(CodeSuggestion(code="99213", rationale="Established patient with respiratory symptoms"))
             codes.append(CodeSuggestion(code="J06.9", rationale="Upper respiratory infection, unspecified"))
             compliance.append("Document duration of fever and associated symptoms")
-            public_health.append("Consider influenza vaccine")
-            diffs.extend(["Common cold", "COVID-19", "Influenza"])
+            public_health.append(
+                PublicHealthSuggestion(recommendation="Consider influenza vaccine", reason=None)
+            )
+            diffs.extend(
+                [
+                    DifferentialSuggestion(diagnosis="Common cold"),
+                    DifferentialSuggestion(diagnosis="COVID-19"),
+                    DifferentialSuggestion(diagnosis="Influenza"),
+                ]
+            )
         # Diabetes management
         if "diabetes" in lower:
             codes.append(CodeSuggestion(code="E11.9", rationale="Type 2 diabetes mellitus without complications"))
             compliance.append("Include latest HbA1c results and medication list")
-            public_health.append("Remind patient about foot and eye exams")
-            diffs.append("Impaired glucose tolerance")
+            public_health.append(
+                PublicHealthSuggestion(
+                    recommendation="Remind patient about foot and eye exams", reason=None
+                )
+            )
+            diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
         # Hypertension
         if "hypertension" in lower or "high blood pressure" in lower:
             codes.append(CodeSuggestion(code="I10", rationale="Essential (primary) hypertension"))
             compliance.append("Document blood pressure readings and lifestyle counselling")
-            public_health.append("Discuss sodium restriction and exercise")
-            diffs.append("White coat hypertension")
+            public_health.append(
+                PublicHealthSuggestion(
+                    recommendation="Discuss sodium restriction and exercise", reason=None
+                )
+            )
+            diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
         # Preventive visit
         if "annual" in lower or "wellness" in lower:
             codes.append(CodeSuggestion(code="99395", rationale="Periodic comprehensive preventive visit"))
             compliance.append("Ensure all preventive screenings are up to date")
-            public_health.append("Screen for depression and alcohol use")
-            diffs.append("–")
+            public_health.append(
+                PublicHealthSuggestion(
+                    recommendation="Screen for depression and alcohol use", reason=None
+                )
+            )
+            diffs.append(DifferentialSuggestion(diagnosis="–"))
         # Mental health
         if any(word in lower for word in ["depression", "anxiety", "sad", "depressed"]):
             codes.append(CodeSuggestion(code="F32.9", rationale="Major depressive disorder, unspecified"))
-            compliance.append("Assess severity and suicidal ideation; document mental status exam")
-            public_health.append("Offer referral to counselling or psychotherapy")
-            diffs.append("Adjustment disorder")
+            compliance.append(
+                "Assess severity and suicidal ideation; document mental status exam"
+            )
+            public_health.append(
+                PublicHealthSuggestion(
+                    recommendation="Offer referral to counselling or psychotherapy", reason=None
+                )
+            )
+            diffs.append(DifferentialSuggestion(diagnosis="Adjustment disorder"))
         # Musculoskeletal pain
         if any(word in lower for word in ["back pain", "low back", "joint pain", "knee pain", "shoulder pain"]):
             codes.append(CodeSuggestion(code="M54.5", rationale="Low back pain"))
-            compliance.append("Document onset, aggravating/relieving factors, and functional limitations")
-            public_health.append("Recommend stretching and physical therapy")
-            diffs.append("Lumbar strain")
+            compliance.append(
+                "Document onset, aggravating/relieving factors, and functional limitations"
+            )
+            public_health.append(
+                PublicHealthSuggestion(
+                    recommendation="Recommend stretching and physical therapy", reason=None
+                )
+            )
+            diffs.append(DifferentialSuggestion(diagnosis="Lumbar strain"))
         # Default suggestions if nothing matched
         if not codes:
             codes.append(CodeSuggestion(code="99212", rationale="Established patient, straightforward"))
         if not compliance:
             compliance.append("Ensure chief complaint and history are complete")
         if not public_health:
-            public_health.append("Consider influenza vaccine")
+            public_health.append(
+                PublicHealthSuggestion(recommendation="Consider influenza vaccine", reason=None)
+            )
         if not diffs:
-            diffs.append("Routine follow-up")
+            diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
         extra_ph = public_health_api.get_public_health_suggestions(
             req.age, req.sex, req.region
         )
         if extra_ph:
-            public_health = list(dict.fromkeys(public_health + extra_ph))
+            existing = {p.recommendation for p in public_health}
+            for rec in extra_ph:
+                if rec not in existing:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=None)
+                    )
         follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
         return SuggestionsResponse(
             codes=codes,

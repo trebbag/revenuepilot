@@ -8,15 +8,24 @@ afterEach(() => cleanup());
 
 test('renders suggestions and handles click', () => {
   const onInsert = vi.fn();
-  const { getByText } = render(
-    <SuggestionPanel suggestions={{ codes: ['A'], compliance: [], publicHealth: [], differentials: [] }} onInsert={onInsert} />
+  const { getAllByText } = render(
+    <SuggestionPanel
+      suggestions={{ codes: [{ code: 'A', rationale: 'reason' }], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
+      onInsert={onInsert}
+    />
   );
-  fireEvent.click(getByText('A'));
-  expect(onInsert).toHaveBeenCalledWith('A');
+  const el = getAllByText((_, el) => el.textContent === 'A — reason').find(
+    (node) => node.tagName === 'LI'
+  );
+  fireEvent.click(el);
+  expect(onInsert).toHaveBeenCalledWith('A — reason');
 });
 
 test('shows loading and toggles sections', () => {
-  const { getByText, getAllByText } = render(<SuggestionPanel loading />);
+  const { getByText, getAllByText } = render(
+    <SuggestionPanel loading settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }} />
+  );
   expect(getAllByText('Loading suggestions...').length).toBeGreaterThan(0);
   const header = getByText('Codes & Rationale');
   fireEvent.click(header);
@@ -25,7 +34,10 @@ test('shows loading and toggles sections', () => {
 
 test('renders follow-up with calendar link', () => {
   const { getByText } = render(
-    <SuggestionPanel suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: '3 months' }} />
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: '3 months' }}
+      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
+    />
   );
   expect(getByText('3 months')).toBeTruthy();
   const href = getByText('Add to calendar').getAttribute('href');

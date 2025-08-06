@@ -321,8 +321,8 @@ def test_suggest_and_fallback(client, monkeypatch):
             {
                 "codes": [{"code": "A1"}],
                 "compliance": ["c"],
-                "publicHealth": ["p"],
-                "differentials": ["d"],
+                "publicHealth": [{"recommendation": "p", "reason": "r"}],
+                "differentials": [{"diagnosis": "d", "score": 10}],
             }
         ),
     )
@@ -330,6 +330,8 @@ def test_suggest_and_fallback(client, monkeypatch):
     resp = client.post("/suggest", json={"text": "note"}, headers=auth_header(token))
     data = resp.json()
     assert data["codes"][0]["code"] == "A1"
+    assert data["publicHealth"][0]["recommendation"] == "p"
+    assert data["differentials"][0]["diagnosis"] == "d"
 
 
 def test_suggest_returns_follow_up(client, monkeypatch):
@@ -371,7 +373,12 @@ def test_suggest_with_demographics(client, monkeypatch):
         assert "HPV vaccine" in user
         assert "Pap smear" in user
         return json.dumps(
-            {"codes": [], "compliance": [], "publicHealth": [], "differentials": []}
+            {
+                "codes": [],
+                "compliance": [],
+                "publicHealth": [],
+                "differentials": [],
+            }
         )
 
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
@@ -427,5 +434,6 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "Shingles vaccine" in data["publicHealth"]
-    assert "Colon cancer screening" in data["publicHealth"]
+    recs = [item["recommendation"] for item in data["publicHealth"]]
+    assert "Shingles vaccine" in recs
+    assert "Colon cancer screening" in recs

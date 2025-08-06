@@ -615,16 +615,10 @@ function App() {
                 </div>
               </div>
               {(() => {
-                const filtered = {
-                  codes: settingsState.enableCodes ? suggestions.codes : [],
-                  compliance: settingsState.enableCompliance ? suggestions.compliance : [],
-                  publicHealth: settingsState.enablePublicHealth ? suggestions.publicHealth : [],
-                  differentials: settingsState.enableDifferentials ? suggestions.differentials : [],
-                  followUp: suggestions.followUp,
-                };
                 return (
                   <SuggestionPanel
-                    suggestions={filtered}
+                    suggestions={suggestions}
+                    settingsState={settingsState}
                     loading={loadingSuggestions}
                     className={showSuggestions ? '' : 'collapsed'}
                     onInsert={handleInsertSuggestion}
