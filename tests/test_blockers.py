@@ -52,6 +52,17 @@ def test_audio_transcription_returns_text(monkeypatch):
     diarised = audio_processing.diarize_and_transcribe(dummy_audio)
     assert diarised["provider"].strip(), "Diarised transcription should not be empty"
 
+    # The FastAPI endpoint should also return text and store it
+    resp = client.post(
+        "/transcribe",
+        files={"file": ("audio.webm", dummy_audio, "audio/webm")},
+    )
+    data = resp.json()
+    assert data["provider"].strip()
+    from backend import main as backend_main
+
+    assert backend_main.last_transcript["provider"].strip()
+
 
 def test_deidentify_handles_complex_phi():
     """PHI scrubber should handle multi-word names, varied dates and IDs.

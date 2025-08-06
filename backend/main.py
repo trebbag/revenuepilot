@@ -119,6 +119,11 @@ app.add_middleware(
 # to a database.
 events: List[Dict[str, Any]] = []
 
+# Last audio transcript returned by the ``/transcribe`` endpoint.  This is a
+# simple in-memory store so the frontend can fetch or re-use the most recent
+# transcript without re-uploading the audio.  It is reset on server restart.
+last_transcript: Dict[str, str] = {"provider": "", "patient": ""}
+
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
 # persist outside the project folder.  A migration step moves any existing
@@ -948,9 +953,13 @@ async def transcribe(
 
     audio_bytes = await file.read()
     if diarise:
-        return diarize_and_transcribe(audio_bytes)
-    text = simple_transcribe(audio_bytes)
-    return {"provider": text, "patient": ""}
+        result = diarize_and_transcribe(audio_bytes)
+    else:
+        result = {"provider": simple_transcribe(audio_bytes), "patient": ""}
+    # Store the most recent transcript so other endpoints or subsequent
+    # requests can reuse it without reprocessing the audio.
+    last_transcript.update(result)
+    return result
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
 # field "key" and stores it in a local file.  Also updates the

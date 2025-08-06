@@ -300,6 +300,18 @@ function App() {
               provider: result.provider || '',
               patient: result.patient || '',
             });
+            // Automatically append the transcript to the current draft so the
+            // user can edit it alongside other note content.
+            const combined = `${result.provider || ''}${
+              result.provider && result.patient ? '\n' : ''
+            }${result.patient || ''}`.trim();
+            if (combined) {
+              setDraftText((prev) => {
+                const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
+                return `${prev}${prefix}${combined}`;
+              });
+              setActiveTab('draft');
+            }
           } catch (err) {
             console.error('Transcription failed', err);
             setAudioTranscript({ provider: '', patient: '' });
