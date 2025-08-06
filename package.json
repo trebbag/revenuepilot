@@ -30,6 +30,7 @@
     "react-quill": "^2.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.54.2",
     "@testing-library/react": "^14.0.0",
     "@vitejs/plugin-react": "^4.2.0",
     "@vitest/coverage-v8": "^1.5.0",
