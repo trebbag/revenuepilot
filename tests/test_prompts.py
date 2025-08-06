@@ -17,6 +17,10 @@ def test_beautify_prompt_language():
     assert "clinical documentation specialist" in en[0]["content"]
     assert "documentación clínica" in es[0]["content"]
     assert "en español" in es[0]["content"]
+    for heading in ["Subjective", "Objective", "Assessment", "Plan"]:
+        assert heading in en[0]["content"]
+    for heading in ["Subjetivo", "Objetivo", "Evaluación", "Plan"]:
+        assert heading in es[0]["content"]
 
 
 def test_suggest_prompt_language():
