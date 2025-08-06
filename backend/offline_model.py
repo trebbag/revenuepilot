@@ -31,8 +31,12 @@ def suggest(
 ) -> Dict[str, List]:
     """Return deterministic suggestion payload for offline testing."""
     return {
-        "codes": [{"code": "00000", "rationale": "offline"}],
+        "codes": [{"code": "00000", "rationale": "offline", "upgrade_to": "00001"}],
         "compliance": ["offline compliance"],
-        "publicHealth": ["offline public health"],
-        "differentials": ["offline differential"],
+        "publicHealth": [
+            {"recommendation": "offline public health", "reason": "offline reason"}
+        ],
+        "differentials": [
+            {"diagnosis": "offline differential", "score": 50}
+        ],
     }

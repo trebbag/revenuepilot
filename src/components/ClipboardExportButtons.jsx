@@ -69,9 +69,31 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
     }
   };
 
+
   const calcRevenue = (codes = []) => {
     const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
     return (codes || []).reduce((sum, c) => sum + (map[c.code || c] || 0), 0);
+
+  const exportRtf = async () => {
+    try {
+      const ipcRenderer = window.require
+        ? window.require('electron').ipcRenderer
+        : null;
+      if (!ipcRenderer) return;
+      await ipcRenderer.invoke('export-rtf', { beautified, summary });
+      setFeedback(t('clipboard.exported'));
+      if (patientID) {
+        logEvent('export-rtf', {
+          patientID,
+          beautifiedLength: beautified.length,
+          summaryLength: summary.length,
+        }).catch(() => {});
+      }
+      setTimeout(() => setFeedback(''), 2000);
+    } catch {
+      setFeedback(t('clipboard.exportFailed'));
+    }
+
   };
 
   return (
@@ -84,6 +106,9 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
         </button>
         <button disabled={!beautified && !summary} onClick={exportNote}>
           {t('clipboard.export')}
+        </button>
+        <button disabled={!beautified && !summary} onClick={exportRtf}>
+          {t('clipboard.exportRtf')}
         </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
       <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />

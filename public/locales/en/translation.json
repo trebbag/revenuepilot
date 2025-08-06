@@ -3,6 +3,7 @@
     "copyBeautified": "Copy Beautified",
     "copySummary": "Copy Summary",
     "export": "Export",
+    "exportRtf": "Export RTF",
     "beautifiedCopied": "Beautified copied",
     "summaryCopied": "Summary copied",
     "copyFailed": "Copy failed",
@@ -141,7 +142,8 @@
     "loading": "Loading suggestions...",
     "none": "No suggestions yet",
     "followUp": "Follow-Up",
-    "addToCalendar": "Add to calendar"
+    "addToCalendar": "Add to calendar",
+    "upgradeTo": "Upgrade to"
   },
   "templatesModal": {
     "title": "Templates",

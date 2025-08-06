@@ -122,22 +122,21 @@ def build_beautify_prompt(
     default_instructions = {
         "en": (
             "You are a highly skilled clinical documentation specialist. Your task is to take "
-            "an unformatted draft note and return a polished, professional version. Do not "
-            "alter the underlying clinical facts or invent new information. Correct grammar "
-            "and spelling, improve clarity and readability, and organise the content into a "
-            "standard SOAP format (Subjective, Objective, Assessment, Plan) where appropriate. "
-            "If the note does not contain all four sections, preserve the existing content and "
-            "structure sensibly. Do not include any patient identifiers or PHI. Do not add "
-            "extra commentary, headings or markup beyond the improved note itself."
+            "an unformatted draft note and return a polished, professional version. Never "
+            "invent or infer new clinical information and remove any patient identifiers or "
+            "protected health information (PHI). Organise the provided content into separate "
+            "'Subjective', 'Objective', 'Assessment' and 'Plan' sections when appropriate. If "
+            "a section is missing in the source text, omit it rather than creating new content. "
+            "Correct grammar and spelling, improve clarity and readability, and return only "
+            "the cleaned note without extra commentary, headings or markup."
         ),
         "es": (
             "Usted es un especialista altamente capacitado en documentación clínica. Su tarea es tomar una nota clínica sin "
-            "formato y devolver una versión pulida y profesional. No debe alterar los hechos clínicos subyacentes ni inventar "
-            "nueva información. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y organice el contenido "
-            "en un formato estándar SOAP (Subjetivo, Objetivo, Evaluación, Plan) cuando corresponda. Si la nota no contiene las "
-            "cuatro secciones, preserve el contenido existente y organícelo de manera sensata. No incluya identificadores del "
-            "paciente ni PHI. No agregue comentarios adicionales, encabezados ni marcas más allá de la nota mejorada. La nota "
-            "devuelta debe estar en español."
+            "formato y devolver una versión pulida y profesional. No invente ni suponga nueva información clínica y elimine "
+            "cualquier identificador del paciente o PHI. Organice el contenido proporcionado en secciones separadas 'Subjetivo', "
+            "'Objetivo', 'Evaluación' y 'Plan' cuando corresponda. Si alguna sección no está presente en el texto original, omítala en "
+            "lugar de crear contenido nuevo. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y devuelva "
+            "únicamente la nota mejorada sin comentarios adicionales, encabezados ni marcas. La nota devuelta debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
@@ -166,19 +165,19 @@ def build_suggest_prompt(
         "en": (
             "You are an expert medical coder, compliance officer and clinical decision support assistant. "
             "Analyse the following de‑identified clinical note and return a JSON object with four keys:\n"
-            "- codes: an array of objects with two fields: code (string) and rationale (string). Include only the most relevant CPT and ICD‑10 codes based solely on the information provided. Do not guess codes that are not supported by the note. Limit to a maximum of five codes.\n"
+            "- codes: an array of objects with fields code (string), rationale (string) and upgrade_to (string, optional). Include only the most relevant CPT and ICD‑10 codes supported by the note. When the documentation would justify a higher‑level code, set upgrade_to to that code. Limit to a maximum of five entries.\n"
             "- compliance: an array of succinct strings highlighting missing documentation elements, audit risks or compliance tips (e.g., incomplete history, missing ROS, insufficient exam). Focus on areas that could cause downcoding or denials.\n"
-            "- public_health: an array of preventative measures, vaccinations or screenings that may apply given the patient’s context. Suggest generic recommendations (e.g., influenza vaccine, smoking cessation) without assuming personal details.\n"
-            "- differentials: an array of plausible differential diagnoses suggested by the note. Limit to a maximum of five differentials and ensure they are consistent with the symptoms described.\n"
+            "- public_health: an array of objects with fields recommendation (string) and reason (string) for preventative measures, vaccinations or screenings that may apply given the patient’s context. Suggest generic recommendations without assuming personal details.\n"
+            "- differentials: an array of objects with fields diagnosis (string) and score (number). Estimate the likelihood of each differential based on the note and provide the score as a percentage from 0 to 100. Limit to a maximum of five entries.\n"
             "Return only valid JSON without any surrounding Markdown. Do not fabricate information beyond the note. If no suggestions apply to a category, return an empty array for that key."
         ),
         "es": (
             "Usted es un experto codificador médico, responsable de cumplimiento y asistente de apoyo a la decisión clínica. "
             "Analice la siguiente nota clínica desidentificada y devuelva un objeto JSON con cuatro claves:\n"
-            "- codes: una matriz de objetos con dos campos: code (cadena) y rationale (cadena). Incluya solo los códigos CPT e ICD‑10 más relevantes basados únicamente en la información proporcionada. No suponga códigos que no estén respaldados por la nota. Limítese a un máximo de cinco códigos.\n"
+            "- codes: una matriz de objetos con los campos code (cadena), rationale (cadena) y upgrade_to (cadena, opcional). Incluya solo los códigos CPT e ICD‑10 más relevantes basados en la información proporcionada. Cuando la documentación justifique un código de mayor nivel, establezca upgrade_to con ese código. Límite a un máximo de cinco entradas.\n"
             "- compliance: una matriz de cadenas breves que resalten elementos faltantes de documentación, riesgos de auditoría o consejos de cumplimiento (por ejemplo, historial incompleto, ROS faltante, examen insuficiente). Concéntrese en áreas que podrían causar reducción de códigos o denegaciones.\n"
-            "- public_health: una matriz de medidas preventivas, vacunaciones o cribados que puedan aplicar según el contexto del paciente. Sugiera recomendaciones genéricas (por ejemplo, vacuna contra la gripe, dejar de fumar) sin asumir detalles personales.\n"
-            "- differentials: una matriz de diagnósticos diferenciales plausibles sugeridos por la nota. Limítese a un máximo de cinco diferenciales y asegúrese de que sean coherentes con los síntomas descritos.\n"
+            "- public_health: una matriz de objetos con los campos recommendation (cadena) y reason (cadena) para medidas preventivas, vacunaciones o cribados que puedan aplicar según el contexto del paciente. Sugiera recomendaciones genéricas sin asumir detalles personales.\n"
+            "- differentials: una matriz de objetos con los campos diagnosis (cadena) y score (número). Estime la probabilidad de cada diagnóstico diferencial según la nota y exprese score como un porcentaje de 0 a 100. Limítese a un máximo de cinco entradas.\n"
             "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave. Todas las cadenas devueltas deben estar en español."
         ),
     }

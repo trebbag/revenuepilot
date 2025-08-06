@@ -159,7 +159,8 @@
     "loading": "Loading suggestions...",
     "none": "No suggestions yet",
     "followUp": "Follow-Up",
-    "addToCalendar": "Add to calendar"
+    "addToCalendar": "Add to calendar",
+    "upgradeTo": "Upgrade to"
   },
   "templatesModal": {
     "title": "Templates",

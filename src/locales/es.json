@@ -159,7 +159,8 @@
     "loading": "Cargando sugerencias...",
     "none": "Sin sugerencias aún",
     "followUp": "Seguimiento",
-    "addToCalendar": "Agregar al calendario"
+    "addToCalendar": "Agregar al calendario",
+    "upgradeTo": "Mejorar a"
   },
   "templatesModal": {
     "title": "Plantillas",
