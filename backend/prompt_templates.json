@@ -1,0 +1,69 @@
+{
+  "default": {
+    "beautify": {
+      "en": "Base instruction applied to all notes.",
+      "examples": [
+        {
+          "user": "Example raw note",
+          "assistant": "Example polished note"
+        }
+      ]
+    },
+    "suggest": {
+      "en": "Base suggestion guidance.",
+      "examples": [
+        {
+          "user": "Example suggest note",
+          "assistant": "{\"codes\": [], \"compliance\": [], \"public_health\": [], \"differentials\": []}"
+        }
+      ]
+    },
+    "summary": {
+      "en": "Base summary guidance.",
+      "examples": [
+        {
+          "user": "Example summary note",
+          "assistant": "Example patient-friendly summary."
+        }
+      ]
+    }
+  },
+  "specialty": {
+    "cardiology": {
+      "beautify": {
+        "en": "Cardiology specific beautify instruction.",
+        "examples": [
+          {
+            "user": "Cardio raw note",
+            "assistant": "Cardio polished note"
+          }
+        ]
+      },
+      "suggest": {
+        "en": "Cardiology specific suggestion instruction."
+      },
+      "summary": {
+        "en": "Cardiology specific summary instruction."
+      }
+    }
+  },
+  "payer": {
+    "medicare": {
+      "beautify": {
+        "en": "Ensure documentation meets Medicare standards."
+      },
+      "suggest": {
+        "en": "Follow Medicare coding rules.",
+        "examples": [
+          {
+            "user": "Medicare suggest note",
+            "assistant": "{\"codes\": [{\"code\": \"G0008\", \"rationale\": \"Influenza vaccine\"}], \"compliance\": [], \"public_health\": [], \"differentials\": []}"
+          }
+        ]
+      },
+      "summary": {
+        "en": "Follow Medicare summary requirements."
+      }
+    }
+  }
+}

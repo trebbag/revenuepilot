@@ -53,12 +53,11 @@ def test_audio_transcription_returns_text(monkeypatch):
     assert diarised["provider"].strip(), "Diarised transcription should not be empty"
 
     # The FastAPI endpoint should also return text and store it
-    token = create_token("tester", "user")
+    token = create_token("test", "user")
     resp = client.post(
         "/transcribe",
         files={"file": ("audio.webm", dummy_audio, "audio/webm")},
-        headers={"Authorization": f"Bearer {create_token('tester', 'user')}"},
-
+        headers={"Authorization": f"Bearer {token}"},
     )
     data = resp.json()
     assert data["provider"].strip()

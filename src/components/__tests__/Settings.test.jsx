@@ -38,6 +38,30 @@ test('saveSettings called when preferences change', async () => {
   await waitFor(() => expect(saveSettings).toHaveBeenCalled());
 });
 
+test('saveSettings called when specialty and payer change', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    specialty: '',
+    payer: '',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getAllByRole } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  const selects = getAllByRole('combobox');
+  // selects[0] is language, [1] specialty, [2] payer
+  fireEvent.change(selects[1], { target: { value: 'cardiology' } });
+  fireEvent.change(selects[2], { target: { value: 'medicare' } });
+  await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+});
+
 test('renders Spanish translations when lang is es', () => {
   const settings = {
     theme: 'modern',
