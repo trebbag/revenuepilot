@@ -43,7 +43,7 @@ This document provides a high‑level overview of the components that make up th
 
 ## Deployment Notes
 
-The current repository is designed for local development.  The `start.sh` script (or `start.ps1` on Windows) runs `uvicorn` for the backend on port 8000 and `npm run dev` for the React frontend on port 5173, setting `VITE_API_URL` accordingly.  In production, the frontend can be bundled with Electron and the backend can be packaged with Gunicorn/Uvicorn.  The roadmap includes tasks for Electron packaging, code‑signing, auto‑updates and migration to a full database such as Postgres.
+The current repository is designed for local development.  The `start.sh` script (or `start.ps1` on Windows) runs `uvicorn` for the backend on port 8000 and `npm run dev` for the React frontend on port 5173, setting `VITE_API_URL` accordingly.  For distribution, the project provides an Electron builder setup that bundles the frontend with the FastAPI backend, performs code signing and enables auto‑updates.  Production deployments can alternatively package the backend with Gunicorn/Uvicorn.  Future work will migrate the embedded SQLite database to a full database such as Postgres.
 
 ## Customising Prompt Templates
 
