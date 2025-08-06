@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from collections import deque
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -824,7 +825,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1738,10 +1739,21 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             req.sex,
             req.region,
         )
+        public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
+        extra_ph = public_health_api.get_public_health_suggestions(
+            req.age, req.sex, req.region
+        )
+        if extra_ph:
+            existing = {p.recommendation for p in public_health}
+            for rec in extra_ph:
+                if rec not in existing:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=None)
+                    )
         return SuggestionsResponse(
             codes=[CodeSuggestion(**c) for c in data["codes"]],
             compliance=data["compliance"],
-            publicHealth=[PublicHealthSuggestion(**p) for p in data["publicHealth"]],
+            publicHealth=public_health,
             differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
         )
     # Try to call the LLM to generate structured suggestions.  The prompt
