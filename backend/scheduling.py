@@ -19,8 +19,21 @@ CODE_INTERVALS = {
     "S93": "2 weeks",
 }
 
+# Prefixes of ICD-10 codes considered indicative of chronic or acute
+# conditions.  These are used as a lightweight heuristic for determining the
+# recommended follow-up interval.
+CHRONIC_CODE_PREFIXES = ["E11", "I10", "J45"]
+ACUTE_CODE_PREFIXES = ["J06", "S93"]
+
 CHRONIC_KEYWORDS = {"chronic", "diabetes", "hypertension", "asthma"}
 ACUTE_KEYWORDS = {"sprain", "acute", "infection", "injury"}
+
+
+def _has_prefix(codes: Iterable[str], prefixes: Iterable[str]) -> bool:
+    """Return ``True`` if any code starts with one of the given prefixes."""
+
+    prefixes = tuple(prefixes)
+    return any(code.startswith(prefixes) for code in codes)
 
 def recommend_follow_up(
     codes: Sequence[str],

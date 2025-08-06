@@ -2197,12 +2197,6 @@ async def suggest(
                         public_health.append(
                             PublicHealthSuggestion(recommendation=str(rec))
                         )
-        follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
-
-                if rec not in existing:
-                    public_health.append(
-                        PublicHealthSuggestion(recommendation=rec, reason=None)
-                    )
         follow_up = recommend_follow_up(
             [c.code for c in codes],
             [d.diagnosis for d in diffs],
