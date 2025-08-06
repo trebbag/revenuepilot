@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from collections import deque
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,9 +47,8 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel
+from .templates import TemplateModel, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up
-
 
 
 import json
@@ -64,10 +64,15 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
 # for running the API in environments without network access.
-USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {"1", "true", "yes"}
+USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 try:
     import scrubadub
+
     _SCRUBBER_AVAILABLE = True
 except Exception:  # pragma: no cover - library is optional
     scrubadub = None  # type: ignore
@@ -346,6 +351,7 @@ def require_role(role: str):
 
     return checker
 
+
 # Model for setting API key via API endpoint
 class ApiKeyModel(BaseModel):
     key: str
@@ -368,6 +374,7 @@ class RefreshModel(BaseModel):
 
 class ResetPasswordModel(BaseModel):
     """Schema used when a user wishes to reset their password."""
+
     username: str
     password: str
     new_password: str
@@ -416,7 +423,6 @@ class UserSettings(BaseModel):
         return cleaned
 
 
-
 def hash_password(password: str) -> str:
     """Hash the provided password using bcrypt with a per-password salt."""
     return pwd_context.hash(password)
@@ -458,7 +464,9 @@ class UpdateUserModel(BaseModel):
 
 
 @app.put("/users/{username}")
-async def update_user(username: str, model: UpdateUserModel, user=Depends(require_role("admin"))):
+async def update_user(
+    username: str, model: UpdateUserModel, user=Depends(require_role("admin"))
+):
     """Update a user's role or password."""
     fields = []
     values: List[Any] = []
@@ -528,9 +536,14 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         if data.get("type") != "refresh":
             raise jwt.PyJWTError()
     except jwt.PyJWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
     access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
-    return {"access_token": access_token, "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60}
+    return {
+        "access_token": access_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
 
 
 @app.post("/reset-password")
@@ -585,7 +598,9 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
 
 
 @app.post("/settings")
-async def save_user_settings(model: UserSettings, user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def save_user_settings(
+    model: UserSettings, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
     """Persist settings for the authenticated user."""
     row = db_conn.execute(
         "SELECT id FROM users WHERE username=?",
@@ -612,8 +627,6 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     return model.dict()
 
 
-
-
 class NoteRequest(BaseModel):
     """
     Schema for a note submitted by the frontend.  The primary field is
@@ -622,6 +635,7 @@ class NoteRequest(BaseModel):
     user‑defined rules, or a transcript of a recorded visit.  These
     fields are appended to the note before sending to the AI model.
     """
+
     text: str
     chart: Optional[str] = None
     rules: Optional[List[str]] = None
@@ -634,9 +648,9 @@ class NoteRequest(BaseModel):
     region: Optional[str] = None
 
 
-
 class CodeSuggestion(BaseModel):
     """Represents a single coding suggestion with rationale and upgrade."""
+
     code: str
     rationale: Optional[str] = None
     upgrade_to: Optional[str] = None
@@ -645,18 +659,21 @@ class CodeSuggestion(BaseModel):
 
 class PublicHealthSuggestion(BaseModel):
     """Preventative care recommendation with supporting reason."""
+
     recommendation: str
     reason: Optional[str] = None
 
 
 class DifferentialSuggestion(BaseModel):
     """Potential differential diagnosis with likelihood score."""
+
     diagnosis: str
     score: Optional[confloat(ge=0, le=1)] = None
 
 
 class SuggestionsResponse(BaseModel):
     """Schema for the suggestions returned to the frontend."""
+
     codes: List[CodeSuggestion]
     compliance: List[str]
     publicHealth: List[PublicHealthSuggestion]
@@ -717,7 +734,11 @@ def deidentify(text: str) -> str:
     """
 
     def _placeholder(token: str, value: str) -> str:
-        rep = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8] if _HASH_TOKENS else value
+        rep = (
+            hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+            if _HASH_TOKENS
+            else value
+        )
         return f"[{token}:{rep}]"
 
     engine = _DEID_ENGINE
@@ -772,7 +793,11 @@ def deidentify(text: str) -> str:
             filths = list(scrubber.iter_filth(text))
             for filth in sorted(filths, key=lambda f: f.beg, reverse=True):
                 token = filth.__class__.__name__.replace("Filth", "").upper()
-                text = text[: filth.beg] + _placeholder(token, filth.text) + text[filth.end :]
+                text = (
+                    text[: filth.beg]
+                    + _placeholder(token, filth.text)
+                    + text[filth.end :]
+                )
             return text
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("scrubadub failed: %s", exc)
@@ -824,7 +849,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -851,19 +876,23 @@ def deidentify(text: str) -> str:
 async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]]:
     try:
         cursor = db_conn.cursor()
-        cursor.execute("SELECT eventType, timestamp, details FROM events ORDER BY timestamp DESC LIMIT 200")
+        cursor.execute(
+            "SELECT eventType, timestamp, details FROM events ORDER BY timestamp DESC LIMIT 200"
+        )
         rows = cursor.fetchall()
         result: List[Dict[str, Any]] = []
         for row in rows:
             try:
-                details = json.loads(row["details"] or '{}')
+                details = json.loads(row["details"] or "{}")
             except Exception:
                 details = {}
-            result.append({
-                "eventType": row["eventType"],
-                "timestamp": row["timestamp"],
-                "details": details,
-            })
+            result.append(
+                {
+                    "eventType": row["eventType"],
+                    "timestamp": row["timestamp"],
+                    "details": details,
+                }
+            )
         return result
     except Exception as exc:
         logging.error("Error fetching events: %s", exc)
@@ -876,7 +905,9 @@ async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]
 # a note, beautifying a note, requesting suggestions).  Events are
 # stored in the global `events` list.  Returns a simple status.
 @app.post("/event")
-async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Dict[str, str]:
+async def log_event(
+    event: EventModel, user=Depends(require_role("user"))
+) -> Dict[str, str]:
     data = {
         "eventType": event.eventType,
         "details": event.details or {},
@@ -915,9 +946,21 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
                 data["timestamp"],
                 json.dumps(data["details"], ensure_ascii=False),
                 data["details"].get("revenue"),
-                json.dumps(data["details"].get("codes")) if data["details"].get("codes") is not None else None,
-                json.dumps(data["details"].get("compliance")) if data["details"].get("compliance") is not None else None,
-                1 if data["details"].get("publicHealth") is True else 0 if data["details"].get("publicHealth") is False else None,
+                (
+                    json.dumps(data["details"].get("codes"))
+                    if data["details"].get("codes") is not None
+                    else None
+                ),
+                (
+                    json.dumps(data["details"].get("compliance"))
+                    if data["details"].get("compliance") is not None
+                    else None
+                ),
+                (
+                    1
+                    if data["details"].get("publicHealth") is True
+                    else 0 if data["details"].get("publicHealth") is False else None
+                ),
                 data["details"].get("satisfaction"),
             ),
         )
@@ -928,7 +971,9 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
 
 
 @app.post("/survey")
-async def submit_survey(survey: SurveyModel, user=Depends(require_role("user"))) -> Dict[str, str]:
+async def submit_survey(
+    survey: SurveyModel, user=Depends(require_role("user"))
+) -> Dict[str, str]:
     """Record a satisfaction survey with optional free-text feedback."""
 
     ts = datetime.utcnow().timestamp()
@@ -967,7 +1012,9 @@ def _validate_prompt_templates(data: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="Template must be a JSON object")
     for key in ("default", "specialty", "payer"):
         if key in data and not isinstance(data[key], dict):
-            raise HTTPException(status_code=400, detail=f"'{key}' section must be an object")
+            raise HTTPException(
+                status_code=400, detail=f"'{key}' section must be an object"
+            )
 
 
 @app.get("/prompt-templates", response_model=Dict[str, Any])
@@ -981,7 +1028,9 @@ def get_prompt_templates(user=Depends(require_role("admin"))) -> Dict[str, Any]:
 
 
 @app.post("/prompt-templates", response_model=Dict[str, Any])
-def save_prompt_templates(data: Dict[str, Any], user=Depends(require_role("admin"))) -> Dict[str, Any]:
+def save_prompt_templates(
+    data: Dict[str, Any], user=Depends(require_role("admin"))
+) -> Dict[str, Any]:
     """Validate and persist prompt templates supplied by an admin user."""
     _validate_prompt_templates(data)
     path = os.path.join(os.path.dirname(__file__), "prompt_templates.json")
@@ -1011,16 +1060,29 @@ def get_templates(
             "WHERE (user=? OR (user IS NULL AND clinic=?))",
             (user["sub"], clinic),
         ).fetchall()
-    return [
+
+    templates = [
         TemplateModel(
-            id=row["id"], name=row["name"], content=row["content"], specialty=row["specialty"]
+            id=row["id"],
+            name=row["name"],
+            content=row["content"],
+            specialty=row["specialty"],
         )
         for row in rows
     ]
 
+    for tpl in DEFAULT_TEMPLATES:
+        if specialty and tpl.specialty != specialty:
+            continue
+        templates.append(tpl)
+
+    return templates
+
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+def create_template(
+    tpl: TemplateModel, user=Depends(require_role("user"))
+) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
     clinic = user.get("clinic")
@@ -1176,10 +1238,16 @@ async def get_metrics(
     current_conditions = base_conditions + [current_cond]
     baseline_conditions = base_conditions + [baseline_cond]
 
-    where_current = f"WHERE {' AND '.join(current_conditions)}" if current_conditions else ""
-    where_baseline = f"WHERE {' AND '.join(baseline_conditions)}" if baseline_conditions else ""
+    where_current = (
+        f"WHERE {' AND '.join(current_conditions)}" if current_conditions else ""
+    )
+    where_baseline = (
+        f"WHERE {' AND '.join(baseline_conditions)}" if baseline_conditions else ""
+    )
 
-    def compute_basic(where_clause: str, params: List[Any], collect_timeseries: bool = False) -> Dict[str, Any]:
+    def compute_basic(
+        where_clause: str, params: List[Any], collect_timeseries: bool = False
+    ) -> Dict[str, Any]:
         totals_query = f"""
             SELECT
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
@@ -1241,7 +1309,11 @@ async def get_metrics(
             except Exception:
                 codes = []
             if isinstance(codes, list):
-                denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
+                denial_flag = (
+                    details.get("denial")
+                    if isinstance(details.get("denial"), bool)
+                    else None
+                )
                 for code in codes:
                     code_counts[code] = code_counts.get(code, 0) + 1
                     if denial_flag is not None:
@@ -1289,7 +1361,11 @@ async def get_metrics(
             )
             if evt == "note_started" and patient_id:
                 last_start_for_patient[patient_id] = ts
-            if evt == "beautify" and patient_id and patient_id in last_start_for_patient:
+            if (
+                evt == "beautify"
+                and patient_id
+                and patient_id in last_start_for_patient
+            ):
                 duration = ts - last_start_for_patient[patient_id]
                 if duration >= 0:
                     beautify_time_sum += duration
@@ -1307,7 +1383,9 @@ async def get_metrics(
         avg_beautify_time = (
             beautify_time_sum / beautify_time_count if beautify_time_count else 0
         )
-        denial_rates = {c: (v[1] / v[0] if v[0] else 0) for c, v in denial_counts.items()}
+        denial_rates = {
+            c: (v[1] / v[0] if v[0] else 0) for c, v in denial_counts.items()
+        }
         overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
         deficiency_rate = (
             deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
@@ -1391,7 +1469,6 @@ async def get_metrics(
     cursor.execute(weekly_query, base_params)
     weekly_list = [dict(r) for r in cursor.fetchall()]
 
-
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
@@ -1415,7 +1492,6 @@ async def get_metrics(
         cursor.execute(daily_query, base_params)
         daily_list = [dict(r) for r in cursor.fetchall()]
 
-
     weekly_list: List[Dict[str, Any]] = []
     if weekly:
         weekly_query = f"""
@@ -1438,7 +1514,6 @@ async def get_metrics(
         """
         cursor.execute(weekly_query, base_params)
         weekly_list = [dict(r) for r in cursor.fetchall()]
-
 
     top_compliance = [
         {"gap": k, "count": v}
@@ -1531,8 +1606,12 @@ async def get_metrics(
         "clinicians": clinicians,
         "timeseries": timeseries,
     }
+
+
 @app.post("/summarize")
-async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dict[str, str]:
+async def summarize(
+    req: NoteRequest, user=Depends(require_role("user"))
+) -> Dict[str, str]:
     """
     Generate a patient‑friendly summary of a clinical note.  This endpoint
     combines the draft text with any optional chart and audio transcript,
@@ -1574,7 +1653,9 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
 
 @app.post("/transcribe")
 async def transcribe(
-    file: UploadFile = File(...), diarise: bool = False, user=Depends(require_role("user"))
+    file: UploadFile = File(...),
+    diarise: bool = False,
+    user=Depends(require_role("user")),
 ) -> Dict[str, Any]:
     """Transcribe uploaded audio.
 
@@ -1594,7 +1675,9 @@ async def transcribe(
         result = {
             "provider": text,
             "patient": "",
-            "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
+            "segments": [
+                {"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}
+            ],
         }
     # Store the most recent transcript so other endpoints or subsequent
     # requests can reuse it without reprocessing the audio.  Replace the
@@ -1616,6 +1699,7 @@ async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, A
 
     return last_transcript
 
+
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
 # field "key" and stores it in a local file.  Also updates the
 # environment variable OPENAI_API_KEY so future requests in this
@@ -1633,7 +1717,9 @@ async def set_api_key(model: ApiKeyModel, user=Depends(require_role("admin"))):
     """
     key = model.key.strip()
     if not key:
-        return JSONResponse({"status": "error", "message": "Key cannot be empty"}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": "Key cannot be empty"}, status_code=400
+        )
 
     # Basic format validation: accept keys starting with ``sk-`` and at
     # least 20 additional non‑whitespace characters.  This intentionally
@@ -1698,7 +1784,9 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
 
 
 @app.post("/suggest", response_model=SuggestionsResponse)
-async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> SuggestionsResponse:
+async def suggest(
+    req: NoteRequest, user=Depends(require_role("user"))
+) -> SuggestionsResponse:
     """
     Generate coding and compliance suggestions for a clinical note.  This
     endpoint de‑identifies the text and then calls an AI model to
@@ -1722,7 +1810,9 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
     # If the client provided custom rules, append them as a guidance section
     if req.rules:
         # Join rules into a bulleted list
-        rules_section = "\n\nUser‑defined rules:\n" + "\n".join(f"- {r}" for r in req.rules)
+        rules_section = "\n\nUser‑defined rules:\n" + "\n".join(
+            f"- {r}" for r in req.rules
+        )
         cleaned_for_prompt = cleaned + rules_section
     else:
         cleaned_for_prompt = cleaned
@@ -1822,9 +1912,7 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
                         DifferentialSuggestion(diagnosis=diag, score=score_val)
                     )
             else:
-                diffs.append(
-                    DifferentialSuggestion(diagnosis=str(item), score=None)
-                )
+                diffs.append(DifferentialSuggestion(diagnosis=str(item), score=None))
         # Augment public health suggestions with external guidelines
         extra_ph = public_health_api.get_public_health_suggestions(
             req.age, req.sex, req.region
@@ -1856,12 +1944,25 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         public_health: List[PublicHealthSuggestion] = []
         diffs: List[DifferentialSuggestion] = []
         # Respiratory symptoms
-        if any(keyword in lower for keyword in ["cough", "fever", "cold", "sore throat"]):
-            codes.append(CodeSuggestion(code="99213", rationale="Established patient with respiratory symptoms"))
-            codes.append(CodeSuggestion(code="J06.9", rationale="Upper respiratory infection, unspecified"))
+        if any(
+            keyword in lower for keyword in ["cough", "fever", "cold", "sore throat"]
+        ):
+            codes.append(
+                CodeSuggestion(
+                    code="99213",
+                    rationale="Established patient with respiratory symptoms",
+                )
+            )
+            codes.append(
+                CodeSuggestion(
+                    code="J06.9", rationale="Upper respiratory infection, unspecified"
+                )
+            )
             compliance.append("Document duration of fever and associated symptoms")
             public_health.append(
-                PublicHealthSuggestion(recommendation="Consider influenza vaccine", reason=None)
+                PublicHealthSuggestion(
+                    recommendation="Consider influenza vaccine", reason=None
+                )
             )
             diffs.extend(
                 [
@@ -1872,27 +1973,42 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             )
         # Diabetes management
         if "diabetes" in lower:
-            codes.append(CodeSuggestion(code="E11.9", rationale="Type 2 diabetes mellitus without complications"))
+            codes.append(
+                CodeSuggestion(
+                    code="E11.9",
+                    rationale="Type 2 diabetes mellitus without complications",
+                )
+            )
             compliance.append("Include latest HbA1c results and medication list")
             public_health.append(
                 PublicHealthSuggestion(
-                    recommendation="Remind patient about foot and eye exams", reason=None
+                    recommendation="Remind patient about foot and eye exams",
+                    reason=None,
                 )
             )
             diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
         # Hypertension
         if "hypertension" in lower or "high blood pressure" in lower:
-            codes.append(CodeSuggestion(code="I10", rationale="Essential (primary) hypertension"))
-            compliance.append("Document blood pressure readings and lifestyle counselling")
+            codes.append(
+                CodeSuggestion(code="I10", rationale="Essential (primary) hypertension")
+            )
+            compliance.append(
+                "Document blood pressure readings and lifestyle counselling"
+            )
             public_health.append(
                 PublicHealthSuggestion(
-                    recommendation="Discuss sodium restriction and exercise", reason=None
+                    recommendation="Discuss sodium restriction and exercise",
+                    reason=None,
                 )
             )
             diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
         # Preventive visit
         if "annual" in lower or "wellness" in lower:
-            codes.append(CodeSuggestion(code="99395", rationale="Periodic comprehensive preventive visit"))
+            codes.append(
+                CodeSuggestion(
+                    code="99395", rationale="Periodic comprehensive preventive visit"
+                )
+            )
             compliance.append("Ensure all preventive screenings are up to date")
             public_health.append(
                 PublicHealthSuggestion(
@@ -1902,36 +2018,57 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             diffs.append(DifferentialSuggestion(diagnosis="–"))
         # Mental health
         if any(word in lower for word in ["depression", "anxiety", "sad", "depressed"]):
-            codes.append(CodeSuggestion(code="F32.9", rationale="Major depressive disorder, unspecified"))
+            codes.append(
+                CodeSuggestion(
+                    code="F32.9", rationale="Major depressive disorder, unspecified"
+                )
+            )
             compliance.append(
                 "Assess severity and suicidal ideation; document mental status exam"
             )
             public_health.append(
                 PublicHealthSuggestion(
-                    recommendation="Offer referral to counselling or psychotherapy", reason=None
+                    recommendation="Offer referral to counselling or psychotherapy",
+                    reason=None,
                 )
             )
             diffs.append(DifferentialSuggestion(diagnosis="Adjustment disorder"))
         # Musculoskeletal pain
-        if any(word in lower for word in ["back pain", "low back", "joint pain", "knee pain", "shoulder pain"]):
+        if any(
+            word in lower
+            for word in [
+                "back pain",
+                "low back",
+                "joint pain",
+                "knee pain",
+                "shoulder pain",
+            ]
+        ):
             codes.append(CodeSuggestion(code="M54.5", rationale="Low back pain"))
             compliance.append(
                 "Document onset, aggravating/relieving factors, and functional limitations"
             )
             public_health.append(
                 PublicHealthSuggestion(
-                    recommendation="Recommend stretching and physical therapy", reason=None
+                    recommendation="Recommend stretching and physical therapy",
+                    reason=None,
                 )
             )
             diffs.append(DifferentialSuggestion(diagnosis="Lumbar strain"))
         # Default suggestions if nothing matched
         if not codes:
-            codes.append(CodeSuggestion(code="99212", rationale="Established patient, straightforward"))
+            codes.append(
+                CodeSuggestion(
+                    code="99212", rationale="Established patient, straightforward"
+                )
+            )
         if not compliance:
             compliance.append("Ensure chief complaint and history are complete")
         if not public_health:
             public_health.append(
-                PublicHealthSuggestion(recommendation="Consider influenza vaccine", reason=None)
+                PublicHealthSuggestion(
+                    recommendation="Consider influenza vaccine", reason=None
+                )
             )
         if not diffs:
             diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
