@@ -135,6 +135,11 @@ def test_electron_packaging_configuration_present():
 
     build = pkg.get("build") or {}
     assert build.get("appId"), "electron-builder config missing"
+    linux_cfg = build.get("linux") or {}
+    assert linux_cfg.get("cscLink"), "linux code signing link missing"
+    assert linux_cfg.get("cscKeyPassword"), "linux code signing password missing"
+    publish = build.get("publish") or []
+    assert any(p.get("url") == "${env.UPDATE_SERVER_URL}" for p in publish), "update server URL missing"
 
 
 def test_electron_auto_update_and_backend_spawn_present():
@@ -145,6 +150,8 @@ def test_electron_auto_update_and_backend_spawn_present():
 
     assert "autoUpdater" in content, "auto-updater not referenced"
     assert "checkForUpdatesAndNotify" in content, "auto-update not triggered"
+    assert "setFeedURL" in content, "update feed not configured"
+    assert "update-downloaded" in content, "update download handler missing"
     assert "spawn(" in content and "uvicorn" in content, "backend spawn missing"
 
 
