@@ -25,6 +25,18 @@ The following variables are written to `.env`:
 - `CSC_LINK`, `CSC_KEY_PASSWORD` – macOS Developer ID certificate and
   password.
 
+## Obtaining code-signing certificates
+
+Windows builds require an Authenticode code-signing certificate. These can be
+purchased from certificate authorities such as DigiCert or GlobalSign. Export
+the certificate to a `.p12` file, host it securely and set `WIN_CSC_LINK` to
+its path or URL along with `WIN_CSC_KEY_PASSWORD`.
+
+macOS builds require membership in the Apple Developer Program. Create a
+*Developer ID Application* certificate in the Apple Developer portal, export it
+as a `.p12` file and configure `CSC_LINK` and `CSC_KEY_PASSWORD` with the file
+location and password.
+
 ## 2. Build signed installers
 
 Running the build script bundles the React frontend, the FastAPI backend and
