@@ -1,6 +1,11 @@
 // Suggestion panel rendering four expandable cards.  Clicking a suggestion
 // inserts it into the note editor via the onInsert callback.
-import { useState } from 'react';
+//
+// The component can optionally trigger backend suggestion fetching when the
+// `text` prop changes.  To avoid overwhelming the backend while the user is
+// typing, these calls are debounced so that only the final value after a short
+// pause results in a request.
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 function SuggestionPanel({
@@ -9,9 +14,26 @@ function SuggestionPanel({
   loading,
   className = '',
   onInsert,
+  // Optional text input that, when provided with `fetchSuggestions`, will
+  // trigger backend suggestion fetching.  Calls are debounced to reduce
+  // latency and unnecessary network load.
+  text,
+  fetchSuggestions,
 }) {
   const { t } = useTranslation();
   const [showPublicHealth, setShowPublicHealth] = useState(true);
+  // Debounce backend suggestion calls.  When `text` changes rapidly we clear
+  // the previous timeout and only invoke `fetchSuggestions` once the user has
+  // paused typing for 300ms.
+  const debounceRef = useRef();
+  useEffect(() => {
+    if (!fetchSuggestions || typeof text !== 'string') return undefined;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchSuggestions(text);
+    }, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [text, fetchSuggestions]);
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics}|string }
   const cards = [];
   if (!settingsState || settingsState.enableCodes) {
