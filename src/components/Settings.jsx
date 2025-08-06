@@ -11,6 +11,8 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
+  getPromptTemplates,
+  savePromptTemplates,
 } from '../api.js';
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
@@ -27,6 +29,12 @@ function Settings({ settings, updateSettings }) {
   const [tplContent, setTplContent] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [tplError, setTplError] = useState(null);
+  const [promptTemplates, setPromptTemplates] = useState({});
+  const [promptError, setPromptError] = useState(null);
+  const [newSpecialty, setNewSpecialty] = useState('');
+  const [newSpecialtyText, setNewSpecialtyText] = useState('');
+  const [newPayer, setNewPayer] = useState('');
+  const [newPayerText, setNewPayerText] = useState('');
 
   useEffect(() => {
     getTemplates()
@@ -38,6 +46,17 @@ function Settings({ settings, updateSettings }) {
           window.location.href = '/';
         } else {
           setTplError(e.message);
+        }
+      });
+    getPromptTemplates()
+      .then((data) => setPromptTemplates(data))
+      .catch((e) => {
+        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert(t('dashboard.accessDenied'));
+          localStorage.removeItem('token');
+          window.location.href = '/';
+        } else {
+          setPromptError(e.message);
         }
       });
   }, []);
@@ -196,6 +215,47 @@ function Settings({ settings, updateSettings }) {
       updateSettings(saved);
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleModifierChange = (type, key, value) => {
+    const section = `${type}_modifiers`;
+    setPromptTemplates((prev) => ({
+      ...prev,
+      [section]: {
+        ...(prev[section] || {}),
+        [key]: { ...(prev[section]?.[key] || {}), en: value },
+      },
+    }));
+  };
+
+  const handleAddSpecialtyModifier = () => {
+    if (!newSpecialty.trim() || !newSpecialtyText.trim()) return;
+    handleModifierChange('specialty', newSpecialty.trim().toLowerCase(), newSpecialtyText.trim());
+    setNewSpecialty('');
+    setNewSpecialtyText('');
+  };
+
+  const handleAddPayerModifier = () => {
+    if (!newPayer.trim() || !newPayerText.trim()) return;
+    handleModifierChange('payer', newPayer.trim().toLowerCase(), newPayerText.trim());
+    setNewPayer('');
+    setNewPayerText('');
+  };
+
+  const handleSavePromptTemplates = async () => {
+    try {
+      const saved = await savePromptTemplates(promptTemplates);
+      setPromptTemplates(saved);
+      setPromptError(null);
+    } catch (e) {
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert(t('dashboard.accessDenied'));
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      } else {
+        setPromptError(e.message);
+      }
     }
   };
 
@@ -506,6 +566,79 @@ function Settings({ settings, updateSettings }) {
           )}
         </div>
       </div>
+      <h3 style={{ marginTop: '1rem' }}>Prompt snippets</h3>
+      {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
+      <h4>Specialty additions</h4>
+      {Object.entries(promptTemplates.specialty_modifiers || {}).map(
+        ([name, entry]) => (
+          <div key={name} style={{ marginBottom: '0.5rem' }}>
+            <strong>{name}</strong>
+            <textarea
+              value={entry.en || ''}
+              onChange={(e) =>
+                handleModifierChange('specialty', name, e.target.value)
+              }
+              rows={3}
+              style={{ width: '100%' }}
+            />
+          </div>
+        )
+      )}
+      <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
+        <input
+          type="text"
+          placeholder="specialty"
+          value={newSpecialty}
+          onChange={(e) => setNewSpecialty(e.target.value)}
+          style={{ flex: 1, marginRight: '0.5rem' }}
+        />
+        <input
+          type="text"
+          placeholder="instruction"
+          value={newSpecialtyText}
+          onChange={(e) => setNewSpecialtyText(e.target.value)}
+          style={{ flex: 2 }}
+        />
+        <button onClick={handleAddSpecialtyModifier} style={{ marginLeft: '0.5rem' }}>
+          Add
+        </button>
+      </div>
+      <h4>Payer additions</h4>
+      {Object.entries(promptTemplates.payer_modifiers || {}).map(
+        ([name, entry]) => (
+          <div key={name} style={{ marginBottom: '0.5rem' }}>
+            <strong>{name}</strong>
+            <textarea
+              value={entry.en || ''}
+              onChange={(e) =>
+                handleModifierChange('payer', name, e.target.value)
+              }
+              rows={3}
+              style={{ width: '100%' }}
+            />
+          </div>
+        )
+      )}
+      <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
+        <input
+          type="text"
+          placeholder="payer"
+          value={newPayer}
+          onChange={(e) => setNewPayer(e.target.value)}
+          style={{ flex: 1, marginRight: '0.5rem' }}
+        />
+        <input
+          type="text"
+          placeholder="instruction"
+          value={newPayerText}
+          onChange={(e) => setNewPayerText(e.target.value)}
+          style={{ flex: 2 }}
+        />
+        <button onClick={handleAddPayerModifier} style={{ marginLeft: '0.5rem' }}>
+          Add
+        </button>
+      </div>
+      <button onClick={handleSavePromptTemplates}>Save snippets</button>
     </div>
   );
 }

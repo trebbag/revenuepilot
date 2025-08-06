@@ -102,6 +102,15 @@ def test_specialty_payer_modifiers_spanish():
     assert "control del colesterol" in content
 
 
+def test_summary_includes_modifiers():
+    msgs = prompts.build_summary_prompt(
+        "note", lang="en", specialty="cardiology", payer="medicare"
+    )
+    content = msgs[0]["content"]
+    assert "cardiac-specific terminology" in content
+    assert "Medicare reimbursement guidelines" in content
+
+
 def test_guideline_tips_added(monkeypatch):
     """Public health guideline tips should be appended to the user content."""
     monkeypatch.setattr(

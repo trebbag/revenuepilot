@@ -70,6 +70,15 @@ def _get_custom_instruction(
     """
 
     templates = _load_custom_templates()
+    # ``prompt_templates.json`` may define "specialty_modifiers"/"payer_modifiers"
+    # (legacy naming) or "specialty_additions"/"payer_additions".  Support both
+    # so existing deployments continue to function.
+    specialty_mods = templates.get("specialty_modifiers") or templates.get(
+        "specialty_additions", {}
+    )
+    payer_mods = templates.get("payer_modifiers") or templates.get(
+        "payer_additions", {}
+    )
 
     def extract(section: Dict[str, Any]) -> Optional[str]:
         entry = section.get(category, {})
@@ -81,21 +90,13 @@ def _get_custom_instruction(
     parts.append(extract(templates.get("default", {})))
     if specialty:
         specialty_key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
-        parts.append(
-            _resolve_lang(
-                templates.get("specialty_modifiers", {}).get(specialty_key, {}), lang
-            )
-        )
+        parts.append(_resolve_lang(specialty_mods.get(specialty_key, {}), lang))
         parts.append(
             extract(templates.get("specialty", {}).get(specialty_key, {}))
         )
     if payer:
         payer_key = payer.lower()
-        parts.append(
-            _resolve_lang(
-                templates.get("payer_modifiers", {}).get(payer_key, {}), lang
-            )
-        )
+        parts.append(_resolve_lang(payer_mods.get(payer_key, {}), lang))
         parts.append(extract(templates.get("payer", {}).get(payer_key, {})))
     return " ".join(p for p in parts if p)
 

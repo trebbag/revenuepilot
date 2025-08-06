@@ -598,7 +598,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies "
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template "
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -632,8 +632,8 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies, template) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
@@ -646,7 +646,6 @@ async def save_user_settings(
             int(model.useLocalModels),
             json.dumps(model.agencies),
             model.template,
-
         ),
     )
 
