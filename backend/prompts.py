@@ -122,22 +122,21 @@ def build_beautify_prompt(
     default_instructions = {
         "en": (
             "You are a highly skilled clinical documentation specialist. Your task is to take "
-            "an unformatted draft note and return a polished, professional version. Do not "
-            "alter the underlying clinical facts or invent new information. Correct grammar "
-            "and spelling, improve clarity and readability, and organise the content into a "
-            "standard SOAP format (Subjective, Objective, Assessment, Plan) where appropriate. "
-            "If the note does not contain all four sections, preserve the existing content and "
-            "structure sensibly. Do not include any patient identifiers or PHI. Do not add "
-            "extra commentary, headings or markup beyond the improved note itself."
+            "an unformatted draft note and return a polished, professional version. Never "
+            "invent or infer new clinical information and remove any patient identifiers or "
+            "protected health information (PHI). Organise the provided content into separate "
+            "'Subjective', 'Objective', 'Assessment' and 'Plan' sections when appropriate. If "
+            "a section is missing in the source text, omit it rather than creating new content. "
+            "Correct grammar and spelling, improve clarity and readability, and return only "
+            "the cleaned note without extra commentary, headings or markup."
         ),
         "es": (
             "Usted es un especialista altamente capacitado en documentación clínica. Su tarea es tomar una nota clínica sin "
-            "formato y devolver una versión pulida y profesional. No debe alterar los hechos clínicos subyacentes ni inventar "
-            "nueva información. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y organice el contenido "
-            "en un formato estándar SOAP (Subjetivo, Objetivo, Evaluación, Plan) cuando corresponda. Si la nota no contiene las "
-            "cuatro secciones, preserve el contenido existente y organícelo de manera sensata. No incluya identificadores del "
-            "paciente ni PHI. No agregue comentarios adicionales, encabezados ni marcas más allá de la nota mejorada. La nota "
-            "devuelta debe estar en español."
+            "formato y devolver una versión pulida y profesional. No invente ni suponga nueva información clínica y elimine "
+            "cualquier identificador del paciente o PHI. Organice el contenido proporcionado en secciones separadas 'Subjetivo', "
+            "'Objetivo', 'Evaluación' y 'Plan' cuando corresponda. Si alguna sección no está presente en el texto original, omítala en "
+            "lugar de crear contenido nuevo. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y devuelva "
+            "únicamente la nota mejorada sin comentarios adicionales, encabezados ni marcas. La nota devuelta debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])

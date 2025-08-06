@@ -4,8 +4,14 @@
       "en": "Base instruction applied to all notes.",
       "examples": [
         {
-          "user": "Example raw note",
-          "assistant": "Example polished note"
+          "user": {
+            "en": "chief complaint: cough for 3 days. vitals t 37.8C hr 80. no known allergies.",
+            "es": "motivo de consulta: tos desde hace 3 días. signos vitales t 37,8C fc 80. sin alergias conocidas."
+          },
+          "assistant": {
+            "en": "Subjective:\n- Cough for 3 days\nObjective:\n- Temp 37.8 C, HR 80\nAssessment:\n- Acute cough\nPlan:\n- Rest and fluids",
+            "es": "Subjetivo:\n- Tos desde hace 3 días\nObjetivo:\n- Temp 37,8 C, FC 80\nEvaluación:\n- Tos aguda\nPlan:\n- Reposo e hidratación"
+          }
         }
       ]
     },

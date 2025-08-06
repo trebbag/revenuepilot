@@ -1,0 +1,47 @@
+import sqlite3
+import hashlib
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backend import main
+
+
+def auth_header(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture
+def client(monkeypatch):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute(
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
+    )
+    pwd = hashlib.sha256(b"pw").hexdigest()
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("u", pwd, "user"),
+    )
+    db.commit()
+    monkeypatch.setattr(main, "db_conn", db)
+    monkeypatch.setattr(main, "events", [])
+    return TestClient(main.app)
+
+
+def test_beautify_spanish(client, monkeypatch):
+    def fake_call(msgs):
+        # ensure the system prompt instructs Spanish output
+        assert "en español" in msgs[0]["content"]
+        return "nota en español"
+
+    monkeypatch.setattr(main, "call_openai", fake_call)
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/beautify", json={"text": "hola", "lang": "es"}, headers=auth_header(token)
+    )
+    data = resp.json()
+    assert data["beautified"] == "nota en español"
