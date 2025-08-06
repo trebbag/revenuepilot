@@ -62,4 +62,22 @@ All tests and linters must pass locally.  Aim for >90 % coverage on new code.
 - Use `pip-tools` or a similar tool (not yet included) to manage Python dependencies.  When adding a new package, update `backend/requirements.txt` and document the reason in the pull request.
 - For Node dependencies, run `npm install <package> --save` or `--save-dev` and commit the updated `package.json` and `package-lock.json`.
 
+## 6. Optional PHI Scrubbers
+
+The backend can leverage advanced de‑identification libraries beyond the default regex patterns.
+
+- **Presidio**
+  ```bash
+  pip install presidio-analyzer spacy
+  python -m spacy download en_core_web_sm
+  export DEID_ENGINE=presidio
+  ```
+- **Philter**
+  ```bash
+  pip install philter-ucsf
+  export DEID_ENGINE=philter
+  ```
+
+Set `DEID_HASH_TOKENS=false` to keep raw values in placeholders when debugging.
+
 By adhering to this SOP, the team can collaborate efficiently, maintain high code quality and ensure that AI assistance is tracked responsibly.
