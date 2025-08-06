@@ -1,12 +1,12 @@
 import sqlite3
-import pytest
-from httpx import AsyncClient, ASGITransport
+from fastapi.testclient import TestClient
 
 from backend import main
 
 
-@pytest.mark.asyncio
-async def test_register_endpoint(monkeypatch):
+def test_register_endpoint(monkeypatch):
+    """Registering users and enforcing roles should work synchronously."""
+
     # Set up in-memory database with users table
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.row_factory = sqlite3.Row
@@ -24,26 +24,26 @@ async def test_register_endpoint(monkeypatch):
     )
     db.commit()
 
-    transport = ASGITransport(app=main.app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        token = main.create_token("admin", "admin")
-        resp = await ac.post(
-            "/register",
-            json={"username": "bob", "password": "pw", "role": "user"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 200
+    client = TestClient(main.app)
 
-        # New user can log in
-        resp = await ac.post("/login", json={"username": "bob", "password": "pw"})
-        assert resp.status_code == 200
-        assert "access_token" in resp.json()
+    token = main.create_token("admin", "admin")
+    resp = client.post(
+        "/register",
+        json={"username": "bob", "password": "pw", "role": "user"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
 
-        # Non-admin should be rejected
-        user_token = main.create_token("bob", "user")
-        resp = await ac.post(
-            "/register",
-            json={"username": "eve", "password": "pw", "role": "user"},
-            headers={"Authorization": f"Bearer {user_token}"},
-        )
-        assert resp.status_code == 403
+    # New user can log in
+    resp = client.post("/login", json={"username": "bob", "password": "pw"})
+    assert resp.status_code == 200
+    assert "access_token" in resp.json()
+
+    # Non-admin should be rejected
+    user_token = main.create_token("bob", "user")
+    resp = client.post(
+        "/register",
+        json={"username": "eve", "password": "pw", "role": "user"},
+        headers={"Authorization": f"Bearer {user_token}"},
+    )
+    assert resp.status_code == 403

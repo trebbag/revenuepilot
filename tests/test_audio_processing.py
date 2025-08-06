@@ -63,8 +63,7 @@ def test_diarize_fallback_when_unavailable(monkeypatch):
     assert result == {"provider": "full text", "patient": ""}
 
 
-@pytest.mark.asyncio
-async def test_transcribe_placeholder_on_failure(monkeypatch):
+def test_transcribe_placeholder_on_failure(monkeypatch):
     class DummyCreate:
         def create(self, model, file):  # noqa: ARG002
             raise RuntimeError("boom")
