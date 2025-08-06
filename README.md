@@ -299,10 +299,10 @@ deploy RevenuePilot, consider the following steps:
    improve coding accuracy.
 
 5. **Secure and scale**: Implement authentication, persist analytics
-   events to a database, and wrap the app in Electron using
-   `electron-builder` when you’re ready to distribute a desktop version.
-   Remember to maintain HIPAA compliance by de‑identifying notes before
-   sending them to any external API.
+   events to a database, and consult the packaging guide to produce
+   signed installers via `electron-builder` when distributing a desktop
+   version. Remember to maintain HIPAA compliance by de‑identifying notes
+   before sending them to any external API.
 
 ### De-identification assumptions
 
