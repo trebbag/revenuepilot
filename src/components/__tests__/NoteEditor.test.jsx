@@ -6,27 +6,46 @@ import { useState } from 'react';
 vi.mock('../../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Tpl', content: 'Hello' }]),
+  transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+
 }));
 
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
 
-afterEach(() => cleanup());
-
-test('calls onRecord when record button clicked', () => {
-  const onRecord = vi.fn();
-  const { getByText } = render(
-    <NoteEditor id="n" value="" onChange={() => {}} onRecord={onRecord} />
-  );
-  fireEvent.click(getByText('Record Audio'));
-  expect(onRecord).toHaveBeenCalled();
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
 });
 
-test('shows record button when recording', () => {
-  const { getByText } = render(
-    <NoteEditor id="a" value="" onChange={() => {}} onRecord={() => {}} recording />
+test('record button toggles recording state', async () => {
+  class MockRecorder {
+    constructor() {
+      this.stream = { getTracks: () => [] };
+      this.ondataavailable = null;
+      this.onstop = null;
+      this.state = 'inactive';
+    }
+    start() {
+      this.state = 'recording';
+    }
+    stop() {
+      this.state = 'inactive';
+      if (this.ondataavailable) this.ondataavailable({ data: new Blob(['a']) });
+      if (this.onstop) this.onstop();
+    }
+  }
+  vi.stubGlobal('MediaRecorder', MockRecorder);
+  // eslint-disable-next-line no-undef
+  navigator.mediaDevices = { getUserMedia: vi.fn().mockResolvedValue({}) };
+
+  const { getByText, findByText } = render(
+    <NoteEditor id="n" value="" onChange={() => {}} />
   );
-  expect(getByText('Stop Recording')).toBeTruthy();
+  fireEvent.click(getByText('Record Audio'));
+  await findByText('Stop Recording');
+  fireEvent.click(getByText('Stop Recording'));
+  await findByText('Record Audio');
 });
 
 test('selecting template inserts content', async () => {

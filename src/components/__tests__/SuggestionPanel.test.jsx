@@ -10,12 +10,12 @@ test('renders suggestions and handles click', () => {
   const onInsert = vi.fn();
   const { getAllByText } = render(
     <SuggestionPanel
-      suggestions={{ codes: [{ code: 'A', rationale: 'reason' }], compliance: [], publicHealth: [], differentials: [] }}
+      suggestions={{ codes: [{ code: 'A', rationale: 'reason', upgradePath: 'A → B for complexity' }], compliance: [], publicHealth: [], differentials: [] }}
       settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
       onInsert={onInsert}
     />
   );
-  const el = getAllByText((_, el) => el.textContent === 'A — reason').find(
+  const el = getAllByText((_, el) => el.textContent.startsWith('A — reason')).find(
     (node) => node.tagName === 'LI'
   );
   fireEvent.click(el);

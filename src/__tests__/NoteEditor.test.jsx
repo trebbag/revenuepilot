@@ -5,6 +5,8 @@ import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('../api.js', () => ({
   fetchLastTranscript: vi.fn(),
   getTemplates: vi.fn().mockResolvedValue([]),
+  transcribeAudio: vi.fn(),
+
 }));
 
 import { fetchLastTranscript } from '../api.js';
@@ -25,13 +27,13 @@ test('transcript persists across reloads', async () => {
     <NoteEditor id="n1" value="" onChange={() => {}} />
   );
   await findByText(/Provider:/);
-  expect(fetchLastTranscript).toHaveBeenCalledTimes(2);
+  expect(fetchLastTranscript).toHaveBeenCalledTimes(1);
   unmount();
   const { findByText: findByText2 } = render(
     <NoteEditor id="n1" value="" onChange={() => {}} />
   );
   await findByText2(/Provider:/);
-  expect(fetchLastTranscript).toHaveBeenCalledTimes(4);
+  expect(fetchLastTranscript).toHaveBeenCalledTimes(2);
 });
 
 test('shows diarised output when available', async () => {

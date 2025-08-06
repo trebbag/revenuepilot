@@ -182,7 +182,7 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
  * Get coding and clinical suggestions based on the draft note.
  * The returned object has arrays for different suggestion types.
  * @param {string} text
- * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: string}>}
+ * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string,upgradePath?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: string}>}
 */
 export async function getSuggestions(text, context = {}) {
   const baseUrl =
@@ -231,7 +231,12 @@ export async function getSuggestions(text, context = {}) {
   // In stub mode, we ignore additional context and return sample suggestions
   return {
     codes: [
-      { code: '99213', rationale: 'Established patient, low complexity', upgrade_to: '99214' },
+      {
+        code: '99213',
+        rationale: 'Established patient, low complexity',
+        upgrade_to: '99214',
+        upgradePath: '99213 → 99214 for extended visit time',
+      },
       { code: '99395', rationale: 'Annual preventive visit' },
     ],
     compliance: ['Include duration of symptoms', 'Add ROS for cardiovascular system'],
