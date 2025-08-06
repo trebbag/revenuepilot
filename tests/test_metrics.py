@@ -21,12 +21,24 @@ def test_metrics_empty_returns_zeros():
     token = main.create_token('admin', 'admin')
     resp = client.get('/metrics', headers={'Authorization': f'Bearer {token}'})
     data = resp.json()
-    assert data['total_notes'] == 0
+    assert data['current']['total_notes'] == 0
+    assert data['baseline']['total_notes'] == 0
     assert data['coding_distribution'] == {}
 
 def test_metrics_aggregation():
     client = TestClient(main.app)
     events = [
+        {
+            "eventType": "note_closed",
+            "timestamp": 500,
+            "clinician": "carol",
+            "codes": ["99212"],
+            "revenue": 50.0,
+            "denial": False,
+            "deficiency": False,
+            "timeToClose": 80.0,
+            "baseline": True,
+        },
         {
             "eventType": "note_closed",
             "timestamp": 1000,
@@ -58,20 +70,22 @@ def test_metrics_aggregation():
     admin_token = main.create_token('tester', 'admin')
     resp = client.get('/metrics', headers={'Authorization': f'Bearer {admin_token}'})
     data = resp.json()
-    assert data['revenue_per_visit'] == pytest.approx(150.0)
+    assert data['current']['revenue_per_visit'] == pytest.approx(150.0)
+    assert data['baseline']['revenue_per_visit'] == pytest.approx(50.0)
+    assert data['improvement']['revenue_per_visit'] == pytest.approx(200.0)
     assert data['coding_distribution']['99213'] == 1
     assert data['coding_distribution']['99214'] == 1
-    assert data['denial_rate'] == pytest.approx(0.5)
-    assert data['deficiency_rate'] == pytest.approx(0.5)
-    assert data['avg_close_time'] == pytest.approx(90.0)
+    assert data['current']['denial_rate'] == pytest.approx(0.5)
+    assert data['current']['deficiency_rate'] == pytest.approx(0.5)
+    assert data['current']['avg_close_time'] == pytest.approx(90.0)
     # Filter by clinician
     resp = client.get(
         '/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {admin_token}'}
     )
     data = resp.json()
-    assert data['revenue_per_visit'] == pytest.approx(100.0)
+    assert data['current']['revenue_per_visit'] == pytest.approx(100.0)
     assert data['coding_distribution'] == {'99213': 1}
-    assert data['denial_rate'] == 0
+    assert data['current']['denial_rate'] == 0
 
 
 def test_metrics_timeseries_and_range():
@@ -107,7 +121,7 @@ def test_metrics_timeseries_and_range():
     # range filter
     resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})
     data = resp.json()
-    assert data['total_notes'] == 1
+    assert data['current']['total_notes'] == 1
 
 
 def test_timeseries_always_present():

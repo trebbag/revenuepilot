@@ -86,107 +86,103 @@ ChartJS.register(
   // one decimal place; otherwise show zero.
   const cards = [
     {
+      key: 'total_notes',
       title: t('dashboard.cards.totalNotes'),
-      baseline: 0,
-      current: metrics.total_notes || 0,
+      baseline: metrics.baseline?.total_notes || 0,
+      current: metrics.current?.total_notes || 0,
+      improvement: metrics.improvement?.total_notes,
       direction: 'higher',
     },
     {
+      key: 'total_beautify',
       title: t('dashboard.cards.beautifiedNotes'),
-      baseline: 0,
-      current: metrics.total_beautify || 0,
+      baseline: metrics.baseline?.total_beautify || 0,
+      current: metrics.current?.total_beautify || 0,
+      improvement: metrics.improvement?.total_beautify,
       direction: 'higher',
     },
     {
+      key: 'total_suggest',
       title: t('dashboard.cards.suggestionsRequested'),
-      baseline: 0,
-      current: metrics.total_suggest || 0,
+      baseline: metrics.baseline?.total_suggest || 0,
+      current: metrics.current?.total_suggest || 0,
+      improvement: metrics.improvement?.total_suggest,
       direction: 'higher',
     },
     {
+      key: 'total_summary',
       title: t('dashboard.cards.summariesGenerated'),
-      baseline: 0,
-      current: metrics.total_summary || 0,
+      baseline: metrics.baseline?.total_summary || 0,
+      current: metrics.current?.total_summary || 0,
+      improvement: metrics.improvement?.total_summary,
       direction: 'higher',
     },
     {
+      key: 'total_chart_upload',
       title: t('dashboard.cards.chartUploads'),
-      baseline: 0,
-      current: metrics.total_chart_upload || 0,
+      baseline: metrics.baseline?.total_chart_upload || 0,
+      current: metrics.current?.total_chart_upload || 0,
+      improvement: metrics.improvement?.total_chart_upload,
       direction: 'higher',
     },
     {
+      key: 'total_audio',
       title: t('dashboard.cards.audioRecordings'),
-      baseline: 0,
-      current: metrics.total_audio || 0,
+      baseline: metrics.baseline?.total_audio || 0,
+      current: metrics.current?.total_audio || 0,
+      improvement: metrics.improvement?.total_audio,
       direction: 'higher',
     },
     {
+      key: 'avg_note_length',
       title: t('dashboard.cards.avgNoteLength'),
-      baseline: 0,
-      current: metrics.avg_note_length ? metrics.avg_note_length.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_note_length ? metrics.baseline.avg_note_length.toFixed(1) : 0,
+      current: metrics.current?.avg_note_length ? metrics.current.avg_note_length.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_note_length,
       direction: 'higher',
     },
     {
+      key: 'avg_beautify_time',
       title: t('dashboard.cards.avgBeautifyTime'),
-      baseline: 0,
-      current: metrics.avg_beautify_time ? metrics.avg_beautify_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_beautify_time ? metrics.baseline.avg_beautify_time.toFixed(1) : 0,
+      current: metrics.current?.avg_beautify_time ? metrics.current.avg_beautify_time.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_beautify_time,
       direction: 'lower',
     },
     {
+      key: 'revenue_per_visit',
       title: t('dashboard.cards.revenuePerVisit'),
-      baseline: 0,
-      current: metrics.revenue_per_visit ? metrics.revenue_per_visit.toFixed(2) : 0,
+      baseline: metrics.baseline?.revenue_per_visit ? metrics.baseline.revenue_per_visit.toFixed(2) : 0,
+      current: metrics.current?.revenue_per_visit ? metrics.current.revenue_per_visit.toFixed(2) : 0,
+      improvement: metrics.improvement?.revenue_per_visit,
       direction: 'higher',
     },
     {
+      key: 'avg_close_time',
       title: t('dashboard.cards.avgCloseTime'),
-      baseline: 0,
-      current: metrics.avg_close_time ? metrics.avg_close_time.toFixed(1) : 0,
+      baseline: metrics.baseline?.avg_close_time ? metrics.baseline.avg_close_time.toFixed(1) : 0,
+      current: metrics.current?.avg_close_time ? metrics.current.avg_close_time.toFixed(1) : 0,
+      improvement: metrics.improvement?.avg_close_time,
       direction: 'lower',
     },
     {
+      key: 'denial_rate',
       title: t('dashboard.cards.denialRate'),
-      baseline: 0,
-      current: metrics.denial_rate ? (metrics.denial_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.denial_rate ? (metrics.baseline.denial_rate * 100).toFixed(1) : 0,
+      current: metrics.current?.denial_rate ? (metrics.current.denial_rate * 100).toFixed(1) : 0,
+      improvement: metrics.improvement?.denial_rate,
       direction: 'lower',
     },
     {
+      key: 'deficiency_rate',
       title: t('dashboard.cards.deficiencyRate'),
-      baseline: 0,
-      current: metrics.deficiency_rate ? (metrics.deficiency_rate * 100).toFixed(1) : 0,
+      baseline: metrics.baseline?.deficiency_rate ? (metrics.baseline.deficiency_rate * 100).toFixed(1) : 0,
+      current: metrics.current?.deficiency_rate ? (metrics.current.deficiency_rate * 100).toFixed(1) : 0,
+      improvement: metrics.improvement?.deficiency_rate,
       direction: 'lower',
     },
   ];
 
-  /**
-   * Try to parse a numeric value from strings like "$150", "12%", "48h" or "3.0".
-   * Returns NaN if parsing fails. Strips common symbols like $,% and h.
-   */
-  const parseNumeric = (value) => {
-    // Convert the value to a string first; this prevents errors when
-    // numbers are passed in (e.g., 0) which do not have a replace method.
-    const cleaned = String(value).replace(/[^0-9.]/g, '');
-    return parseFloat(cleaned);
-  };
-
-  /**
-   * Determine improvement or decline for a metric.  Returns an object with
-   * direction ('up' or 'down' or null) and magnitude (absolute difference).
-   */
-  const computeChange = (metric) => {
-    if (metric.direction === 'none') return { dir: null, diff: null };
-    const baseVal = parseNumeric(metric.baseline);
-    const curVal = parseNumeric(metric.current);
-    if (isNaN(baseVal) || isNaN(curVal)) return { dir: null, diff: null };
-    const diff = curVal - baseVal;
-    // For metrics where lower is better, invert the sign
-    const effectiveDiff = metric.direction === 'lower' ? -diff : diff;
-    return {
-      dir: effectiveDiff > 0 ? 'up' : effectiveDiff < 0 ? 'down' : null,
-      diff: Math.abs(diff),
-    };
-  };
 
   const exportCSV = () => {
     const rows = [];
@@ -205,7 +201,7 @@ ChartJS.register(
       'deficiency_rate',
     ];
     topLevel.forEach((k) => {
-      if (k in metrics) rows.push([k, metrics[k]]);
+      if (metrics.current && k in metrics.current) rows.push([k, metrics.current[k]]);
     });
     const daily = metrics.timeseries?.daily || [];
     rows.push([]);
@@ -436,8 +432,8 @@ ChartJS.register(
       {
         label: t('dashboard.rate'),
         data: [
-          metrics.denial_rate ? metrics.denial_rate * 100 : 0,
-          metrics.deficiency_rate ? metrics.deficiency_rate * 100 : 0,
+          metrics.current?.denial_rate ? metrics.current.denial_rate * 100 : 0,
+          metrics.current?.deficiency_rate ? metrics.current.deficiency_rate * 100 : 0,
         ],
         backgroundColor: ['rgba(255,159,64,0.6)', 'rgba(75, 192, 192, 0.6)'],
       },
@@ -524,10 +520,15 @@ ChartJS.register(
         </thead>
         <tbody>
           {cards.map((m) => {
-            const change = computeChange(m);
-            const arrow = change.dir === 'up' ? '↑' : change.dir === 'down' ? '↓' : '';
-            const colour = change.dir === 'up' ? '#2E7D32' : change.dir === 'down' ? '#E57373' : 'inherit';
-            const diffLabel = change.diff != null ? `${arrow} ${change.diff}` : '';
+            const pct = m.improvement;
+            const effective =
+              pct != null ? (m.direction === 'lower' ? -pct : pct) : null;
+            const arrow =
+              effective > 0 ? '↑' : effective < 0 ? '↓' : '';
+            const colour =
+              effective > 0 ? '#2E7D32' : effective < 0 ? '#E57373' : 'inherit';
+            const diffLabel =
+              effective != null ? `${arrow} ${Math.abs(effective).toFixed(1)}%` : '';
             return (
               <tr key={m.title}>
                 <td>{m.title}</td>
@@ -559,8 +560,9 @@ ChartJS.register(
         </div>
       )}
 
-      {typeof metrics.denial_rate === 'number' &&
-        typeof metrics.deficiency_rate === 'number' && (
+      {metrics.current &&
+        typeof metrics.current.denial_rate === 'number' &&
+        typeof metrics.current.deficiency_rate === 'number' && (
           <div style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.denialDefRates')}</h3>
             <Bar
