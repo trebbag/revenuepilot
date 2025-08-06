@@ -111,6 +111,7 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
     if not audio_bytes:
         return {"provider": "", "patient": "", "segments": []}
 
+    error_msg = ""
     if _DIARISATION_AVAILABLE:
         try:
             # Write bytes to a temporary file so pyannote can process it
@@ -162,9 +163,11 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
                         "patient": patient,
                         "segments": mapped_segments,
                     }
-        except Exception:
+        except Exception as exc:
             # Any failure falls through to simple transcription below
-            pass
+            error_msg = f"diarisation failed: {exc}"
+    else:
+        error_msg = "diarisation unavailable"
 
     # Fallback: single-speaker transcription
     text = simple_transcribe(audio_bytes)
@@ -172,11 +175,14 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
         # Ensure a deterministic placeholder is returned when transcription
         # ultimately fails so callers always receive some text.
         text = f"[transcribed {len(audio_bytes)} bytes]"
-    return {
+    result = {
         "provider": text,
         "patient": "",
         "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
     }
+    if error_msg:
+        result["error"] = error_msg
+    return result
 
 
 def simple_transcribe(audio_bytes: bytes) -> str:
