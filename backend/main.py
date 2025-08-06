@@ -78,11 +78,20 @@ try:
     _analyzer.registry.add_recognizer(_ssn_recognizer)
 
     _anonymizer = AnonymizerEngine()
-    _ADVANCED_AVAILABLE = True
+    _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
-    _ADVANCED_AVAILABLE = False
+    _PRESIDIO_AVAILABLE = False
     _analyzer = None  # type: ignore
     _anonymizer = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    from philter.philter import Philter as _Philter
+
+    _philter = _Philter()
+    _PHILTER_AVAILABLE = True
+except Exception:
+    _PHILTER_AVAILABLE = False
+    _philter = None  # type: ignore
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
@@ -423,7 +432,7 @@ def deidentify(text: str) -> str:
         ``[NAME]`` or ``[PHONE]``.
     """
 
-    if USE_ADVANCED_SCRUBBER and _ADVANCED_AVAILABLE:
+    if USE_ADVANCED_SCRUBBER and _PRESIDIO_AVAILABLE:
         try:
             entities = [
                 "PERSON",
@@ -434,9 +443,17 @@ def deidentify(text: str) -> str:
                 "ADDRESS",
             ]
             results = _analyzer.analyze(text=text, language="en", entities=entities)
+            token_map = {
+                "PERSON": "NAME",
+                "PHONE_NUMBER": "PHONE",
+                "EMAIL_ADDRESS": "EMAIL",
+                "US_SSN": "SSN",
+                "DATE_TIME": "DATE",
+                "ADDRESS": "ADDRESS",
+            }
             operators = {
                 r.entity_type: OperatorConfig(
-                    "replace", {"new_value": f"[{r.entity_type}]"}
+                    "replace", {"new_value": f"[{token_map.get(r.entity_type, r.entity_type)}]"}
                 )
                 for r in results
             }
@@ -446,6 +463,18 @@ def deidentify(text: str) -> str:
             return text
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("Advanced scrubber failed: %s", exc)
+
+    if USE_ADVANCED_SCRUBBER and _PHILTER_AVAILABLE:
+        try:
+            # Philter replaces detected PHI with the literal "**PHI**".
+            if hasattr(_philter, "philter"):
+                text = _philter.philter(text)
+            elif hasattr(_philter, "filter"):
+                text = _philter.filter(text)
+            text = text.replace("**PHI**", "[PHI]")
+            return text
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.warning("Philter failed: %s", exc)
 
     if _SCRUBBER_AVAILABLE:
         try:
