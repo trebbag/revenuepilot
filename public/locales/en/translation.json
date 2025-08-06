@@ -84,7 +84,11 @@
     "backToLogin": "Back",
     "resetSuccess": "Password reset, please login",
     "resetFailed": "Password reset failed",
-    "newPassword": "New Password"
+    "newPassword": "New Password",
+    "loginFailed": "Login failed",
+    "register": "Register",
+    "registering": "Registering…",
+    "registerFailed": "Registration failed"
   },
   "logs": {
     "title": "Event Log",
@@ -169,6 +173,8 @@
     "back": "Back to Notes",
     "file": "File",
     "patientId": "Patient ID",
+    "patientLanguage": "Patient language",
+    "patientAge": "Patient age",
     "templates": "Templates",
     "beautifying": "Beautifying…",
     "beautify": "Beautify",

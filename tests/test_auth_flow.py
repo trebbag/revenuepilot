@@ -1,7 +1,9 @@
 import sqlite3
+import sqlite3
 from fastapi.testclient import TestClient
 
 from backend import main
+from backend import auth
 
 
 def setup_module(module):
@@ -19,13 +21,7 @@ def setup_module(module):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
     )
     main.ensure_settings_table(db)
-    # Seed admin user
-    admin_hash = main.hash_password("secret")
-    db.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        ("admin", admin_hash, "admin"),
-    )
-    db.commit()
+    auth.register_user(db, "admin", "secret", "admin")
 
 
 def test_registration_login_refresh_and_roles():
@@ -39,8 +35,7 @@ def test_registration_login_refresh_and_roles():
     # Register regular user
     resp = client.post(
         "/register",
-        json={"username": "alice", "password": "pw", "role": "user"},
-        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"username": "alice", "password": "pw"},
     )
     assert resp.status_code == 200
 

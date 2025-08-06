@@ -6,8 +6,11 @@ def test_simple_transcribe_uses_openai(monkeypatch):
     class DummyResp:
         text = "hello world"
 
+    captured = {}
+
     class DummyCreate:
-        def create(self, model, file):  # noqa: ARG002
+        def create(self, model, file, language=None):  # noqa: ARG002
+            captured["language"] = language
             return DummyResp()
 
     class DummyClient:
@@ -15,14 +18,16 @@ def test_simple_transcribe_uses_openai(monkeypatch):
 
     monkeypatch.setattr(ap, "OpenAI", lambda api_key=None: DummyClient())
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
-    result = ap.simple_transcribe(b"data")
+    result = ap.simple_transcribe(b"data", language="es")
     assert result == "hello world"
+    assert captured["language"] == "es"
 
 
 def test_diarize_and_transcribe(monkeypatch):
     transcripts = ["provider text", "patient text"]
 
-    def fake_simple(_):
+    def fake_simple(_, language=None):  # noqa: ARG002
+        assert language == "es"
         return transcripts.pop(0)
 
     class DummyDiarization:
@@ -52,7 +57,8 @@ def test_diarize_and_transcribe(monkeypatch):
     monkeypatch.setattr(ap, "torchaudio", DummyTorchaudio)
     monkeypatch.setattr(ap, "simple_transcribe", fake_simple)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
-    result = ap.diarize_and_transcribe(b"bytes")
+    monkeypatch.setattr(ap, "_DIARISATION_PIPELINE", None)
+    result = ap.diarize_and_transcribe(b"bytes", language="es")
     assert result["provider"] == "provider text"
     assert result["patient"] == "patient text"
     assert result["segments"] == [
@@ -64,7 +70,8 @@ def test_diarize_and_transcribe(monkeypatch):
 def test_diarize_maps_extra_speakers(monkeypatch):
     transcripts = ["p0 text", "p1 text", "p0 two", "p2 text"]
 
-    def fake_simple(_):
+    def fake_simple(_, language=None):  # noqa: ARG002
+        assert language == "es"
         return transcripts.pop(0)
 
     class DummyDiarization:
@@ -96,8 +103,9 @@ def test_diarize_maps_extra_speakers(monkeypatch):
     monkeypatch.setattr(ap, "torchaudio", DummyTorchaudio)
     monkeypatch.setattr(ap, "simple_transcribe", fake_simple)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
+    monkeypatch.setattr(ap, "_DIARISATION_PIPELINE", None)
 
-    result = ap.diarize_and_transcribe(b"bytes")
+    result = ap.diarize_and_transcribe(b"bytes", language="es")
     assert result["provider"] == "p0 text p0 two"
     assert result["patient"] == "p1 text"
     assert result["segments"] == [
@@ -110,8 +118,8 @@ def test_diarize_maps_extra_speakers(monkeypatch):
 
 def test_diarize_fallback_when_unavailable(monkeypatch):
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", False)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "full text")
-    result = ap.diarize_and_transcribe(b"bytes")
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "full text")
+    result = ap.diarize_and_transcribe(b"bytes", language="es")
     assert result == {
         "provider": "full text",
         "patient": "",
@@ -130,8 +138,9 @@ def test_diarize_reports_error_on_failure(monkeypatch):
 
     monkeypatch.setattr(ap, "Pipeline", FailPipeline)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "fallback")
-    result = ap.diarize_and_transcribe(b"bytes")
+    monkeypatch.setattr(ap, "_DIARISATION_PIPELINE", None)
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "fallback")
+    result = ap.diarize_and_transcribe(b"bytes", language="en")
     assert result["provider"] == "fallback"
     assert result["segments"] == [
         {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "fallback"}
@@ -149,17 +158,27 @@ def test_transcribe_placeholder_on_failure(monkeypatch):
 
     monkeypatch.setattr(ap, "OpenAI", lambda api_key=None: DummyClient())
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
-    result = ap.simple_transcribe(b"\xff\xfe")
+    result = ap.simple_transcribe(b"\xff\xfe", language="en")
     assert result == "[transcribed 2 bytes]"
 
 
 def test_offline_transcribe_uses_local_model(monkeypatch):
+    captured = {}
+
     class DummyModel:
-        def transcribe(self, path):  # noqa: ARG002
+        def transcribe(self, path, language=None):  # noqa: ARG002
+            captured["language"] = language
             return {"text": "offline text"}
 
-    monkeypatch.setattr(ap, "_load_local_model", lambda: DummyModel())
+    monkeypatch.setattr(ap, "_load_local_model", lambda lang: DummyModel())
     monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
     monkeypatch.setattr(ap, "get_api_key", lambda: None)
-    result = ap.simple_transcribe(b"data")
+    result = ap.simple_transcribe(b"data", language="es")
     assert result == "offline text"
+    assert captured["language"] == "es"
+
+
+def test_select_model_by_language(monkeypatch):
+    monkeypatch.delenv("WHISPER_MODEL", raising=False)
+    assert ap._select_model("en") == "medium.en"
+    assert ap._select_model("es") == "medium"

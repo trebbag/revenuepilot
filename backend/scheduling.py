@@ -1,83 +1,57 @@
 """Tools for recommending follow-up intervals and calendar exports.
 
-This module exposes lightweight heuristics plus an LLM-backed helper for
-deriving a follow-up interval from the clinical note and associated billing
-codes.  It also includes an ``export_ics`` utility which creates a minimal
-ICS string for the recommended interval so the result can be added to a
-calendar client.
+This module contains lightweight heuristics for deriving a follow-up interval
+from clinical codes and diagnoses.  It also includes an ``export_ics`` utility
+which creates a minimal ICS string for the recommended interval so the result
+can be added to a calendar client.
 """
 from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
-from .openai_client import call_openai
-
-CHRONIC_KEYWORDS = {
-    "chronic",
-    "diabetes",
-    "hypertension",
-    "asthma",
+CODE_INTERVALS = {
+    "E11": "3 months",
+    "I10": "3 months",
+    "J45": "3 months",
+    "J06": "2 weeks",
+    "S93": "2 weeks",
 }
-CHRONIC_CODE_PREFIXES = {"E11", "I10", "J45"}
 
+CHRONIC_KEYWORDS = {"chronic", "diabetes", "hypertension", "asthma"}
 ACUTE_KEYWORDS = {"sprain", "acute", "infection", "injury"}
-ACUTE_CODE_PREFIXES = {"S93", "J06"}
-
-
-def _has_prefix(codes: Iterable[str], prefixes: Iterable[str]) -> bool:
-    prefixes = tuple(prefixes)
-    return any(str(code).upper().startswith(prefixes) for code in codes)
-
-
-def _heuristic_follow_up(note: str, codes: Iterable[str]) -> Optional[str]:
-    """Return a follow-up interval using simple keyword rules."""
-    lower = note.lower() if note else ""
-    codes = [c.upper() for c in codes if c]
-
-    if _has_prefix(codes, CHRONIC_CODE_PREFIXES) or any(
-        kw in lower for kw in CHRONIC_KEYWORDS
-    ):
-        return "3 months"
-
-    if _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
-        kw in lower for kw in ACUTE_KEYWORDS
-    ):
-        return "2 weeks"
-
-    return None
-
 
 def recommend_follow_up(
-    note: str, codes: Iterable[str], use_llm: bool = True
-) -> Optional[str]:
-    """Return a human-readable follow-up interval.
+    codes: Sequence[str],
+    diagnoses: Optional[Sequence[str]] = None,
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+) -> dict:
+    """Return a follow-up interval and ICS string.
 
-    The function first attempts to use the OpenAI API to derive a follow-up
-    recommendation.  If the call fails or no interval can be parsed from the
-    LLM response, a small heuristic rule set is used as a fallback.
+    The current implementation uses simple keyword and code-prefix heuristics
+    to derive a recommended interval.  ``specialty`` and ``payer`` are accepted
+    for future expansion but currently unused.
     """
-    if use_llm:
-        try:
-            messages = [
-                {
-                    "role": "user",
-                    "content": (
-                        "Given the following clinical note and codes, provide a "
-                        "concise follow-up interval such as '2 weeks' or '3 months'.\n"
-                        f"Note: {note}\nCodes: {', '.join(codes)}"
-                    ),
-                }
-            ]
-            reply = call_openai(messages)
-            match = re.search(r"(\d+\s*(?:day|week|month|year)s?)", reply, re.I)
-            if match:
-                return match.group(1).lower()
-        except Exception:
-            pass
 
-    return _heuristic_follow_up(note, codes)
+    diag_text = " ".join(diagnoses or []).lower()
+    codes = [c.upper() for c in codes if c]
+
+
+    if _has_prefix(codes, CHRONIC_CODE_PREFIXES) or any(
+        kw in diag_text for kw in CHRONIC_KEYWORDS
+    ):
+        interval = "3 months"
+    elif _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
+        kw in diag_text for kw in ACUTE_KEYWORDS
+    ):
+        interval = "2 weeks"
+    else:
+        interval = "4 weeks"
+
+
+    return {"interval": interval, "ics": export_ics(interval)}
 
 
 def export_ics(interval: str, summary: str = "Follow-up appointment") -> Optional[str]:

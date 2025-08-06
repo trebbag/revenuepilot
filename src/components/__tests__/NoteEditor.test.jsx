@@ -62,9 +62,9 @@ test('selecting template inserts content', async () => {
     const [val, setVal] = useState('');
     return <NoteEditor id="t" value={val} onChange={setVal} />;
   }
-  const { findByLabelText, container } = render(<Wrapper />);
-  const select = await findByLabelText('Templates');
-  fireEvent.change(select, { target: { value: '1' } });
+  const { findByText, container } = render(<Wrapper />);
+  const btn = await findByText('Tpl');
+  fireEvent.click(btn);
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => expect(editor.innerHTML).toContain('Hello'));
 });
@@ -77,9 +77,9 @@ test('inserts template and merges audio transcript', async () => {
     return <NoteEditor id="m" value={val} onChange={setVal} />;
   }
 
-  const { findByLabelText, container, findAllByText } = render(<Wrapper />);
-  const select = await findByLabelText('Templates');
-  fireEvent.change(select, { target: { value: '1' } });
+  const { findByText, container, findAllByText } = render(<Wrapper />);
+  const btn = await findByText('Tpl');
+  fireEvent.click(btn);
   const [insertProvider] = await findAllByText('Insert');
   fireEvent.click(insertProvider);
 
@@ -89,6 +89,24 @@ test('inserts template and merges audio transcript', async () => {
     expect(editor.innerHTML).toContain('Hi there');
   });
   fetchLastTranscript.mockResolvedValue({ provider: '', patient: '' });
+});
+
+test('preloads default template', async () => {
+  function Wrapper() {
+    const [val, setVal] = useState('');
+    return (
+      <NoteEditor
+        id="p"
+        value={val}
+        onChange={setVal}
+        defaultTemplateId={1}
+      />
+    );
+  }
+  const { container, findByText } = render(<Wrapper />);
+  await findByText('Tpl');
+  const editor = container.querySelector('.ql-editor');
+  await waitFor(() => expect(editor.innerHTML).toContain('Hello'));
 });
 
 test('maintains beautified history with undo/redo', () => {
@@ -120,9 +138,15 @@ test('supports undo beyond five beautified entries', () => {
 });
 
 test('EHR export button triggers API call', async () => {
-  const { getByText } = render(
-    <NoteEditor id="e" value="Some" onChange={() => {}} mode="beautified" />,
-  );
+    const { getByText } = render(
+      <NoteEditor
+        id="e"
+        value="Some"
+        onChange={() => {}}
+        mode="beautified"
+        role="admin"
+      />,
+    );
   fireEvent.click(getByText('EHR Export'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });

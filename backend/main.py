@@ -13,11 +13,9 @@ import os
 import re
 import shutil
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-from collections import deque
-
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -48,8 +46,9 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel, DEFAULT_TEMPLATES
+from .templates import TemplateModel, load_builtin_templates, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
+
 
 
 
@@ -58,10 +57,12 @@ import sqlite3
 import hashlib
 from collections import deque
 
-from passlib.context import CryptContext
-
-# Password hashing context using bcrypt
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+from .auth import (
+    authenticate_user,
+    hash_password,
+    register_user,
+    verify_password,
+)
 
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
@@ -168,10 +169,13 @@ app.add_middleware(
 # to a database.
 events: List[Dict[str, Any]] = []
 
-# Last audio transcript returned by the ``/transcribe`` endpoint.  This is a
-# simple in-memory store so the frontend can fetch or re-use the most recent
-# transcript without re-uploading the audio.  It is reset on server restart.
-last_transcript: Dict[str, Any] = {"provider": "", "patient": "", "segments": []}
+# Cache of recent audio transcripts per user.  Each user retains the last
+# ``TRANSCRIPT_HISTORY_LIMIT`` transcripts so clinicians can revisit previous
+# conversations.  The cache is stored in-memory and reset on server restart.
+TRANSCRIPT_HISTORY_LIMIT = int(os.getenv("TRANSCRIPT_HISTORY", "5"))
+transcript_history: Dict[str, deque] = defaultdict(
+    lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
+)
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
@@ -363,7 +367,6 @@ class ApiKeyModel(BaseModel):
 class RegisterModel(BaseModel):
     username: str
     password: str
-    role: str
 
 
 class LoginModel(BaseModel):
@@ -404,6 +407,7 @@ class UserSettings(BaseModel):
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
+    template: Optional[int] = None
     useLocalModels: StrictBool = False
     agencies: List[str] = Field(default_factory=lambda: ["CDC", "WHO"])
 
@@ -427,34 +431,22 @@ class UserSettings(BaseModel):
                 continue
             cleaned.append(item)
         return cleaned
-
-
-def hash_password(password: str) -> str:
-    """Hash the provided password using bcrypt with a per-password salt."""
-    return pwd_context.hash(password)
-
-
-def verify_password(password: str, hashed: str) -> bool:
-    """Verify a plain password against the stored hash."""
-    try:
-        return pwd_context.verify(password, hashed)
-    except Exception:
-        return False
-
-
 @app.post("/register")
-async def register(model: RegisterModel, user=Depends(require_role("admin"))):
-    """Create a new user. Only admins may register users."""
-    pwd_hash = hash_password(model.password)
+async def register(model: RegisterModel) -> Dict[str, Any]:
+    """Register a new user and immediately issue JWT tokens."""
     try:
-        db_conn.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (model.username, pwd_hash, model.role),
-        )
-        db_conn.commit()
+        _user_id = register_user(db_conn, model.username, model.password)
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=400, detail="Username already exists")
-    return {"status": "registered"}
+    access_token = create_access_token(model.username, "user")
+    refresh_token = create_refresh_token(model.username, "user")
+    settings = UserSettings().dict()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "settings": settings,
+    }
 
 
 @app.get("/users")
@@ -512,11 +504,8 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             detail="Account locked due to failed login attempts",
         )
 
-    row = db_conn.execute(
-        "SELECT password_hash, role FROM users WHERE username=?",
-        (model.username,),
-    ).fetchone()
-    if not row or not verify_password(model.password, row["password_hash"]):
+    auth = authenticate_user(db_conn, model.username, model.password)
+    if not auth:
         db_conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
             (time.time(), model.username, "failed_login", "invalid credentials"),
@@ -525,12 +514,31 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
-    access_token = create_access_token(model.username, row["role"])
-    refresh_token = create_refresh_token(model.username, row["role"])
+    user_id, role = auth
+    access_token = create_access_token(model.username, role)
+    refresh_token = create_refresh_token(model.username, role)
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        settings = {
+            "theme": settings_row["theme"],
+            "categories": json.loads(settings_row["categories"]),
+            "rules": json.loads(settings_row["rules"]),
+            "lang": settings_row["lang"],
+            "specialty": settings_row["specialty"],
+            "payer": settings_row["payer"],
+            "region": settings_row["region"] or "",
+            "useLocalModels": bool(settings_row["use_local_models"]),
+        }
+    else:
+        settings = UserSettings().dict()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "settings": settings,
     }
 
 
@@ -598,6 +606,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             specialty=row["specialty"],
             payer=row["payer"],
             region=row["region"] or "",
+            template=row["template"],
             useLocalModels=bool(row["use_local_models"]),
             agencies=json.loads(row["agencies"]) if row["agencies"] else ["CDC", "WHO"],
         )
@@ -630,6 +639,8 @@ async def save_user_settings(
             model.region,
             int(model.useLocalModels),
             json.dumps(model.agencies),
+            model.template,
+
         ),
     )
 
@@ -653,11 +664,14 @@ class NoteRequest(BaseModel):
     lang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
-    age: Optional[int] = None
+    age: Optional[int] = Field(None, alias="patientAge")
     sex: Optional[str] = None
     region: Optional[str] = None
     useLocalModels: Optional[bool] = False
     agencies: Optional[List[str]] = None
+
+    class Config:
+        populate_by_name = True
 
 
 class CodeSuggestion(BaseModel):
@@ -685,6 +699,13 @@ class DifferentialSuggestion(BaseModel):
     score: Optional[confloat(ge=0, le=1)] = None
 
 
+class FollowUp(BaseModel):
+    """Recommended follow-up interval and optional calendar event."""
+
+    interval: Optional[str]
+    ics: Optional[str] = None
+
+
 class SuggestionsResponse(BaseModel):
     """Schema for the suggestions returned to the frontend."""
 
@@ -692,7 +713,7 @@ class SuggestionsResponse(BaseModel):
     compliance: List[str]
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
-    followUp: Optional[str] = None
+    followUp: Optional[FollowUp] = None
 
 
 class ScheduleRequest(BaseModel):
@@ -700,11 +721,9 @@ class ScheduleRequest(BaseModel):
     text: str
     codes: Optional[List[str]] = None
 
-
-class ScheduleResponse(BaseModel):
+class ScheduleResponse(FollowUp):
     """Response model containing recommended interval and optional ICS."""
-    interval: Optional[str]
-    ics: Optional[str] = None
+    pass
 
 
 # Schema for logging events from the frontend.  Each event should include
@@ -1071,24 +1090,26 @@ def save_prompt_templates(
 
 @app.get("/templates", response_model=List[TemplateModel])
 def get_templates(
-    specialty: Optional[str] = None, user=Depends(require_role("user"))
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+    user=Depends(require_role("user")),
 ) -> List[TemplateModel]:
-    """Return templates for the current user and clinic, optionally filtered by specialty."""
+    """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
     clinic = user.get("clinic")
     cursor = db_conn.cursor()
+    base_query = (
+        "SELECT id, name, content, specialty, payer FROM templates "
+        "WHERE (user=? OR (user IS NULL AND clinic=?))"
+    )
+    params: List[Any] = [user["sub"], clinic]
     if specialty:
-        rows = cursor.execute(
-            "SELECT id, name, content, specialty FROM templates "
-            "WHERE (user=? OR (user IS NULL AND clinic=?)) AND specialty=?",
-            (user["sub"], clinic, specialty),
-        ).fetchall()
-    else:
-        rows = cursor.execute(
-            "SELECT id, name, content, specialty FROM templates "
-            "WHERE (user=? OR (user IS NULL AND clinic=?))",
-            (user["sub"], clinic),
-        ).fetchall()
+        base_query += " AND specialty=?"
+        params.append(specialty)
+    if payer:
+        base_query += " AND payer=?"
+        params.append(payer)
+    rows = cursor.execute(base_query, params).fetchall()
 
     templates = [
         TemplateModel(
@@ -1096,12 +1117,15 @@ def get_templates(
             name=row["name"],
             content=row["content"],
             specialty=row["specialty"],
+            payer=row["payer"],
         )
         for row in rows
     ]
 
-    for tpl in DEFAULT_TEMPLATES:
+    for tpl in load_builtin_templates():
         if specialty and tpl.specialty != specialty:
+            continue
+        if payer and tpl.payer != payer:
             continue
         templates.append(tpl)
 
@@ -1118,13 +1142,17 @@ def create_template(
     owner = None if user.get("role") == "admin" else user["sub"]
     cursor = db_conn.cursor()
     cursor.execute(
-        "INSERT INTO templates (user, clinic, specialty, name, content) VALUES (?, ?, ?, ?, ?)",
-        (owner, clinic, tpl.specialty, tpl.name, tpl.content),
+        "INSERT INTO templates (user, clinic, specialty, payer, name, content) VALUES (?, ?, ?, ?, ?, ?)",
+        (owner, clinic, tpl.specialty, tpl.payer, tpl.name, tpl.content),
     )
     db_conn.commit()
     tpl_id = cursor.lastrowid
     return TemplateModel(
-        id=tpl_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+        id=tpl_id,
+        name=tpl.name,
+        content=tpl.content,
+        specialty=tpl.specialty,
+        payer=tpl.payer,
     )
 
 
@@ -1138,20 +1166,39 @@ def update_template(
     cursor = db_conn.cursor()
     if user.get("role") == "admin":
         cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=? "
+            "UPDATE templates SET name=?, content=?, specialty=?, payer=? "
             "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"], clinic),
+            (
+                tpl.name,
+                tpl.content,
+                tpl.specialty,
+                tpl.payer,
+                template_id,
+                user["sub"],
+                clinic,
+            ),
         )
     else:
         cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=? WHERE id=? AND user=?",
-            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"]),
+            "UPDATE templates SET name=?, content=?, specialty=?, payer=? WHERE id=? AND user=?",
+            (
+                tpl.name,
+                tpl.content,
+                tpl.specialty,
+                tpl.payer,
+                template_id,
+                user["sub"],
+            ),
         )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateModel(
-        id=template_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+        id=template_id,
+        name=tpl.name,
+        content=tpl.content,
+        specialty=tpl.specialty,
+        payer=tpl.payer,
     )
 
 
@@ -1184,6 +1231,8 @@ class ExportRequest(BaseModel):
 
     note: str
     codes: List[str] = Field(default_factory=list)
+    patientId: Optional[str] = None
+    encounterId: Optional[str] = None
 
 
 @app.post("/export_to_ehr")
@@ -1200,7 +1249,9 @@ async def export_to_ehr(
     try:
         from . import ehr_integration
 
-        result = ehr_integration.post_note_and_codes(req.note, req.codes)
+        result = ehr_integration.post_note_and_codes(
+            req.note, req.codes, req.patientId, req.encounterId
+        )
     except Exception as exc:  # pragma: no cover - network failures
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -1456,48 +1507,6 @@ async def get_metrics(
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
 
-    daily_query = f"""
-        SELECT
-            date(datetime(timestamp, 'unixepoch')) AS date,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY date
-        ORDER BY date
-    """
-    cursor.execute(daily_query, base_params)
-    daily_list = [dict(r) for r in cursor.fetchall()]
-
-    weekly_query = f"""
-        SELECT
-            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY week
-        ORDER BY week
-    """
-    cursor.execute(weekly_query, base_params)
-    weekly_list = [dict(r) for r in cursor.fetchall()]
-
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
@@ -1556,10 +1565,16 @@ async def get_metrics(
         for entry in daily_list:
             bt = beautify_daily.get(entry["date"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+            notes = entry.get("notes") or 0
+            entry["denial_rate"] = (entry.get("denials", 0) / notes) if notes else 0
+            entry["deficiency_rate"] = (entry.get("deficiencies", 0) / notes) if notes else 0
     if weekly:
         for entry in weekly_list:
             bt = beautify_weekly.get(entry["week"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+            notes = entry.get("notes") or 0
+            entry["denial_rate"] = (entry.get("denials", 0) / notes) if notes else 0
+            entry["deficiency_rate"] = (entry.get("deficiencies", 0) / notes) if notes else 0
 
     def _add_rolling(records: List[Dict[str, Any]], window: int) -> None:
         """Attach rolling averages for key metrics."""
@@ -1594,11 +1609,37 @@ async def get_metrics(
     if weekly:
         _add_rolling(weekly_list, 4)
 
+    def _code_timeseries(period_sql: str) -> Dict[str, Dict[str, int]]:
+        query = f"""
+            SELECT {period_sql} AS period, json_each.value AS code, COUNT(*) AS count
+            FROM events
+            JOIN json_each(COALESCE(events.codes, '[]'))
+            {where_current}
+            GROUP BY period, code
+            ORDER BY period
+        """
+        cursor.execute(query, base_params)
+        result: Dict[str, Dict[str, int]] = {}
+        for r in cursor.fetchall():
+            period = r["period"]
+            code_map = result.setdefault(period, {})
+            code_map[r["code"]] = r["count"]
+        return result
+
+    codes_daily: Dict[str, Dict[str, int]] = {}
+    codes_weekly: Dict[str, Dict[str, int]] = {}
+    if daily:
+        codes_daily = _code_timeseries("date(datetime(timestamp, 'unixepoch'))")
+    if weekly:
+        codes_weekly = _code_timeseries("strftime('%Y-%W', datetime(timestamp, 'unixepoch'))")
+
     timeseries: Dict[str, List[Dict[str, Any]]] = {}
     if daily:
         timeseries["daily"] = daily_list
+        timeseries["codes_daily"] = codes_daily
     if weekly:
         timeseries["weekly"] = weekly_list
+        timeseries["codes_weekly"] = codes_weekly
 
     def pct_change(b: float, c: float) -> float | None:
         return ((c - b) / b * 100) if b else None
@@ -1640,7 +1681,7 @@ async def get_metrics(
 @app.post("/summarize")
 async def summarize(
     req: NoteRequest, user=Depends(require_role("user"))
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Generate a patient‑friendly summary of a clinical note.  This endpoint
     combines the draft text with any optional chart and audio transcript,
@@ -1651,7 +1692,7 @@ async def summarize(
     Args:
         req: NoteRequest with the clinical note and optional context.
     Returns:
-        A dictionary containing the summary under the key "summary".
+        A dictionary containing "summary", "recommendations" and "warnings".
     """
     combined = req.text or ""
     if req.chart:
@@ -1662,14 +1703,21 @@ async def summarize(
     if USE_OFFLINE_MODEL:
         from .offline_model import summarize as offline_summarize
 
-        summary = offline_summarize(
-            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+        data = offline_summarize(
+            cleaned,
+            req.lang,
+            req.specialty,
+            req.payer,
+            req.age,
+            use_local=req.useLocalModels,
         )
     else:
         try:
-            messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
+            messages = build_summary_prompt(
+                cleaned, req.lang, req.specialty, req.payer, req.age
+            )
             response_content = call_openai(messages)
-            summary = response_content.strip()
+            data = json.loads(response_content)
         except Exception as exc:
             # If the LLM call fails, fall back to a simple truncation of the
             # cleaned text.  Take the first 200 characters and append ellipsis
@@ -1679,13 +1727,15 @@ async def summarize(
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
-    return {"summary": summary}
+            data = {"summary": summary, "recommendations": [], "warnings": []}
+    return data
 
 
 @app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
     diarise: bool = False,
+    lang: Optional[str] = None,
     user=Depends(require_role("user")),
 ) -> Dict[str, Any]:
     """Transcribe uploaded audio.
@@ -1700,9 +1750,9 @@ async def transcribe(
 
     audio_bytes = await file.read()
     if diarise:
-        result = diarize_and_transcribe(audio_bytes)
+        result = diarize_and_transcribe(audio_bytes, language=lang)
     else:
-        text = simple_transcribe(audio_bytes)
+        text = simple_transcribe(audio_bytes, language=lang)
         result = {
             "provider": text,
             "patient": "",
@@ -1710,25 +1760,17 @@ async def transcribe(
                 {"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}
             ],
         }
-    # Store the most recent transcript so other endpoints or subsequent
-    # requests can reuse it without reprocessing the audio.  Replace the
-    # previous contents entirely so stale keys (e.g. error messages) do
-    # not persist across requests.
-    last_transcript.clear()
-    last_transcript.update(result)
+    # Store the transcript in the user's history so it can be revisited
+    transcript_history[user["sub"]].append(result)
     return result
 
 
 @app.get("/transcribe")
 async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    """Return the most recent audio transcript.
+    """Return recent audio transcripts for the current user."""
 
-    This endpoint allows the frontend to retrieve the last transcript
-    produced by :func:`transcribe` without uploading the audio again.
-    The transcript is stored in-memory and reset when the server restarts.
-    """
-
-    return last_transcript
+    history = list(transcript_history.get(user["sub"], []))
+    return {"history": history}
 
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
@@ -1793,7 +1835,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         from .offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
-            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+            cleaned, req.lang, req.specialty, req.payer, use_local=True
         )
         return {"beautified": beautified}
     # Attempt to call the LLM to beautify the note. If the call
@@ -1860,7 +1902,7 @@ async def suggest(
             req.age,
             req.sex,
             req.region,
-            use_local=req.useLocalModels,
+            use_local=True,
         )
         public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
         extra_ph = public_health_api.get_public_health_suggestions(
@@ -1991,7 +2033,12 @@ async def suggest(
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
-        follow_up = recommend_follow_up(cleaned, [c.code for c in codes_list])
+        follow_up = recommend_follow_up(
+            [c.code for c in codes_list],
+            [d.diagnosis for d in diffs],
+            req.specialty,
+            req.payer,
+        )
         return SuggestionsResponse(
             codes=codes_list,
             compliance=compliance,
@@ -2151,6 +2198,18 @@ async def suggest(
                             PublicHealthSuggestion(recommendation=str(rec))
                         )
         follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
+
+                if rec not in existing:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=rec, reason=None)
+                    )
+        follow_up = recommend_follow_up(
+            [c.code for c in codes],
+            [d.diagnosis for d in diffs],
+            req.specialty,
+            req.payer,
+        )
+
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,
@@ -2171,6 +2230,5 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
         ScheduleResponse with the recommended interval and ICS string.
     """
     cleaned = deidentify(req.text or "")
-    interval = recommend_follow_up(cleaned, req.codes or [])
-    ics = export_ics(interval) if interval else None
-    return ScheduleResponse(interval=interval, ics=ics)
+    follow = recommend_follow_up(req.codes or [], [cleaned])
+    return ScheduleResponse(**follow)

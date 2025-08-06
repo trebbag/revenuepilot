@@ -14,13 +14,23 @@ def reset_templates() -> Iterator[None]:
 def test_beautify_prompt_language():
     en = prompts.build_beautify_prompt("note", lang="en")
     es = prompts.build_beautify_prompt("nota", lang="es")
+    fr = prompts.build_beautify_prompt("note", lang="fr")
+    de = prompts.build_beautify_prompt("note", lang="de")
     assert "clinical documentation specialist" in en[0]["content"]
     assert "documentación clínica" in es[0]["content"]
+    assert "documentation clinique" in fr[0]["content"]
+    assert "klinische Dokumentation" in de[0]["content"]
     assert "en español" in es[0]["content"]
+    assert "en français" in fr[0]["content"]
+    assert "auf Deutsch" in de[0]["content"]
     for heading in ["Subjective", "Objective", "Assessment", "Plan"]:
         assert heading in en[0]["content"]
     for heading in ["Subjetivo", "Objetivo", "Evaluación", "Plan"]:
         assert heading in es[0]["content"]
+    for heading in ["Subjectif", "Objectif", "Évaluation", "Plan"]:
+        assert heading in fr[0]["content"]
+    for heading in ["Subjektiv", "Objektiv", "Beurteilung", "Plan"]:
+        assert heading in de[0]["content"]
 
 
 def test_suggest_prompt_language():
@@ -34,9 +44,15 @@ def test_suggest_prompt_language():
 def test_summary_prompt_language():
     en = prompts.build_summary_prompt("note", lang="en")
     es = prompts.build_summary_prompt("nota", lang="es")
+    fr = prompts.build_summary_prompt("note", lang="fr")
+    de = prompts.build_summary_prompt("note", lang="de")
     assert "clinical communicator" in en[0]["content"]
     assert "comunicador clínico" in es[0]["content"]
+    assert "communication clinique" in fr[0]["content"]
+    assert "klinische Kommunikation" in de[0]["content"]
     assert "en español" in es[0]["content"]
+    assert "en français" in fr[0]["content"]
+    assert "auf Deutsch" in de[0]["content"]
 
 
 def test_specialty_and_payer_overrides():
@@ -60,6 +76,7 @@ def test_specialty_and_payer_overrides():
     )
     scontent = sugg[0]["content"]
     assert "Cardiology specific suggestion instruction." in scontent
+    assert "cholesterol screening" in scontent
     assert "Follow Medicare coding rules." in scontent
     texts = [m["content"] for m in sugg]
     assert "Example suggest note" in texts
@@ -82,6 +99,7 @@ def test_specialty_payer_modifiers_spanish():
     content = msgs[0]["content"]
     assert "terminología cardiaca" in content
     assert "Medicare reimbursement guidelines" in content
+    assert "control del colesterol" in content
 
 
 def test_guideline_tips_added(monkeypatch):
@@ -109,6 +127,12 @@ def test_additional_specialties_and_payers():
     scontent = sugg[0]["content"]
     assert "Geriatrics specific suggestion instruction." in scontent
     assert "Follow Aetna coding rules." in scontent
+
+    ped = prompts.build_suggest_prompt(
+        "note", lang="en", specialty="pediatrics", payer=None
+    )
+    ped_content = ped[0]["content"]
+    assert "immunisation schedules" in ped_content
 
 
 def test_fallback_to_default_when_override_missing():

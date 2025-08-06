@@ -84,7 +84,11 @@
     "backToLogin": "Volver",
     "resetSuccess": "Contraseña restablecida, inicie sesión",
     "resetFailed": "Error al restablecer contraseña",
-    "newPassword": "Nueva contraseña"
+    "newPassword": "Nueva contraseña",
+    "loginFailed": "Error de inicio de sesión",
+    "register": "Registrarse",
+    "registering": "Registrando…",
+    "registerFailed": "Error al registrar"
   },
   "logs": {
     "title": "Registro de eventos",
@@ -169,6 +173,8 @@
     "back": "Volver a las notas",
     "file": "Archivo",
     "patientId": "ID de paciente",
+    "patientLanguage": "Idioma del paciente",
+    "patientAge": "Edad del paciente",
     "templates": "Plantillas",
     "beautifying": "Embelleciendo…",
     "beautify": "Embellecer",

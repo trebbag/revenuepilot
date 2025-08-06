@@ -3,26 +3,30 @@ import json
 from backend import offline_model as om
 
 
-def test_local_beautify(monkeypatch):
+def test_local_beautify(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_LOCAL_MODELS", "true")
-    monkeypatch.setenv("LOCAL_BEAUTIFY_MODEL", "dummy")
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("fake")
+    monkeypatch.setenv("LOCAL_BEAUTIFY_MODEL", str(model_path))
 
-    class Pipe:
-        def __call__(self, text):
-            return [{"generated_text": "beautified"}]
+    class Model:
+        def __call__(self, prompt, max_tokens=256, temperature=0.0, top_p=1.0):
+            return {"choices": [{"text": "beautified"}]}
 
-    monkeypatch.setattr(om, "_get_pipeline", lambda task, model: Pipe())
+    monkeypatch.setattr(om, "_get_llama", lambda path: Model())
     assert om.beautify("note") == "beautified"
 
 
-def test_local_beautify_fallback(monkeypatch):
+def test_local_beautify_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_LOCAL_MODELS", "true")
-    monkeypatch.setenv("LOCAL_BEAUTIFY_MODEL", "dummy")
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("fake")
+    monkeypatch.setenv("LOCAL_BEAUTIFY_MODEL", str(model_path))
 
-    def raiser(task, model):
+    def raiser(path):
         raise RuntimeError("no model")
 
-    monkeypatch.setattr(om, "_get_pipeline", raiser)
+    monkeypatch.setattr(om, "_get_llama", raiser)
     assert om.beautify("note").startswith("Beautified (offline):")
 
 
@@ -35,7 +39,11 @@ def test_local_summarize(monkeypatch):
             return [{"summary_text": "short"}]
 
     monkeypatch.setattr(om, "_get_pipeline", lambda task, model: Pipe())
-    assert om.summarize("long note") == "short"
+    assert om.summarize("long note") == {
+        "summary": "short",
+        "recommendations": [],
+        "warnings": [],
+    }
 
 
 def test_local_summarize_fallback(monkeypatch):
@@ -46,12 +54,17 @@ def test_local_summarize_fallback(monkeypatch):
         raise RuntimeError("no model")
 
     monkeypatch.setattr(om, "_get_pipeline", raiser)
-    assert om.summarize("note").startswith("Summary (offline):")
+    out = om.summarize("note")
+    assert out["summary"].startswith("Summary (offline):")
+    assert out["recommendations"] == []
+    assert out["warnings"] == []
 
 
-def test_local_suggest(monkeypatch):
+def test_local_suggest(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_LOCAL_MODELS", "true")
-    monkeypatch.setenv("LOCAL_SUGGEST_MODEL", "dummy")
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("fake")
+    monkeypatch.setenv("LOCAL_SUGGEST_MODEL", str(model_path))
 
     sample = {
         "codes": [{"code": "12345"}],
@@ -66,23 +79,25 @@ def test_local_suggest(monkeypatch):
         "differentials": [{"diagnosis": "dx", "score": 0.1}],
     }
 
-    class Pipe:
-        def __call__(self, text, max_new_tokens=256):
-            return [{"generated_text": json.dumps(sample)}]
+    class Model:
+        def __call__(self, prompt, max_tokens=512, temperature=0.0, top_p=1.0):
+            return {"choices": [{"text": json.dumps(sample)}]}
 
-    monkeypatch.setattr(om, "_get_pipeline", lambda task, model: Pipe())
+    monkeypatch.setattr(om, "_get_llama", lambda path: Model())
     assert om.suggest("note") == sample
 
 
-def test_local_suggest_fallback(monkeypatch):
+def test_local_suggest_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("USE_LOCAL_MODELS", "true")
-    monkeypatch.setenv("LOCAL_SUGGEST_MODEL", "dummy")
+    model_path = tmp_path / "model.gguf"
+    model_path.write_text("fake")
+    monkeypatch.setenv("LOCAL_SUGGEST_MODEL", str(model_path))
 
-    class Pipe:
-        def __call__(self, text, max_new_tokens=256):
-            return [{"generated_text": "not json"}]
+    class Model:
+        def __call__(self, prompt, max_tokens=512, temperature=0.0, top_p=1.0):
+            return {"choices": [{"text": "not json"}]}
 
-    monkeypatch.setattr(om, "_get_pipeline", lambda task, model: Pipe())
+    monkeypatch.setattr(om, "_get_llama", lambda path: Model())
     out = om.suggest("note")
     assert out["codes"][0]["code"] == "00000"
 

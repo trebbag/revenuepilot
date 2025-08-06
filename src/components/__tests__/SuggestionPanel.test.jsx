@@ -147,8 +147,24 @@ test('debounces backend calls on rapid input', async () => {
   expect(fetchSuggestions).not.toHaveBeenCalled();
   vi.advanceTimersByTime(300);
   expect(fetchSuggestions).toHaveBeenCalledTimes(1);
-  expect(fetchSuggestions).toHaveBeenCalledWith('abc');
+  expect(fetchSuggestions).toHaveBeenCalledWith('abc', { specialty: '', payer: '' });
   vi.useRealTimers();
+});
+
+test('changing specialty or payer triggers fetch', () => {
+  const fetchSuggestions = vi.fn();
+  const { getByLabelText } = render(
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={{ specialty: '', payer: '' }}
+      text="note"
+      fetchSuggestions={fetchSuggestions}
+    />,
+  );
+  fireEvent.change(getByLabelText('Specialty'), { target: { value: 'cardiology' } });
+  expect(fetchSuggestions).toHaveBeenLastCalledWith('note', { specialty: 'cardiology', payer: '' });
+  fireEvent.change(getByLabelText('Payer'), { target: { value: 'medicare' } });
+  expect(fetchSuggestions).toHaveBeenLastCalledWith('note', { specialty: 'cardiology', payer: 'medicare' });
 });
 
 test('handles missing or invalid differential scores gracefully', () => {

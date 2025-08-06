@@ -19,6 +19,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "specialty TEXT,"
         "payer TEXT,"
         "region TEXT,"
+        "template INTEGER,"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -45,10 +46,15 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN use_local_models INTEGER NOT NULL DEFAULT 0"
         )
+
     if "agencies" not in columns:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN agencies TEXT NOT NULL DEFAULT '[]'"
         )
+
+    if "template" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN template INTEGER")
+
 
     conn.commit()
 
@@ -60,6 +66,7 @@ def ensure_templates_table(conn: sqlite3.Connection) -> None:
         "user TEXT,"
         "clinic TEXT,"
         "specialty TEXT,"
+        "payer TEXT,"
         "name TEXT,"
         "content TEXT"
         ")"
@@ -68,4 +75,6 @@ def ensure_templates_table(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(templates)")}
     if "specialty" not in columns:
         conn.execute("ALTER TABLE templates ADD COLUMN specialty TEXT")
+    if "payer" not in columns:
+        conn.execute("ALTER TABLE templates ADD COLUMN payer TEXT")
     conn.commit()

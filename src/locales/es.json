@@ -105,7 +105,10 @@
     "resetSuccess": "Contraseña restablecida, inicie sesión",
     "resetFailed": "Error al restablecer contraseña",
     "newPassword": "Nueva contraseña",
-    "loginFailed": "Error de inicio de sesión"
+    "loginFailed": "Error de inicio de sesión",
+    "register": "Registrarse",
+    "registering": "Registrando…",
+    "registerFailed": "Error al registrar"
   },
   "logs": {
     "title": "Registro de eventos",
@@ -172,6 +175,8 @@
     "invalidPromptTemplates": "Formato de plantilla inválido",
     "english": "Inglés",
     "spanish": "Español",
+    "french": "Francés",
+    "german": "Alemán",
     "region": "Región",
     "regionPlaceholder": "p. ej., US",
     "specialties": {
@@ -238,6 +243,8 @@
     "back": "Volver a las notas",
     "file": "Archivo",
     "patientId": "ID de paciente",
+    "patientLanguage": "Idioma del paciente",
+    "patientAge": "Edad del paciente",
     "templates": "Plantillas",
     "beautifying": "Embelleciendo…",
     "beautify": "Embellecer",

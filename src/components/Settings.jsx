@@ -359,6 +359,8 @@ function Settings({ settings, updateSettings }) {
       >
         <option value="en">{t('settings.english')}</option>
         <option value="es">{t('settings.spanish')}</option>
+        <option value="fr">{t('settings.french')}</option>
+        <option value="de">{t('settings.german')}</option>
       </select>
 
       <h3>{t('settings.summaryLanguage')}</h3>
@@ -369,6 +371,8 @@ function Settings({ settings, updateSettings }) {
       >
         <option value="en">{t('settings.english')}</option>
         <option value="es">{t('settings.spanish')}</option>
+        <option value="fr">{t('settings.french')}</option>
+        <option value="de">{t('settings.german')}</option>
       </select>
 
       <h3>{t('settings.specialty')}</h3>

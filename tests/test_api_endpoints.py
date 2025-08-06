@@ -2,6 +2,8 @@ import json
 import sqlite3
 import hashlib
 import logging
+from collections import defaultdict, deque
+
 
 
 import pytest
@@ -37,6 +39,11 @@ def client(monkeypatch, tmp_path):
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
     monkeypatch.setattr(main, "events", [])
+    monkeypatch.setattr(
+        main,
+        "transcript_history",
+        defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT)),
+    )
     return TestClient(main.app)
 
 
@@ -204,9 +211,11 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
     ).json()["access_token"]
 
     # Avoid real HTTP calls by stubbing the FHIR helper
-    def fake_post(note, codes):
+    def fake_post(note, codes, patient_id=None, encounter_id=None):
         assert note == "hi"
         assert codes == []
+        assert patient_id is None
+        assert encounter_id is None
         return {"status": "exported"}
 
     monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
@@ -223,12 +232,22 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
 
 def test_summarize_and_fallback(client, monkeypatch, caplog):
 
-    monkeypatch.setattr(main, "call_openai", lambda msgs: "great summary")
+    monkeypatch.setattr(
+        main,
+        "call_openai",
+        lambda msgs: json.dumps(
+            {"summary": "great summary", "recommendations": ["do"], "warnings": []}
+        ),
+    )
     token = main.create_token("u", "user")
     resp = client.post(
         "/summarize", json={"text": "hello"}, headers=auth_header(token)
     )
-    assert resp.json()["summary"] == "great summary"
+    assert resp.json() == {
+        "summary": "great summary",
+        "recommendations": ["do"],
+        "warnings": [],
+    }
 
     def boom(_):
         raise RuntimeError("no key")
@@ -240,31 +259,39 @@ def test_summarize_and_fallback(client, monkeypatch, caplog):
             "/summarize", json={"text": long_text}, headers=auth_header(token)
         )
     assert resp.status_code == 200
-    assert len(resp.json()["summary"]) <= 203  # truncated fallback
+    data = resp.json()
+    assert len(data["summary"]) <= 203  # truncated fallback
+    assert data["recommendations"] == []
+    assert data["warnings"] == []
     assert "Error during summary LLM call" in caplog.text
 
 
 def test_summarize_spanish_language(client, monkeypatch):
     def fake_call_openai(msgs):
-        # Ensure the system prompt is in Spanish
+        # Ensure the system prompt is in Spanish and includes age guidance
         assert "comunicador clínico" in msgs[0]["content"]
-        return "resumen"
+        assert "10-year-old" in msgs[0]["content"]
+        return json.dumps(
+            {"summary": "resumen", "recommendations": [], "warnings": []}
+        )
 
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
     token = main.create_token("u", "user")
     resp = client.post(
-        "/summarize", json={"text": "hola", "lang": "es"}, headers=auth_header(token)
+        "/summarize",
+        json={"text": "hola", "lang": "es", "patientAge": 10},
+        headers=auth_header(token),
     )
     assert resp.status_code == 200
     assert resp.json()["summary"] == "resumen"
 
 
 def test_transcribe_endpoint(client, monkeypatch):
-    monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(main, "simple_transcribe", lambda b, language=None: "hello")
     monkeypatch.setattr(
         main,
         "diarize_and_transcribe",
-        lambda b: {
+        lambda b, language=None: {
             "provider": "p",
             "patient": "q",
             "segments": [
@@ -307,7 +334,7 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
 
     monkeypatch.setattr(ap, "Pipeline", FailPipeline)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "fallback")
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "fallback")
     token = main.create_token("u", "user")
     resp = client.post(
         "/transcribe?diarise=true",
@@ -322,14 +349,28 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
     assert "error" in data
 
 
+def test_transcribe_language_param(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        main, "simple_transcribe", lambda b, language=None: captured.setdefault("lang", language) or "text"
+    )
+    token = main.create_token("u", "user")
+    client.post(
+        "/transcribe?lang=es",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    assert captured["lang"] == "es"
+
+
 def test_transcribe_endpoint_offline(client, monkeypatch):
     import backend.audio_processing as ap
 
     class DummyModel:
-        def transcribe(self, path):  # noqa: ARG002
+        def transcribe(self, path, language=None):  # noqa: ARG002
             return {"text": "offline text"}
 
-    monkeypatch.setattr(ap, "_load_local_model", lambda: DummyModel())
+    monkeypatch.setattr(ap, "_load_local_model", lambda lang: DummyModel())
     monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
     monkeypatch.setattr(ap, "get_api_key", lambda: None)
     token = main.create_token("u", "user")
@@ -346,11 +387,11 @@ def test_transcribe_endpoint_offline(client, monkeypatch):
 
 
 def test_get_last_transcript(client, monkeypatch):
-    monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(main, "simple_transcribe", lambda b, language=None: "hello")
     monkeypatch.setattr(
         main,
         "diarize_and_transcribe",
-        lambda b: {
+        lambda b, language=None: {
             "provider": "p",
             "patient": "q",
             "segments": [
@@ -368,11 +409,15 @@ def test_get_last_transcript(client, monkeypatch):
     )
     resp = client.get("/transcribe", headers=auth_header(token))
     assert resp.json() == {
-        "provider": "hello",
-        "patient": "",
-        "segments": [
-            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
-        ],
+        "history": [
+            {
+                "provider": "hello",
+                "patient": "",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
+                ],
+            }
+        ]
     }
 
     # Now call with diarisation and ensure both parts returned
@@ -383,12 +428,23 @@ def test_get_last_transcript(client, monkeypatch):
     )
     resp = client.get("/transcribe", headers=auth_header(token))
     assert resp.json() == {
-        "provider": "p",
-        "patient": "q",
-        "segments": [
-            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
-            {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
-        ],
+        "history": [
+            {
+                "provider": "hello",
+                "patient": "",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
+                ],
+            },
+            {
+                "provider": "p",
+                "patient": "q",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+                    {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+                ],
+            },
+        ]
     }
 
 
@@ -475,7 +531,8 @@ def test_suggest_returns_follow_up(client, monkeypatch):
     token = main.create_token("u", "user")
     resp = client.post("/suggest", json={"text": "diabetes"}, headers=auth_header(token))
     data = resp.json()
-    assert data["followUp"] == "3 months"
+    assert data["followUp"]["interval"] == "3 months"
+    assert "BEGIN:VCALENDAR" in data["followUp"]["ics"]
     
 
 def test_suggest_with_demographics(client, monkeypatch):
