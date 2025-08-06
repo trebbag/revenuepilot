@@ -69,6 +69,8 @@ function App() {
     patient: '',
   });
   const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [transcriptionError, setTranscriptionError] = useState('');
   // References for MediaRecorder and audio chunks
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -322,31 +324,19 @@ function App() {
         };
         mediaRecorder.onstop = async () => {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          setTranscribing(true);
           try {
-            const result = await transcribeAudio(blob, true);
-            setAudioTranscript({
-              provider: result.provider || '',
-              patient: result.patient || '',
-            });
-            // Automatically append the transcript to the current draft so the
-            // user can edit it alongside other note content.
-            const combined = `${result.provider || ''}${
-              result.provider && result.patient ? '\n' : ''
-            }${result.patient || ''}`.trim();
-            if (combined) {
-              setDraftText((prev) => {
-                const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
-                return `${prev}${prefix}${combined}`;
-              });
-              setActiveTab('draft');
-            }
+            await transcribeAudio(blob, true);
+            setTranscriptionError('');
           } catch (err) {
             if (err.message === 'Unauthorized') {
               handleUnauthorized();
             } else {
               console.error('Transcription failed', err);
-              setAudioTranscript({ provider: '', patient: '' });
+              setTranscriptionError('Transcription failed');
             }
+          } finally {
+            setTranscribing(false);
           }
           if (patientID) {
             logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
@@ -356,6 +346,7 @@ function App() {
         setRecording(true);
       } catch (err) {
         console.error('Error accessing microphone', err);
+        setTranscriptionError('Error accessing microphone');
       }
     } else {
       const recorder = mediaRecorderRef.current;
@@ -363,6 +354,23 @@ function App() {
         recorder.stop();
       }
       setRecording(false);
+    }
+  };
+
+  const handleTranscriptChange = (data) => {
+    setAudioTranscript({
+      provider: data.provider || '',
+      patient: data.patient || '',
+    });
+    const combined = `${data.provider || ''}${
+      data.provider && data.patient ? '\n' : ''
+    }${data.patient || ''}`.trim();
+    if (combined) {
+      setDraftText((prev) => {
+        const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
+        return `${prev}${prefix}${combined}`;
+      });
+      setActiveTab('draft');
     }
   };
 
@@ -578,26 +586,16 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-                    <>
-                      <NoteEditor
-                        id="draft-input"
-                        value={draftText}
-                        onChange={handleDraftChange}
-                        onRecord={handleRecordAudio}
-                        recording={recording}
-                      />
-                      {(audioTranscript.provider || audioTranscript.patient) && (
-                        <div className="transcript-display">
-                          <strong>{t('noteEditor.transcript')}</strong>
-                          {audioTranscript.provider && (
-                            <div><em>Provider:</em> {audioTranscript.provider}</div>
-                          )}
-                          {audioTranscript.patient && (
-                            <div><em>Patient:</em> {audioTranscript.patient}</div>
-                          )}
-                        </div>
-                      )}
-                    </>
+                    <NoteEditor
+                      id="draft-input"
+                      value={draftText}
+                      onChange={handleDraftChange}
+                      onRecord={handleRecordAudio}
+                      recording={recording}
+                      transcribing={transcribing}
+                      onTranscriptChange={handleTranscriptChange}
+                      error={transcriptionError}
+                    />
                   ) : (
                     activeTab === 'beautified' ? (
                       <div className="beautified-view">{beautified}</div>

@@ -258,6 +258,32 @@ export async function transcribeAudio(blob, diarise = false) {
 }
 
 /**
+ * Retrieve the most recent audio transcript from the backend.
+ * @returns {Promise<{provider: string, patient: string}>}
+ */
+export async function fetchLastTranscript() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (baseUrl) {
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const resp = await fetch(`${baseUrl}/transcribe`, { headers });
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Unauthorized');
+      }
+      const data = await resp.json();
+      return { provider: data.provider || '', patient: data.patient || '' };
+    } catch (err) {
+      console.error('fetchLastTranscript error', err);
+    }
+  }
+  return { provider: '', patient: '' };
+}
+
+/**
  * Log an analytics event.  Sends the event type and optional details to the
  * backend.  If no backend is configured, the call is a no-op.
  * @param {string} eventType

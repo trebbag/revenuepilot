@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { fetchLastTranscript } from '../api.js';
 let ReactQuill;
 try {
   // Dynamically require ReactQuill to avoid breaking when the package is
@@ -24,12 +25,24 @@ try {
   ReactQuill = null;
 }
 
-function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
+function NoteEditor({
+  id,
+  value,
+  onChange,
+  onRecord,
+  recording = false,
+  transcribing = false,
+  onTranscriptChange,
+  error = '',
+}) {
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
   // controlled input in both modes.
   const [localValue, setLocalValue] = useState(value || '');
+  const [transcript, setTranscript] = useState({ provider: '', patient: '' });
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+  const [fetchError, setFetchError] = useState('');
 
   // Keep the internal state in sync with the parent value.  When using
   // ReactQuill the parent `value` prop is passed directly, so this
@@ -45,6 +58,34 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
     onChange(newVal);
   };
 
+  const loadTranscript = async () => {
+    setLoadingTranscript(true);
+    setFetchError('');
+    try {
+      const data = await fetchLastTranscript();
+      setTranscript(data);
+      if (onTranscriptChange) {
+        onTranscriptChange(data);
+      }
+    } catch (err) {
+      setFetchError('Failed to load transcript');
+    } finally {
+      setLoadingTranscript(false);
+    }
+  };
+
+  useEffect(() => {
+    loadTranscript();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!transcribing) {
+      loadTranscript();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcribing]);
+
   const toolbar = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
@@ -52,6 +93,8 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
           {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
         </button>
       )}
+      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+      {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
     </div>
   );
 
@@ -70,6 +113,25 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
           onChange={(content) => onChange(content)}
           style={{ height: '100%', width: '100%' }}
         />
+        {(transcript.provider || transcript.patient) && (
+          <div style={{ marginTop: '0.5rem' }}>
+            <strong>{t('noteEditor.transcript')}</strong>
+            {transcript.provider && (
+              <p>
+                <strong>Provider:</strong> {transcript.provider}
+              </p>
+            )}
+            {transcript.patient && (
+              <p>
+                <strong>Patient:</strong> {transcript.patient}
+              </p>
+            )}
+          </div>
+        )}
+        {(error || fetchError) && (
+          <p style={{ color: 'red' }}>{error || fetchError}</p>
+        )}
+        {loadingTranscript && <p>Loading transcript...</p>}
       </div>
     );
   }
@@ -81,8 +143,27 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
         value={localValue}
         onChange={handleTextAreaChange}
         style={{ width: '100%', height: '100%', padding: '0.5rem' }}
-          placeholder={t('noteEditor.placeholder')}
-        />
+        placeholder={t('noteEditor.placeholder')}
+      />
+      {(transcript.provider || transcript.patient) && (
+        <div style={{ marginTop: '0.5rem' }}>
+          <strong>{t('noteEditor.transcript')}</strong>
+          {transcript.provider && (
+            <p>
+              <strong>Provider:</strong> {transcript.provider}
+            </p>
+          )}
+          {transcript.patient && (
+            <p>
+              <strong>Patient:</strong> {transcript.patient}
+            </p>
+          )}
+        </div>
+      )}
+      {(error || fetchError) && (
+        <p style={{ color: 'red' }}>{error || fetchError}</p>
+      )}
+      {loadingTranscript && <p>Loading transcript...</p>}
     </div>
   );
 }
