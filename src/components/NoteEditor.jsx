@@ -7,9 +7,9 @@
 // component will gracefully fall back to a simple <textarea> so that
 // development can proceed without breaking the UI.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript } from '../api.js';
+import { fetchLastTranscript, getTemplates } from '../api.js';
 let ReactQuill;
 try {
   // Dynamically require ReactQuill to avoid breaking when the package is
@@ -68,6 +68,9 @@ function NoteEditor({
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [templates, setTemplates] = useState([]);
+  const quillRef = useRef(null);
+  const textareaRef = useRef(null);
 
   // Keep the internal state in sync with the parent value.  When using
   // ReactQuill the parent `value` prop is passed directly, so this
@@ -75,6 +78,21 @@ function NoteEditor({
   useEffect(() => {
     setLocalValue(value || '');
   }, [value]);
+
+  // Fetch user-defined templates on mount.
+  useEffect(() => {
+    let mounted = true;
+    getTemplates()
+      .then((tpls) => {
+        if (mounted) setTemplates(tpls);
+      })
+      .catch(() => {
+        if (mounted) setTemplates([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   // Handler for changes from the fallback <textarea>.
   const handleTextAreaChange = (e) => {
@@ -111,6 +129,66 @@ function NoteEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcribing]);
 
+  const insertTemplate = (content) => {
+    if (ReactQuill && quillRef.current) {
+      const editor = quillRef.current.getEditor();
+      const range = editor.getSelection(true);
+      const pos = range ? range.index : editor.getLength();
+      editor.insertText(pos, content);
+      try {
+        editor.setSelection(pos + content.length);
+      } catch (e) {
+        // Ignore selection errors in non-browser environments (e.g. tests)
+      }
+      onChange(editor.root.innerHTML);
+    } else if (textareaRef.current) {
+      const textarea = textareaRef.current;
+      const start = textarea.selectionStart || 0;
+      const end = textarea.selectionEnd || 0;
+      const newVal =
+        localValue.slice(0, start) + content + localValue.slice(end);
+      setLocalValue(newVal);
+      onChange(newVal);
+      textarea.focus();
+      const cursor = start + content.length;
+      textarea.selectionStart = textarea.selectionEnd = cursor;
+    }
+  };
+
+  const handleTemplateSelect = (e) => {
+    const tplId = Number(e.target.value);
+    if (!tplId) return;
+    const tpl = templates.find((t) => t.id === tplId);
+    if (tpl) insertTemplate(tpl.content);
+    e.target.value = '';
+  };
+
+  const templateChooser = (
+    templates.length > 0 ? (
+      <select
+        aria-label={t('app.templates')}
+        defaultValue=""
+        onChange={handleTemplateSelect}
+        style={{ marginBottom: '0.5rem' }}
+      >
+        <option value="">{t('app.templates')}</option>
+        {templates.map((tpl) => (
+          <option key={tpl.id} value={tpl.id}>
+            {tpl.name}
+          </option>
+        ))}
+      </select>
+    ) : (
+      <select
+        aria-label={t('app.templates')}
+        disabled
+        style={{ marginBottom: '0.5rem' }}
+      >
+        <option>{t('settings.noTemplates')}</option>
+      </select>
+    )
+  );
+
   const audioControls = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
@@ -134,8 +212,10 @@ function NoteEditor({
     return (
       <div style={{ height: '100%', width: '100%' }}>
         {audioControls}
+        {templateChooser}
         <QuillToolbar toolbarId={toolbarId} />
         <ReactQuill
+          ref={quillRef}
           id={id}
           theme="snow"
           value={value}
@@ -172,7 +252,9 @@ function NoteEditor({
   return (
     <div style={{ width: '100%', height: '100%' }}>
       {audioControls}
+      {templateChooser}
       <textarea
+        ref={textareaRef}
         id={id}
         value={localValue}
         onChange={handleTextAreaChange}
