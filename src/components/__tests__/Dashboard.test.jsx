@@ -112,3 +112,17 @@ test('denies access when user not admin', () => {
   render(<Dashboard />);
   expect(alertSpy).toHaveBeenCalled();
 });
+
+test('applies clinician filter', async () => {
+  const { getByLabelText, getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  const clinicianInput = getByLabelText('Clinician');
+  fireEvent.change(clinicianInput, { target: { value: 'alice' } });
+  getByText('Apply').click();
+  await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
+  expect(getMetrics).toHaveBeenLastCalledWith({
+    start: '',
+    end: '',
+    clinician: 'alice',
+  });
+});

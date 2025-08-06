@@ -68,3 +68,13 @@ def test_specialty_and_payer_overrides():
     texts = [m["content"] for m in summary]
     assert "Example summary note" in texts
 
+
+def test_guideline_tips_added(monkeypatch):
+    """Public health guideline tips should be appended to the user content."""
+    monkeypatch.setattr(
+        prompts, "get_guidelines", lambda age, sex, region: {"vaccinations": ["Flu"], "screenings": ["BP"]}
+    )
+    msgs = prompts.build_suggest_prompt("note", age=30, sex="male", region="US")
+    user_msg = msgs[-1]["content"]
+    assert "Flu" in user_msg and "BP" in user_msg
+

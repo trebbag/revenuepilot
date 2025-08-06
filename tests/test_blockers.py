@@ -1,9 +1,9 @@
-"""Failing tests for open blockers.
+"""Regression tests for previously blocked features.
 
-These tests highlight missing or incomplete functionality described in
-`docs/ROADMAP.md`.  They are intentionally written to fail or be marked as
-`xfail` so that subsequent development can drive them to green.  When
-implementing these features, update or remove the `xfail` markers.
+The project roadmap once marked these behaviours as incomplete and some tests
+used ``xfail`` to document the gaps.  Those features have since been
+implemented, so the ``xfail`` markers have been removed and the tests now run
+as part of the standard suite.
 """
 
 import os

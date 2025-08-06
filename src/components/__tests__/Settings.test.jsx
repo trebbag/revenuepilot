@@ -131,3 +131,25 @@ test('setApiKey called when saving API key', async () => {
   fireEvent.click(getAllByText('Save Key')[0]);
   await waitFor(() => expect(setApiKey).toHaveBeenCalled());
 });
+
+test('changing theme triggers saveSettings', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getByLabelText } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  await fireEvent.click(getByLabelText('Dark Elegance'));
+  await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+  expect(updateSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ theme: 'dark' })
+  );
+});
