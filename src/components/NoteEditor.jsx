@@ -238,6 +238,12 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (seg) setCurrentSpeaker(seg.speaker);
   };
 
+  const groupedTemplates = templates.reduce((acc, tpl) => {
+    const key = tpl.specialty || 'General';
+    (acc[key] ||= []).push(tpl);
+    return acc;
+  }, {});
+
   const templateChooser = templates.length ? (
     <select
       aria-label={t('app.templates')}
@@ -246,10 +252,14 @@ const NoteEditor = forwardRef(function NoteEditor(
       style={{ marginBottom: '0.5rem' }}
     >
       <option value="">{t('app.templates')}</option>
-      {templates.map((tpl) => (
-        <option key={tpl.id} value={tpl.id}>
-          {tpl.name}
-        </option>
+      {Object.entries(groupedTemplates).map(([spec, tpls]) => (
+        <optgroup key={spec} label={spec}>
+          {tpls.map((tpl) => (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.name}
+            </option>
+          ))}
+        </optgroup>
       ))}
     </select>
   ) : (
@@ -295,9 +305,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       )}
     </div>
   ) : (
-    <p style={{ marginBottom: '0.5rem' }}>
-      {t('noteEditor.audioUnsupported')}
-    </p>
+    <p style={{ marginBottom: '0.5rem' }}>{t('noteEditor.audioUnsupported')}</p>
   );
 
   const transcriptControls = (transcript.provider || transcript.patient) && (
