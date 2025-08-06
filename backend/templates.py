@@ -61,9 +61,9 @@ def load_builtin_templates() -> List[TemplateModel]:
     return templates
 
 
-# Expose built-in templates at import time for modules that expect a constant.
-# This mirrors previous behaviour where ``DEFAULT_TEMPLATES`` was defined in
-# this module and imported elsewhere.  The list is generated lazily once when
-# the module is imported which is sufficient for the small test suite.
+
+# Preload built-in templates at import time so that other modules can
+# reference them without repeatedly parsing the JSON file.
+
 DEFAULT_TEMPLATES: List[TemplateModel] = load_builtin_templates()
 

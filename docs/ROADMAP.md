@@ -5,7 +5,7 @@ This roadmap reflects the outstanding bugs, missing features and future enhancem
 ## P0 – Blockers
 
 - **Speech‑to‑Text & Diarisation:** Replace the stubs in `backend/audio_processing.py` with real transcription (e.g. OpenAI Whisper) and speaker separation.  Expose a `/transcribe` endpoint and update the UI to display transcripts.
-- **Role‑Based Authentication:** Implement a simple login with JWT tokens.  Distinguish clinician and admin roles and restrict sensitive endpoints (e.g. `/metrics`, `/events`) to authorised users.
+- **Advanced PHI Scrubbing:** Upgrade `backend/main.py`’s `deidentify` function to a ML‑based scrubber that detects names, dates and other PHI beyond simple regexes.  Consider integrating a library such as Philter.
 - **Analytics Visualisation:** Expand `Dashboard.jsx` to render time‑series charts for each metric using Chart.js or Recharts.  Enhance `/metrics` to return aggregated data by day/week.
 - **Test Coverage:** Establish unit and integration tests for both backend and frontend.  Cover all endpoints, UI flows and edge cases.  Integrate `pytest`, `pytest‑asyncio`, `pytest‑cov` and React Testing Library.
 
