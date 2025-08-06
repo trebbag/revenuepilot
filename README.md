@@ -64,6 +64,10 @@ app into an Electron shell for desktop deployment.
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
+### JWT secret
+
+Authentication tokens issued by the backend are signed with a secret. In production the `JWT_SECRET` environment variable **must** be set before starting the server. If it is missing while `ENVIRONMENT` is anything other than `development`, the application will raise an error at startup. For local development the default `dev-secret` is used so you can run the app without additional configuration.
+
 ### Offline model mode (experimental)
 
 Set the environment variable `USE_OFFLINE_MODEL=true` before starting the

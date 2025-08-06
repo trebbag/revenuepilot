@@ -1,5 +1,7 @@
 import sqlite3
+import importlib
 
+import pytest
 from fastapi.testclient import TestClient
 
 import backend.main as main
@@ -124,3 +126,12 @@ def test_refresh_token_flow():
     assert client.get('/metrics', headers={'Authorization': f'Bearer {new_token}'}).status_code == 200
     bad = client.post('/refresh', json={'refresh_token': 'bad'})
     assert bad.status_code == 401
+
+
+def test_requires_jwt_secret(monkeypatch):
+    monkeypatch.delenv('JWT_SECRET', raising=False)
+    monkeypatch.setenv('ENVIRONMENT', 'production')
+    with pytest.raises(RuntimeError):
+        importlib.reload(main)
+    monkeypatch.setenv('ENVIRONMENT', 'development')
+    importlib.reload(main)
