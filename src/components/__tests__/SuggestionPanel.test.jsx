@@ -22,3 +22,12 @@ test('shows loading and toggles sections', () => {
   fireEvent.click(header);
   expect(header.parentElement?.parentElement.querySelector('ul')).toBeNull();
 });
+
+test('renders follow-up with calendar link', () => {
+  const { getByText } = render(
+    <SuggestionPanel suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: '3 months' }} />
+  );
+  expect(getByText('3 months')).toBeTruthy();
+  const href = getByText('Add to calendar').getAttribute('href');
+  expect(href).toContain('text/calendar');
+});

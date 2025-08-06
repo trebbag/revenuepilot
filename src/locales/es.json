@@ -139,7 +139,9 @@
     "publicHealth": "Salud pública",
     "differentials": "Diagnósticos diferenciales",
     "loading": "Cargando sugerencias...",
-    "none": "Sin sugerencias aún"
+    "none": "Sin sugerencias aún",
+    "followUp": "Seguimiento",
+    "addToCalendar": "Agregar al calendario"
   },
   "templatesModal": {
     "title": "Plantillas",

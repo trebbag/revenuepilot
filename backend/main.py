@@ -37,6 +37,8 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
+from .scheduling import recommend_follow_up
+
 
 
 import json
@@ -426,6 +428,7 @@ class SuggestionsResponse(BaseModel):
     compliance: List[str]
     publicHealth: List[str]
     differentials: List[str]
+    followUp: Optional[str] = None
 
 
 # Schema for logging events from the frontend.  Each event should include
@@ -1217,11 +1220,13 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
+        follow_up = recommend_follow_up(cleaned, [c.code for c in codes_list])
         return SuggestionsResponse(
             codes=codes_list,
             compliance=compliance,
             publicHealth=public_health,
             differentials=diffs,
+            followUp=follow_up,
         )
     except Exception as exc:
         # Log error and use rule-based fallback suggestions.
@@ -1282,9 +1287,11 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         )
         if extra_ph:
             public_health = list(dict.fromkeys(public_health + extra_ph))
+        follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,
             publicHealth=public_health,
             differentials=diffs,
+            followUp=follow_up,
         )

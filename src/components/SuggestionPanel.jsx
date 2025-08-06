@@ -10,12 +10,13 @@ import { useTranslation } from 'react-i18next';
     onInsert,
   }) {
     const { t } = useTranslation();
-    // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] }
+    // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: string }
     const cards = [
       { type: 'codes', key: 'codes', title: t('suggestion.codes'), items: suggestions?.codes || [] },
       { type: 'compliance', key: 'compliance', title: t('suggestion.compliance'), items: suggestions?.compliance || [] },
       { type: 'public-health', key: 'publicHealth', title: t('suggestion.publicHealth'), items: suggestions?.publicHealth || [] },
       { type: 'differentials', key: 'differentials', title: t('suggestion.differentials'), items: suggestions?.differentials || [] },
+      { type: 'follow-up', key: 'followUp', title: t('suggestion.followUp'), items: suggestions?.followUp ? [suggestions.followUp] : [] },
     ];
 
   const [openState, setOpenState] = useState({
@@ -23,13 +24,14 @@ import { useTranslation } from 'react-i18next';
     compliance: true,
     publicHealth: true,
     differentials: true,
+    followUp: true,
   });
 
   const toggleCard = (type) => {
     setOpenState((prev) => ({ ...prev, [type]: !prev[type] }));
   };
 
-  const renderItems = (items) => {
+  const renderItems = (items, type) => {
       if (loading) {
         return (
           <li style={{ color: '#9AA3B2', fontStyle: 'italic' }}>
@@ -62,6 +64,23 @@ import { useTranslation } from 'react-i18next';
           </li>
         );
       }
+      if (type === 'follow-up') {
+        const ics = generateIcs(item);
+        return (
+          <li key={idx}>
+            {item}
+            {ics && (
+              <a
+                href={ics}
+                download="follow-up.ics"
+                style={{ marginLeft: '0.5em' }}
+              >
+                {t('suggestion.addToCalendar')}
+              </a>
+            )}
+          </li>
+        );
+      }
       return (
         <li
           key={idx}
@@ -73,6 +92,23 @@ import { useTranslation } from 'react-i18next';
         </li>
       );
     });
+  };
+
+  const generateIcs = (interval) => {
+    const match = interval?.match(/(\d+)\s*(day|week|month|year)/i);
+    if (!match) return null;
+    const value = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    const start = new Date();
+    const date = new Date(start);
+    if (unit.startsWith('day')) date.setDate(start.getDate() + value);
+    else if (unit.startsWith('week')) date.setDate(start.getDate() + 7 * value);
+    else if (unit.startsWith('month')) date.setMonth(start.getMonth() + value);
+    else if (unit.startsWith('year')) date.setFullYear(start.getFullYear() + value);
+    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    const dt = fmt(date);
+    const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:Follow-up appointment\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
+    return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
   };
 
   return (
@@ -89,7 +125,7 @@ import { useTranslation } from 'react-i18next';
               {openState[key] ? '\u25BC' : '\u25B2'}
             </span>
           </div>
-          {openState[key] && <ul>{renderItems(items)}</ul>}
+          {openState[key] && <ul>{renderItems(items, type)}</ul>}
         </div>
       ))}
     </div>

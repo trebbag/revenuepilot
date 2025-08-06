@@ -182,8 +182,8 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
  * Get coding and clinical suggestions based on the draft note.
  * The returned object has arrays for different suggestion types.
  * @param {string} text
- * @returns {Promise<{codes: string[], compliance: string[], publicHealth: string[], differentials: string[]}>}
- */
+ * @returns {Promise<{codes: string[], compliance: string[], publicHealth: string[], differentials: string[], followUp?: string}>}
+*/
 export async function getSuggestions(text, context = {}) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
@@ -229,7 +229,7 @@ export async function getSuggestions(text, context = {}) {
     };
   }
   // In stub mode, we ignore additional context and return sample suggestions
-  return {
+    return {
     codes: [
       { code: '99213', rationale: 'Established patient, low complexity' },
       { code: '99395', rationale: 'Annual preventive visit' },
@@ -237,6 +237,7 @@ export async function getSuggestions(text, context = {}) {
     compliance: ['Include duration of symptoms', 'Add ROS for cardiovascular system'],
     publicHealth: ['Consider flu vaccine', 'Screen for depression'],
     differentials: ['Influenza', 'Acute sinusitis'],
+    followUp: '3 months',
   };
 }
 

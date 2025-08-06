@@ -330,6 +330,25 @@ def test_suggest_and_fallback(client, monkeypatch):
     resp = client.post("/suggest", json={"text": "note"}, headers=auth_header(token))
     data = resp.json()
     assert data["codes"][0]["code"] == "A1"
+
+
+def test_suggest_returns_follow_up(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "call_openai",
+        lambda msgs: json.dumps(
+            {
+                "codes": [{"code": "E11.9"}],
+                "compliance": [],
+                "publicHealth": [],
+                "differentials": [],
+            }
+        ),
+    )
+    token = main.create_token("u", "user")
+    resp = client.post("/suggest", json={"text": "diabetes"}, headers=auth_header(token))
+    data = resp.json()
+    assert data["followUp"] == "3 months"
     
 
 def test_beautify_spanish(client, monkeypatch):
