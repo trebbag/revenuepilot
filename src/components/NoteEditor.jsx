@@ -117,10 +117,8 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [segments, setSegments] = useState([]);
   const [audioUrl, setAudioUrl] = useState('');
   const [currentSpeaker, setCurrentSpeaker] = useState('');
-  const [templates, setTemplates] = useState([]);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
-  const [transcribing, setTranscribing] = useState(false);
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -145,6 +143,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, mode]);
 
+  let mounted = true;
   useEffect(() => {
     getTemplates()
       .then((tpls) => mounted && setTemplates(tpls))
@@ -152,7 +151,6 @@ const NoteEditor = forwardRef(function NoteEditor(
     return () => {
       mounted = false;
     };
-
   }, []);
 
   const loadTranscript = async () => {
