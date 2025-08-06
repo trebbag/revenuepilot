@@ -141,6 +141,18 @@ def test_summarize_and_fallback(client, monkeypatch):
     assert len(resp.json()["summary"]) <= 203  # truncated fallback
 
 
+def test_summarize_spanish_language(client, monkeypatch):
+    def fake_call_openai(msgs):
+        # Ensure the system prompt is in Spanish
+        assert "comunicador clínico" in msgs[0]["content"]
+        return "resumen"
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+    resp = client.post("/summarize", json={"text": "hola", "lang": "es"})
+    assert resp.status_code == 200
+    assert resp.json()["summary"] == "resumen"
+
+
 def test_transcribe_endpoint(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
     monkeypatch.setattr(
