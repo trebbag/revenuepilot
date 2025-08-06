@@ -1,23 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { logEvent } from '../api.js';
-import SatisfactionSurvey from './SatisfactionSurvey.jsx';
 import html2pdf from 'html2pdf.js';
 
 function ClipboardExportButtons({ beautified, summary, patientID, suggestions = {} }) {
   const { t } = useTranslation();
   const [feedback, setFeedback] = useState('');
-  const [showSurvey, setShowSurvey] = useState(false);
-
-  useEffect(() => {
-    const handler = (e) => {
-      setShowSurvey(true);
-      e.preventDefault();
-      e.returnValue = '';
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, []);
 
   const copy = async (text, type) => {
     try {
@@ -63,7 +51,6 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
           publicHealth: suggestions.publicHealth?.length > 0,
         }).catch(() => {});
       }
-      setShowSurvey(true);
       setTimeout(() => setFeedback(''), 2000);
     } catch {
         setFeedback(t('clipboard.exportFailed'));
@@ -139,7 +126,6 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
           {t('clipboard.exportPdf')}
         </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
-      <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />
     </>
   );
 }

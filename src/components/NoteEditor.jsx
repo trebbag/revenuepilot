@@ -1,16 +1,20 @@
+
 import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
 import { fetchLastTranscript, getTemplates, transcribeAudio } from '../api.js';
 
 let ReactQuill;
 try {
+
   ReactQuill = require('react-quill');
   require('react-quill/dist/quill.snow.css');
 } catch (err) {
   ReactQuill = null;
 }
 
+
 const quillFormats = ['header', 'bold', 'italic', 'underline', 'list', 'bullet'];
+
 
 function QuillToolbar({ toolbarId }) {
   return (
@@ -30,6 +34,7 @@ function QuillToolbar({ toolbarId }) {
     </div>
   );
 }
+
 
 function useAudioRecorder(onTranscribed) {
   const [recording, setRecording] = useState(false);
@@ -91,6 +96,7 @@ function useAudioRecorder(onTranscribed) {
 }
 
 const NoteEditor = forwardRef(function NoteEditor(
+
   {
     id,
     value,
@@ -98,6 +104,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     onTranscriptChange,
     mode = 'draft',
     ...rest
+
   },
   ref,
 ) {
@@ -105,6 +112,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [localValue, setLocalValue] = useState(value || '');
   const [history, setHistory] = useState(value ? [value] : []);
   const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
+  const [templates, setTemplates] = useState([]);
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [segments, setSegments] = useState([]);
   const [audioUrl, setAudioUrl] = useState('');
@@ -112,10 +120,12 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [templates, setTemplates] = useState([]);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [transcribing, setTranscribing] = useState(false);
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
   const audioRef = useRef(null);
+
 
   useEffect(() => {
     if (mode === 'draft') setLocalValue(value || '');
@@ -136,13 +146,13 @@ const NoteEditor = forwardRef(function NoteEditor(
   }, [value, mode]);
 
   useEffect(() => {
-    let mounted = true;
     getTemplates()
       .then((tpls) => mounted && setTemplates(tpls))
       .catch(() => mounted && setTemplates([]));
     return () => {
       mounted = false;
     };
+
   }, []);
 
   const loadTranscript = async () => {
@@ -154,6 +164,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       if (onTranscriptChange) onTranscriptChange(data);
       setSegments(data.segments || []);
     } catch (err) {
+
       setFetchError('Failed to load transcript');
     } finally {
       setLoadingTranscript(false);
@@ -342,13 +353,12 @@ const NoteEditor = forwardRef(function NoteEditor(
       <div style={{ height: '100%', width: '100%' }}>
         {audioControls}
         {templateChooser}
-        <QuillToolbar toolbarId={toolbarId} />
         <ReactQuill
           ref={quillRef}
           id={id}
           theme="snow"
           value={value}
-          modules={modules}
+          modules={quillModules}
           formats={quillFormats}
           onChange={(content) => onChange(content)}
           style={{ height: '100%', width: '100%' }}
@@ -361,6 +371,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             onTimeUpdate={handleTimeUpdate}
             style={{ width: '100%', marginTop: '0.5rem' }}
           />
+
         )}
         {transcriptControls}
         {(recorderError || fetchError) && (
@@ -391,6 +402,7 @@ const NoteEditor = forwardRef(function NoteEditor(
           onTimeUpdate={handleTimeUpdate}
           style={{ width: '100%', marginTop: '0.5rem' }}
         />
+
       )}
       {transcriptControls}
       {(recorderError || fetchError) && (
@@ -399,6 +411,6 @@ const NoteEditor = forwardRef(function NoteEditor(
       {loadingTranscript && <p>Loading transcript...</p>}
     </div>
   );
-});
+}
 
-export default NoteEditor;
+export default forwardRef(NoteEditor);

@@ -50,6 +50,7 @@ def test_endpoints_require_auth(client):
         in {401, 403}
     )
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
+    assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
 
 
@@ -161,7 +162,7 @@ def test_events_metrics_with_auth(client):
 
     resp = client.get("/metrics", headers=auth_header(token_admin))
     assert resp.status_code == 200
-    assert resp.json()["total_notes"] >= 1
+    assert resp.json()["current"]["total_notes"] >= 1
 
 
 def test_export_to_ehr_requires_admin(client):

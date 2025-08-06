@@ -366,6 +366,35 @@ export async function logEvent(eventType, details = {}) {
 }
 
 /**
+ * Submit a satisfaction survey to the backend.
+ * @param {number} rating 1-5 star rating
+ * @param {string} feedback Optional free-text feedback
+ */
+export async function submitSurvey(rating, feedback = '') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return;
+  try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${baseUrl}/survey`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ rating, feedback }),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+  } catch (err) {
+    console.error('Failed to submit survey', err);
+  }
+}
+
+/**
  * Fetch aggregated metrics from the backend.  Returns stubbed metrics
  * when no backend is configured.
  * @returns {Promise<object>}
@@ -378,23 +407,41 @@ export async function getMetrics(filters = {}) {
   if (!baseUrl) {
     // Return stub metrics
     return {
-      total_notes: 0,
-      total_beautify: 0,
-      total_suggest: 0,
-      total_summary: 0,
-      total_chart_upload: 0,
-      total_audio: 0,
-      avg_note_length: 0,
-      avg_beautify_time: 0,
-      avg_close_time: 0,
-      revenue_per_visit: 0,
+      baseline: {
+        total_notes: 0,
+        total_beautify: 0,
+        total_suggest: 0,
+        total_summary: 0,
+        total_chart_upload: 0,
+        total_audio: 0,
+        avg_note_length: 0,
+        avg_beautify_time: 0,
+        avg_close_time: 0,
+        revenue_per_visit: 0,
+        denial_rate: 0,
+        deficiency_rate: 0,
+      },
+      current: {
+        total_notes: 0,
+        total_beautify: 0,
+        total_suggest: 0,
+        total_summary: 0,
+        total_chart_upload: 0,
+        total_audio: 0,
+        avg_note_length: 0,
+        avg_beautify_time: 0,
+        avg_close_time: 0,
+        revenue_per_visit: 0,
+        denial_rate: 0,
+        deficiency_rate: 0,
+      },
+      improvement: {},
       coding_distribution: {},
-      denial_rate: 0,
       denial_rates: {},
-      deficiency_rate: 0,
+      compliance_counts: {},
       avg_satisfaction: 0,
       public_health_rate: 0,
-      compliance_counts: {},
+
       clinicians: [],
       timeseries: { daily: [], weekly: [] },
     };
