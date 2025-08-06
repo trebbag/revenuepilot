@@ -21,6 +21,10 @@ from openai import OpenAI
 
 from .key_manager import get_api_key
 
+# Public functions exported by this module.  Keeping this explicit makes the
+# intent clear for tools and readers alike.
+__all__ = ["diarize_and_transcribe", "simple_transcribe"]
+
 try:  # pragma: no cover - optional heavy dependency
     from pyannote.audio import Pipeline, Audio
     import torchaudio
@@ -119,9 +123,11 @@ def _transcribe_bytes(data: bytes, language: str | None = None) -> str:
     if api_key and not offline:
         try:
             client = OpenAI(api_key=api_key)
+            # Allow callers to override the remote Whisper model via env var
+            model_name = os.getenv("WHISPER_API_MODEL", "whisper-1")
             with io.BytesIO(data) as buf:
                 resp = client.audio.transcriptions.create(
-                    model="whisper-1", file=buf, language=language
+                    model=model_name, file=buf, language=language
                 )
             text = getattr(resp, "text", "") if resp else ""
             if text:
