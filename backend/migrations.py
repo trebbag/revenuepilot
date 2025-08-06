@@ -40,6 +40,10 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE settings ADD COLUMN payer TEXT")
     if "region" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
+    if "use_local_models" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN use_local_models INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
 
 def ensure_templates_table(conn: sqlite3.Connection) -> None:

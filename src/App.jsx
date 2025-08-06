@@ -22,7 +22,6 @@ import TemplatesModal from './components/TemplatesModal.jsx';
 import AdminUsers from './components/AdminUsers.jsx';
 import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
 
-
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
 // text.  This naive implementation removes all markup.  For more
@@ -43,13 +42,13 @@ function parseJwt(tok) {
 // Basic skeleton component implementing the toolbar, tab system and suggestion panel.
 function App() {
   const [token, setToken] = useState(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('token') : null
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null,
   );
   const [refreshToken, setRefreshToken] = useState(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null
+    typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null,
   );
   const [userRole, setUserRole] = useState(() =>
-    token ? parseJwt(token)?.role : null
+    token ? parseJwt(token)?.role : null,
   );
   const { t } = useTranslation();
   // Track which tab is active: 'draft' or 'beautified'
@@ -118,7 +117,7 @@ function App() {
   });
 
   const calcRevenue = (codes = []) => {
-    const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
+    const map = { 99212: 50, 99213: 75, 99214: 110, 99215: 160 };
     return (codes || []).reduce((sum, c) => sum + (map[c] || 0), 0);
   };
 
@@ -137,6 +136,7 @@ function App() {
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
     region: '',
+    useLocalModels: false,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   const [settingsState, setSettingsState] = useState(defaultSettings);
@@ -174,6 +174,7 @@ function App() {
     age: age ? parseInt(age, 10) : undefined,
     sex,
     region: settingsState.region,
+    useLocalModels: settingsState.useLocalModels,
   };
 
   useEffect(() => {
@@ -244,7 +245,9 @@ function App() {
         onLoggedIn={(tok, settings) => {
           setToken(tok);
           setRefreshToken(
-            typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null
+            typeof window !== 'undefined'
+              ? localStorage.getItem('refreshToken')
+              : null,
           );
           if (settings) {
             const merged = { ...defaultSettings, ...settings };
@@ -266,7 +269,11 @@ function App() {
     // Strip HTML tags before sending the note to the backend.  ReactQuill
     // produces an HTML string; the backend expects plain text.
     const plain = stripHtml(draftText);
-    beautifyNote(plain, settingsState.lang, { specialty: settingsState.specialty, payer: settingsState.payer })
+    beautifyNote(plain, settingsState.lang, {
+      specialty: settingsState.specialty,
+      payer: settingsState.payer,
+      useLocalModels: settingsState.useLocalModels,
+    })
       .then((cleaned) => {
         setBeautified(cleaned);
         setActiveTab('beautified');
@@ -314,6 +321,7 @@ function App() {
       lang: settingsState.lang,
       specialty: settingsState.specialty,
       payer: settingsState.payer,
+      useLocalModels: settingsState.useLocalModels,
     })
       .then((summary) => {
         setSummaryText(summary);
@@ -376,10 +384,15 @@ function App() {
   // Insert a suggestion into the draft note at the current cursor position
   // and focus the draft tab so the user can continue editing.
   const handleInsertSuggestion = (text) => {
-    if (editorRef.current && typeof editorRef.current.insertAtCursor === 'function') {
+    if (
+      editorRef.current &&
+      typeof editorRef.current.insertAtCursor === 'function'
+    ) {
       editorRef.current.insertAtCursor(text);
     } else {
-      setDraftText((prev) => `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text}`);
+      setDraftText(
+        (prev) => `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text}`,
+      );
     }
     setActiveTab('draft');
   };
@@ -414,13 +427,14 @@ function App() {
       setChartText(typeof text === 'string' ? text : '');
       setChartFileName(file.name);
       if (patientID) {
-        logEvent('chart_upload', { patientID, filename: file.name }).catch(() => {});
+        logEvent('chart_upload', { patientID, filename: file.name }).catch(
+          () => {},
+        );
       }
     };
     // Read as text; in a future iteration we could parse PDFs or structured formats.
     reader.readAsText(file);
   };
-
 
   const handleTranscriptChange = (data) => {
     setAudioTranscript({
@@ -445,9 +459,15 @@ function App() {
   // Ref for the hidden chart file input
   const fileInputRef = useRef(null);
   useEffect(() => {
-    if (prevDraftRef.current.trim() === '' && draftText.trim() !== '' && patientID) {
+    if (
+      prevDraftRef.current.trim() === '' &&
+      draftText.trim() !== '' &&
+      patientID
+    ) {
       // Log a note_started event when the user begins typing a new draft
-      logEvent('note_started', { patientID, length: draftText.length }).catch(() => {});
+      logEvent('note_started', { patientID, length: draftText.length }).catch(
+        () => {},
+      );
     }
     prevDraftRef.current = draftText;
   }, [draftText, patientID]);
@@ -516,12 +536,12 @@ function App() {
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
-                <button
-                  onClick={() => setShowTemplatesModal(true)}
-                  aria-label={t('app.templates')}
-                >
-                  {t('app.templates')}
-                </button>
+              <button
+                onClick={() => setShowTemplatesModal(true)}
+                aria-label={t('app.templates')}
+              >
+                {t('app.templates')}
+              </button>
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}
@@ -545,7 +565,10 @@ function App() {
                 disabled={!patientID || !draftText.trim()}
                 onClick={() => {
                   localStorage.setItem(`draft_${patientID}`, draftText);
-                  logEvent('note_saved', { patientID, length: draftText.length }).catch(() => {});
+                  logEvent('note_saved', {
+                    patientID,
+                    length: draftText.length,
+                  }).catch(() => {});
                 }}
               >
                 {t('app.saveDraft')}
@@ -566,7 +589,13 @@ function App() {
                 {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
               </button>
               {chartFileName && (
-                <span style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}>
+                <span
+                  style={{
+                    fontSize: '0.8rem',
+                    marginLeft: '0.5rem',
+                    color: 'var(--secondary)',
+                  }}
+                >
                   {chartFileName}
                 </span>
               )}
@@ -575,7 +604,9 @@ function App() {
                 onClick={() => setShowSuggestions((s) => !s)}
                 style={{ marginLeft: '0.5rem' }}
               >
-                {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
+                {showSuggestions
+                  ? t('app.hideSuggestions')
+                  : t('app.showSuggestions')}
               </button>
             </>
           )}
@@ -597,12 +628,18 @@ function App() {
                   >
                     {t('app.beautifiedNote')}
                   </button>
-                <button
-                  className={summaryText ? (activeTab === 'summary' ? 'tab active' : 'tab') : 'tab disabled'}
-                  onClick={() => summaryText && setActiveTab('summary')}
-                >
-                  {t('app.summary')}
-                </button>
+                  <button
+                    className={
+                      summaryText
+                        ? activeTab === 'summary'
+                          ? 'tab active'
+                          : 'tab'
+                        : 'tab disabled'
+                    }
+                    onClick={() => summaryText && setActiveTab('summary')}
+                  >
+                    {t('app.summary')}
+                  </button>
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
@@ -617,7 +654,6 @@ function App() {
                       suggestionContext={suggestionContext}
                       onSuggestions={handleSuggestions}
                       onSuggestionsLoading={setLoadingSuggestions}
-
                     />
                   ) : activeTab === 'beautified' ? (
                     <NoteEditor
@@ -647,7 +683,10 @@ function App() {
           {view === 'dashboard' && <Dashboard />}
           {view === 'help' && <Help />}
           {view === 'settings' && (
-            <Settings settings={settingsState} updateSettings={updateSettings} />
+            <Settings
+              settings={settingsState}
+              updateSettings={updateSettings}
+            />
           )}
           {view === 'drafts' && (
             <Drafts
@@ -657,10 +696,10 @@ function App() {
               }}
             />
           )}
-        {view === 'logs' && <Logs />}
-        {view === 'admin-users' && userRole === 'admin' && (
-          <AdminUsers token={token} />
-        )}
+          {view === 'logs' && <Logs />}
+          {view === 'admin-users' && userRole === 'admin' && (
+            <AdminUsers token={token} />
+          )}
         </div>
       </div>
       {showTemplatesModal && (
@@ -674,7 +713,10 @@ function App() {
           onClose={() => setShowTemplatesModal(false)}
         />
       )}
-      <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />
+      <SatisfactionSurvey
+        open={showSurvey}
+        onClose={() => setShowSurvey(false)}
+      />
     </div>
   );
 }

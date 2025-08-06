@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from collections import deque
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -393,6 +394,7 @@ class UserSettings(BaseModel):
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
+    useLocalModels: StrictBool = False
 
     @validator("theme")
     def validate_theme(cls, v: str) -> str:
@@ -565,7 +567,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region "
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models "
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -579,6 +581,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             specialty=row["specialty"],
             payer=row["payer"],
             region=row["region"] or "",
+            useLocalModels=bool(row["use_local_models"]),
         )
         return settings.dict()
     return UserSettings().dict()
@@ -594,8 +597,8 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
@@ -605,6 +608,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
             model.specialty,
             model.payer,
             model.region,
+            int(model.useLocalModels),
         ),
     )
 
@@ -632,6 +636,7 @@ class NoteRequest(BaseModel):
     age: Optional[int] = None
     sex: Optional[str] = None
     region: Optional[str] = None
+    useLocalModels: Optional[bool] = False
 
 
 
@@ -824,7 +829,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1554,7 +1559,9 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
     if USE_OFFLINE_MODEL:
         from .offline_model import summarize as offline_summarize
 
-        summary = offline_summarize(cleaned, req.lang, req.specialty, req.payer)
+        summary = offline_summarize(
+            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+        )
     else:
         try:
             messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
@@ -1675,7 +1682,9 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
     if USE_OFFLINE_MODEL:
         from .offline_model import beautify as offline_beautify
 
-        beautified = offline_beautify(cleaned, req.lang, req.specialty, req.payer)
+        beautified = offline_beautify(
+            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+        )
         return {"beautified": beautified}
     # Attempt to call the LLM to beautify the note. If the call
     # fails for any reason (e.g., missing API key, network error), fall
@@ -1737,6 +1746,7 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             req.age,
             req.sex,
             req.region,
+            use_local=req.useLocalModels,
         )
         return SuggestionsResponse(
             codes=[CodeSuggestion(**c) for c in data["codes"]],
