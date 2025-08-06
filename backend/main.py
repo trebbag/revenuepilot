@@ -45,6 +45,11 @@ import json
 import sqlite3
 import hashlib
 
+# When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
+# placeholder responses without calling external AI services.  This is useful
+# for running the API in environments without network access.
+USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {"1", "true", "yes"}
+
 try:
     import scrubadub
     _SCRUBBER_AVAILABLE = True
@@ -1025,19 +1030,24 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
     if req.audio:
         combined += "\n\n" + str(req.audio)
     cleaned = deidentify(combined)
-    try:
-        messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
-        response_content = call_openai(messages)
-        summary = response_content.strip()
-    except Exception as exc:
-        # If the LLM call fails, fall back to a simple truncation of the
-        # cleaned text.  Take the first 200 characters and append ellipsis
-        # if the text is longer.  This ensures the endpoint still returns
-        # something useful without crashing.
-        print(f"Error during summary LLM call: {exc}")
-        summary = cleaned[:200]
-        if len(cleaned) > 200:
-            summary += "..."
+    if USE_OFFLINE_MODEL:
+        from .offline_model import summarize as offline_summarize
+
+        summary = offline_summarize(cleaned, req.lang, req.specialty, req.payer)
+    else:
+        try:
+            messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
+            response_content = call_openai(messages)
+            summary = response_content.strip()
+        except Exception as exc:
+            # If the LLM call fails, fall back to a simple truncation of the
+            # cleaned text.  Take the first 200 characters and append ellipsis
+            # if the text is longer.  This ensures the endpoint still returns
+            # something useful without crashing.
+            print(f"Error during summary LLM call: {exc}")
+            summary = cleaned[:200]
+            if len(cleaned) > 200:
+                summary += "..."
     return {"summary": summary}
 
 
@@ -1133,6 +1143,11 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         A dictionary with the beautified note as a string.
     """
     cleaned = deidentify(req.text)
+    if USE_OFFLINE_MODEL:
+        from .offline_model import beautify as offline_beautify
+
+        beautified = offline_beautify(cleaned, req.lang, req.specialty, req.payer)
+        return {"beautified": beautified}
     # Attempt to call the LLM to beautify the note.  If the call
     # fails for any reason (e.g., missing API key, network error), fall
     # back to a simple uppercase transformation so the endpoint still
@@ -1180,6 +1195,24 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         cleaned_for_prompt = cleaned + rules_section
     else:
         cleaned_for_prompt = cleaned
+    if USE_OFFLINE_MODEL:
+        from .offline_model import suggest as offline_suggest
+
+        data = offline_suggest(
+            cleaned_for_prompt,
+            req.lang,
+            req.specialty,
+            req.payer,
+            req.age,
+            req.sex,
+            req.region,
+        )
+        return SuggestionsResponse(
+            codes=[CodeSuggestion(**c) for c in data["codes"]],
+            compliance=data["compliance"],
+            publicHealth=data["publicHealth"],
+            differentials=data["differentials"],
+        )
     # Try to call the LLM to generate structured suggestions.  The prompt
     # instructs the model to return JSON with keys codes, compliance,
     # public_health and differentials.  We parse the JSON into the
