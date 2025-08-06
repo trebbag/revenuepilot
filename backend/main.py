@@ -409,6 +409,7 @@ class UserSettings(BaseModel):
     region: str = ""
     template: Optional[int] = None
     useLocalModels: StrictBool = False
+    agencies: List[str] = Field(default_factory=lambda: ["CDC", "WHO"])
 
     @validator("theme")
     def validate_theme(cls, v: str) -> str:
@@ -591,7 +592,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.template "
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies "
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -607,6 +608,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             region=row["region"] or "",
             template=row["template"],
             useLocalModels=bool(row["use_local_models"]),
+            agencies=json.loads(row["agencies"]) if row["agencies"] else ["CDC", "WHO"],
         )
         return settings.dict()
     return UserSettings().dict()
@@ -624,7 +626,7 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, template) "
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
@@ -636,7 +638,9 @@ async def save_user_settings(
             model.payer,
             model.region,
             int(model.useLocalModels),
+            json.dumps(model.agencies),
             model.template,
+
         ),
     )
 
@@ -664,6 +668,7 @@ class NoteRequest(BaseModel):
     sex: Optional[str] = None
     region: Optional[str] = None
     useLocalModels: Optional[bool] = False
+    agencies: Optional[List[str]] = None
 
     class Config:
         populate_by_name = True
@@ -683,6 +688,8 @@ class PublicHealthSuggestion(BaseModel):
 
     recommendation: str
     reason: Optional[str] = None
+    source: Optional[str] = None
+    evidenceLevel: Optional[str] = Field(None, alias="evidence_level")
 
 
 class DifferentialSuggestion(BaseModel):
@@ -1899,15 +1906,19 @@ async def suggest(
         )
         public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
         extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region
+            req.age, req.sex, req.region, req.agencies
         )
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                if rec not in existing:
-                    public_health.append(
-                        PublicHealthSuggestion(recommendation=rec, reason=None)
-                    )
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                if rec_name and rec_name not in existing:
+                    if isinstance(rec, dict):
+                        public_health.append(PublicHealthSuggestion(**rec))
+                    else:
+                        public_health.append(
+                            PublicHealthSuggestion(recommendation=str(rec))
+                        )
         return SuggestionsResponse(
             codes=[CodeSuggestion(**c) for c in data["codes"]],
             compliance=data["compliance"],
@@ -1957,9 +1968,20 @@ async def suggest(
             if isinstance(item, dict):
                 rec = item.get("recommendation") or item.get("Recommendation") or ""
                 reason = item.get("reason") or item.get("Reason") or None
+                source = item.get("source") or item.get("Source")
+                evidence = (
+                    item.get("evidenceLevel")
+                    or item.get("evidence_level")
+                    or item.get("evidence")
+                )
                 if rec:
                     public_health.append(
-                        PublicHealthSuggestion(recommendation=rec, reason=reason)
+                        PublicHealthSuggestion(
+                            recommendation=rec,
+                            reason=reason,
+                            source=source,
+                            evidenceLevel=evidence,
+                        )
                     )
             else:
                 public_health.append(
@@ -1995,15 +2017,19 @@ async def suggest(
                 diffs.append(DifferentialSuggestion(diagnosis=str(item), score=None))
         # Augment public health suggestions with external guidelines
         extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region
+            req.age, req.sex, req.region, req.agencies
         )
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                if rec not in existing:
-                    public_health.append(
-                        PublicHealthSuggestion(recommendation=rec, reason=None)
-                    )
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                if rec_name and rec_name not in existing:
+                    if isinstance(rec, dict):
+                        public_health.append(PublicHealthSuggestion(**rec))
+                    else:
+                        public_health.append(
+                            PublicHealthSuggestion(recommendation=str(rec))
+                        )
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
@@ -2158,11 +2184,21 @@ async def suggest(
         if not diffs:
             diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
         extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region
+            req.age, req.sex, req.region, req.agencies
         )
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                if rec_name and rec_name not in existing:
+                    if isinstance(rec, dict):
+                        public_health.append(PublicHealthSuggestion(**rec))
+                    else:
+                        public_health.append(
+                            PublicHealthSuggestion(recommendation=str(rec))
+                        )
+        follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
+
                 if rec not in existing:
                     public_health.append(
                         PublicHealthSuggestion(recommendation=rec, reason=None)
@@ -2173,6 +2209,7 @@ async def suggest(
             req.specialty,
             req.payer,
         )
+
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,

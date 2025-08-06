@@ -1,5 +1,6 @@
-import logging
+import json
 import pytest
+
 from backend import public_health
 
 
@@ -8,87 +9,56 @@ def _clear_cache():
     public_health.clear_cache()
 
 
-def test_fetch_vaccination_recommendations(monkeypatch):
-    def fake_guidelines(age, sex, region):
-        assert age == 40
-        assert sex == "male"
-        assert region == "US"
-        return {"vaccinations": [{"recommendation": "Flu shot", "region": "US"}]}
+def test_get_public_health_suggestions_includes_source(monkeypatch):
+    def fake_cdc(age, sex, region):
+        return [
+            {
+                "recommendation": "Flu shot",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
+        ]
 
-    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-    result = public_health.fetch_vaccination_recommendations(40, "male", "US")
-    assert result == ["Flu shot"]
+    def fake_who(age, sex, region):
+        return [
+            {
+                "recommendation": "BP check",
+                "source": "WHO",
+                "evidenceLevel": "B",
+            }
+        ]
 
-
-def test_fetch_screening_recommendations(monkeypatch):
-    def fake_guidelines(age, sex, region):
-        assert age == 40
-        assert sex == "male"
-        assert region == "US"
-        return {"screenings": [{"recommendation": "BP check", "region": "US"}]}
-
-    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-    result = public_health.fetch_screening_recommendations(40, "male", "US")
-    assert result == ["BP check"]
-
-
-def test_get_public_health_suggestions_combines(monkeypatch):
     monkeypatch.setattr(
         public_health,
-        "fetch_vaccination_recommendations",
-        lambda *args, **kwargs: ["Flu shot"],
+        "_AGENCY_FETCHERS",
+        {"cdc": fake_cdc, "who": fake_who},
     )
-    monkeypatch.setattr(
-        public_health,
-        "fetch_screening_recommendations",
-        lambda *args, **kwargs: ["Flu shot", "BP check"],
-    )
-    result = public_health.get_public_health_suggestions(40, "male", "US")
-    assert result == ["Flu shot", "BP check"]
+    res = public_health.get_public_health_suggestions(40, "male", "US")
+    assert {"recommendation": "Flu shot", "source": "CDC", "evidenceLevel": "A"} in res
+    assert {"recommendation": "BP check", "source": "WHO", "evidenceLevel": "B"} in res
 
 
-def test_fetch_vaccination_recommendations_error(monkeypatch, caplog):
-    def fake_guidelines(*args, **kwargs):
-        raise Exception("boom")
+def test_guideline_cache(monkeypatch):
+    calls = {"cdc": 0}
 
-    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-    with caplog.at_level(logging.WARNING):
-        result = public_health.fetch_vaccination_recommendations(40, "male", "US")
-    assert result == []
-    assert "Vaccination API error" in caplog.text
+    def fake_cdc(age, sex, region):
+        calls["cdc"] += 1
+        return [
+            {
+                "recommendation": "Flu shot",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
+        ]
 
+    monkeypatch.setattr(public_health, "_AGENCY_FETCHERS", {"cdc": fake_cdc})
 
-def test_caching_avoids_repeated_calls(monkeypatch):
-    calls = []
+    times = iter([0, 5, 15])
+    monkeypatch.setattr(public_health, "_now", lambda: next(times))
+    public_health.CACHE_TTL = 10
 
-    def fake_guidelines(age, sex, region):
-        calls.append((age, sex, region))
-        return {
-            "vaccinations": ["Flu shot"],
-            "screenings": ["BP check"],
-        }
-
-    public_health.clear_cache()
-    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-
-    first = public_health.get_public_health_suggestions(40, "male", "US")
-    second = public_health.get_public_health_suggestions(40, "male", "US")
-    assert first == ["Flu shot", "BP check"]
-    assert second == ["Flu shot", "BP check"]
-    # get_guidelines should only be called twice (once per category)
-    assert len(calls) == 2
-
-
-def test_region_filtering(monkeypatch):
-    def fake_guidelines(age, sex, region):
-        return {
-            "vaccinations": [
-                {"recommendation": "US only", "region": "US"},
-                {"recommendation": "CA only", "region": "CA"},
-            ]
-        }
-
-    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-    result = public_health.fetch_vaccination_recommendations(40, "male", "US")
-    assert result == ["US only"]
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    assert calls["cdc"] == 2
 

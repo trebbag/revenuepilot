@@ -172,7 +172,12 @@ def suggest(
         ],
         "compliance": ["offline compliance"],
         "publicHealth": [
-            {"recommendation": "offline public health", "reason": "offline reason"}
+            {
+                "recommendation": "offline public health",
+                "reason": "offline reason",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
         ],
         "differentials": [
             {"diagnosis": "offline differential", "score": 0.5}

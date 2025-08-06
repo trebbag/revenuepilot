@@ -94,6 +94,7 @@ def test_login_and_settings(client):
     assert data["specialty"] is None
     assert data["payer"] is None
     assert data["region"] == ""
+    assert data["agencies"] == ["CDC", "WHO"]
 
     new_settings = {
         "theme": "dark",
@@ -108,6 +109,7 @@ def test_login_and_settings(client):
         "specialty": "cardiology",
         "payer": "medicare",
         "region": "us",
+        "agencies": ["CDC"],
     }
     resp = client.post(
         "/settings", json=new_settings, headers=auth_header(token)
@@ -123,6 +125,7 @@ def test_login_and_settings(client):
     assert data["specialty"] == "cardiology"
     assert data["payer"] == "medicare"
     assert data["region"] == "us"
+    assert data["agencies"] == ["CDC"]
 
     # second user should still see default settings
     token_user = client.post(
@@ -491,7 +494,14 @@ def test_suggest_and_fallback(client, monkeypatch):
             {
                 "codes": [{"code": "A1"}],
                 "compliance": ["c"],
-                "publicHealth": [{"recommendation": "p", "reason": "r"}],
+                "publicHealth": [
+                    {
+                        "recommendation": "p",
+                        "reason": "r",
+                        "source": "CDC",
+                        "evidenceLevel": "A",
+                    }
+                ],
                 "differentials": [{"diagnosis": "d", "score": 0.1}],
             }
         ),
@@ -501,6 +511,7 @@ def test_suggest_and_fallback(client, monkeypatch):
     data = resp.json()
     assert data["codes"][0]["code"] == "A1"
     assert data["publicHealth"][0]["recommendation"] == "p"
+    assert data["publicHealth"][0]["source"] == "CDC"
     assert data["differentials"][0]["diagnosis"] == "d"
 
 
@@ -563,19 +574,30 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
 
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
     monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        main.public_health_api, "get_public_health_suggestions", lambda *args, **kwargs: []
+    )
 
-    def fake_guidelines(age, sex, region):
+    def fake_ph(age, sex, region, agencies=None):
         assert age == 50
         assert sex == "male"
         assert region == "US"
-        return {
-            "vaccinations": ["Shingles vaccine"],
-            "screenings": ["Colon cancer screening"],
-        }
+        return [
+            {
+                "recommendation": "Shingles vaccine",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            },
+            {
+                "recommendation": "Colon cancer screening",
+                "source": "WHO",
+                "evidenceLevel": "B",
+            },
+        ]
 
-    monkeypatch.setattr(main.public_health_api, "get_guidelines", fake_guidelines)
-    main.public_health_api.clear_cache()
-
+    monkeypatch.setattr(
+        main.public_health_api, "get_public_health_suggestions", fake_ph
+    )
     token_d = main.create_token("u", "user")
     resp = client.post(
         "/suggest",

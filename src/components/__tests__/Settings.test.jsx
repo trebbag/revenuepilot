@@ -38,7 +38,7 @@ test('saveSettings called when preferences change', async () => {
       specialty: '',
       payer: '',
       region: '',
-
+      agencies: ['CDC', 'WHO'],
     };
   const updateSettings = vi.fn();
   const { getByLabelText } = render(
@@ -61,6 +61,7 @@ test('saveSettings called when specialty and payer change', async () => {
     specialty: '',
     payer: '',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const updateSettings = vi.fn();
   const { getAllByRole } = render(
@@ -86,6 +87,7 @@ test('changing region triggers saveSettings', async () => {
     specialty: '',
     payer: '',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const updateSettings = vi.fn();
   const { getByPlaceholderText } = render(
@@ -109,6 +111,7 @@ test('renders Spanish translations when lang is es', () => {
     lang: 'es',
     summaryLang: 'es',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   i18n.changeLanguage('es');
   const { getAllByText } = render(
@@ -129,6 +132,7 @@ test('changing language calls saveSettings with new lang', async () => {
     lang: 'en',
     summaryLang: 'en',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const updateSettings = vi.fn();
   const { getByLabelText } = render(
@@ -159,6 +163,7 @@ test('changing summary language calls saveSettings with new summaryLang', async 
     lang: 'en',
     summaryLang: 'en',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const updateSettings = vi.fn();
   const { getByLabelText } = render(
@@ -188,6 +193,7 @@ test('setApiKey called when saving API key', async () => {
     lang: 'en',
     summaryLang: 'en',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const { getAllByPlaceholderText, getAllByText } = render(
     <Settings settings={settings} updateSettings={() => {}} />
@@ -210,6 +216,7 @@ test('invalid API key shows error and does not call setApiKey', async () => {
     rules: [],
     lang: 'en',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const { getAllByPlaceholderText, getByText, getAllByText } = render(
     <Settings settings={settings} updateSettings={() => {}} />,
@@ -236,6 +243,7 @@ test('changing theme triggers saveSettings', async () => {
     lang: 'en',
     summaryLang: 'en',
     region: '',
+    agencies: ['CDC', 'WHO'],
   };
   const updateSettings = vi.fn();
   const { getByLabelText } = render(

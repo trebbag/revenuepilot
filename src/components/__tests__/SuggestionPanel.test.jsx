@@ -13,7 +13,14 @@ test('renders suggestions and handles click', () => {
       suggestions={{
         codes: [{ code: 'A', rationale: 'reason' }],
         compliance: [],
-        publicHealth: [{ recommendation: 'Flu shot', reason: 'Prevents influenza' }],
+        publicHealth: [
+          {
+            recommendation: 'Flu shot',
+            reason: 'Prevents influenza',
+            source: 'CDC',
+            evidenceLevel: 'A',
+          },
+        ],
         differentials: [],
       }}
 
@@ -27,6 +34,7 @@ test('renders suggestions and handles click', () => {
   fireEvent.click(el);
   expect(onInsert).toHaveBeenCalledWith('A — reason');
   expect(getByText('Prevents influenza')).toBeTruthy();
+  expect(getByText('CDC (A)')).toBeTruthy();
 });
 
 test('filters public health suggestions by region', () => {

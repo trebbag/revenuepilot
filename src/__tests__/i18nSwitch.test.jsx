@@ -14,6 +14,7 @@ vi.mock('../api.js', () => ({
     enableDifferentials: true,
     rules: [],
     region: '',
+    agencies: ['CDC', 'WHO'],
   }),
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   getMetrics: vi.fn().mockResolvedValue({}),

@@ -140,6 +140,7 @@ function App() {
     rules: [],
     region: '',
     useLocalModels: false,
+    agencies: ['CDC', 'WHO'],
     template: null,
   };
   // User settings controlling theme and which suggestion categories are enabled.
@@ -189,6 +190,7 @@ function App() {
     sex,
     region: settingsState.region,
     useLocalModels: settingsState.useLocalModels,
+    agencies: settingsState.agencies,
   };
 
   useEffect(() => {
