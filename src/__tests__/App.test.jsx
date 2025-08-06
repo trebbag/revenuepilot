@@ -17,7 +17,9 @@ vi.mock('../api.js', () => ({
   }),
 }));
 
+// Mock fetch for loading default templates and reset state before each test
 beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })));
   localStorage.clear();
   vi.clearAllMocks();
 });
