@@ -34,10 +34,13 @@ def test_register_endpoint(monkeypatch):
     )
     assert resp.status_code == 200
 
-    # New user can log in
+    # New user can log in and receives a token with the correct role
     resp = client.post("/login", json={"username": "bob", "password": "pw"})
     assert resp.status_code == 200
-    assert "access_token" in resp.json()
+    token_resp = resp.json()["access_token"]
+    assert token_resp
+    payload = main.jwt.decode(token_resp, main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
+    assert payload["role"] == "user"
 
     # Non-admin should be rejected
     user_token = main.create_token("bob", "user")

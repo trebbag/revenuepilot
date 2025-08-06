@@ -14,6 +14,16 @@ def setup_module(module):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT)"
     )
 
+
+def test_metrics_empty_returns_zeros():
+    """When no events are logged metrics should return zeros and empty dicts."""
+    client = TestClient(main.app)
+    token = main.create_token('admin', 'admin')
+    resp = client.get('/metrics', headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    assert data['total_notes'] == 0
+    assert data['coding_distribution'] == {}
+
 def test_metrics_aggregation():
     client = TestClient(main.app)
     events = [
