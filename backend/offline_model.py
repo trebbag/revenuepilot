@@ -16,19 +16,12 @@ import os
 from typing import Dict, List, Optional
 
 
-_PIPELINES = {}
+_PIPELINES: Dict[tuple, object] = {}
+_LLAMAS: Dict[str, "Llama"] = {}
 
 
 def _get_pipeline(task: str, model: str):
-    """Lazy-load and cache a ``transformers`` pipeline.
-
-    Parameters
-    ----------
-    task:
-        The pipeline task, e.g. ``"summarization"``.
-    model:
-        Model identifier to pass to :func:`transformers.pipeline`.
-    """
+    """Lazy-load and cache a ``transformers`` pipeline."""
 
     key = (task, model)
     if key not in _PIPELINES:
@@ -36,6 +29,20 @@ def _get_pipeline(task: str, model: str):
 
         _PIPELINES[key] = pipeline(task, model=model)
     return _PIPELINES[key]
+
+
+def _get_llama(model_path: str):
+    """Lazy-load and cache a llama.cpp model."""
+
+    if model_path not in _LLAMAS:
+        from llama_cpp import Llama  # Imported lazily when needed
+
+        _LLAMAS[model_path] = Llama(
+            model_path=model_path,
+            n_ctx=int(os.getenv("LLAMA_CTX", "2048")),
+            seed=0,
+        )
+    return _LLAMAS[model_path]
 
 
 def _use_local() -> bool:
@@ -49,17 +56,29 @@ def beautify(
     payer: Optional[str] = None,
     use_local: Optional[bool] = None,
 ) -> str:
-    """Beautify ``text`` using a local model or deterministic placeholder."""
+    """Beautify ``text`` via llama.cpp or deterministic placeholder."""
 
     if use_local is None:
         use_local = _use_local()
 
     if use_local:
-        model = os.getenv("LOCAL_BEAUTIFY_MODEL")
-        if model:
+        model = os.getenv("LOCAL_BEAUTIFY_MODEL") or os.getenv("LOCAL_LLM_MODEL")
+        if model and os.path.exists(model):
             try:
-                pipe = _get_pipeline("text2text-generation", model)
-                return pipe(text)[0]["generated_text"].strip()
+                llm = _get_llama(model)
+                prompt = (
+                    "You are a helpful assistant that rewrites clinical notes in a "
+                    "professional tone.\n\nNote:\n" + text.strip() + "\n\nBeautified:"
+                )
+                out = llm(
+                    prompt,
+                    max_tokens=256,
+                    temperature=0.0,
+                    top_p=1.0,
+                )
+                result = out["choices"][0]["text"].strip()
+                if result:
+                    return result
             except Exception:
                 pass
     return f"Beautified (offline): {text.strip()}"
@@ -106,13 +125,26 @@ def suggest(
         use_local = _use_local()
 
     if use_local:
-        model = os.getenv("LOCAL_SUGGEST_MODEL")
-        if model:
+        model = os.getenv("LOCAL_SUGGEST_MODEL") or os.getenv("LOCAL_LLM_MODEL")
+        if model and os.path.exists(model):
             try:
-                pipe = _get_pipeline("text-generation", model)
-                raw = pipe(text, max_new_tokens=256)[0]["generated_text"]
+                llm = _get_llama(model)
+                prompt = (
+                    "You are a medical coding assistant. Given the clinical note "
+                    "below, reply with JSON containing keys codes, compliance, "
+                    "publicHealth and differentials.\n\nNote:\n" + text.strip() + "\n\nJSON:"
+                )
+                out = llm(
+                    prompt,
+                    max_tokens=512,
+                    temperature=0.0,
+                    top_p=1.0,
+                )
+                raw = out["choices"][0]["text"].strip()
                 data = json.loads(raw)
-                if all(k in data for k in ("codes", "compliance", "publicHealth", "differentials")):
+                if all(
+                    k in data for k in ("codes", "compliance", "publicHealth", "differentials")
+                ):
                     return data
             except Exception:
                 pass

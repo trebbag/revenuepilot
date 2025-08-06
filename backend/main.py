@@ -1787,7 +1787,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         from .offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
-            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+            cleaned, req.lang, req.specialty, req.payer, use_local=True
         )
         return {"beautified": beautified}
     # Attempt to call the LLM to beautify the note. If the call
@@ -1854,7 +1854,7 @@ async def suggest(
             req.age,
             req.sex,
             req.region,
-            use_local=req.useLocalModels,
+            use_local=True,
         )
         public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
         extra_ph = public_health_api.get_public_health_suggestions(
