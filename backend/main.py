@@ -46,7 +46,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel, load_builtin_templates, DEFAULT_TEMPLATES
+from .templates import TemplateModel, load_builtin_templates
 from .scheduling import recommend_follow_up, export_ics
 
 
@@ -267,6 +267,13 @@ get_api_key()
 # required to enable them, keeping the behaviour simple out of the box.  Tests
 # may monkeypatch ``_PRESIDIO_AVAILABLE`` or ``_PHILTER_AVAILABLE`` to force the
 # fallback implementation when these optional dependencies are missing.
+if _DEID_ENGINE == "regex":
+    if _PRESIDIO_AVAILABLE:
+        _DEID_ENGINE = "presidio"
+    elif _PHILTER_AVAILABLE:
+        _DEID_ENGINE = "philter"
+    elif _SCRUBBER_AVAILABLE:
+        _DEID_ENGINE = "scrubadub"
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -802,6 +809,13 @@ def deidentify(text: str) -> str:
                 "MEDICAL_RECORD",
             ]
             results = _analyzer.analyze(text=text, language="en", entities=entities)
+            # Remove nested results (e.g., URL inside EMAIL_ADDRESS) to avoid
+            # replacing overlapping spans twice.
+            filtered: List[Any] = []
+            for r in sorted(results, key=lambda r: (r.start, -r.end)):
+                if any(f.start <= r.start and r.end <= f.end for f in filtered):
+                    continue
+                filtered.append(r)
             token_map = {
                 "PERSON": "NAME",
                 "PHONE_NUMBER": "PHONE",
@@ -813,7 +827,7 @@ def deidentify(text: str) -> str:
                 "URL": "URL",
                 "MEDICAL_RECORD": "MRN",
             }
-            for r in sorted(results, key=lambda r: r.start, reverse=True):
+            for r in sorted(filtered, key=lambda r: r.start, reverse=True):
                 token = token_map.get(r.entity_type, r.entity_type)
                 value = text[r.start : r.end]
                 text = text[: r.start] + _placeholder(token, value) + text[r.end :]
@@ -837,6 +851,9 @@ def deidentify(text: str) -> str:
             filths = list(scrubber.iter_filth(text))
             for filth in sorted(filths, key=lambda f: f.beg, reverse=True):
                 token = filth.__class__.__name__.replace("Filth", "").upper()
+                token = {"EMAILADDRESS": "EMAIL", "IPADDRESS": "IP"}.get(
+                    token, token
+                )
                 text = (
                     text[: filth.beg]
                     + _placeholder(token, filth.text)
