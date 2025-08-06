@@ -23,6 +23,7 @@ vi.mock('../api.js', () => ({
   deleteTemplate: vi.fn(),
   getPromptTemplates: vi.fn().mockResolvedValue({}),
   saveSettings: vi.fn(),
+  getPromptTemplates: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('react-chartjs-2', () => ({
