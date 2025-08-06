@@ -95,7 +95,9 @@
     "transcript": "Transcripción:",
     "placeholder": "Escriba aquí su nota clínica...",
     "undo": "Deshacer",
-    "redo": "Rehacer"
+    "redo": "Rehacer",
+    "audioUnsupported": "Grabación de audio no compatible",
+    "segments": "Segmentos"
   },
   "settings": {
     "title": "Configuración",

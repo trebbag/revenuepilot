@@ -54,10 +54,12 @@ from .scheduling import recommend_follow_up
 import json
 import sqlite3
 import hashlib
+
 from passlib.context import CryptContext
 
 # Password hashing context using bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -1404,6 +1406,39 @@ async def get_metrics(
         for entry in weekly_list:
             bt = beautify_weekly.get(entry["week"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+
+    def _add_rolling(records: List[Dict[str, Any]], window: int) -> None:
+        """Attach rolling averages for key metrics."""
+        fields = [
+            "notes",
+            "beautify",
+            "suggest",
+            "summary",
+            "chart_upload",
+            "audio",
+            "avg_note_length",
+            "avg_beautify_time",
+            "avg_close_time",
+            "revenue_per_visit",
+            "denials",
+            "deficiencies",
+        ]
+        sums: Dict[str, float] = {f: 0.0 for f in fields}
+        queues: Dict[str, deque] = {f: deque() for f in fields}
+        for rec in records:
+            for f in fields:
+                val = float(rec.get(f, 0) or 0)
+                q = queues[f]
+                q.append(val)
+                sums[f] += val
+                if len(q) > window:
+                    sums[f] -= q.popleft()
+                rec[f"rolling_{f}"] = sums[f] / len(q) if q else 0
+
+    if daily:
+        _add_rolling(daily_list, 7)
+    if weekly:
+        _add_rolling(weekly_list, 4)
 
     timeseries: Dict[str, List[Dict[str, Any]]] = {}
     if daily:
