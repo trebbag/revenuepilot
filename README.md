@@ -70,9 +70,17 @@ Set the environment variable `USE_OFFLINE_MODEL=true` before starting the backen
 
 ### Advanced PHI de-identification
 
-The backend can optionally use machine-learning based scrubbers to remove names, dates, addresses, Social Security numbers and phone numbers from notes.
-Install either [Microsoft Presidio](https://github.com/microsoft/presidio) or [Philter](https://github.com/Bitscopic/philter) and the backend will automatically use them when available.
-If neither library is installed, a simpler regex-based scrubber is used instead.
+Set `DEID_ENGINE` in `.env` to choose the PHI scrubber:
+
+* `presidio` – good accuracy and entity typing, but requires large spaCy models.
+* `philter` – designed for clinical notes, heavier and returns generic PHI tags.
+* `scrubadub` – light-weight library that detects many identifiers but is less domain aware.
+* `regex` – built-in patterns with no external dependencies but the least comprehensive.
+
+Removed spans become placeholders like `[NAME:abcd1234]`. By default the value
+after the colon is a short hash so the original text is not exposed. Set
+`DEID_HASH_TOKENS=false` to embed the raw value instead, producing placeholders
+such as `[NAME:John Doe]`.
 
 5. **Run the Electron shell**.  The project includes scripts to launch
    an Electron wrapper for development and to build distributable binaries:
