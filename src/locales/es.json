@@ -169,6 +169,8 @@
     "invalidPromptTemplates": "Formato de plantilla inválido",
     "english": "Inglés",
     "spanish": "Español",
+    "french": "Francés",
+    "german": "Alemán",
     "region": "Región",
     "regionPlaceholder": "p. ej., US",
     "specialties": {
