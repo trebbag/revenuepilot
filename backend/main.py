@@ -189,13 +189,17 @@ JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
 
-def create_token(username: str, role: str) -> str:
-    """Create a signed JWT for the given user and role."""
+def create_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Create a signed JWT for the given user and role.
+
+    Optionally include a clinic identifier so templates can be scoped per clinic."""
     payload = {
         "sub": username,
         "role": role,
         "exp": datetime.utcnow() + timedelta(hours=12),
     }
+    if clinic is not None:
+        payload["clinic"] = clinic
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -636,6 +640,21 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> T
     db_conn.commit()
     tpl_id = cursor.lastrowid
     return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
+
+
+@app.put("/templates/{template_id}", response_model=TemplateModel)
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+    """Update an existing custom template owned by the current user."""
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "UPDATE templates SET name=?, content=? WHERE id=? AND user=?",
+        (tpl.name, tpl.content, template_id, user["sub"]),
+    )
+    db_conn.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return TemplateModel(id=template_id, name=tpl.name, content=tpl.content)
 
 
 @app.delete("/templates/{template_id}")
