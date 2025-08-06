@@ -176,7 +176,9 @@
     "payers": {
       "medicare": "Medicare",
       "aetna": "Aetna"
-    }
+    },
+    "useLocalModels": "Enable local models",
+    "useLocalModelsHelp": "Use downloaded models when offline instead of placeholders."
   },
   "sidebar": {
     "notes": "Notes",

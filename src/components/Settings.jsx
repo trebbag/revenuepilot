@@ -210,6 +210,18 @@ function Settings({ settings, updateSettings }) {
         <p style={{ color: 'var(--secondary)' }}>{apiKeyStatus}</p>
       )}
 
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={settings.useLocalModels}
+          onChange={() => handleToggle('useLocalModels')}
+        />{' '}
+        {t('settings.useLocalModels')}
+      </label>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
+        {t('settings.useLocalModelsHelp')}
+      </p>
+
       <h3>{t('settings.theme')}</h3>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         <input
