@@ -666,6 +666,7 @@ function App() {
       {showTemplatesModal && (
         <TemplatesModal
           baseTemplates={baseTemplates}
+          specialty={settingsState.specialty}
           onSelect={(content) => {
             insertTemplate(content);
             setShowTemplatesModal(false);

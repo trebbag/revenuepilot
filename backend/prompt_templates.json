@@ -34,6 +34,20 @@
       ]
     }
   },
+  "specialty_modifiers": {
+      "cardiology": {
+        "en": "Remember to include cardiac-specific terminology.",
+        "es": "Recuerda incluir terminología cardiaca."
+      },
+    "paediatrics": {
+      "en": "Adjust tone for pediatric cases."
+    }
+  },
+  "payer_modifiers": {
+    "medicare": {
+      "en": "Apply Medicare reimbursement guidelines."
+    }
+  },
   "specialty": {
     "cardiology": {
       "beautify": {

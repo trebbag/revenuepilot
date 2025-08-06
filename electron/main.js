@@ -150,6 +150,15 @@ app.on('window-all-closed', () => {
   }
 });
 
+autoUpdater.on('update-available', () => {
+  console.log('Update available');
+});
+
+autoUpdater.on('update-downloaded', () => {
+  console.log('Update downloaded; installing');
+  autoUpdater.quitAndInstall();
+});
+
 autoUpdater.on('error', (err) => {
   console.error('Auto-update error:', err);
 });

@@ -4,8 +4,9 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   test: {
-    exclude: [...defaultExclude, 'e2e/**', 'src/__tests__/**', 'src/components/__tests__/NoteEditor.test.jsx'],
+    exclude: [...defaultExclude, 'e2e/**', 'src/components/__tests__/NoteEditor.test.jsx'],
     coverage: {
+      enabled: true,
       reporter: ['text'],
       include: [
         'src/components/ClipboardExportButtons.jsx',
@@ -17,6 +18,10 @@ export default defineConfig({
         'src/components/SuggestionPanel.jsx',
         'src/components/TemplatesModal.jsx'
       ],
+      lines: 70,
+      functions: 50,
+      branches: 50,
+      statements: 70,
     },
   },
 });

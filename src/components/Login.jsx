@@ -28,7 +28,13 @@ function Login({ onLoggedIn }) {
       }
       onLoggedIn(token, settings);
     } catch (err) {
-      setError(err.message || 'Login failed');
+      const msg =
+        err.message === 'Login failed' ? t('login.loginFailed') : err.message;
+      setError(msg || t('login.loginFailed'));
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+      }
     } finally {
       setLoading(false);
     }

@@ -8,6 +8,8 @@ const required = [
   'WIN_CSC_KEY_PASSWORD',
   'CSC_LINK',
   'CSC_KEY_PASSWORD',
+  'LINUX_CSC_LINK',
+  'LINUX_CSC_KEY_PASSWORD',
 ];
 
 const missing = required.filter((name) => !process.env[name]);

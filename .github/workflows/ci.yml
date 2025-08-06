@@ -22,3 +22,24 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
+  electron:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: npm ci
+      - name: Build electron app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run electron:build -- -l
+      - name: Start update server
+        run: |
+          npm run update-server &
+          sleep 5
+          curl -I http://localhost:8080 || true
+          kill %1

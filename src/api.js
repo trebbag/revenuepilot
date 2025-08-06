@@ -3,6 +3,10 @@
 // other AI models.  For now they simulate asynchronous
 // operations with dummy data.
 
+// Keep a reference to the original ``fetch`` so we can implement
+// automatic token refresh without recursion.
+const rawFetch = globalThis.fetch.bind(globalThis);
+
 /**
  * Authenticate a user and retrieve JWT access and refresh tokens from the backend. After a
  * successful login the user's persisted settings are also fetched.
@@ -19,7 +23,7 @@ export async function login(username, password) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const resp = await fetch(`${baseUrl}/login`, {
+  const resp = await rawFetch(`${baseUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -51,7 +55,7 @@ export async function refreshAccessToken(refreshToken) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const resp = await fetch(`${baseUrl}/refresh`, {
+  const resp = await rawFetch(`${baseUrl}/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refreshToken }),
@@ -73,7 +77,7 @@ export async function resetPassword(username, password, newPassword) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const resp = await fetch(`${baseUrl}/reset-password`, {
+  const resp = await rawFetch(`${baseUrl}/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password, new_password: newPassword }),
@@ -84,6 +88,54 @@ export async function resetPassword(username, password, newPassword) {
   }
   return await resp.json();
 }
+
+function clearStoredTokens() {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('token');
+    localStorage.removeItem('refreshToken');
+  }
+}
+
+let refreshFailures = 0;
+
+async function authFetch(input, init = {}, retry = true) {
+  let resp = await rawFetch(input, init);
+  if ((resp.status === 401 || resp.status === 403) && retry) {
+    const refreshToken =
+      typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+    if (!refreshToken) {
+      refreshFailures += 1;
+      if (refreshFailures >= 2) clearStoredTokens();
+      throw new Error('Unauthorized');
+    }
+    try {
+      const data = await refreshAccessToken(refreshToken);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', data.access_token);
+      }
+      const headers = {
+        ...(init.headers || {}),
+        Authorization: `Bearer ${data.access_token}`,
+      };
+      resp = await rawFetch(input, { ...init, headers });
+    } catch {
+      refreshFailures += 1;
+      if (refreshFailures >= 2) clearStoredTokens();
+      throw new Error('Unauthorized');
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      refreshFailures += 1;
+      if (refreshFailures >= 2) clearStoredTokens();
+      throw new Error('Unauthorized');
+    }
+  }
+  if (resp.ok) {
+    refreshFailures = 0;
+  }
+  return resp;
+}
+
+globalThis.fetch = authFetch;
 
 /**
  * Fetch persisted user settings from the backend.  A JWT must be
@@ -158,7 +210,20 @@ export async function saveSettings(settings, token) {
     body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error('Failed to save settings');
-  return await resp.json();
+  const data = await resp.json();
+  const categories = data.categories || {};
+  return {
+    theme: data.theme,
+    enableCodes: categories.codes !== false,
+    enableCompliance: categories.compliance !== false,
+    enablePublicHealth: categories.publicHealth !== false,
+    enableDifferentials: categories.differentials !== false,
+    rules: data.rules || [],
+    lang: data.lang || 'en',
+    specialty: data.specialty || '',
+    payer: data.payer || '',
+    region: data.region || '',
+  };
 }
 
 /**
@@ -499,7 +564,7 @@ export async function getMetrics(filters = {}) {
  * Returns an empty array if the backend is unreachable.
  * @returns {Promise<Array<{id:number,name:string,content:string}>>}
  */
-export async function getTemplates() {
+export async function getTemplates(specialty) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -507,7 +572,8 @@ export async function getTemplates() {
   if (!baseUrl) return [];
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/templates`, { headers });
+  const query = specialty ? `?specialty=${encodeURIComponent(specialty)}` : '';
+  const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
   }
@@ -695,7 +761,20 @@ export async function setApiKey(key) {
  * @param {string} note
  * @param {string} [token]
  */
-export async function exportToEhr(note, token) {
+export async function exportToEhr(
+  note,
+  codes = [],
+  direct = false,
+  token
+) {
+  // ``direct`` acts as a frontend toggle. When false the function resolves
+  // immediately without contacting the backend so the caller can simply copy
+  // the note manually. This keeps the UI logic straightforward while allowing
+  // opt‑in EHR submission.
+  if (!direct) {
+    return { status: 'skipped' };
+  }
+
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -709,7 +788,7 @@ export async function exportToEhr(note, token) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify({ note, codes }),
   });
   if (!resp.ok) throw new Error('Export failed');
   return await resp.json();

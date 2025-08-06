@@ -29,6 +29,25 @@ test('renders suggestions and handles click', () => {
   expect(getByText('Prevents influenza')).toBeTruthy();
 });
 
+test('filters public health suggestions by region', () => {
+  const { getByText, queryByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [
+          { recommendation: 'US rec', region: 'US' },
+          { recommendation: 'EU rec', region: 'EU' },
+        ],
+        differentials: [],
+      }}
+      settingsState={{ enablePublicHealth: true, region: 'US' }}
+    />
+  );
+  expect(getByText('US rec')).toBeTruthy();
+  expect(queryByText('EU rec')).toBeNull();
+});
+
 test('shows loading and toggles sections', () => {
   const { getByText, getAllByText } = render(
     <SuggestionPanel loading settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }} />
@@ -42,13 +61,29 @@ test('shows loading and toggles sections', () => {
 test('renders follow-up with calendar link', () => {
   const { getByText } = render(
     <SuggestionPanel
-      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: '3 months' }}
-      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [],
+        differentials: [],
+        followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' },
+      }}
+      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true, enableFollowUp: true }}
     />
   );
   expect(getByText('3 months')).toBeTruthy();
   const href = getByText('Add to calendar').getAttribute('href');
   expect(href).toContain('text/calendar');
+});
+
+test('hides follow-up when disabled', () => {
+  const { queryByText } = render(
+    <SuggestionPanel
+      suggestions={{ followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' } }}
+      settingsState={{ enableFollowUp: false }}
+    />
+  );
+  expect(queryByText('3 months')).toBeNull();
 });
 
 test('renders differential scores as percentages', () => {

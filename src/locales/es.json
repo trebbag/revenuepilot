@@ -3,6 +3,8 @@
     "copyBeautified": "Copiar embellecido",
     "copySummary": "Copiar resumen",
     "export": "Exportar",
+    "exportRtf": "Exportar RTF",
+    "exportPdf": "Exportar PDF",
     "beautifiedCopied": "Nota embellecida copiada",
     "summaryCopied": "Resumen copiado",
     "copyFailed": "Error al copiar",
@@ -32,6 +34,8 @@
     "weeklyEvents": "Eventos semanales",
     "codingDistribution": "Distribución de códigos",
     "denialRates": "Tasas de denegación",
+    "documentationGaps": "Principales brechas de documentación",
+    "gapCountLabel": "Ocurrencias",
     "denialDefRates": "Tasas de denegación y deficiencia",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
@@ -99,7 +103,8 @@
     "backToLogin": "Volver",
     "resetSuccess": "Contraseña restablecida, inicie sesión",
     "resetFailed": "Error al restablecer contraseña",
-    "newPassword": "Nueva contraseña"
+    "newPassword": "Nueva contraseña",
+    "loginFailed": "Error de inicio de sesión"
   },
   "logs": {
     "title": "Registro de eventos",
@@ -107,13 +112,31 @@
     "loading": "Cargando…",
     "none": "No se han registrado eventos."
   },
+  "auditLog": {
+    "title": "Registro de auditoría",
+    "timestamp": "Marca de tiempo",
+    "username": "Usuario",
+    "action": "Acción",
+    "details": "Detalles",
+    "loading": "Cargando…",
+    "none": "Sin entradas de auditoría"
+  },
   "noteEditor": {
     "stopRecording": "Detener grabación",
     "recordAudio": "Grabar audio",
     "transcript": "Transcripción:",
     "placeholder": "Escriba aquí su nota clínica...",
     "undo": "Deshacer",
-    "redo": "Rehacer"
+    "redo": "Rehacer",
+    "audioUnsupported": "Grabación de audio no compatible",
+    "transcriptionFailed": "Error de transcripción",
+    "microphoneAccessDenied": "Acceso al micrófono denegado",
+    "failedToLoadTranscript": "Error al cargar la transcripción",
+    "insert": "Insertar",
+    "loadingTranscript": "Cargando transcripción...",
+    "recording": "Grabando...",
+    "transcribing": "Transcribiendo...",
+    "segments": "Segmentos"
   },
   "settings": {
     "title": "Configuración",
@@ -143,7 +166,16 @@
     "invalidPromptTemplates": "Formato de plantilla inválido",
     "english": "Inglés",
     "spanish": "Español",
-    "region": "Región"
+    "region": "Región",
+    "regionPlaceholder": "p. ej., US",
+    "specialties": {
+      "cardiology": "Cardiología",
+      "dermatology": "Dermatología"
+    },
+    "payers": {
+      "medicare": "Medicare",
+      "aetna": "Aetna"
+    }
   },
   "sidebar": {
     "notes": "Notas",
@@ -166,6 +198,7 @@
     "none": "Sin sugerencias aún",
     "followUp": "Seguimiento",
     "addToCalendar": "Agregar al calendario",
+    "followUpAppointment": "Cita de seguimiento",
     "upgradeTo": "Mejorar a",
     "upgradePath": "Ruta de mejora"
   },
@@ -178,6 +211,20 @@
     "close": "Cerrar",
     "delete": "Eliminar",
     "edit": "Editar"
+  },
+  "adminUsers": {
+    "title": "Usuarios",
+    "username": "Nombre de usuario",
+    "tempPassword": "Contraseña temporal",
+    "role": "Rol",
+    "invite": "Invitar",
+    "update": "Actualizar",
+    "delete": "Eliminar",
+    "colUsername": "Nombre de usuario",
+    "colRole": "Rol",
+    "colActions": "Acciones",
+    "newRolePrompt": "Nuevo rol",
+    "confirmDelete": "¿Eliminar {{username}}?"
   },
   "app": {
     "back": "Volver a las notas",

@@ -20,10 +20,17 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, confloat
+from pydantic import BaseModel, Field, confloat, validator, StrictBool
 
 
 import jwt
+
+try:  # Load environment variables from a .env file if present
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:  # pragma: no cover - optional dependency
+    pass
 
 # Import prompt builders and OpenAI helper for LLM integration.
 # These imports are commented out above to avoid import errors when the
@@ -39,6 +46,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
+from .templates import TemplateModel
 from .scheduling import recommend_follow_up
 
 
@@ -46,6 +54,12 @@ from .scheduling import recommend_follow_up
 import json
 import sqlite3
 import hashlib
+
+from passlib.context import CryptContext
+
+# Password hashing context using bcrypt
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -87,6 +101,16 @@ try:
         supported_entity="US_SSN", patterns=[_ssn_pattern]
     )
     _analyzer.registry.add_recognizer(_ssn_recognizer)
+
+    _mrn_pattern = Pattern(
+        "mrn",
+        r"\b(?:MRN|Medical Record Number)[:\s-]*\d{6,10}\b",
+        0.5,
+    )
+    _mrn_recognizer = PatternRecognizer(
+        supported_entity="MEDICAL_RECORD", patterns=[_mrn_pattern]
+    )
+    _analyzer.registry.add_recognizer(_mrn_recognizer)
 
     _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
@@ -341,25 +365,61 @@ class ResetPasswordModel(BaseModel):
     new_password: str
 
 
+class CategorySettings(BaseModel):
+    """Which suggestion categories are enabled for a user."""
+
+    codes: StrictBool = True
+    compliance: StrictBool = True
+    publicHealth: StrictBool = True
+    differentials: StrictBool = True
+
+    class Config:
+        extra = "forbid"
+
+
 class UserSettings(BaseModel):
     theme: str = "modern"
-    categories: Dict[str, bool] = {
-        "codes": True,
-        "compliance": True,
-        "publicHealth": True,
-        "differentials": True,
-    }
+    categories: CategorySettings = CategorySettings()
     rules: List[str] = []
     lang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
 
+    @validator("theme")
+    def validate_theme(cls, v: str) -> str:
+        allowed = {"modern", "dark", "warm"}
+        if v not in allowed:
+            raise ValueError("invalid theme")
+        return v
+
+    @validator("rules", pre=True)
+    def validate_rules(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        cleaned: List[str] = []
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("rules must be strings")
+            item = item.strip()
+            if not item:
+                continue
+            cleaned.append(item)
+        return cleaned
+
 
 
 def hash_password(password: str) -> str:
-    """Return a SHA-256 hash of the provided password."""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """Hash the provided password using bcrypt with a per-password salt."""
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a plain password against the stored hash."""
+    try:
+        return pwd_context.verify(password, hashed)
+    except Exception:
+        return False
 
 
 @app.post("/register")
@@ -434,7 +494,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         db_conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
             (time.time(), model.username, "failed_login", "invalid credentials"),
@@ -472,7 +532,7 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
         "SELECT password_hash FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -503,15 +563,16 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
     ).fetchone()
 
     if row:
-        return {
-            "theme": row["theme"],
-            "categories": json.loads(row["categories"]),
-            "rules": json.loads(row["rules"]),
-            "lang": row["lang"],
-            "specialty": row["specialty"],
-            "payer": row["payer"],
-            "region": row["region"] or "",
-        }
+        settings = UserSettings(
+            theme=row["theme"],
+            categories=json.loads(row["categories"]),
+            rules=json.loads(row["rules"]),
+            lang=row["lang"],
+            specialty=row["specialty"],
+            payer=row["payer"],
+            region=row["region"] or "",
+        )
+        return settings.dict()
     return UserSettings().dict()
 
 
@@ -530,7 +591,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
         (
             row["id"],
             model.theme,
-            json.dumps(model.categories),
+            json.dumps(model.categories.dict()),
             json.dumps(model.rules),
             model.lang,
             model.specialty,
@@ -632,14 +693,6 @@ class SurveyModel(BaseModel):
     clinician: Optional[str] = None
 
 
-class TemplateModel(BaseModel):
-    """Template structure for note creation snippets."""
-
-    id: Optional[int] = None
-    name: str
-    content: str
-
-
 def deidentify(text: str) -> str:
     """Redact common protected health information from ``text``.
 
@@ -671,6 +724,9 @@ def deidentify(text: str) -> str:
                 "US_SSN",
                 "DATE_TIME",
                 "ADDRESS",
+                "IP_ADDRESS",
+                "URL",
+                "MEDICAL_RECORD",
             ]
             results = _analyzer.analyze(text=text, language="en", entities=entities)
             token_map = {
@@ -680,6 +736,9 @@ def deidentify(text: str) -> str:
                 "US_SSN": "SSN",
                 "DATE_TIME": "DATE",
                 "ADDRESS": "ADDRESS",
+                "IP_ADDRESS": "IP",
+                "URL": "URL",
+                "MEDICAL_RECORD": "MRN",
             }
             for r in sorted(results, key=lambda r: r.start, reverse=True):
                 token = token_map.get(r.entity_type, r.entity_type)
@@ -736,6 +795,12 @@ def deidentify(text: str) -> str:
     )
     email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
     ssn_pattern = re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b")
+    ip_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+    url_pattern = re.compile(r"https?://[\w./%-]+", re.IGNORECASE)
+    mrn_pattern = re.compile(
+        r"\b(?:MRN|Medical Record Number)[:\s-]*\d{6,10}\b",
+        re.IGNORECASE,
+    )
     health_id_pattern = re.compile(
         r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b",
         re.IGNORECASE,
@@ -755,6 +820,9 @@ def deidentify(text: str) -> str:
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
+        ("IP", ip_pattern),
+        ("URL", url_pattern),
+        ("MRN", mrn_pattern),
         ("HEALTH_ID", health_id_pattern),
         ("VEHICLE", vehicle_pattern),
         ("ADDRESS", address_pattern),
@@ -916,57 +984,96 @@ def save_prompt_templates(data: Dict[str, Any], user=Depends(require_role("admin
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
-    """Return custom templates for the current user and clinic."""
+def get_templates(
+    specialty: Optional[str] = None, user=Depends(require_role("user"))
+) -> List[TemplateModel]:
+    """Return templates for the current user and clinic, optionally filtered by specialty."""
 
     clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    rows = cursor.execute(
-        "SELECT id, name, content FROM templates WHERE user=? AND (clinic=? OR clinic IS NULL)",
-        (user["sub"], clinic),
-    ).fetchall()
-    return [TemplateModel(id=row["id"], name=row["name"], content=row["content"]) for row in rows]
+    if specialty:
+        rows = cursor.execute(
+            "SELECT id, name, content, specialty FROM templates "
+            "WHERE (user=? OR (user IS NULL AND clinic=?)) AND specialty=?",
+            (user["sub"], clinic, specialty),
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            "SELECT id, name, content, specialty FROM templates "
+            "WHERE (user=? OR (user IS NULL AND clinic=?))",
+            (user["sub"], clinic),
+        ).fetchall()
+    return [
+        TemplateModel(
+            id=row["id"], name=row["name"], content=row["content"], specialty=row["specialty"]
+        )
+        for row in rows
+    ]
 
 
 @app.post("/templates", response_model=TemplateModel)
 def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
-    """Create a new custom template for the user."""
+    """Create a new template for the user or clinic."""
 
     clinic = user.get("clinic")
+    owner = None if user.get("role") == "admin" else user["sub"]
     cursor = db_conn.cursor()
     cursor.execute(
-        "INSERT INTO templates (user, clinic, name, content) VALUES (?, ?, ?, ?)",
-        (user["sub"], clinic, tpl.name, tpl.content),
+        "INSERT INTO templates (user, clinic, specialty, name, content) VALUES (?, ?, ?, ?, ?)",
+        (owner, clinic, tpl.specialty, tpl.name, tpl.content),
     )
     db_conn.commit()
     tpl_id = cursor.lastrowid
-    return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
+    return TemplateModel(
+        id=tpl_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+    )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
-def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
-    """Update an existing custom template owned by the current user."""
+def update_template(
+    template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
+) -> TemplateModel:
+    """Update an existing template owned by the user or clinic."""
 
+    clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    cursor.execute(
-        "UPDATE templates SET name=?, content=? WHERE id=? AND user=?",
-        (tpl.name, tpl.content, template_id, user["sub"]),
-    )
+    if user.get("role") == "admin":
+        cursor.execute(
+            "UPDATE templates SET name=?, content=?, specialty=? "
+            "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
+            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"], clinic),
+        )
+    else:
+        cursor.execute(
+            "UPDATE templates SET name=?, content=?, specialty=? WHERE id=? AND user=?",
+            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"]),
+        )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
-    return TemplateModel(id=template_id, name=tpl.name, content=tpl.content)
+    return TemplateModel(
+        id=template_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+    )
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
-    """Delete a custom template owned by the current user."""
+def delete_template(
+    template_id: int, user=Depends(require_role("user"))
+) -> Dict[str, str]:
+    """Delete a template owned by the user or clinic."""
 
+    clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    cursor.execute(
-        "DELETE FROM templates WHERE id=? AND user=?",
-        (template_id, user["sub"]),
-    )
+    if user.get("role") == "admin":
+        cursor.execute(
+            "DELETE FROM templates WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
+            (template_id, user["sub"], clinic),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM templates WHERE id=? AND user=?",
+            (template_id, user["sub"]),
+        )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -974,15 +1081,30 @@ def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dic
 
 
 class ExportRequest(BaseModel):
-    """Payload for exporting a note to an external EHR system."""
+    """Payload for exporting a note and codes to an external EHR system."""
+
     note: str
+    codes: List[str] = Field(default_factory=list)
 
 
 @app.post("/export_to_ehr")
-async def export_to_ehr(req: ExportRequest, user=Depends(require_role("admin"))) -> Dict[str, str]:
-    """Placeholder endpoint demonstrating admin-only export functionality."""
-    # Real implementation would interface with an EHR API. For now, simply
-    # acknowledge the request.
+async def export_to_ehr(
+    req: ExportRequest, user=Depends(require_role("admin"))
+) -> Dict[str, str]:
+    """Post the supplied note and codes to a FHIR server.
+
+    The heavy lifting is delegated to :mod:`backend.ehr_integration`.  Any
+    ``requests`` exceptions are translated into ``502`` errors so clients
+    receive a clear failure message instead of an internal error.
+    """
+
+    try:
+        from . import ehr_integration
+
+        ehr_integration.post_note_and_codes(req.note, req.codes)
+    except Exception as exc:  # pragma: no cover - network failures
+        raise HTTPException(status_code=502, detail=str(exc))
+
     return {"status": "exported"}
 
 
@@ -995,6 +1117,8 @@ async def get_metrics(
     start: Optional[str] = None,
     end: Optional[str] = None,
     clinician: Optional[str] = None,
+    daily: bool = True,
+    weekly: bool = True,
     user=Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Aggregate analytics separately for baseline and current events.
@@ -1260,6 +1384,53 @@ async def get_metrics(
     weekly_list = [dict(r) for r in cursor.fetchall()]
 
 
+    daily_list: List[Dict[str, Any]] = []
+    if daily:
+        daily_query = f"""
+            SELECT
+                date(datetime(timestamp, 'unixepoch')) AS date,
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue) AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+            FROM events {where_current}
+            GROUP BY date
+            ORDER BY date
+        """
+        cursor.execute(daily_query, base_params)
+        daily_list = [dict(r) for r in cursor.fetchall()]
+
+
+    weekly_list: List[Dict[str, Any]] = []
+    if weekly:
+        weekly_query = f"""
+            SELECT
+                strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue) AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+            FROM events {where_current}
+            GROUP BY week
+            ORDER BY week
+        """
+        cursor.execute(weekly_query, base_params)
+        weekly_list = [dict(r) for r in cursor.fetchall()]
+
 
     top_compliance = [
         {"gap": k, "count": v}
@@ -1269,12 +1440,53 @@ async def get_metrics(
     ]
 
     # attach beautify averages to the SQL-produced time series
-    for entry in daily_list:
-        bt = beautify_daily.get(entry["date"])
-        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
-    for entry in weekly_list:
-        bt = beautify_weekly.get(entry["week"])
-        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+    if daily:
+        for entry in daily_list:
+            bt = beautify_daily.get(entry["date"])
+            entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+    if weekly:
+        for entry in weekly_list:
+            bt = beautify_weekly.get(entry["week"])
+            entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+
+    def _add_rolling(records: List[Dict[str, Any]], window: int) -> None:
+        """Attach rolling averages for key metrics."""
+        fields = [
+            "notes",
+            "beautify",
+            "suggest",
+            "summary",
+            "chart_upload",
+            "audio",
+            "avg_note_length",
+            "avg_beautify_time",
+            "avg_close_time",
+            "revenue_per_visit",
+            "denials",
+            "deficiencies",
+        ]
+        sums: Dict[str, float] = {f: 0.0 for f in fields}
+        queues: Dict[str, deque] = {f: deque() for f in fields}
+        for rec in records:
+            for f in fields:
+                val = float(rec.get(f, 0) or 0)
+                q = queues[f]
+                q.append(val)
+                sums[f] += val
+                if len(q) > window:
+                    sums[f] -= q.popleft()
+                rec[f"rolling_{f}"] = sums[f] / len(q) if q else 0
+
+    if daily:
+        _add_rolling(daily_list, 7)
+    if weekly:
+        _add_rolling(weekly_list, 4)
+
+    timeseries: Dict[str, List[Dict[str, Any]]] = {}
+    if daily:
+        timeseries["daily"] = daily_list
+    if weekly:
+        timeseries["weekly"] = weekly_list
 
     def pct_change(b: float, c: float) -> float | None:
         return ((c - b) / b * 100) if b else None
@@ -1309,7 +1521,7 @@ async def get_metrics(
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "clinicians": clinicians,
-        "timeseries": {"daily": daily_list, "weekly": weekly_list},
+        "timeseries": timeseries,
     }
 @app.post("/summarize")
 async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dict[str, str]:

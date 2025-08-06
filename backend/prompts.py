@@ -77,9 +77,23 @@ def _get_custom_instruction(
     parts = []
     parts.append(extract(templates.get("default", {})))
     if specialty:
-        parts.append(extract(templates.get("specialty", {}).get(specialty, {})))
+        specialty_key = specialty.lower()
+        parts.append(
+            _resolve_lang(
+                templates.get("specialty_modifiers", {}).get(specialty_key, {}), lang
+            )
+        )
+        parts.append(
+            extract(templates.get("specialty", {}).get(specialty_key, {}))
+        )
     if payer:
-        parts.append(extract(templates.get("payer", {}).get(payer, {})))
+        payer_key = payer.lower()
+        parts.append(
+            _resolve_lang(
+                templates.get("payer_modifiers", {}).get(payer_key, {}), lang
+            )
+        )
+        parts.append(extract(templates.get("payer", {}).get(payer_key, {})))
     return " ".join(p for p in parts if p)
 
 

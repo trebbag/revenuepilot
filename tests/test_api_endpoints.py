@@ -1,11 +1,10 @@
 import json
 import sqlite3
-import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main, prompts, migrations
+from backend import main, prompts, migrations, ehr_integration
 
 
 @pytest.fixture
@@ -23,7 +22,7 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
     )
     migrations.ensure_settings_table(db)
-    pwd = hashlib.sha256(b"pw").hexdigest()
+    pwd = main.hash_password("pw")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", pwd, "admin"),
@@ -55,6 +54,11 @@ def test_endpoints_require_auth(client):
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
     assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
+
+
+def test_get_transcribe_requires_auth(client):
+    resp = client.get('/transcribe')
+    assert resp.status_code in {401, 403}
 
 
 def test_login_and_settings(client):
@@ -168,7 +172,7 @@ def test_events_metrics_with_auth(client):
     assert resp.json()["current"]["total_notes"] >= 1
 
 
-def test_export_to_ehr_requires_admin(client):
+def test_export_to_ehr_requires_admin(client, monkeypatch):
     # user token should be forbidden
     token_user = client.post(
         "/login", json={"username": "user", "password": "pw"}
@@ -192,6 +196,15 @@ def test_export_to_ehr_requires_admin(client):
     token_admin = client.post(
         "/login", json={"username": "admin", "password": "pw"}
     ).json()["access_token"]
+
+    # Avoid real HTTP calls by stubbing the FHIR helper
+    def fake_post(note, codes):
+        assert note == "hi"
+        assert codes == []
+        return {"result": "ok"}
+
+    monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
+
     resp = client.post(
         "/export_to_ehr",
         json={"note": "hi"},
@@ -199,6 +212,25 @@ def test_export_to_ehr_requires_admin(client):
     )
     assert resp.status_code == 200
     assert resp.json()["status"] == "exported"
+
+
+def test_export_to_ehr_handles_failure(client, monkeypatch):
+    token_admin = client.post(
+        "/login", json={"username": "admin", "password": "pw"}
+    ).json()["access_token"]
+
+    def boom(note, codes):  # noqa: ARG002
+        raise RuntimeError("fail")
+
+    monkeypatch.setattr(ehr_integration, "post_note_and_codes", boom)
+
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header(token_admin),
+    )
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "fail"
 
 
 def test_summarize_and_fallback(client, monkeypatch):
@@ -485,23 +517,16 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
     monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
 
-    class DummyResp:
-        def __init__(self, data):
-            self._data = data
+    def fake_guidelines(age, sex, region):
+        assert age == 50
+        assert sex == "male"
+        assert region == "US"
+        return {
+            "vaccinations": ["Shingles vaccine"],
+            "screenings": ["Colon cancer screening"],
+        }
 
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return self._data
-
-    def fake_get(url, params=None, timeout=10):
-        assert params == {"age": 50, "sex": "male", "region": "US"}
-        if "vaccinations" in url:
-            return DummyResp({"vaccinations": ["Shingles vaccine"]})
-        return DummyResp({"screenings": ["Colon cancer screening"]})
-
-    monkeypatch.setattr(main.public_health_api.requests, "get", fake_get)
+    monkeypatch.setattr(main.public_health_api, "get_guidelines", fake_guidelines)
     main.public_health_api.clear_cache()
 
     token_d = main.create_token("u", "user")

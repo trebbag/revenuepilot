@@ -15,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
-import requests
+from .guidelines import get_guidelines
 
 
 # ---------------------------------------------------------------------------
@@ -34,33 +34,34 @@ if _ENV_PATH.exists():  # pragma: no cover - simple environment loading
         os.environ.setdefault(key.strip(), val.strip())
 
 
-# Base URLs for the external services.  These are intentionally configurable so
-# tests can monkeypatch them and real deployments can point to trusted sources.
-VACCINATION_API_URL = os.getenv(
-    "VACCINATION_API_URL", "https://public-health.example.com/vaccinations"
-)
-SCREENING_API_URL = os.getenv(
-    "SCREENING_API_URL", "https://public-health.example.com/screenings"
-)
+def _to_strings(items: object, region: str) -> List[str]:
+    """Normalise guideline entries into plain strings filtered by region."""
 
+    results: List[str] = []
+    if not isinstance(items, list):
+        return results
 
-def _extract_items(data: object, key: str) -> List[str]:
-    """Return list of strings from ``data`` using a best‑effort strategy."""
-
-    items: List[str] = []
-    if isinstance(data, dict):
-        raw = (
-            data.get(key)
-            or data.get("recommendations")
-            or data.get("suggestions")
-            or data.get("results")
-            or data.get("data")
-        )
-        if isinstance(raw, list):
-            items = raw
-    elif isinstance(data, list):
-        items = data
-    return [str(x) for x in items]
+    for item in items:
+        if isinstance(item, dict):
+            # Some APIs provide `region` or `regions` fields.  If present, only
+            # include the recommendation when the user's region matches.
+            regions = item.get("regions") or item.get("region")
+            if regions:
+                if isinstance(regions, str):
+                    regions = [regions]
+                if region not in regions:
+                    continue
+            text = (
+                item.get("recommendation")
+                or item.get("text")
+                or item.get("name")
+                or item.get("title")
+            )
+            if isinstance(text, str):
+                results.append(text)
+        else:
+            results.append(str(item))
+    return results
 
 
 @lru_cache(maxsize=128)
@@ -71,11 +72,9 @@ def fetch_vaccination_recommendations(
 
     if age is None or not sex or not region:
         return []
-    params = {"age": age, "sex": sex, "region": region}
     try:
-        resp = requests.get(VACCINATION_API_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        return _extract_items(resp.json(), "vaccinations")
+        data = get_guidelines(age, sex, region)
+        return _to_strings(data.get("vaccinations"), region)
     except Exception as exc:  # pragma: no cover - best effort logging
         print(f"Vaccination API error: {exc}")
         return []
@@ -89,11 +88,9 @@ def fetch_screening_recommendations(
 
     if age is None or not sex or not region:
         return []
-    params = {"age": age, "sex": sex, "region": region}
     try:
-        resp = requests.get(SCREENING_API_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        return _extract_items(resp.json(), "screenings")
+        data = get_guidelines(age, sex, region)
+        return _to_strings(data.get("screenings"), region)
     except Exception as exc:  # pragma: no cover - best effort logging
         print(f"Screening API error: {exc}")
         return []

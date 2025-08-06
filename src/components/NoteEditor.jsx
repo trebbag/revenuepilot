@@ -26,6 +26,7 @@ const quillFormats = [
 ];
 
 function useAudioRecorder(onTranscribed) {
+  const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState('');
@@ -35,7 +36,7 @@ function useAudioRecorder(onTranscribed) {
   const startRecording = async () => {
     setError('');
     if (!navigator.mediaDevices || !window.MediaRecorder) {
-      setError('Audio recording not supported');
+      setError(t('noteEditor.audioUnsupported'));
       return;
     }
     try {
@@ -56,7 +57,7 @@ function useAudioRecorder(onTranscribed) {
           if (onTranscribed) onTranscribed(data, blob);
         } catch (err) {
           console.error('Transcription failed', err);
-          setError('Transcription failed');
+          setError(t('noteEditor.transcriptionFailed'));
         } finally {
           setTranscribing(false);
         }
@@ -65,7 +66,7 @@ function useAudioRecorder(onTranscribed) {
       setRecording(true);
     } catch (err) {
       console.error('Error accessing microphone', err);
-      setError('Microphone access denied');
+      setError(t('noteEditor.microphoneAccessDenied'));
     }
   };
 
@@ -146,7 +147,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       setSegments(data.segments || []);
       setFetchError(data.error || '');
     } catch (err) {
-      setFetchError('Failed to load transcript');
+      setFetchError(t('noteEditor.failedToLoadTranscript'));
     } finally {
       setLoadingTranscript(false);
     }
@@ -260,7 +261,13 @@ const NoteEditor = forwardRef(function NoteEditor(
     </select>
   );
 
-  const audioControls = (
+  const recordingSupported =
+    typeof window !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    navigator.mediaDevices &&
+    window.MediaRecorder;
+
+  const audioControls = recordingSupported ? (
     <div style={{ marginBottom: '0.5rem' }}>
       <button
         type="button"
@@ -275,11 +282,21 @@ const NoteEditor = forwardRef(function NoteEditor(
           ? t('noteEditor.stopRecording')
           : t('noteEditor.recordAudio')}
       </button>
-      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+      {recording && (
+        <span style={{ marginLeft: '0.5rem' }}>
+          {t('noteEditor.recording')}
+        </span>
+      )}
       {transcribing && (
-        <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>
+        <span style={{ marginLeft: '0.5rem' }}>
+          {t('noteEditor.transcribing')}
+        </span>
       )}
     </div>
+  ) : (
+    <p style={{ marginBottom: '0.5rem' }}>
+      {t('noteEditor.audioUnsupported')}
+    </p>
   );
 
   const transcriptControls = (transcript.provider || transcript.patient) && (
@@ -302,7 +319,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             }}
           />
           <button type="button" onClick={() => insertText(transcript.provider)}>
-            Insert
+            {t('noteEditor.insert')}
           </button>
         </div>
       )}
@@ -323,12 +340,33 @@ const NoteEditor = forwardRef(function NoteEditor(
             }}
           />
           <button type="button" onClick={() => insertText(transcript.patient)}>
-            Insert
+            {t('noteEditor.insert')}
           </button>
         </div>
       )}
     </div>
   );
+
+  const segmentList =
+    segments.length > 0 ? (
+      <div style={{ marginTop: '0.5rem' }}>
+        <strong>{t('noteEditor.segments')}</strong>
+        <ul style={{ paddingLeft: '1.25rem' }}>
+          {segments.map((s, i) => (
+            <li
+              // eslint-disable-next-line react/no-array-index-key
+              key={i}
+              style={{
+                backgroundColor:
+                  currentSpeaker === s.speaker ? '#fff3cd' : undefined,
+              }}
+            >
+              <strong>{s.speaker}:</strong> {s.text}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
 
   const handleUndo = () => {
     setHistoryIndex((idx) => {
@@ -397,11 +435,12 @@ const NoteEditor = forwardRef(function NoteEditor(
             style={{ width: '100%', marginTop: '0.5rem' }}
           />
         )}
+        {segmentList}
         {transcriptControls}
         {(recorderError || fetchError) && (
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
-        {loadingTranscript && <p>Loading transcript...</p>}
+        {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
       </div>
     );
   }
@@ -427,11 +466,12 @@ const NoteEditor = forwardRef(function NoteEditor(
           style={{ width: '100%', marginTop: '0.5rem' }}
         />
       )}
+      {segmentList}
       {transcriptControls}
       {(recorderError || fetchError) && (
         <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
       )}
-      {loadingTranscript && <p>Loading transcript...</p>}
+      {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
     </div>
   );
 });

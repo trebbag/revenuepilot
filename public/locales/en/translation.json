@@ -97,7 +97,9 @@
     "transcript": "Transcript:",
     "placeholder": "Type your clinical note here...",
     "undo": "Undo",
-    "redo": "Redo"
+    "redo": "Redo",
+    "audioUnsupported": "Audio recording not supported",
+    "segments": "Segments"
   },
   "settings": {
     "title": "Settings",
