@@ -61,6 +61,7 @@ def test_login_and_settings(client):
     assert data["lang"] == "en"
     assert data["specialty"] is None
     assert data["payer"] is None
+    assert data["region"] == ""
 
     new_settings = {
         "theme": "dark",
@@ -74,6 +75,7 @@ def test_login_and_settings(client):
         "lang": "es",
         "specialty": "cardiology",
         "payer": "medicare",
+        "region": "us",
     }
     resp = client.post(
         "/settings", json=new_settings, headers=auth_header(token)
@@ -88,7 +90,19 @@ def test_login_and_settings(client):
     assert data["lang"] == "es"
     assert data["specialty"] == "cardiology"
     assert data["payer"] == "medicare"
+    assert data["region"] == "us"
 
+    # second user should still see default settings
+    token_user = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+    resp = client.get("/settings", headers=auth_header(token_user))
+    other = resp.json()
+    assert other["theme"] == "modern"
+    assert other["lang"] == "en"
+    assert other["region"] == ""
+
+    # unauthenticated request should fail
     resp = client.get("/settings")
     assert resp.status_code in {401, 403}
 
