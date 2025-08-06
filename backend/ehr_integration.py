@@ -12,7 +12,7 @@ from __future__ import annotations
 import base64
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
@@ -20,6 +20,12 @@ FHIR_SERVER_URL = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
 TOKEN_URL = os.getenv("EHR_TOKEN_URL")
 CLIENT_ID = os.getenv("EHR_CLIENT_ID")
 CLIENT_SECRET = os.getenv("EHR_CLIENT_SECRET")
+
+# Optional basic auth credentials and static bearer token.  These provide a
+# fallback authentication mechanism when OAuth2 is not configured.
+BASIC_AUTH_USER = os.getenv("EHR_BASIC_USER")
+BASIC_AUTH_PASSWORD = os.getenv("EHR_BASIC_PASSWORD")
+STATIC_BEARER_TOKEN = os.getenv("EHR_BEARER_TOKEN")
 
 _token_cache: Dict[str, Any] = {"token": None, "expires_at": 0}
 
@@ -57,11 +63,34 @@ def get_ehr_token() -> Optional[str]:
     return token
 
 
+def _auth_headers() -> Dict[str, str]:
+    """Return authorization headers for FHIR requests.
+
+    ``get_ehr_token`` is attempted first (OAuth2).  If no token can be
+    obtained, basic auth credentials or a static bearer token are used if
+    available.
+    """
+
+    token = STATIC_BEARER_TOKEN or get_ehr_token()
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+
+    if BASIC_AUTH_USER and BASIC_AUTH_PASSWORD:
+        basic = base64.b64encode(
+            f"{BASIC_AUTH_USER}:{BASIC_AUTH_PASSWORD}".encode()
+        ).decode()
+        return {"Authorization": f"Basic {basic}"}
+
+    return {}
+
+
 def _build_bundle(
     note: str,
-    codes: List[str],
+    codes: Sequence[str],
     patient_id: Optional[str] = None,
     encounter_id: Optional[str] = None,
+    procedures: Sequence[str] | None = None,
+    medications: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     """Return a FHIR transaction bundle for ``note`` and ``codes``.
 
@@ -134,34 +163,64 @@ def _build_bundle(
         claim_resource["patient"] = {"reference": f"Patient/{patient_id}"}
     if encounter_id:
         claim_resource["encounter"] = [{"reference": f"Encounter/{encounter_id}"}]
+
     bundle["entry"].append(
         {"request": {"method": "POST", "url": "Claim"}, "resource": claim_resource}
     )
+
+    # Optional additional resources
+    for code in procedures or []:
+        bundle["entry"].append(
+            {
+                "request": {"method": "POST", "url": "Procedure"},
+                "resource": {
+                    "resourceType": "Procedure",
+                    "status": "completed",
+                    "code": {"coding": [{"code": code}]},
+                },
+            }
+        )
+
+    for code in medications or []:
+        bundle["entry"].append(
+            {
+                "request": {"method": "POST", "url": "MedicationStatement"},
+                "resource": {
+                    "resourceType": "MedicationStatement",
+                    "status": "completed",
+                    "medicationCodeableConcept": {
+                        "coding": [{"code": code}]
+                    },
+                },
+            }
+        )
 
     return bundle
 
 
 def post_note_and_codes(
     note: str,
-    codes: List[str],
+    codes: Sequence[str],
     patient_id: Optional[str] = None,
     encounter_id: Optional[str] = None,
+    procedures: Sequence[str] | None = None,
+    medications: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
-    """Send ``note`` and ``codes`` to the configured FHIR server."""
+    """Send ``note`` and associated data to the configured FHIR server."""
 
     url = f"{FHIR_SERVER_URL.rstrip('/')}/Bundle"
-    payload = _build_bundle(note, codes, patient_id, encounter_id)
-    headers: Dict[str, str] = {}
-    token = get_ehr_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    payload = _build_bundle(
+        note, codes, patient_id, encounter_id, procedures, medications
+    )
+    headers = _auth_headers()
 
     resp = requests.post(url, json=payload, headers=headers or None, timeout=10)
 
     if resp.status_code in {401, 403}:
-        return {"status": "auth_error"}
+        return {"status": "auth_error", "detail": resp.text}
+    if not resp.ok:
+        return {"status": "error", "detail": resp.text}
 
-    resp.raise_for_status()
     data = resp.json()
     if isinstance(data, dict):
         data = {**data}
