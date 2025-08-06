@@ -34,6 +34,7 @@ test('saveSettings called when preferences change', async () => {
       enableDifferentials: true,
       rules: [],
       lang: 'en',
+      summaryLang: 'en',
       specialty: '',
       payer: '',
       region: '',
@@ -56,6 +57,7 @@ test('saveSettings called when specialty and payer change', async () => {
     enableDifferentials: true,
     rules: [],
     lang: 'en',
+    summaryLang: 'en',
     specialty: '',
     payer: '',
     region: '',
@@ -65,9 +67,9 @@ test('saveSettings called when specialty and payer change', async () => {
     <Settings settings={settings} updateSettings={updateSettings} />
   );
   const selects = getAllByRole('combobox');
-  // selects[0] is language, [1] specialty, [2] payer
-  fireEvent.change(selects[1], { target: { value: 'cardiology' } });
-  fireEvent.change(selects[2], { target: { value: 'medicare' } });
+  // selects[0] is language, [1] summary language, [2] specialty, [3] payer
+  fireEvent.change(selects[2], { target: { value: 'cardiology' } });
+  fireEvent.change(selects[3], { target: { value: 'medicare' } });
   await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
 });
 
@@ -80,6 +82,7 @@ test('changing region triggers saveSettings', async () => {
     enableDifferentials: true,
     rules: [],
     lang: 'en',
+    summaryLang: 'en',
     specialty: '',
     payer: '',
     region: '',
@@ -104,6 +107,7 @@ test('renders Spanish translations when lang is es', () => {
     enableDifferentials: true,
     rules: [],
     lang: 'es',
+    summaryLang: 'es',
     region: '',
   };
   i18n.changeLanguage('es');
@@ -123,6 +127,7 @@ test('changing language calls saveSettings with new lang', async () => {
     enableDifferentials: true,
     rules: [],
     lang: 'en',
+    summaryLang: 'en',
     region: '',
   };
   const updateSettings = vi.fn();
@@ -143,6 +148,35 @@ test('changing language calls saveSettings with new lang', async () => {
   expect(i18n.language).toBe('es');
 });
 
+test('changing summary language calls saveSettings with new summaryLang', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    summaryLang: 'en',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getByLabelText } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  await fireEvent.change(getByLabelText('Summary language'), {
+    target: { value: 'es' },
+  });
+  await waitFor(() =>
+    expect(saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ summaryLang: 'es' })
+    )
+  );
+  expect(updateSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ summaryLang: 'es' })
+  );
+});
+
 test('setApiKey called when saving API key', async () => {
   const settings = {
     theme: 'modern',
@@ -152,6 +186,7 @@ test('setApiKey called when saving API key', async () => {
     enableDifferentials: true,
     rules: [],
     lang: 'en',
+    summaryLang: 'en',
     region: '',
   };
   const { getAllByPlaceholderText, getAllByText } = render(
@@ -174,6 +209,7 @@ test('changing theme triggers saveSettings', async () => {
     enableDifferentials: true,
     rules: [],
     lang: 'en',
+    summaryLang: 'en',
     region: '',
   };
   const updateSettings = vi.fn();

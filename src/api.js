@@ -39,7 +39,7 @@ export async function login(username, password, lang = 'en') {
   let settings = null;
   try {
     const s = await getSettings(token);
-    settings = { ...s, lang };
+    settings = { ...s, lang, summaryLang: s.summaryLang || lang };
   } catch (e) {
     console.error('Failed to fetch settings', e);
   }
@@ -169,6 +169,7 @@ export async function getSettings(token) {
     enableDifferentials: categories.differentials !== false,
     rules: data.rules || [],
     lang: data.lang || 'en',
+    summaryLang: data.summaryLang || data.lang || 'en',
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
@@ -202,6 +203,7 @@ export async function saveSettings(settings, token) {
     },
     rules: settings.rules || [],
     lang: settings.lang || 'en',
+    summaryLang: settings.summaryLang || settings.lang || 'en',
     specialty: settings.specialty || null,
     payer: settings.payer || null,
     region: settings.region || '',
@@ -226,6 +228,7 @@ export async function saveSettings(settings, token) {
     enableDifferentials: categories.differentials !== false,
     rules: data.rules || [],
     lang: data.lang || 'en',
+    summaryLang: data.summaryLang || data.lang || 'en',
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
@@ -873,7 +876,8 @@ export async function summarizeNote(text, context = {}) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (baseUrl) {
-    const payload = { text, lang: context.lang };
+    const payload = { text };
+    if (context.lang) payload.lang = context.lang;
     if (context.chart) payload.chart = context.chart;
     if (context.audio) payload.audio = context.audio;
     if (context.specialty) payload.specialty = context.specialty;

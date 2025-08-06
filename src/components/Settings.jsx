@@ -144,6 +144,18 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleSummaryLangChange = async (event) => {
+    const newLang = event.target.value;
+    if (newLang === settings.summaryLang) return;
+    const updated = { ...settings, summaryLang: newLang };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleSpecialtyChange = async (event) => {
     const value = event.target.value || '';
     const updated = { ...settings, specialty: value };
@@ -323,6 +335,16 @@ function Settings({ settings, updateSettings }) {
         value={settings.lang}
         onChange={handleLangChange}
         aria-label={t('settings.language')}
+      >
+        <option value="en">{t('settings.english')}</option>
+        <option value="es">{t('settings.spanish')}</option>
+      </select>
+
+      <h3>{t('settings.summaryLanguage')}</h3>
+      <select
+        value={settings.summaryLang}
+        onChange={handleSummaryLangChange}
+        aria-label={t('settings.summaryLanguage')}
       >
         <option value="en">{t('settings.english')}</option>
         <option value="es">{t('settings.spanish')}</option>
