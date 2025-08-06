@@ -54,9 +54,11 @@ function Settings({ settings, updateSettings }) {
   };
 
   const handleLangChange = async (event) => {
-    const updated = { ...settings, lang: event.target.value };
+    const newLang = event.target.value;
+    if (newLang === settings.lang) return;
+    const updated = { ...settings, lang: newLang };
     updateSettings(updated);
-    i18n.changeLanguage(event.target.value);
+    i18n.changeLanguage(newLang);
     try {
       await saveSettings(updated);
     } catch (e) {

@@ -110,6 +110,8 @@ def build_beautify_prompt(
     extra = _get_custom_instruction("beautify", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
+    if lang == "es":
+        instructions = f"{instructions} Responde en español."
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": text},
@@ -150,6 +152,8 @@ def build_suggest_prompt(
     extra = _get_custom_instruction("suggest", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
+    if lang == "es":
+        instructions = f"{instructions} Responde en español."
     user_content = text
     if age is not None and sex and region:
         try:
@@ -193,6 +197,8 @@ def build_summary_prompt(
     extra = _get_custom_instruction("summary", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
+    if lang == "es":
+        instructions = f"{instructions} Responde en español."
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": text},

@@ -375,15 +375,8 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [
-    draftText,
-    audioTranscript,
-    age,
-    sex,
-    settingsState.region,
-    settingsState.specialty,
-    settingsState.payer,
-  ]);
+  }, [draftText, audioTranscript, age, sex, settingsState.region, settingsState.specialty, settingsState.payer]);
+
 
 
   // Effect: apply theme colours to CSS variables when the theme changes

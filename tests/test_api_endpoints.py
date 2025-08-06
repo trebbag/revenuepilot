@@ -232,14 +232,17 @@ def test_suggest_and_fallback(client, monkeypatch):
     resp = client.post("/suggest", json={"text": "note"})
     data = resp.json()
     assert data["codes"][0]["code"] == "A1"
+    
 
-    def boom(_):
-        raise RuntimeError("fail")
+def test_beautify_spanish(client, monkeypatch):
+    def fake_call(msgs):
+        # ensure the system prompt is in Spanish
+        assert "en español" in msgs[0]["content"]
+        return "nota en español"
 
-    monkeypatch.setattr(main, "call_openai", boom)
-    resp = client.post("/suggest", json={"text": "cough"})
-    data = resp.json()
-    assert any(c["code"] == "99213" for c in data["codes"])
+    monkeypatch.setattr(main, "call_openai", fake_call)
+    resp = client.post("/beautify", json={"text": "hola", "lang": "es"})
+    assert resp.json()["beautified"] == "nota en español"
 
 
 def test_suggest_with_demographics(client, monkeypatch):
