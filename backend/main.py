@@ -410,6 +410,7 @@ class UserSettings(BaseModel):
     categories: CategorySettings = CategorySettings()
     rules: List[str] = []
     lang: str = "en"
+    summaryLang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
@@ -524,7 +525,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models FROM settings WHERE user_id=?",
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies FROM settings WHERE user_id=?",
         (user_id,),
     ).fetchone()
     if settings_row:
@@ -533,10 +534,13 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             "categories": json.loads(settings_row["categories"]),
             "rules": json.loads(settings_row["rules"]),
             "lang": settings_row["lang"],
+            "summaryLang": settings_row["summary_lang"] or settings_row["lang"],
             "specialty": settings_row["specialty"],
             "payer": settings_row["payer"],
             "region": settings_row["region"] or "",
+            "template": settings_row["template"],
             "useLocalModels": bool(settings_row["use_local_models"]),
+            "agencies": json.loads(settings_row["agencies"]) if settings_row["agencies"] else ["CDC", "WHO"],
         }
     else:
         settings = UserSettings().dict()
@@ -598,7 +602,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies "
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.template, s.use_local_models, s.agencies "
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -609,6 +613,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             categories=json.loads(row["categories"]),
             rules=json.loads(row["rules"]),
             lang=row["lang"],
+            summaryLang=row["summary_lang"] or row["lang"],
             specialty=row["specialty"],
             payer=row["payer"],
             region=row["region"] or "",
@@ -632,21 +637,21 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
             json.dumps(model.categories.dict()),
             json.dumps(model.rules),
             model.lang,
+            model.summaryLang,
             model.specialty,
             model.payer,
             model.region,
+            model.template,
             int(model.useLocalModels),
             json.dumps(model.agencies),
-            model.template,
-
         ),
     )
 
