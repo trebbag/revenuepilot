@@ -49,9 +49,18 @@ ChartJS.register(
   const [metrics, setMetrics] = useState({});
   const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
   const [inputs, setInputs] = useState(filters);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    getMetrics(filters).then((data) => setMetrics(data));
+    getMetrics(filters)
+      .then((data) => setMetrics(data))
+      .catch((err) => {
+        if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
+          window.location.href = '/';
+        } else {
+          setError(err.message);
+        }
+      });
   }, [filters]);
 
   // Define display cards using the fetched metrics.  Missing values will
@@ -201,7 +210,25 @@ ChartJS.register(
         borderColor: 'rgba(0,0,0,1)',
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
+      {
+        label: t('dashboard.cards.avgNoteLength'),
+        data: metrics.timeseries?.daily?.map((d) => d.avg_note_length || 0) || [],
+        borderColor: 'rgba(99,255,132,1)',
+        backgroundColor: 'rgba(99,255,132,0.2)',
+        yAxisID: 'y1',
+      },
     ],
+  };
+
+  const dailyOptions = {
+    scales: {
+      y: { beginAtZero: true },
+      y1: {
+        beginAtZero: true,
+        position: 'right',
+        grid: { drawOnChartArea: false },
+      },
+    },
   };
 
   const weeklyLabels = metrics.timeseries?.weekly?.map((w) => w.week) || [];
@@ -244,7 +271,25 @@ ChartJS.register(
         borderColor: 'rgba(0,0,0,1)',
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
+      {
+        label: t('dashboard.cards.avgNoteLength'),
+        data: metrics.timeseries?.weekly?.map((w) => w.avg_note_length || 0) || [],
+        borderColor: 'rgba(99,255,132,1)',
+        backgroundColor: 'rgba(99,255,132,0.2)',
+        yAxisID: 'y1',
+      },
     ],
+  };
+
+  const weeklyOptions = {
+    scales: {
+      y: { beginAtZero: true },
+      y1: {
+        beginAtZero: true,
+        position: 'right',
+        grid: { drawOnChartArea: false },
+      },
+    },
   };
 
   const codingData = {
@@ -277,6 +322,7 @@ ChartJS.register(
   return (
       <div className="dashboard">
         <h2>{t('dashboard.title')}</h2>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
         <div className="filters" style={{ marginBottom: '1rem' }}>
           <label>
             {t('dashboard.start')}
@@ -356,9 +402,9 @@ ChartJS.register(
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.dailyEvents')}</h3>
-            <Line data={dailyData} data-testid="daily-line" />
+            <Line data={dailyData} options={dailyOptions} data-testid="daily-line" />
             <h3 style={{ marginTop: '1rem' }}>{t('dashboard.weeklyEvents')}</h3>
-            <Line data={weeklyData} data-testid="weekly-line" />
+            <Line data={weeklyData} options={weeklyOptions} data-testid="weekly-line" />
         </div>
       )}
 

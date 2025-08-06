@@ -34,7 +34,9 @@ from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
+from .public_health import get_public_health_suggestions
 from .migrations import ensure_settings_table
+
 
 import json
 import sqlite3
@@ -169,8 +171,16 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
-# Determine whether the advanced scrubber is enabled via environment variable.
-USE_ADVANCED_SCRUBBER = os.getenv("USE_ADVANCED_SCRUBBER", "false").lower() == "true"
+# Determine whether the advanced scrubber is enabled.  If the environment
+# variable ``USE_ADVANCED_SCRUBBER`` is explicitly set, respect it.  Otherwise
+# automatically enable advanced scrubbing when either Presidio or Philter is
+# available.  This makes the richer recognizers the default behaviour without
+# requiring any configuration.
+_env_flag = os.getenv("USE_ADVANCED_SCRUBBER")
+if _env_flag is None:
+    USE_ADVANCED_SCRUBBER = _PRESIDIO_AVAILABLE or _PHILTER_AVAILABLE
+else:  # pragma: no cover - environment override is rarely used in tests
+    USE_ADVANCED_SCRUBBER = _env_flag.lower() == "true"
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -180,20 +190,25 @@ JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
 
-def create_token(username: str, role: str) -> str:
-    """Create a signed JWT for the given user and role."""
+def create_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Create a signed JWT for the given user and role.
+
+    Optionally include a clinic identifier so templates can be scoped per clinic."""
     payload = {
         "sub": username,
         "role": role,
         "exp": datetime.utcnow() + timedelta(hours=12),
     }
+    if clinic is not None:
+        payload["clinic"] = clinic
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
+    required_role: str | None = None,
 ):
-    """Decode the provided JWT and return its payload."""
+    """Decode the provided JWT and optionally enforce a required role."""
     token = credentials.credentials
     try:
         data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -201,6 +216,11 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+        )
+    if required_role and data.get("role") not in (required_role, "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient privileges",
         )
     return data
 
@@ -213,13 +233,8 @@ def require_role(role: str):
     still permitting administrators to perform regular user actions.
     """
 
-    def checker(user=Depends(get_current_user)):
-        if user.get("role") not in (role, "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient privileges",
-            )
-        return user
+    def checker(credentials: HTTPAuthorizationCredentials = Depends(security)):
+        return get_current_user(credentials, required_role=role)
 
     return checker
 
@@ -251,6 +266,8 @@ class UserSettings(BaseModel):
     lang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
+    region: str = ""
+
 
 
 def hash_password(password: str) -> str:
@@ -295,6 +312,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
         "SELECT theme, categories, rules, lang, specialty, payer FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
+
     if row:
         return {
             "theme": row["theme"],
@@ -303,6 +321,8 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             "lang": row["lang"],
             "specialty": row["specialty"],
             "payer": row["payer"],
+            "region": row["region"] or "",
+
         }
     return UserSettings().dict()
 
@@ -328,6 +348,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
             model.payer,
         ),
     )
+
     db_conn.commit()
     return model.dict()
 
@@ -484,8 +505,8 @@ def deidentify(text: str) -> str:
         rf"\b("  # start group
         r"\d{1,2}/\d{1,2}/\d{2,4}"
         r"|\d{4}-\d{1,2}-\d{1,2}"
-        rf"|{month}\s+\d{{1,2}},?\s+\d{{2,4}}"
-        rf"|\d{{1,2}}\s+{month}\s+\d{{2,4}}"
+        rf"|{month}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{2,4}}"
+        rf"|\d{{1,2}}(?:st|nd|rd|th)?\s+{month}\s+\d{{2,4}}"
         r")\b",
         re.IGNORECASE,
     )
@@ -495,7 +516,9 @@ def deidentify(text: str) -> str:
         r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
         re.IGNORECASE,
     )
-    name_pattern = re.compile(r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.))+\b")
+    name_pattern = re.compile(
+        r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.|[a-z]{2,3}))*\s+[A-Z][a-z]+\b"
+    )
 
     patterns = [
         ("PHONE", phone_pattern),
@@ -588,7 +611,7 @@ async def log_event(event: EventModel) -> Dict[str, str]:
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
+def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
     """Return custom templates for the current user and clinic."""
 
     clinic = user.get("clinic")
@@ -601,7 +624,7 @@ def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
 
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
     """Create a new custom template for the user."""
 
     clinic = user.get("clinic")
@@ -615,8 +638,23 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> T
     return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
 
 
+@app.put("/templates/{template_id}", response_model=TemplateModel)
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
+    """Update an existing custom template owned by the current user."""
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "UPDATE templates SET name=?, content=? WHERE id=? AND user=?",
+        (tpl.name, tpl.content, template_id, user["sub"]),
+    )
+    db_conn.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return TemplateModel(id=template_id, name=tpl.name, content=tpl.content)
+
+
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
+def delete_template(template_id: int, user=Depends(require_role("admin"))) -> Dict[str, str]:
     """Delete a custom template owned by the current user."""
 
     cursor = db_conn.cursor()
@@ -641,10 +679,18 @@ async def get_metrics(
     clinician: Optional[str] = None,
     user=Depends(require_role("admin")),
 ) -> Dict[str, Any]:
-    """Aggregate analytics from logged events with optional filtering."""
+    """Aggregate analytics from logged events with optional filtering.
+
+    The endpoint now uses SQL aggregation to build daily and weekly
+    time‑series buckets directly within SQLite rather than iterating over
+    each event in Python.  This keeps the implementation reasonably
+    efficient even as the number of logged events grows."""
 
     cursor = db_conn.cursor()
 
+    # ------------------------------------------------------------------
+    # Build a WHERE clause based on optional query parameters
+    # ------------------------------------------------------------------
     conditions: List[str] = []
     params: List[Any] = []
     if start:
@@ -667,119 +713,108 @@ async def get_metrics(
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
+    # ------------------------------------------------------------------
+    # Aggregate overall totals/averages using SQL
+    # ------------------------------------------------------------------
+    totals_query = f"""
+        SELECT
+            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
+            AVG(CAST(json_extract(details, '$.length')      AS REAL))     AS avg_note_length,
+            AVG(CAST(json_extract(details, '$.revenue')     AS REAL))     AS revenue_per_visit,
+            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL))     AS avg_close_time
+        FROM events {where_clause}
+    """
+    cursor.execute(totals_query, params)
+    row = cursor.fetchone()
+    totals = dict(row) if row else {}
+
+    total_notes = totals.get("total_notes", 0) or 0
+    total_beautify = totals.get("total_beautify", 0) or 0
+    total_suggest = totals.get("total_suggest", 0) or 0
+    total_summary = totals.get("total_summary", 0) or 0
+    total_chart_upload = totals.get("total_chart_upload", 0) or 0
+    total_audio = totals.get("total_audio", 0) or 0
+    avg_length = totals.get("avg_note_length") or 0
+    avg_revenue = totals.get("revenue_per_visit") or 0
+    avg_close_time = totals.get("avg_close_time") or 0
+
+    # ------------------------------------------------------------------
+    # Build daily and weekly time series via SQL GROUP BY
+    # ------------------------------------------------------------------
+    daily_query = f"""
+        SELECT
+            date(datetime(timestamp, 'unixepoch')) AS date,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            AVG(CAST(json_extract(details, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(details, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_clause}
+        GROUP BY date
+        ORDER BY date
+    """
+    cursor.execute(daily_query, params)
+    daily_list = [dict(row) for row in cursor.fetchall()]
+
+    weekly_query = f"""
+        SELECT
+            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            AVG(CAST(json_extract(details, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(details, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_clause}
+        GROUP BY week
+        ORDER BY week
+    """
+    cursor.execute(weekly_query, params)
+    weekly_list = [dict(row) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Additional aggregations that are easier in Python
+    # (e.g. denial rates, coding distribution, beautify time)
+    # ------------------------------------------------------------------
     cursor.execute(
         f"SELECT eventType, timestamp, details FROM events {where_clause} ORDER BY timestamp",
         params,
     )
     rows = cursor.fetchall()
 
-    total_notes = total_beautify = total_suggest = 0
-    total_summary = total_chart_upload = total_audio = 0
-
     code_counts: Dict[str, int] = {}
     denial_counts: Dict[str, List[int]] = {}
     denial_totals = [0, 0]
     deficiency_totals = [0, 0]
 
-    length_sum = length_count = 0.0
-    revenue_sum = revenue_count = 0.0
-    close_sum = close_count = 0.0
     beautify_time_sum = beautify_time_count = 0.0
-
-    daily: Dict[str, Dict[str, Any]] = {}
-    weekly: Dict[str, Dict[str, Any]] = {}
+    beautify_daily: Dict[str, List[float]] = {}
+    beautify_weekly: Dict[str, List[float]] = {}
     last_start_for_patient: Dict[str, float] = {}
 
     for row in rows:
-        evt = row['eventType']
-        ts = row['timestamp']
+        evt = row["eventType"]
+        ts = row["timestamp"]
         try:
-            details = json.loads(row['details'] or '{}')
+            details = json.loads(row["details"] or "{}")
         except Exception:
             details = {}
 
-        day = datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d')
-        week = datetime.utcfromtimestamp(ts).strftime('%Y-%W')
-        for bucket, key, label in ((daily, day, 'date'), (weekly, week, 'week')):
-            if key not in bucket:
-                bucket[key] = {
-                    label: key,
-                    'notes': 0,
-                    'beautify': 0,
-                    'suggest': 0,
-                    'summary': 0,
-                    'chart_upload': 0,
-                    'audio': 0,
-                    'length_sum': 0.0,
-                    'length_count': 0,
-                    'revenue_sum': 0.0,
-                    'revenue_count': 0,
-                    'close_sum': 0.0,
-                    'close_count': 0,
-                    'beautify_time_sum': 0.0,
-                    'beautify_time_count': 0,
-                }
-
-        def incr(b):
-            if evt in ('note_started', 'note_saved'):
-                b['notes'] += 1
-            elif evt == 'beautify':
-                b['beautify'] += 1
-            elif evt == 'suggest':
-                b['suggest'] += 1
-            elif evt == 'summary':
-                b['summary'] += 1
-            elif evt == 'chart_upload':
-                b['chart_upload'] += 1
-            elif evt == 'audio_recorded':
-                b['audio'] += 1
-
-        incr(daily[day])
-        incr(weekly[week])
-
-        if evt in ('note_started', 'note_saved'):
-            total_notes += 1
-        elif evt == 'beautify':
-            total_beautify += 1
-        elif evt == 'suggest':
-            total_suggest += 1
-        elif evt == 'summary':
-            total_summary += 1
-        elif evt == 'chart_upload':
-            total_chart_upload += 1
-        elif evt == 'audio_recorded':
-            total_audio += 1
-
-        length = details.get('length')
-        if isinstance(length, (int, float)):
-            length_sum += length
-            length_count += 1
-            daily[day]['length_sum'] += length
-            daily[day]['length_count'] += 1
-            weekly[week]['length_sum'] += length
-            weekly[week]['length_count'] += 1
-
-        rev = details.get('revenue')
-        if isinstance(rev, (int, float)):
-            revenue_sum += rev
-            revenue_count += 1
-            daily[day]['revenue_sum'] += rev
-            daily[day]['revenue_count'] += 1
-            weekly[week]['revenue_sum'] += rev
-            weekly[week]['revenue_count'] += 1
-
-        ttc = details.get('timeToClose')
-        if isinstance(ttc, (int, float)):
-            close_sum += ttc
-            close_count += 1
-            daily[day]['close_sum'] += ttc
-            daily[day]['close_count'] += 1
-            weekly[week]['close_sum'] += ttc
-            weekly[week]['close_count'] += 1
-
-        codes = details.get('codes')
+        codes = details.get("codes")
         if isinstance(codes, list):
-            denial_flag = details.get('denial') if isinstance(details.get('denial'), bool) else None
+            denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
             for code in codes:
                 code_counts[code] = code_counts.get(code, 0) + 1
                 if denial_flag is not None:
@@ -789,70 +824,75 @@ async def get_metrics(
                         totals[1] += 1
                     denial_counts[code] = totals
 
-        denial = details.get('denial')
+        denial = details.get("denial")
         if isinstance(denial, bool):
             denial_totals[0] += 1
             if denial:
                 denial_totals[1] += 1
-        deficiency = details.get('deficiency')
+
+        deficiency = details.get("deficiency")
         if isinstance(deficiency, bool):
             deficiency_totals[0] += 1
             if deficiency:
                 deficiency_totals[1] += 1
 
-        patient_id = details.get('patientID') or details.get('patientId') or details.get('patient_id')
-        if evt == 'note_started' and patient_id:
+        patient_id = (
+            details.get("patientID")
+            or details.get("patientId")
+            or details.get("patient_id")
+        )
+        if evt == "note_started" and patient_id:
             last_start_for_patient[patient_id] = ts
-        if evt == 'beautify' and patient_id and patient_id in last_start_for_patient:
+        if evt == "beautify" and patient_id and patient_id in last_start_for_patient:
             duration = ts - last_start_for_patient[patient_id]
             if duration >= 0:
                 beautify_time_sum += duration
                 beautify_time_count += 1
-                daily[day]['beautify_time_sum'] += duration
-                daily[day]['beautify_time_count'] += 1
-                weekly[week]['beautify_time_sum'] += duration
-                weekly[week]['beautify_time_count'] += 1
+                day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
+                daily_rec = beautify_daily.setdefault(day, [0.0, 0])
+                daily_rec[0] += duration
+                daily_rec[1] += 1
+                weekly_rec = beautify_weekly.setdefault(week, [0.0, 0])
+                weekly_rec[0] += duration
+                weekly_rec[1] += 1
 
-    avg_length = length_sum / length_count if length_count else 0
-    avg_revenue = revenue_sum / revenue_count if revenue_count else 0
-    avg_close_time = close_sum / close_count if close_count else 0
-    avg_beautify_time = beautify_time_sum / beautify_time_count if beautify_time_count else 0
-    denial_rates = {code: (v[1] / v[0] if v[0] else 0) for code, v in denial_counts.items()}
+    avg_beautify_time = (
+        beautify_time_sum / beautify_time_count if beautify_time_count else 0
+    )
+
+    # attach beautify averages to the SQL-produced time series
+    for entry in daily_list:
+        bt = beautify_daily.get(entry["date"])
+        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+    for entry in weekly_list:
+        bt = beautify_weekly.get(entry["week"])
+        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+
+    denial_rates = {
+        code: (v[1] / v[0] if v[0] else 0) for code, v in denial_counts.items()
+    }
     overall_denial = denial_totals[1] / denial_totals[0] if denial_totals[0] else 0
-    deficiency_rate = deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
-
-    def finalize(bucket: Dict[str, Dict[str, Any]]):
-        out = []
-        for key in sorted(bucket.keys()):
-            entry = bucket[key]
-            entry['avg_note_length'] = entry['length_sum'] / entry['length_count'] if entry['length_count'] else 0
-            entry['revenue_per_visit'] = entry['revenue_sum'] / entry['revenue_count'] if entry['revenue_count'] else 0
-            entry['avg_beautify_time'] = entry['beautify_time_sum'] / entry['beautify_time_count'] if entry['beautify_time_count'] else 0
-            entry['avg_close_time'] = entry['close_sum'] / entry['close_count'] if entry['close_count'] else 0
-            for k in ['length_sum','length_count','revenue_sum','revenue_count','close_sum','close_count','beautify_time_sum','beautify_time_count']:
-                entry.pop(k, None)
-            out.append(entry)
-        return out
-
-    daily_list = finalize(daily)
-    weekly_list = finalize(weekly)
+    deficiency_rate = (
+        deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
+    )
 
     return {
-        'total_notes': total_notes,
-        'total_beautify': total_beautify,
-        'total_suggest': total_suggest,
-        'total_summary': total_summary,
-        'total_chart_upload': total_chart_upload,
-        'total_audio': total_audio,
-        'avg_note_length': avg_length,
-        'avg_beautify_time': avg_beautify_time,
-        'avg_close_time': avg_close_time,
-        'revenue_per_visit': avg_revenue,
-        'coding_distribution': code_counts,
-        'denial_rate': overall_denial,
-        'denial_rates': denial_rates,
-        'deficiency_rate': deficiency_rate,
-        'timeseries': {'daily': daily_list, 'weekly': weekly_list},
+        "total_notes": total_notes,
+        "total_beautify": total_beautify,
+        "total_suggest": total_suggest,
+        "total_summary": total_summary,
+        "total_chart_upload": total_chart_upload,
+        "total_audio": total_audio,
+        "avg_note_length": avg_length,
+        "avg_beautify_time": avg_beautify_time,
+        "avg_close_time": avg_close_time,
+        "revenue_per_visit": avg_revenue,
+        "coding_distribution": code_counts,
+        "denial_rate": overall_denial,
+        "denial_rates": denial_rates,
+        "deficiency_rate": deficiency_rate,
+        "timeseries": {"daily": daily_list, "weekly": weekly_list},
     }
 @app.post("/summarize")
 async def summarize(req: NoteRequest) -> Dict[str, str]:
@@ -1044,6 +1084,10 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
         public_health_raw = data.get("publicHealth", data.get("public_health", []))
         public_health = [str(x) for x in public_health_raw]
         diffs = [str(x) for x in data.get("differentials", [])]
+        # Augment public health suggestions with external guidelines
+        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        if extra_ph:
+            public_health = list(dict.fromkeys(public_health + extra_ph))
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
@@ -1107,6 +1151,9 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
             public_health.append("Consider influenza vaccine")
         if not diffs:
             diffs.append("Routine follow-up")
+        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        if extra_ph:
+            public_health = list(dict.fromkeys(public_health + extra_ph))
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,

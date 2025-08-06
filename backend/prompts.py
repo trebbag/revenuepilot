@@ -102,7 +102,8 @@ def build_beautify_prompt(
             "nueva información. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y organice el contenido "
             "en un formato estándar SOAP (Subjetivo, Objetivo, Evaluación, Plan) cuando corresponda. Si la nota no contiene las "
             "cuatro secciones, preserve el contenido existente y organícelo de manera sensata. No incluya identificadores del "
-            "paciente ni PHI. No agregue comentarios adicionales, encabezados ni marcas más allá de la nota mejorada."
+            "paciente ni PHI. No agregue comentarios adicionales, encabezados ni marcas más allá de la nota mejorada. La nota "
+            "devuelta debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
@@ -142,7 +143,7 @@ def build_suggest_prompt(
             "- compliance: una matriz de cadenas breves que resalten elementos faltantes de documentación, riesgos de auditoría o consejos de cumplimiento (por ejemplo, historial incompleto, ROS faltante, examen insuficiente). Concéntrese en áreas que podrían causar reducción de códigos o denegaciones.\n"
             "- public_health: una matriz de medidas preventivas, vacunaciones o cribados que puedan aplicar según el contexto del paciente. Sugiera recomendaciones genéricas (por ejemplo, vacuna contra la gripe, dejar de fumar) sin asumir detalles personales.\n"
             "- differentials: una matriz de diagnósticos diferenciales plausibles sugeridos por la nota. Limítese a un máximo de cinco diferenciales y asegúrese de que sean coherentes con los síntomas descritos.\n"
-            "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave."
+            "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave. Todas las cadenas devueltas deben estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
@@ -185,7 +186,7 @@ def build_summary_prompt(
             "Do not include any patient identifiers or PHI."
         ),
         "es": (
-            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un resumen conciso que un paciente pueda entender fácilmente. Preserve todos los hechos médicos importantes (síntomas, diagnósticos, tratamientos, seguimiento), pero elimine los códigos de facturación y la jerga técnica. Escriba en un lenguaje sencillo equivalente a un nivel de lectura de octavo grado. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI."
+            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un resumen conciso que un paciente pueda entender fácilmente. Preserve todos los hechos médicos importantes (síntomas, diagnósticos, tratamientos, seguimiento), pero elimine los códigos de facturación y la jerga técnica. Escriba en un lenguaje sencillo equivalente a un nivel de lectura de octavo grado. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])

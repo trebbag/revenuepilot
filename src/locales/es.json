@@ -103,7 +103,8 @@
     "templates": "Plantillas",
     "noTemplates": "Sin plantillas",
     "english": "Inglés",
-    "spanish": "Español"
+    "spanish": "Español",
+    "region": "Región"
   },
   "sidebar": {
     "notes": "Notas",
@@ -130,7 +131,8 @@
     "content": "Contenido",
     "save": "Guardar",
     "close": "Cerrar",
-    "delete": "Eliminar"
+    "delete": "Eliminar",
+    "edit": "Editar"
   },
   "app": {
     "back": "Volver a las notas",

@@ -147,6 +147,18 @@ def test_summarize_and_fallback(client, monkeypatch):
     assert len(resp.json()["summary"]) <= 203  # truncated fallback
 
 
+def test_summarize_spanish_language(client, monkeypatch):
+    def fake_call_openai(msgs):
+        # Ensure the system prompt is in Spanish
+        assert "comunicador clínico" in msgs[0]["content"]
+        return "resumen"
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+    resp = client.post("/summarize", json={"text": "hola", "lang": "es"})
+    assert resp.status_code == 200
+    assert resp.json()["summary"] == "resumen"
+
+
 def test_transcribe_endpoint(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
     monkeypatch.setattr(
@@ -240,3 +252,27 @@ def test_suggest_with_demographics(client, monkeypatch):
         json={"text": "note", "age": 30, "sex": "female", "region": "US"},
     )
     assert resp.status_code == 200
+
+
+def test_suggest_includes_public_health_from_api(client, monkeypatch):
+    def fake_call_openai(msgs):
+        return json.dumps({"codes": [], "compliance": [], "publicHealth": [], "differentials": []})
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+    monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
+
+    def fake_ph(age, sex, region):
+        assert age == 50
+        assert sex == "male"
+        assert region == "US"
+        return ["Shingles vaccine"]
+
+    monkeypatch.setattr(main, "get_public_health_suggestions", fake_ph)
+
+    resp = client.post(
+        "/suggest",
+        json={"text": "note", "age": 50, "sex": "male", "region": "US"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Shingles vaccine" in data["publicHealth"]

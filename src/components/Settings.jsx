@@ -189,11 +189,11 @@ function Settings({ settings, updateSettings }) {
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
         placeholder={t('settings.customRulesPlaceholder')}
       />
-      <h3>{t('settings.language')}</h3>
-      <select value={settings.lang} onChange={handleLangChange}>
-        <option value="en">{t('settings.english')}</option>
-        <option value="es">{t('settings.spanish')}</option>
-      </select>
+  <h3>{t('settings.language')}</h3>
+  <select value={settings.lang} onChange={handleLangChange}>
+    <option value="en">{t('settings.english')}</option>
+    <option value="es">{t('settings.spanish')}</option>
+  </select>
 
       <h3>{t('settings.specialty')}</h3>
       <input
@@ -213,6 +213,7 @@ function Settings({ settings, updateSettings }) {
 
       <h3>{t('settings.templates')}</h3>
       <ul>
+
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}

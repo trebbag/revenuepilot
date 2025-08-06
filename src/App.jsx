@@ -20,6 +20,7 @@ import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
+import defaultTemplates from './templates.json';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -62,8 +63,12 @@ function App() {
   // Audio transcript extracted from a recorded visit.  Recording is
   // optional; when present, the transcript is appended to the note to
   // enrich suggestions.  The recording itself is not stored; only the
-  // text is used.
-  const [audioTranscript, setAudioTranscript] = useState('');
+  // text is used.  When diarisation is enabled we keep provider and
+  // patient segments separately so the UI can display them individually.
+  const [audioTranscript, setAudioTranscript] = useState({
+    provider: '',
+    patient: '',
+  });
   const [recording, setRecording] = useState(false);
   // References for MediaRecorder and audio chunks
   const mediaRecorderRef = useRef(null);
@@ -80,7 +85,6 @@ function App() {
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
-  const [region, setRegion] = useState('');
   // Suggestions fetched from the API
   const [suggestions, setSuggestions] = useState({
     codes: [],
@@ -105,6 +109,7 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
+    region: '',
   };
   // User settings controlling theme and which suggestion categories are enabled.
   // Load any previously saved settings from ``localStorage`` on first render.
@@ -147,49 +152,8 @@ function App() {
     i18n.changeLanguage(settingsState.lang);
   }, [settingsState.lang]);
 
-  // Templates for quick note creation
-  const templates = [
-    {
-      name: 'SOAP Note Template',
-      content:
-        'Subjective: \n\nObjective: \n\nAssessment: \n\nPlan: ',
-    },
-    {
-      name: 'Wellness Visit Template',
-      content:
-        'Chief Complaint: Annual wellness visit\n\nHistory of Present Illness: \n\nPast Medical History: \n\nMedications: \n\nAllergies: \n\nPhysical Exam: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Follow-up Visit Template',
-      content:
-        'Chief Complaint: \n\nInterval History: \n\nReview of Systems: \n\nPhysical Exam: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Paediatrics Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nGrowth Parameters: \n\nDevelopment: \n\nImmunisations: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Geriatrics Template',
-      content:
-        'Chief Complaint: \n\nFunctional Status: \n\nCognitive Assessment: \n\nMedications: \n\nSupport Systems: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Psychiatry Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nMental Status Exam: \n\nRisk Assessment: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Cardiology Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nCardiac Risk Factors: \n\nExam: \n\nDiagnostics: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Dermatology Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nSkin Exam: \n\nAssessment: \n\nPlan: ',
-    },
-  ];
+  // Templates for quick note creation loaded from a JSON file
+  const templates = defaultTemplates;
 
   // If there is no JWT stored, show the login form instead of the main app
   if (!token) {
@@ -244,7 +208,7 @@ function App() {
     const plain = stripHtml(draftText);
     summarizeNote(plain, {
       chart: chartText,
-      audio: audioTranscript,
+      audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
       lang: settingsState.lang,
       specialty: settingsState.specialty,
       payer: settingsState.payer,
@@ -348,11 +312,13 @@ function App() {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           try {
             const result = await transcribeAudio(blob, true);
-            const combined = `${result.provider || ''} ${result.patient || ''}`.trim();
-            setAudioTranscript(combined);
+            setAudioTranscript({
+              provider: result.provider || '',
+              patient: result.patient || '',
+            });
           } catch (err) {
             console.error('Transcription failed', err);
-            setAudioTranscript('');
+            setAudioTranscript({ provider: '', patient: '' });
           }
           if (patientID) {
             logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
@@ -406,10 +372,13 @@ function App() {
       getSuggestions(plain, {
         chart: chartText,
         rules: settingsState.rules,
-        audio: audioTranscript,
+        audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
         lang: settingsState.lang,
         specialty: settingsState.specialty,
         payer: settingsState.payer,
+        age: age ? parseInt(age, 10) : undefined,
+        sex,
+        region: settingsState.region,
       })
         .then((data) => {
           setSuggestions(data);
@@ -423,6 +392,7 @@ function App() {
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
   }, [draftText, audioTranscript, age, sex, region, settingsState.specialty, settingsState.payer]);
+
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
@@ -580,9 +550,15 @@ function App() {
                         onRecord={handleRecordAudio}
                         recording={recording}
                       />
-                      {audioTranscript && (
+                      {(audioTranscript.provider || audioTranscript.patient) && (
                         <div className="transcript-display">
-                          <strong>{t('noteEditor.transcript')}</strong> {audioTranscript}
+                          <strong>{t('noteEditor.transcript')}</strong>
+                          {audioTranscript.provider && (
+                            <div><em>Provider:</em> {audioTranscript.provider}</div>
+                          )}
+                          {audioTranscript.patient && (
+                            <div><em>Patient:</em> {audioTranscript.patient}</div>
+                          )}
                         </div>
                       )}
                     </>
