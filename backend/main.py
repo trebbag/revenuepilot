@@ -20,6 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, confloat
+from pydantic import BaseModel, Field
+
 
 import jwt
 
@@ -445,6 +447,7 @@ class CodeSuggestion(BaseModel):
     code: str
     rationale: Optional[str] = None
     upgrade_to: Optional[str] = None
+    upgradePath: Optional[str] = Field(None, alias="upgrade_path")
 
 
 class PublicHealthSuggestion(BaseModel):
@@ -1322,9 +1325,15 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             code_str = item.get("code") or item.get("Code") or ""
             rationale = item.get("rationale") or item.get("Rationale") or None
             upgrade = item.get("upgrade_to") or item.get("upgradeTo") or None
+            upgrade_path = item.get("upgrade_path") or item.get("upgradePath") or None
             if code_str:
                 codes_list.append(
-                    CodeSuggestion(code=code_str, rationale=rationale, upgrade_to=upgrade)
+                    CodeSuggestion(
+                        code=code_str,
+                        rationale=rationale,
+                        upgrade_to=upgrade,
+                        upgradePath=upgrade_path,
+                    )
                 )
         # Extract compliance as list of strings
         compliance = [str(x) for x in data.get("compliance", [])]
