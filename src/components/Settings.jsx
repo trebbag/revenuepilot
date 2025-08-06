@@ -64,6 +64,26 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleSpecialtyChange = async (event) => {
+    const updated = { ...settings, specialty: event.target.value };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handlePayerChange = async (event) => {
+    const updated = { ...settings, payer: event.target.value };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
       <h2>{t('settings.title')}</h2>
@@ -175,24 +195,25 @@ function Settings({ settings, updateSettings }) {
     <option value="es">{t('settings.spanish')}</option>
   </select>
 
-  <h3>{t('settings.region')}</h3>
-  <input
-    type="text"
-    value={settings.region || ''}
-    onChange={async (e) => {
-      const updated = { ...settings, region: e.target.value };
-      updateSettings(updated);
-      try {
-        await saveSettings(updated);
-      } catch (err) {
-        console.error(err);
-      }
-    }}
-    style={{ width: '100%', marginBottom: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
-  />
+      <h3>{t('settings.specialty')}</h3>
+      <input
+        type="text"
+        value={settings.specialty || ''}
+        onChange={handleSpecialtyChange}
+        style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+      />
 
-  <h3>{t('settings.templates')}</h3>
-  <ul>
+      <h3>{t('settings.payer')}</h3>
+      <input
+        type="text"
+        value={settings.payer || ''}
+        onChange={handlePayerChange}
+        style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+      />
+
+      <h3>{t('settings.templates')}</h3>
+      <ul>
+
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}

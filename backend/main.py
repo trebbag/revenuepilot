@@ -264,7 +264,10 @@ class UserSettings(BaseModel):
     }
     rules: List[str] = []
     lang: str = "en"
+    specialty: Optional[str] = None
+    payer: Optional[str] = None
     region: str = ""
+
 
 
 def hash_password(password: str) -> str:
@@ -305,24 +308,10 @@ async def login(model: LoginModel) -> Dict[str, str]:
 @app.get("/settings")
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
-    try:
-        row = db_conn.execute(
-            "SELECT theme, categories, rules, lang, region FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-            (user["sub"],),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        try:
-            db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
-        except Exception:
-            pass
-        try:
-            db_conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
-        except Exception:
-            pass
-        row = db_conn.execute(
-            "SELECT theme, categories, rules, lang, region FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-            (user["sub"],),
-        ).fetchone()
+    row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, specialty, payer FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
 
     if row:
         return {
@@ -330,7 +319,10 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             "categories": json.loads(row["categories"]),
             "rules": json.loads(row["rules"]),
             "lang": row["lang"],
+            "specialty": row["specialty"],
+            "payer": row["payer"],
             "region": row["region"] or "",
+
         }
     return UserSettings().dict()
 
@@ -344,38 +336,18 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
-    try:
-        db_conn.execute(
-            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, region) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                row["id"],
-                model.theme,
-                json.dumps(model.categories),
-                json.dumps(model.rules),
-                model.lang,
-                model.region,
-            ),
-        )
-    except sqlite3.OperationalError:
-        try:
-            db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
-        except Exception:
-            pass
-        try:
-            db_conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
-        except Exception:
-            pass
-        db_conn.execute(
-            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, region) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                row["id"],
-                model.theme,
-                json.dumps(model.categories),
-                json.dumps(model.rules),
-                model.lang,
-                model.region,
-            ),
-        )
+    db_conn.execute(
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            row["id"],
+            model.theme,
+            json.dumps(model.categories),
+            json.dumps(model.rules),
+            model.lang,
+            model.specialty,
+            model.payer,
+        ),
+    )
 
     db_conn.commit()
     return model.dict()

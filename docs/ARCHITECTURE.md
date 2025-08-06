@@ -18,8 +18,7 @@ This document provides a high‑level overview of the components that make up th
 ### Backend (`backend/`)
 
 - **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
-- **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.
- - **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load overrides from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
+- **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load extra instructions from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
 - **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
 - **Audio processing** (`audio_processing.py`): Provides stubbed functions for diarisation and transcription.  They return empty strings and need to be implemented with real speech‑to‑text libraries (e.g. Whisper, pyannote).  This module demonstrates the expected API and highlights a current gap in functionality.
 
@@ -48,4 +47,4 @@ The current repository is designed for local development.  The `start.sh` script
 
 ## Customising Prompt Templates
 
-Prompt instructions can be tailored per specialty or payer.  Create a `backend/prompt_templates.json` or `backend/prompt_templates.yaml` file with entries under `specialty` or `payer` that map to custom `beautify`, `suggest`, or `summary` instructions.  Each instruction can provide translations via `en` and `es` keys.  When a request supplies matching `specialty` or `payer` values, the custom text overrides the default prompts.
+Prompt instructions can be tailored per specialty or payer.  Create a `backend/prompt_templates.json` or `backend/prompt_templates.yaml` file with entries under `specialty` or `payer` that map to custom `beautify`, `suggest`, or `summary` instructions.  Each instruction can provide translations via `en` and `es` keys.  When a request supplies matching `specialty` or `payer` values, the custom text is appended to the default prompts.

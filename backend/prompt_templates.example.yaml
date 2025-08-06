@@ -1,10 +1,21 @@
+# Example prompt template overrides.
+# Copy this file to prompt_templates.yaml or prompt_templates.json and
+# customise as needed.
+
+default:
+  beautify:
+    en: "Base instruction applied to all notes"
+
 specialty:
   cardiology:
     beautify:
       en: "Cardiology specific beautify instruction"
       es: "Instrucción de embellecer específica de cardiología"
+
 payer:
   medicare:
     suggest:
       en: "Follow Medicare coding rules"
       es: "Siga las reglas de codificación de Medicare"
+    beautify:
+      en: "Ensure documentation meets Medicare standards"
