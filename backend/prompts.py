@@ -50,6 +50,9 @@ def _resolve_lang(entry: Any, lang: str) -> Optional[str]:
     return None
 
 
+SPECIALTY_ALIASES = {"pediatrics": "paediatrics"}
+
+
 def _get_custom_instruction(
     category: str, lang: str, specialty: Optional[str], payer: Optional[str]
 ) -> str:
@@ -77,7 +80,7 @@ def _get_custom_instruction(
     parts = []
     parts.append(extract(templates.get("default", {})))
     if specialty:
-        specialty_key = specialty.lower()
+        specialty_key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
         parts.append(
             _resolve_lang(
                 templates.get("specialty_modifiers", {}).get(specialty_key, {}), lang
@@ -116,11 +119,10 @@ def _get_custom_examples(
     messages: List[Dict[str, str]] = []
     messages.extend(collect(templates.get("default", {}).get(category, {})))
     if specialty:
+        key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
         messages.extend(
             collect(
-                templates.get("specialty", {})
-                .get(specialty.lower(), {})
-                .get(category, {})
+                templates.get("specialty", {}).get(key, {}).get(category, {})
             )
         )
     if payer:
