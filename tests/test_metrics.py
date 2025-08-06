@@ -66,10 +66,10 @@ def test_metrics_timeseries_and_range():
     events = [
         {"eventType": "note_started", "timestamp": ts1, "details": json.dumps({"patientID": "p1", "length": 100})},
         {"eventType": "beautify", "timestamp": ts1 + 60, "details": json.dumps({"patientID": "p1"})},
-        {"eventType": "suggest", "timestamp": ts1 + 120, "details": ""},
-        {"eventType": "summary", "timestamp": ts1 + 180, "details": ""},
-        {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": ""},
-        {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": ""},
+        {"eventType": "suggest", "timestamp": ts1 + 120, "details": json.dumps({})},
+        {"eventType": "summary", "timestamp": ts1 + 180, "details": json.dumps({})},
+        {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": json.dumps({})},
+        {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": json.dumps({})},
         {"eventType": "note_started", "timestamp": ts2, "details": json.dumps({"patientID": "p2", "length": 150})},
     ]
     for ev in events:

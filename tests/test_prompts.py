@@ -40,6 +40,7 @@ def test_summary_prompt_language():
     es = prompts.build_summary_prompt("nota", lang="es")
     assert "clinical communicator" in en[0]["content"]
     assert "comunicador clínico" in es[0]["content"]
+    assert "en español" in es[0]["content"]
 
 
 def test_specialty_and_payer_overrides(tmp_path):
@@ -72,5 +73,4 @@ def test_specialty_and_payer_overrides(tmp_path):
     assert "Medicare extra" in content
     sugg = prompts.build_suggest_prompt("note", lang="en", payer="medicare")
     assert "Follow Medicare coding rules" in sugg[0]["content"]
-    assert "en español" in es[0]["content"]
 

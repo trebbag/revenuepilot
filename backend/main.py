@@ -321,7 +321,6 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             "lang": row["lang"],
             "specialty": row["specialty"],
             "payer": row["payer"],
-            "region": row["region"] or "",
 
         }
     return UserSettings().dict()
