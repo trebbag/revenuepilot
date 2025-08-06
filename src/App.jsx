@@ -12,6 +12,7 @@ import {
   logEvent,
   summarizeNote,
   getSettings,
+  saveSettings,
   refreshAccessToken,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -139,6 +140,7 @@ function App() {
     rules: [],
     region: '',
     useLocalModels: false,
+    template: null,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   const [settingsState, setSettingsState] = useState(defaultSettings);
@@ -146,6 +148,16 @@ function App() {
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
+  };
+
+  const handleDefaultTemplateChange = async (tplId) => {
+    const newSettings = { ...settingsState, template: tplId };
+    setSettingsState(newSettings);
+    try {
+      await saveSettings(newSettings);
+    } catch (e) {
+      console.error('Failed to save template selection', e);
+    }
   };
 
   const logout = () => {
@@ -669,35 +681,34 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-                      <NoteEditor
-                        ref={editorRef}
-                        id="draft-input"
-                        value={draftText}
-                        onChange={handleDraftChange}
-                        onTranscriptChange={handleTranscriptChange}
-                        error={transcriptionError}
-                        templateContext={templateContext}
-                        suggestionContext={suggestionContext}
-                        onSuggestions={handleSuggestions}
-                        onSuggestionsLoading={setLoadingSuggestions}
-                        role={userRole}
-                        patientId={patientID}
-                        encounterId={encounterID}
-                      />
-                    ) : activeTab === 'beautified' ? (
-                      <NoteEditor
-                        id="beautified-output"
-                        value={beautified}
-                        onChange={setBeautified}
-                        mode="beautified"
-                        codes={suggestions.codes.map((c) => c.code)}
-                        patientId={patientID}
-                        encounterId={encounterID}
-                        role={userRole}
-                      />
-                    ) : (
-                      <div className="beautified-view">{summaryText}</div>
-                    )}
+
+                    <NoteEditor
+                      ref={editorRef}
+                      id="draft-input"
+                      value={draftText}
+                      onChange={handleDraftChange}
+                      onTranscriptChange={handleTranscriptChange}
+                      specialty={settingsState.specialty}
+                      payer={settingsState.payer}
+                      defaultTemplateId={settingsState.template}
+                      onTemplateChange={handleDefaultTemplateChange}
+                      error={transcriptionError}
+                      templateContext={templateContext}
+                      suggestionContext={suggestionContext}
+                      onSuggestions={handleSuggestions}
+                      onSuggestionsLoading={setLoadingSuggestions}
+                    />
+                  ) : activeTab === 'beautified' ? (
+                    <NoteEditor
+                      id="beautified-output"
+                      value={beautified}
+                      onChange={setBeautified}
+                      mode="beautified"
+                    />
+                  ) : (
+                    <div className="beautified-view">{summaryText}</div>
+                  )}
+
                 </div>
               </div>
               {(() => {

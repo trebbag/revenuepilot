@@ -46,7 +46,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel, DEFAULT_TEMPLATES
+from .templates import TemplateModel, load_builtin_templates, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
 
 
@@ -406,6 +406,7 @@ class UserSettings(BaseModel):
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
+    template: Optional[int] = None
     useLocalModels: StrictBool = False
 
     @validator("theme")
@@ -589,7 +590,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models "
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.template "
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -603,6 +604,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             specialty=row["specialty"],
             payer=row["payer"],
             region=row["region"] or "",
+            template=row["template"],
             useLocalModels=bool(row["use_local_models"]),
         )
         return settings.dict()
@@ -621,8 +623,8 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, template) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
@@ -633,6 +635,7 @@ async def save_user_settings(
             model.payer,
             model.region,
             int(model.useLocalModels),
+            model.template,
         ),
     )
 
@@ -1074,24 +1077,26 @@ def save_prompt_templates(
 
 @app.get("/templates", response_model=List[TemplateModel])
 def get_templates(
-    specialty: Optional[str] = None, user=Depends(require_role("user"))
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+    user=Depends(require_role("user")),
 ) -> List[TemplateModel]:
-    """Return templates for the current user and clinic, optionally filtered by specialty."""
+    """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
     clinic = user.get("clinic")
     cursor = db_conn.cursor()
+    base_query = (
+        "SELECT id, name, content, specialty, payer FROM templates "
+        "WHERE (user=? OR (user IS NULL AND clinic=?))"
+    )
+    params: List[Any] = [user["sub"], clinic]
     if specialty:
-        rows = cursor.execute(
-            "SELECT id, name, content, specialty FROM templates "
-            "WHERE (user=? OR (user IS NULL AND clinic=?)) AND specialty=?",
-            (user["sub"], clinic, specialty),
-        ).fetchall()
-    else:
-        rows = cursor.execute(
-            "SELECT id, name, content, specialty FROM templates "
-            "WHERE (user=? OR (user IS NULL AND clinic=?))",
-            (user["sub"], clinic),
-        ).fetchall()
+        base_query += " AND specialty=?"
+        params.append(specialty)
+    if payer:
+        base_query += " AND payer=?"
+        params.append(payer)
+    rows = cursor.execute(base_query, params).fetchall()
 
     templates = [
         TemplateModel(
@@ -1099,12 +1104,15 @@ def get_templates(
             name=row["name"],
             content=row["content"],
             specialty=row["specialty"],
+            payer=row["payer"],
         )
         for row in rows
     ]
 
-    for tpl in DEFAULT_TEMPLATES:
+    for tpl in load_builtin_templates():
         if specialty and tpl.specialty != specialty:
+            continue
+        if payer and tpl.payer != payer:
             continue
         templates.append(tpl)
 
@@ -1121,13 +1129,17 @@ def create_template(
     owner = None if user.get("role") == "admin" else user["sub"]
     cursor = db_conn.cursor()
     cursor.execute(
-        "INSERT INTO templates (user, clinic, specialty, name, content) VALUES (?, ?, ?, ?, ?)",
-        (owner, clinic, tpl.specialty, tpl.name, tpl.content),
+        "INSERT INTO templates (user, clinic, specialty, payer, name, content) VALUES (?, ?, ?, ?, ?, ?)",
+        (owner, clinic, tpl.specialty, tpl.payer, tpl.name, tpl.content),
     )
     db_conn.commit()
     tpl_id = cursor.lastrowid
     return TemplateModel(
-        id=tpl_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+        id=tpl_id,
+        name=tpl.name,
+        content=tpl.content,
+        specialty=tpl.specialty,
+        payer=tpl.payer,
     )
 
 
@@ -1141,20 +1153,39 @@ def update_template(
     cursor = db_conn.cursor()
     if user.get("role") == "admin":
         cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=? "
+            "UPDATE templates SET name=?, content=?, specialty=?, payer=? "
             "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"], clinic),
+            (
+                tpl.name,
+                tpl.content,
+                tpl.specialty,
+                tpl.payer,
+                template_id,
+                user["sub"],
+                clinic,
+            ),
         )
     else:
         cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=? WHERE id=? AND user=?",
-            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"]),
+            "UPDATE templates SET name=?, content=?, specialty=?, payer=? WHERE id=? AND user=?",
+            (
+                tpl.name,
+                tpl.content,
+                tpl.specialty,
+                tpl.payer,
+                template_id,
+                user["sub"],
+            ),
         )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateModel(
-        id=template_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+        id=template_id,
+        name=tpl.name,
+        content=tpl.content,
+        specialty=tpl.specialty,
+        payer=tpl.payer,
     )
 
 

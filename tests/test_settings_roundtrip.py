@@ -38,6 +38,7 @@ def test_settings_roundtrip(client):
     assert data['lang'] == 'en'
     assert data['specialty'] is None
     assert data['payer'] is None
+    assert data.get('template') is None
 
     new_settings = {
         'theme': 'dark',
@@ -52,6 +53,7 @@ def test_settings_roundtrip(client):
         'specialty': 'cardiology',
         'payer': 'medicare',
         'region': '',
+        'template': -1,
     }
     resp = client.post('/settings', json=new_settings, headers=auth_header(token))
     assert resp.status_code == 200
@@ -65,6 +67,7 @@ def test_settings_roundtrip(client):
     assert data['lang'] == 'es'
     assert data['specialty'] == 'cardiology'
     assert data['payer'] == 'medicare'
+    assert data['template'] == -1
 
 
 def test_invalid_settings_rejected(client):

@@ -135,5 +135,47 @@
         "en": "Follow Aetna summary requirements."
       }
     }
+  },
+  "note_templates": {
+    "default": [
+      {
+        "name": "SOAP Note Template",
+        "content": "Subjective: \n\nObjective: \n\nAssessment: \n\nPlan: "
+      }
+    ],
+    "specialty": {
+      "pediatrics": [
+        {
+          "name": "Pediatric Visit",
+          "content": "Chief Complaint:\nHistory of Present Illness:\nAssessment/Plan:\n"
+        }
+      ],
+      "geriatrics": [
+        {
+          "name": "Geriatric Assessment",
+          "content": "Chief Complaint:\nFunctional Status:\nAssessment/Plan:\n"
+        }
+      ],
+      "psychiatry": [
+        {
+          "name": "Psychiatry Evaluation",
+          "content": "Chief Complaint:\nMental Status Exam:\nAssessment/Plan:\n"
+        }
+      ],
+      "cardiology": [
+        {
+          "name": "Cardiology Consultation",
+          "content": "Chief Complaint:\nCardiac History:\nAssessment/Plan:\n"
+        }
+      ]
+    },
+    "payer": {
+      "medicare": [
+        {
+          "name": "Medicare Follow-up",
+          "content": "Chief Complaint:\nMedicare Requirements:\nAssessment/Plan:\n"
+        }
+      ]
+    }
   }
 }

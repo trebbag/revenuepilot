@@ -97,10 +97,15 @@ const NoteEditor = forwardRef(function NoteEditor(
     onChange,
     onTranscriptChange,
     mode = 'draft',
+    specialty,
+    payer,
+    defaultTemplateId,
+    onTemplateChange,
     codes = [],
     patientId = '',
     encounterId = '',
     role = '',
+
   },
   ref,
 ) {
@@ -110,6 +115,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [history, setHistory] = useState(value ? [value] : []);
   const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
   const [templates, setTemplates] = useState([]);
+  const [sideTab, setSideTab] = useState('templates');
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [segments, setSegments] = useState([]);
   const [audioUrl, setAudioUrl] = useState('');
@@ -139,15 +145,26 @@ const NoteEditor = forwardRef(function NoteEditor(
     });
   }, [value, mode]);
 
-  let mounted = true;
   useEffect(() => {
-    getTemplates()
-      .then((tpls) => mounted && setTemplates(tpls))
-      .catch(() => mounted && setTemplates([]));
+    let active = true;
+    getTemplates(specialty, payer)
+      .then((tpls) => {
+        if (!active) return;
+        setTemplates(tpls);
+        if (!value && defaultTemplateId) {
+          const tpl = tpls.find(
+            (t) => String(t.id) === String(defaultTemplateId),
+          );
+          if (tpl) insertText(tpl.content);
+        }
+      })
+      .catch(() => {
+        if (active) setTemplates([]);
+      });
     return () => {
-      mounted = false;
+        active = false;
     };
-  }, []);
+  }, [specialty, payer, defaultTemplateId]);
 
   const loadTranscript = async () => {
     setLoadingTranscript(true);
@@ -208,11 +225,9 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   useImperativeHandle(ref, () => ({ insertAtCursor: insertText }));
-
-  const handleTemplateSelect = (e) => {
-    const tpl = templates.find((t) => String(t.id) === e.target.value);
-    if (tpl) insertText(tpl.content);
-    e.target.value = '';
+  const handleTemplateClick = (tpl) => {
+    insertText(tpl.content);
+    if (onTemplateChange) onTemplateChange(tpl.id);
   };
 
   const {
@@ -252,38 +267,18 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (seg) setCurrentSpeaker(seg.speaker);
   };
 
-  const groupedTemplates = templates.reduce((acc, tpl) => {
-    const key = tpl.specialty || 'General';
-    (acc[key] ||= []).push(tpl);
-    return acc;
-  }, {});
-
-  const templateChooser = templates.length ? (
-    <select
-      aria-label={t('app.templates')}
-      defaultValue=""
-      onChange={handleTemplateSelect}
-      style={{ marginBottom: '0.5rem' }}
-    >
-      <option value="">{t('app.templates')}</option>
-      {Object.entries(groupedTemplates).map(([spec, tpls]) => (
-        <optgroup key={spec} label={spec}>
-          {tpls.map((tpl) => (
-            <option key={tpl.id} value={tpl.id}>
-              {tpl.name}
-            </option>
-          ))}
-        </optgroup>
+  const templateList = templates.length ? (
+    <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
+      {templates.map((tpl) => (
+        <li key={tpl.id} style={{ marginBottom: '0.25rem' }}>
+          <button type="button" onClick={() => handleTemplateClick(tpl)}>
+            {tpl.name}
+          </button>
+        </li>
       ))}
-    </select>
+    </ul>
   ) : (
-    <select
-      aria-label={t('app.templates')}
-      disabled
-      style={{ marginBottom: '0.5rem' }}
-    >
-      <option>{t('settings.noTemplates')}</option>
-    </select>
+    <p>{t('settings.noTemplates')}</p>
   );
 
   const recordingSupported =
@@ -391,6 +386,38 @@ const NoteEditor = forwardRef(function NoteEditor(
       </div>
     ) : null;
 
+  const sidebar = (
+    <div style={{ width: '200px', marginLeft: '0.5rem' }}>
+      <div style={{ marginBottom: '0.5rem' }}>
+        <button
+          type="button"
+          onClick={() => setSideTab('templates')}
+          disabled={sideTab === 'templates'}
+        >
+          {t('app.templates')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setSideTab('transcript')}
+          disabled={sideTab === 'transcript'}
+          style={{ marginLeft: '0.5rem' }}
+        >
+          {t('noteEditor.transcript')}
+        </button>
+      </div>
+      <div>
+        {sideTab === 'templates' ? (
+          templateList
+        ) : (
+          <div>
+            {segmentList}
+            {transcriptControls}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const handleUndo = () => {
     setHistoryIndex((idx) => {
       if (idx <= 0) return idx;
@@ -474,16 +501,47 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   if (ReactQuill) {
     return (
-      <div style={{ height: '100%', width: '100%' }}>
+      <div style={{ display: 'flex', height: '100%', width: '100%' }}>
+        <div style={{ flex: 1 }}>
+          {audioControls}
+          <ReactQuill
+            ref={quillRef}
+            id={id}
+            theme="snow"
+            value={value}
+            formats={quillFormats}
+            style={{ height: '100%', width: '100%' }}
+          />
+          {audioUrl && (
+            <audio
+              ref={audioRef}
+              src={audioUrl}
+              controls
+              onTimeUpdate={handleTimeUpdate}
+              style={{ width: '100%', marginTop: '0.5rem' }}
+            />
+          )}
+          {(recorderError || fetchError) && (
+            <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
+          )}
+          {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
+        </div>
+        {sidebar}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+      <div style={{ flex: 1 }}>
         {audioControls}
-        {templateChooser}
-        <ReactQuill
-          ref={quillRef}
+        <textarea
+          ref={textAreaRef}
           id={id}
-          theme="snow"
-          value={value}
-          formats={quillFormats}
-          style={{ height: '100%', width: '100%' }}
+          value={localValue}
+          onChange={handleTextAreaChange}
+          style={{ width: '100%', height: '100%', padding: '0.5rem' }}
+          placeholder={t('noteEditor.placeholder')}
         />
         {audioUrl && (
           <audio
@@ -494,43 +552,12 @@ const NoteEditor = forwardRef(function NoteEditor(
             style={{ width: '100%', marginTop: '0.5rem' }}
           />
         )}
-        {segmentList}
-        {transcriptControls}
         {(recorderError || fetchError) && (
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
         {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
       </div>
-    );
-  }
-
-  return (
-    <div style={{ width: '100%', height: '100%' }}>
-      {audioControls}
-      {templateChooser}
-      <textarea
-        ref={textAreaRef}
-        id={id}
-        value={localValue}
-        onChange={handleTextAreaChange}
-        style={{ width: '100%', height: '100%', padding: '0.5rem' }}
-        placeholder={t('noteEditor.placeholder')}
-      />
-      {audioUrl && (
-        <audio
-          ref={audioRef}
-          src={audioUrl}
-          controls
-          onTimeUpdate={handleTimeUpdate}
-          style={{ width: '100%', marginTop: '0.5rem' }}
-        />
-      )}
-      {segmentList}
-      {transcriptControls}
-      {(recorderError || fetchError) && (
-        <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
-      )}
-      {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
+      {sidebar}
     </div>
   );
 });
