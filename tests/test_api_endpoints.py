@@ -59,6 +59,8 @@ def test_login_and_settings(client):
     data = resp.json()
     assert data["theme"] == "modern"
     assert data["lang"] == "en"
+    assert data["specialty"] is None
+    assert data["payer"] is None
 
     new_settings = {
         "theme": "dark",
@@ -70,6 +72,8 @@ def test_login_and_settings(client):
         },
         "rules": ["x"],
         "lang": "es",
+        "specialty": "cardiology",
+        "payer": "medicare",
     }
     resp = client.post(
         "/settings", json=new_settings, headers=auth_header(token)
@@ -82,6 +86,8 @@ def test_login_and_settings(client):
     assert data["categories"]["codes"] is False
     assert data["rules"] == ["x"]
     assert data["lang"] == "es"
+    assert data["specialty"] == "cardiology"
+    assert data["payer"] == "medicare"
 
     resp = client.get("/settings")
     assert resp.status_code in {401, 403}

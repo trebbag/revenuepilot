@@ -99,6 +99,8 @@ function App() {
     enablePublicHealth: true,
     enableDifferentials: true,
     lang: 'en',
+    specialty: '',
+    payer: '',
     // Array of custom clinical rules supplied by the user.  When non‑empty,
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
@@ -215,7 +217,7 @@ function App() {
     // Strip HTML tags before sending the note to the backend.  ReactQuill
     // produces an HTML string; the backend expects plain text.
     const plain = stripHtml(draftText);
-    beautifyNote(plain, settingsState.lang)
+    beautifyNote(plain, settingsState.lang, { specialty: settingsState.specialty, payer: settingsState.payer })
       .then((cleaned) => {
         setBeautified(cleaned);
         setActiveTab('beautified');
@@ -244,6 +246,8 @@ function App() {
       chart: chartText,
       audio: audioTranscript,
       lang: settingsState.lang,
+      specialty: settingsState.specialty,
+      payer: settingsState.payer,
     })
       .then((summary) => {
         setSummaryText(summary);
@@ -404,6 +408,8 @@ function App() {
         rules: settingsState.rules,
         audio: audioTranscript,
         lang: settingsState.lang,
+        specialty: settingsState.specialty,
+        payer: settingsState.payer,
       })
         .then((data) => {
           setSuggestions(data);
@@ -416,7 +422,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText, audioTranscript, age, sex, region]);
+  }, [draftText, audioTranscript, age, sex, region, settingsState.specialty, settingsState.payer]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {

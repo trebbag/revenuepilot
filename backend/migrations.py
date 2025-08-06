@@ -4,10 +4,11 @@ import sqlite3
 def ensure_settings_table(conn: sqlite3.Connection) -> None:
     """Ensure the settings table exists with all required columns.
 
-    This helper can be used during application startup or as a standalone
-    migration step.  It creates the ``settings`` table if it does not exist
-    and adds the ``lang`` column when missing.
+    This helper may be invoked during application startup or as a
+    standalone migration.  It creates the ``settings`` table when missing
+    and adds any new columns required by the application.
     """
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS settings ("
         "user_id INTEGER PRIMARY KEY,"
@@ -15,11 +16,16 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "categories TEXT NOT NULL,"
         "rules TEXT NOT NULL,"
         "lang TEXT NOT NULL DEFAULT 'en',"
+        "specialty TEXT,"
+        "payer TEXT,"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
-    # Check existing columns to handle upgrades from older schemas.
     columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
     if "lang" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+    if "specialty" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN specialty TEXT")
+    if "payer" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN payer TEXT")
     conn.commit()

@@ -34,17 +34,48 @@ def _load_custom_templates() -> Dict[str, Any]:
     return {}
 
 
-def _get_custom_instruction(category: str, lang: str, specialty: Optional[str], payer: Optional[str]) -> Optional[str]:
-    templates = _load_custom_templates()
-    for key, group in ((specialty, "specialty"), (payer, "payer")):
-        if key:
-            data = templates.get(group, {}).get(key, {})
-            instr = data.get(category)
-            if isinstance(instr, dict):
-                return instr.get(lang)
-            if instr:
-                return instr
+def _resolve_lang(entry: Any, lang: str) -> Optional[str]:
+    """Return a language-specific string from ``entry``.
+
+    ``entry`` may either be a plain string or a mapping of language codes to
+    strings.  If the requested ``lang`` is not present, English is used as a
+    fallback when available.  ``None`` is returned when no suitable text is
+    found.
+    """
+
+    if isinstance(entry, dict):
+        return entry.get(lang) or entry.get("en")
+    if isinstance(entry, str):
+        return entry
     return None
+
+
+def _get_custom_instruction(
+    category: str, lang: str, specialty: Optional[str], payer: Optional[str]
+) -> str:
+    """Return additional instructions based on specialty and payer.
+
+    The function reads ``prompt_templates.json`` or ``.yaml`` once and then
+    composes any matching instructions in the following order:
+
+    1. ``default`` instructions for the category
+    2. ``specialty`` overrides matching the provided ``specialty``
+    3. ``payer`` overrides matching the provided ``payer``
+
+    Each piece is appended to the base prompt so the default instructions are
+    always preserved.
+    """
+
+    templates = _load_custom_templates()
+    parts = []
+    parts.append(_resolve_lang(templates.get("default", {}).get(category), lang))
+    if specialty:
+        spec = templates.get("specialty", {}).get(specialty, {}).get(category)
+        parts.append(_resolve_lang(spec, lang))
+    if payer:
+        pay = templates.get("payer", {}).get(payer, {}).get(category)
+        parts.append(_resolve_lang(pay, lang))
+    return " ".join(p for p in parts if p)
 
 
 def build_beautify_prompt(
@@ -74,7 +105,10 @@ def build_beautify_prompt(
             "paciente ni PHI. No agregue comentarios adicionales, encabezados ni marcas más allá de la nota mejorada."
         ),
     }
-    instructions = _get_custom_instruction("beautify", lang, specialty, payer) or default_instructions.get(lang, default_instructions["en"])
+    instructions = default_instructions.get(lang, default_instructions["en"])
+    extra = _get_custom_instruction("beautify", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": text},
@@ -111,7 +145,10 @@ def build_suggest_prompt(
             "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave."
         ),
     }
-    instructions = _get_custom_instruction("suggest", lang, specialty, payer) or default_instructions.get(lang, default_instructions["en"])
+    instructions = default_instructions.get(lang, default_instructions["en"])
+    extra = _get_custom_instruction("suggest", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
     user_content = text
     if age is not None and sex and region:
         try:
@@ -151,7 +188,10 @@ def build_summary_prompt(
             "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un resumen conciso que un paciente pueda entender fácilmente. Preserve todos los hechos médicos importantes (síntomas, diagnósticos, tratamientos, seguimiento), pero elimine los códigos de facturación y la jerga técnica. Escriba en un lenguaje sencillo equivalente a un nivel de lectura de octavo grado. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI."
         ),
     }
-    instructions = _get_custom_instruction("summary", lang, specialty, payer) or default_instructions.get(lang, default_instructions["en"])
+    instructions = default_instructions.get(lang, default_instructions["en"])
+    extra = _get_custom_instruction("summary", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
     return [
         {"role": "system", "content": instructions},
         {"role": "user", "content": text},

@@ -96,17 +96,20 @@ export async function saveSettings(settings, token) {
  * @param {string} text
  * @returns {Promise<string>}
  */
-export async function beautifyNote(text, lang = 'en') {
+export async function beautifyNote(text, lang = 'en', context = {}) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
   // If a backend URL is configured, call the API.  Otherwise, fall back to a stub.
   if (baseUrl) {
+    const payload = { text, lang };
+    if (context.specialty) payload.specialty = context.specialty;
+    if (context.payer) payload.payer = context.payer;
     const resp = await fetch(`${baseUrl}/beautify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, lang }),
+      body: JSON.stringify(payload),
     });
     const data = await resp.json();
     return data.beautified;
@@ -140,6 +143,8 @@ export async function getSuggestions(text, context = {}) {
     if (typeof context.age === 'number') payload.age = context.age;
     if (context.sex) payload.sex = context.sex;
     if (context.region) payload.region = context.region;
+    if (context.specialty) payload.specialty = context.specialty;
+    if (context.payer) payload.payer = context.payer;
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -396,6 +401,8 @@ export async function summarizeNote(text, context = {}) {
     const payload = { text, lang: context.lang };
     if (context.chart) payload.chart = context.chart;
     if (context.audio) payload.audio = context.audio;
+    if (context.specialty) payload.specialty = context.specialty;
+    if (context.payer) payload.payer = context.payer;
     try {
       const resp = await fetch(`${baseUrl}/summarize`, {
         method: 'POST',

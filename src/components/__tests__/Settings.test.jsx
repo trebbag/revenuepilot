@@ -20,6 +20,8 @@ test('saveSettings called when preferences change', async () => {
       enableDifferentials: true,
       rules: [],
       lang: 'en',
+      specialty: '',
+      payer: '',
     };
   const updateSettings = vi.fn();
   const { getByLabelText } = render(
