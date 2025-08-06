@@ -13,8 +13,9 @@ performed so callers always receive predictable output.
 from __future__ import annotations
 
 import io
+import os
 import tempfile
-from typing import Dict
+from typing import Any, Dict
 
 from openai import OpenAI
 
@@ -30,6 +31,20 @@ except Exception:  # pragma: no cover - dependency may be missing
     _DIARISATION_AVAILABLE = False
 
 
+_LOCAL_MODEL: Any | None = None
+
+
+def _load_local_model() -> Any:  # pragma: no cover - heavy optional dependency
+    """Lazily load and cache the Whisper model for offline use."""
+    global _LOCAL_MODEL
+    if _LOCAL_MODEL is None:
+        import whisper  # type: ignore
+
+        model_name = os.getenv("WHISPER_MODEL", "base")
+        _LOCAL_MODEL = whisper.load_model(model_name)
+    return _LOCAL_MODEL
+
+
 def _transcribe_bytes(data: bytes) -> str:
     """Helper that attempts to transcribe ``data`` using Whisper.
 
@@ -41,8 +56,22 @@ def _transcribe_bytes(data: bytes) -> str:
     if not data:
         return ""
 
+    offline = os.getenv("OFFLINE_TRANSCRIBE", "").lower() == "true"
+    if offline:
+        try:
+            model = _load_local_model()
+            with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+                tmp.write(data)
+                tmp.flush()
+                result = model.transcribe(tmp.name)
+            text = result.get("text", "")
+            if text:
+                return text.strip()
+        except Exception:
+            pass
+
     api_key = get_api_key()
-    if api_key:
+    if api_key and not offline:
         try:
             client = OpenAI(api_key=api_key)
             with io.BytesIO(data) as buf:
