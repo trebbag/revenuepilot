@@ -1,4 +1,5 @@
 import backend.audio_processing as ap
+import pytest
 
 
 def test_simple_transcribe_uses_openai(monkeypatch):
@@ -60,3 +61,18 @@ def test_diarize_fallback_when_unavailable(monkeypatch):
     monkeypatch.setattr(ap, "simple_transcribe", lambda b: "full text")
     result = ap.diarize_and_transcribe(b"bytes")
     assert result == {"provider": "full text", "patient": ""}
+
+
+@pytest.mark.asyncio
+async def test_transcribe_placeholder_on_failure(monkeypatch):
+    class DummyCreate:
+        def create(self, model, file):  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    class DummyClient:
+        audio = type("obj", (), {"transcriptions": DummyCreate()})()
+
+    monkeypatch.setattr(ap, "OpenAI", lambda api_key=None: DummyClient())
+    monkeypatch.setattr(ap, "get_api_key", lambda: "key")
+    result = ap.simple_transcribe(b"\xff\xfe")
+    assert result == "[transcribed 2 bytes]"

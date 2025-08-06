@@ -10,3 +10,5 @@ python-multipart
 presidio-analyzer
 presidio-anonymizer
 pyyaml
+pyannote.audio
+torchaudio

@@ -141,8 +141,16 @@ def test_summarize_and_fallback(client, monkeypatch):
 
 def test_transcribe_endpoint(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(
+        main, "diarize_and_transcribe", lambda b: {"provider": "p", "patient": "q"}
+    )
     resp = client.post("/transcribe", files={"file": ("a.wav", b"bytes")})
     assert resp.json()["provider"] == "hello"
+
+    resp = client.post(
+        "/transcribe?diarise=true", files={"file": ("a.wav", b"bytes")}
+    )
+    assert resp.json() == {"provider": "p", "patient": "q"}
 
     resp = client.post("/transcribe")
     assert resp.status_code == 422

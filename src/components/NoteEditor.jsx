@@ -7,7 +7,7 @@
 // component will gracefully fall back to a simple <textarea> so that
 // development can proceed without breaking the UI.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 let ReactQuill;
 try {
@@ -24,7 +24,7 @@ try {
   ReactQuill = null;
 }
 
-function NoteEditor({ id, value, onChange, onRecord, recording = false, transcript = '' }) {
+function NoteEditor({ id, value, onChange, onRecord, recording = false }) {
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
@@ -48,16 +48,9 @@ function NoteEditor({ id, value, onChange, onRecord, recording = false, transcri
   const toolbar = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
-          <button type="button" onClick={onRecord}>
-            {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-          </button>
-      )}
-      {transcript && (
-        <span
-          style={{ fontSize: '0.8rem', marginLeft: '0.5rem', color: 'var(--secondary)' }}
-        >
-            {t('noteEditor.transcript')} {transcript}
-        </span>
+        <button type="button" onClick={onRecord}>
+          {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+        </button>
       )}
     </div>
   );

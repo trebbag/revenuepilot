@@ -6,6 +6,8 @@ also attempt basic speaker diarisation so that provider and patient text
 can be separated.  Both functions gracefully fall back to lightweight
 placeholders when the required models or API keys are unavailable so the
 rest of the application continues to function in limited environments.
+Deterministic placeholders are used whenever transcription cannot be
+performed so callers always receive predictable output.
 """
 
 from __future__ import annotations
