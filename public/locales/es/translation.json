@@ -28,6 +28,8 @@
     "weeklyEvents": "Eventos semanales",
     "codingDistribution": "Distribución de códigos",
     "denialRates": "Tasas de denegación",
+    "documentationGaps": "Principales brechas de documentación",
+    "gapCountLabel": "Ocurrencias",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
     "allClinicians": "Todos los clínicos",

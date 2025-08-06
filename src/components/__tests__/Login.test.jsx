@@ -16,7 +16,7 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 test('successful login stores token and calls callback', async () => {
-  login.mockResolvedValue({ token: 'token123', settings: { theme: 'modern' } });
+  login.mockResolvedValue({ token: 'token123', refreshToken: 'r', settings: { theme: 'modern' } });
   const onLoggedIn = vi.fn();
   const { getByLabelText, getAllByRole } = render(
     <Login onLoggedIn={onLoggedIn} />
@@ -25,8 +25,9 @@ test('successful login stores token and calls callback', async () => {
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
   fireEvent.click(getAllByRole('button', { name: /login/i })[0]);
   await waitFor(() =>
-    expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern' })
+    expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern', lang: 'en' })
   );
+  expect(login).toHaveBeenCalledWith('u', 'p', 'en');
   expect(localStorage.getItem('token')).toBe('token123');
 });
 
@@ -37,5 +38,6 @@ test('shows error on failed login', async () => {
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
   fireEvent.click(getAllByRole('button', { name: /login/i })[0]);
   expect(await findByText('bad')).toBeTruthy();
+  expect(login).toHaveBeenCalledWith('u', 'p', 'en');
 });
 

@@ -362,6 +362,7 @@ class RegisterModel(BaseModel):
 class LoginModel(BaseModel):
     username: str
     password: str
+    lang: str = "en"
 
 
 class RefreshModel(BaseModel):
