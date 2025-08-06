@@ -167,8 +167,9 @@ def build_suggest_prompt(
             "Analyse the following de‑identified clinical note and return a JSON object with four keys:\n"
             "- codes: an array of objects with fields code (string), rationale (string), upgrade_to (string, optional) and upgrade_path (string, optional). Include only the most relevant CPT and ICD‑10 codes supported by the note. When the documentation would justify a higher‑level code, set upgrade_to to that code and describe the reason in upgrade_path, e.g. '99213 → 99214 due to time or medical decision complexity'. Limit to a maximum of five entries.\n"
             "- compliance: an array of succinct strings highlighting missing documentation elements, audit risks or compliance tips (e.g., incomplete history, missing ROS, insufficient exam). Focus on areas that could cause downcoding or denials.\n"
-            "- public_health: an array of objects with fields recommendation (string) and reason (string) for preventative measures, vaccinations or screenings that may apply given the patient’s context. Suggest generic recommendations without assuming personal details.\n"
-            "- differentials: an array of objects with fields diagnosis (string) and score (number between 0 and 1). Estimate the likelihood of each differential based on the note and provide the score as a decimal between 0 and 1. Limit to a maximum of five entries.\n"
+            "- public_health: an array of objects with fields recommendation (string) and reason (string) giving a brief explanation of why the measure is suggested. Suggest generic recommendations without assuming personal details.\n"
+            "- differentials: an array of objects with fields diagnosis (string) and score (number). Estimate the likelihood of each differential based on the note and provide the score as a percentage from 0 to 100. Limit to a maximum of five entries.\n"
+
             "Return only valid JSON without any surrounding Markdown. Do not fabricate information beyond the note. If no suggestions apply to a category, return an empty array for that key."
         ),
         "es": (
@@ -176,8 +177,8 @@ def build_suggest_prompt(
             "Analice la siguiente nota clínica desidentificada y devuelva un objeto JSON con cuatro claves:\n"
             "- codes: una matriz de objetos con los campos code (cadena), rationale (cadena), upgrade_to (cadena, opcional) y upgrade_path (cadena, opcional). Incluya solo los códigos CPT e ICD‑10 más relevantes basados en la información proporcionada. Cuando la documentación justifique un código de mayor nivel, establezca upgrade_to con ese código y describa la razón en upgrade_path, por ejemplo '99213 → 99214 por tiempo o complejidad de la decisión médica'. Límite a un máximo de cinco entradas.\n"
             "- compliance: una matriz de cadenas breves que resalten elementos faltantes de documentación, riesgos de auditoría o consejos de cumplimiento (por ejemplo, historial incompleto, ROS faltante, examen insuficiente). Concéntrese en áreas que podrían causar reducción de códigos o denegaciones.\n"
-            "- public_health: una matriz de objetos con los campos recommendation (cadena) y reason (cadena) para medidas preventivas, vacunaciones o cribados que puedan aplicar según el contexto del paciente. Sugiera recomendaciones genéricas sin asumir detalles personales.\n"
-            "- differentials: una matriz de objetos con los campos diagnosis (cadena) y score (número entre 0 y 1). Estime la probabilidad de cada diagnóstico diferencial según la nota y exprese score como un decimal entre 0 y 1. Limítese a un máximo de cinco entradas.\n"
+            "- public_health: una matriz de objetos con los campos recommendation (cadena) y reason (cadena) que brinden una breve explicación de por qué se sugiere la medida. Sugiera recomendaciones genéricas sin asumir detalles personales.\n"
+            "- differentials: una matriz de objetos con los campos diagnosis (cadena) y score (número). Estime la probabilidad de cada diagnóstico diferencial según la nota y exprese score como un porcentaje de 0 a 100. Limítese a un máximo de cinco entradas.\n"
             "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave. Todas las cadenas devueltas deben estar en español."
         ),
     }

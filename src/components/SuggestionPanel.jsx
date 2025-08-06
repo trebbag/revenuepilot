@@ -88,6 +88,9 @@ import { useTranslation } from 'react-i18next';
             onClick={() => onInsert && onInsert(item.recommendation)}
           >
             {item.recommendation}
+            {item.reason && (
+              <div style={{ fontStyle: 'italic', color: '#555' }}>{item.reason}</div>
+            )}
           </li>
         );
       }

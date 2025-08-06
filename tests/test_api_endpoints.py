@@ -425,3 +425,28 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
     recs = [item["recommendation"] for item in data["publicHealth"]]
     assert "Shingles vaccine" in recs
     assert "Colon cancer screening" in recs
+
+
+def test_suggest_parses_public_health_reason(client, monkeypatch):
+    def fake_call_openai(msgs):
+        return json.dumps({
+            "codes": [],
+            "compliance": [],
+            "publicHealth": [
+                {"recommendation": "Flu shot", "reason": "Prevents influenza"}
+            ],
+            "differentials": [],
+        })
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+    monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
+
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/suggest",
+        json={"text": "note"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["publicHealth"][0]["reason"] == "Prevents influenza"
