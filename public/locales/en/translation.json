@@ -16,6 +16,7 @@
   "saved": "Saved",
   "templateManager": "Template Manager",
   "ehrExport": "EHR Export",
+  "ehrAuthFailed": "EHR authentication failed",
   "dashboard": {
     "accessDenied": "Access denied",
     "title": "Analytics Dashboard",

@@ -48,6 +48,26 @@ test('filters public health suggestions by region', () => {
   expect(queryByText('EU rec')).toBeNull();
 });
 
+test('toggles public health suggestions visibility', () => {
+  const { getByText, queryByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [{ recommendation: 'Flu shot' }],
+        differentials: [],
+      }}
+      settingsState={{ enablePublicHealth: true }}
+    />
+  );
+  expect(getByText('Flu shot')).toBeTruthy();
+  const toggle = getByText('Hide Suggestions');
+  fireEvent.click(toggle);
+  expect(queryByText('Flu shot')).toBeNull();
+  fireEvent.click(getByText('Show Suggestions'));
+  expect(getByText('Flu shot')).toBeTruthy();
+});
+
 test('shows loading and toggles sections', () => {
   const { getByText, getAllByText } = render(
     <SuggestionPanel loading settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }} />

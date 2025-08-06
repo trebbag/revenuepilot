@@ -12,12 +12,14 @@ vi.mock('../../api.js', () => ({
 
   getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Tpl', content: 'Hello' }]),
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+  exportToEhr: vi.fn().mockResolvedValue({ status: 'exported' }),
 
 
 }));
 
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
+import { exportToEhr } from '../../api.js';
 
 afterEach(() => {
   cleanup();
@@ -93,4 +95,12 @@ test('limits beautified history to five entries', () => {
   }
   expect(queryByText('1')).toBeNull();
   expect(getByText('2')).toBeTruthy();
+});
+
+test('EHR export button triggers API call', async () => {
+  const { getByText } = render(
+    <NoteEditor id="e" value="Some" onChange={() => {}} mode="beautified" />,
+  );
+  fireEvent.click(getByText('EHR Export'));
+  await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });

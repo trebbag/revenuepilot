@@ -6,7 +6,7 @@ import {
   useImperativeHandle,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript, getTemplates, transcribeAudio } from '../api.js';
+import { fetchLastTranscript, getTemplates, transcribeAudio, exportToEhr } from '../api.js';
 
 let ReactQuill;
 try {
@@ -102,6 +102,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [currentSpeaker, setCurrentSpeaker] = useState('');
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [ehrFeedback, setEhrFeedback] = useState('');
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -237,6 +238,12 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (seg) setCurrentSpeaker(seg.speaker);
   };
 
+  const groupedTemplates = templates.reduce((acc, tpl) => {
+    const key = tpl.specialty || 'General';
+    (acc[key] ||= []).push(tpl);
+    return acc;
+  }, {});
+
   const templateChooser = templates.length ? (
     <select
       aria-label={t('app.templates')}
@@ -245,10 +252,14 @@ const NoteEditor = forwardRef(function NoteEditor(
       style={{ marginBottom: '0.5rem' }}
     >
       <option value="">{t('app.templates')}</option>
-      {templates.map((tpl) => (
-        <option key={tpl.id} value={tpl.id}>
-          {tpl.name}
-        </option>
+      {Object.entries(groupedTemplates).map(([spec, tpls]) => (
+        <optgroup key={spec} label={spec}>
+          {tpls.map((tpl) => (
+            <option key={tpl.id} value={tpl.id}>
+              {tpl.name}
+            </option>
+          ))}
+        </optgroup>
       ))}
     </select>
   ) : (
@@ -294,9 +305,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       )}
     </div>
   ) : (
-    <p style={{ marginBottom: '0.5rem' }}>
-      {t('noteEditor.audioUnsupported')}
-    </p>
+    <p style={{ marginBottom: '0.5rem' }}>{t('noteEditor.audioUnsupported')}</p>
   );
 
   const transcriptControls = (transcript.provider || transcript.patient) && (
@@ -386,6 +395,22 @@ const NoteEditor = forwardRef(function NoteEditor(
     });
   };
 
+  const handleExportEhr = async () => {
+    try {
+      const res = await exportToEhr(value, [], true);
+      if (res.status === 'exported') {
+        setEhrFeedback(t('clipboard.exported'));
+      } else if (res.status === 'auth_error') {
+        setEhrFeedback(t('ehrAuthFailed'));
+      } else {
+        setEhrFeedback(t('clipboard.exportFailed'));
+      }
+    } catch (e) {
+      setEhrFeedback(t('clipboard.exportFailed'));
+    }
+    setTimeout(() => setEhrFeedback(''), 2000);
+  };
+
   if (mode === 'beautified') {
     return (
       <div style={{ width: '100%', height: '100%' }}>
@@ -405,6 +430,16 @@ const NoteEditor = forwardRef(function NoteEditor(
           >
             {t('noteEditor.redo')}
           </button>
+          <button
+            type="button"
+            onClick={handleExportEhr}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            {t('ehrExport')}
+          </button>
+          {ehrFeedback && (
+            <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
+          )}
         </div>
         <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
           {history[historyIndex] || ''}

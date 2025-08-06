@@ -706,6 +706,7 @@ function App() {
         <TemplatesModal
           baseTemplates={baseTemplates}
           specialty={settingsState.specialty}
+          payer={settingsState.payer}
           onSelect={(content) => {
             insertTemplate(content);
             setShowTemplatesModal(false);

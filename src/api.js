@@ -18,7 +18,7 @@ const rawFetch = globalThis.fetch.bind(globalThis);
  * @param {string} password
  * @returns {Promise<{token: string, settings: object|null}>}
  */
-export async function login(username, password) {
+export async function login(username, password, lang = 'en') {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -26,7 +26,7 @@ export async function login(username, password) {
   const resp = await rawFetch(`${baseUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, lang }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -39,7 +39,7 @@ export async function login(username, password) {
   let settings = null;
   try {
     const s = await getSettings(token);
-    settings = s;
+    settings = { ...s, lang };
   } catch (e) {
     console.error('Failed to fetch settings', e);
   }

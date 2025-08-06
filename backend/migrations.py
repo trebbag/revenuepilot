@@ -24,6 +24,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     )
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
+
     if "categories" not in columns:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN categories TEXT NOT NULL DEFAULT '{}'"
@@ -44,6 +45,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN use_local_models INTEGER NOT NULL DEFAULT 0"
         )
+
     conn.commit()
 
 def ensure_templates_table(conn: sqlite3.Connection) -> None:
