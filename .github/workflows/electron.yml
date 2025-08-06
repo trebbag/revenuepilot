@@ -1,0 +1,59 @@
+name: Electron Packaging
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: npm ci
+      - name: Generate dummy certificates
+        run: |
+          openssl req -new -newkey rsa:2048 -nodes -x509 -days 1 -subj "/CN=test" -keyout key.pem -out cert.pem
+          openssl pkcs12 -export -out cert.p12 -inkey key.pem -in cert.pem -passout pass:password
+      - name: Build electron app
+        env:
+          UPDATE_SERVER_URL: http://localhost:8080
+          WIN_CSC_LINK: cert.p12
+          WIN_CSC_KEY_PASSWORD: password
+          CSC_LINK: cert.p12
+          CSC_KEY_PASSWORD: password
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run electron:build -- -l
+      - uses: actions/upload-artifact@v3
+        with:
+          name: dist
+          path: dist
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: pip install -r backend/requirements.txt pytest pytest-cov
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - uses: actions/download-artifact@v3
+        with:
+          name: dist
+          path: dist
+      - name: Run update server
+        run: |
+          npm run update-server &
+          sleep 5
+          curl -I http://localhost:8080 || true
+          kill %1
+      - name: Run smoke tests
+        run: pytest tests/test_blockers.py::test_electron_auto_update_and_backend_spawn_present tests/test_blockers.py::test_update_server_serves_files -q

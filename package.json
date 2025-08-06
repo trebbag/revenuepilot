@@ -11,7 +11,7 @@
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js",
-    "update-server": "node scripts/update-server.js",
+    "update-server": "node -r dotenv/config scripts/update-server.js",
     "setup-env": "node scripts/setup-env.js",
     "test": "vitest run"
   },
@@ -62,13 +62,17 @@
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "cscLink": "${env.CSC_LINK}",
+      "cscKeyPassword": "${env.CSC_KEY_PASSWORD}"
     },
     "win": {
       "target": "nsis",
       "signingHashAlgorithms": [
         "sha256"
-      ]
+      ],
+      "cscLink": "${env.WIN_CSC_LINK}",
+      "cscKeyPassword": "${env.WIN_CSC_KEY_PASSWORD}"
     },
     "linux": {
       "target": [
