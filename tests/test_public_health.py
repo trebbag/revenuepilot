@@ -62,3 +62,49 @@ def test_guideline_cache(monkeypatch):
     public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
     assert calls["cdc"] == 2
 
+
+def test_cache_is_region_specific(monkeypatch):
+    calls = []
+
+    def fake_cdc(age, sex, region):
+        calls.append(region)
+        return [
+            {
+                "recommendation": region,
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
+        ]
+
+    monkeypatch.setattr(public_health, "_AGENCY_FETCHERS", {"cdc": fake_cdc})
+    times = iter([0, 1, 2])
+    monkeypatch.setattr(public_health, "_now", lambda: next(times))
+    monkeypatch.setattr(public_health, "CACHE_TTL", 10)
+
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "EU", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    assert calls == ["US", "EU"]
+
+
+def test_region_specific_endpoints(monkeypatch):
+    urls = []
+
+    def fake_download(url):
+        urls.append(url)
+        return {"recommendations": [{"text": "x"}]}
+
+    monkeypatch.setattr(public_health, "_download_json", fake_download)
+    monkeypatch.setattr(
+        public_health,
+        "CDC_URL",
+        "US:https://us.example/cdc;EU:https://eu.example/cdc",
+    )
+    monkeypatch.setattr(public_health, "_AGENCY_FETCHERS", {"cdc": public_health._fetch_cdc})
+    monkeypatch.setattr(public_health, "CACHE_TTL", 100)
+
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "EU", ["cdc"])
+    public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
+    assert urls == ["https://us.example/cdc", "https://eu.example/cdc"]
+
