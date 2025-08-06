@@ -5,7 +5,7 @@ import i18n from '../../i18n.js';
 
 vi.mock('../../api.js', () => ({
   setApiKey: vi.fn(),
-  saveSettings: vi.fn(),
+  saveSettings: vi.fn(async (s) => s),
   getTemplates: vi.fn().mockResolvedValue([]),
   createTemplate: vi.fn(),
   updateTemplate: vi.fn(),

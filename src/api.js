@@ -210,7 +210,20 @@ export async function saveSettings(settings, token) {
     body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error('Failed to save settings');
-  return await resp.json();
+  const data = await resp.json();
+  const categories = data.categories || {};
+  return {
+    theme: data.theme,
+    enableCodes: categories.codes !== false,
+    enableCompliance: categories.compliance !== false,
+    enablePublicHealth: categories.publicHealth !== false,
+    enableDifferentials: categories.differentials !== false,
+    rules: data.rules || [],
+    lang: data.lang || 'en',
+    specialty: data.specialty || '',
+    payer: data.payer || '',
+    region: data.region || '',
+  };
 }
 
 /**

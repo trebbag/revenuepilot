@@ -20,7 +20,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, R
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, confloat
+from pydantic import BaseModel, Field, confloat, validator, StrictBool
 
 
 import jwt
@@ -358,19 +358,47 @@ class ResetPasswordModel(BaseModel):
     new_password: str
 
 
+class CategorySettings(BaseModel):
+    """Which suggestion categories are enabled for a user."""
+
+    codes: StrictBool = True
+    compliance: StrictBool = True
+    publicHealth: StrictBool = True
+    differentials: StrictBool = True
+
+    class Config:
+        extra = "forbid"
+
+
 class UserSettings(BaseModel):
     theme: str = "modern"
-    categories: Dict[str, bool] = {
-        "codes": True,
-        "compliance": True,
-        "publicHealth": True,
-        "differentials": True,
-    }
+    categories: CategorySettings = CategorySettings()
     rules: List[str] = []
     lang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
+
+    @validator("theme")
+    def validate_theme(cls, v: str) -> str:
+        allowed = {"modern", "dark", "warm"}
+        if v not in allowed:
+            raise ValueError("invalid theme")
+        return v
+
+    @validator("rules", pre=True)
+    def validate_rules(cls, v: List[str]) -> List[str]:
+        if not v:
+            return []
+        cleaned: List[str] = []
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("rules must be strings")
+            item = item.strip()
+            if not item:
+                continue
+            cleaned.append(item)
+        return cleaned
 
 
 
@@ -520,15 +548,16 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
     ).fetchone()
 
     if row:
-        return {
-            "theme": row["theme"],
-            "categories": json.loads(row["categories"]),
-            "rules": json.loads(row["rules"]),
-            "lang": row["lang"],
-            "specialty": row["specialty"],
-            "payer": row["payer"],
-            "region": row["region"] or "",
-        }
+        settings = UserSettings(
+            theme=row["theme"],
+            categories=json.loads(row["categories"]),
+            rules=json.loads(row["rules"]),
+            lang=row["lang"],
+            specialty=row["specialty"],
+            payer=row["payer"],
+            region=row["region"] or "",
+        )
+        return settings.dict()
     return UserSettings().dict()
 
 
@@ -547,7 +576,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
         (
             row["id"],
             model.theme,
-            json.dumps(model.categories),
+            json.dumps(model.categories.dict()),
             json.dumps(model.rules),
             model.lang,
             model.specialty,
@@ -780,7 +809,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),

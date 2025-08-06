@@ -32,14 +32,23 @@ def test_settings_roundtrip(client):
     resp = client.get('/settings', headers=auth_header(token))
     assert resp.status_code == 200
     data = resp.json()
+    assert data['theme'] == 'modern'
+    assert data['categories']['codes'] is True
+    assert data['rules'] == []
+
     assert data['lang'] == 'en'
     assert data['specialty'] is None
     assert data['payer'] is None
 
     new_settings = {
-        'theme': 'modern',
-        'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
-        'rules': [],
+        'theme': 'dark',
+        'categories': {
+            'codes': False,
+            'compliance': True,
+            'publicHealth': False,
+            'differentials': True,
+        },
+        'rules': ['r1', 'r2'],
         'lang': 'es',
         'specialty': 'cardiology',
         'payer': 'medicare',
@@ -50,6 +59,37 @@ def test_settings_roundtrip(client):
 
     resp = client.get('/settings', headers=auth_header(token))
     data = resp.json()
+    assert data['theme'] == 'dark'
+    assert data['categories']['codes'] is False
+    assert data['categories']['publicHealth'] is False
+    assert data['rules'] == ['r1', 'r2']
     assert data['lang'] == 'es'
     assert data['specialty'] == 'cardiology'
     assert data['payer'] == 'medicare'
+
+
+def test_invalid_settings_rejected(client):
+    token = main.create_token('alice', 'user')
+    bad_theme = {
+        'theme': 'neon',
+        'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
+        'rules': [],
+    }
+    resp = client.post('/settings', json=bad_theme, headers=auth_header(token))
+    assert resp.status_code == 422
+
+    bad_categories = {
+        'theme': 'modern',
+        'categories': {'codes': 'yes'},
+        'rules': [],
+    }
+    resp = client.post('/settings', json=bad_categories, headers=auth_header(token))
+    assert resp.status_code == 422
+
+    bad_rules = {
+        'theme': 'modern',
+        'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
+        'rules': ['ok', 5],
+    }
+    resp = client.post('/settings', json=bad_rules, headers=auth_header(token))
+    assert resp.status_code == 422
