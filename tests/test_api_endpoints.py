@@ -50,6 +50,7 @@ def test_endpoints_require_auth(client):
         in {401, 403}
     )
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
+    assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
 
 
 def test_login_and_settings(client):
@@ -161,6 +162,39 @@ def test_events_metrics_with_auth(client):
     resp = client.get("/metrics", headers=auth_header(token_admin))
     assert resp.status_code == 200
     assert resp.json()["total_notes"] >= 1
+
+
+def test_export_to_ehr_requires_admin(client):
+    # user token should be forbidden
+    token_user = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header(token_user),
+    )
+    assert resp.status_code == 403
+
+    # invalid token should return 401
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header("badtoken"),
+    )
+    assert resp.status_code == 401
+
+    # admin token succeeds
+    token_admin = client.post(
+        "/login", json={"username": "admin", "password": "pw"}
+    ).json()["access_token"]
+    resp = client.post(
+        "/export_to_ehr",
+        json={"note": "hi"},
+        headers=auth_header(token_admin),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "exported"
 
 
 def test_summarize_and_fallback(client, monkeypatch):

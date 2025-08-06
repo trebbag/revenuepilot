@@ -66,7 +66,13 @@
     "username": "Username",
     "password": "Password",
     "loggingIn": "Logging in…",
-    "login": "Login"
+    "login": "Login",
+    "resetPassword": "Reset Password",
+    "resetting": "Resetting…",
+    "backToLogin": "Back",
+    "resetSuccess": "Password reset, please login",
+    "resetFailed": "Password reset failed",
+    "newPassword": "New Password"
   },
   "logs": {
     "title": "Event Log",

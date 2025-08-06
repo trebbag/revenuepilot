@@ -254,6 +254,13 @@ class LoginModel(BaseModel):
     password: str
 
 
+class ResetPasswordModel(BaseModel):
+    """Schema used when a user wishes to reset their password."""
+    username: str
+    password: str
+    new_password: str
+
+
 class UserSettings(BaseModel):
     theme: str = "modern"
     categories: Dict[str, bool] = {
@@ -303,6 +310,26 @@ async def login(model: LoginModel) -> Dict[str, str]:
         )
     token = create_token(model.username, row["role"])
     return {"access_token": token}
+
+
+@app.post("/reset-password")
+async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
+    """Allow a user to change their password by providing the current one."""
+    row = db_conn.execute(
+        "SELECT password_hash FROM users WHERE username=?",
+        (model.username,),
+    ).fetchone()
+    if not row or hash_password(model.password) != row["password_hash"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+    db_conn.execute(
+        "UPDATE users SET password_hash=? WHERE username=?",
+        (hash_password(model.new_password), model.username),
+    )
+    db_conn.commit()
+    return {"status": "password reset"}
 
 
 @app.get("/settings")
@@ -668,6 +695,19 @@ def delete_template(template_id: int, user=Depends(require_role("admin"))) -> Di
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
     return {"status": "deleted"}
+
+
+class ExportRequest(BaseModel):
+    """Payload for exporting a note to an external EHR system."""
+    note: str
+
+
+@app.post("/export_to_ehr")
+async def export_to_ehr(req: ExportRequest, user=Depends(require_role("admin"))) -> Dict[str, str]:
+    """Placeholder endpoint demonstrating admin-only export functionality."""
+    # Real implementation would interface with an EHR API. For now, simply
+    # acknowledge the request.
+    return {"status": "exported"}
 
 
 # Endpoint: aggregate metrics from the logged events.  Returns counts of

@@ -63,3 +63,10 @@ def test_login_failure():
     client = TestClient(main.app)
     resp = client.post('/login', json={'username': 'alice', 'password': 'wrong'})
     assert resp.status_code == 401
+
+
+def test_invalid_token_rejected():
+    client = TestClient(main.app)
+    # An obviously invalid token should return 401 rather than 403
+    resp = client.get('/settings', headers={'Authorization': 'Bearer badtoken'})
+    assert resp.status_code == 401

@@ -77,3 +77,9 @@ def test_templates_require_admin_role():
     token = main.create_token('alice', 'user', clinic='clinic1')
     resp = client.get('/templates', headers={'Authorization': f'Bearer {token}'})
     assert resp.status_code == 403
+
+
+def test_templates_reject_invalid_token():
+    client = TestClient(main.app)
+    resp = client.get('/templates', headers={'Authorization': 'Bearer badtoken'})
+    assert resp.status_code == 401
