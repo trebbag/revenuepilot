@@ -19,6 +19,7 @@ import {
 } from '../api.js';
 import useRecorder from '../hooks/useRecorder.js';
 
+
 let ReactQuill;
 try {
   // eslint-disable-next-line global-require
@@ -47,7 +48,9 @@ const quillModules = {
   ],
 };
 
+
 function NoteEditor(
+
   {
     id,
     value,
@@ -69,6 +72,7 @@ function NoteEditor(
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
+  const templateChooser = null;
 
   const {
     startRecording,
