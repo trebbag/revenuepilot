@@ -204,7 +204,7 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
     def fake_post(note, codes):
         assert note == "hi"
         assert codes == []
-        return {"result": "ok"}
+        return {"status": "exported"}
 
     monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
 

@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -824,7 +825,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1109,11 +1110,11 @@ async def export_to_ehr(
     try:
         from . import ehr_integration
 
-        ehr_integration.post_note_and_codes(req.note, req.codes)
+        result = ehr_integration.post_note_and_codes(req.note, req.codes)
     except Exception as exc:  # pragma: no cover - network failures
         raise HTTPException(status_code=502, detail=str(exc))
 
-    return {"status": "exported"}
+    return result
 
 
 # Endpoint: aggregate metrics from the logged events.  Returns counts of

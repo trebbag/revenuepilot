@@ -66,8 +66,22 @@ def post_note_and_codes(note: str, codes: List[str]) -> Dict[str, Any]:
     url = f"{FHIR_SERVER_URL.rstrip('/')}/Bundle"
     payload = _build_bundle(note, codes)
     resp = requests.post(url, json=payload, timeout=10)
+
+    # Many FHIR servers require authentication and will reply with a
+    # 401/403 status when credentials are missing or invalid.  Instead of
+    # raising an exception we report the condition to the caller so the
+    # API endpoint can surface a helpful message to the frontend.
+    if resp.status_code in {401, 403}:
+        return {"status": "auth_error"}
+
     resp.raise_for_status()
-    return resp.json()
+
+    # The server's JSON response is included alongside a success status so
+    # callers can inspect any returned identifiers if desired.
+    data = resp.json()
+    if isinstance(data, dict):
+        data = {**data}
+    return {"status": "exported", **data}
 
 
 __all__ = ["post_note_and_codes"]

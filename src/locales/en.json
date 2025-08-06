@@ -16,6 +16,7 @@
   "saved": "Saved",
   "templateManager": "Template Manager",
   "ehrExport": "EHR Export",
+  "ehrAuthFailed": "EHR authentication failed",
   "survey": {
     "title": "Quick Survey",
     "question": "How confident are you in today's documentation?",
