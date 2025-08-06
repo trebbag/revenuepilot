@@ -15,10 +15,9 @@ test('calls onRecord when record button clicked', () => {
   expect(onRecord).toHaveBeenCalled();
 });
 
-test('shows record button and transcript when provided', () => {
+test('shows record button when recording', () => {
   const { getByText } = render(
-    <NoteEditor id="a" value="" onChange={() => {}} onRecord={() => {}} recording transcript="done" />
+    <NoteEditor id="a" value="" onChange={() => {}} onRecord={() => {}} recording />
   );
   expect(getByText('Stop Recording')).toBeTruthy();
-  expect(getByText(/Transcript: done/)).toBeTruthy();
 });

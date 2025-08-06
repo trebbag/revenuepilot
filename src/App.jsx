@@ -555,14 +555,20 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-                    <NoteEditor
-                      id="draft-input"
-                      value={draftText}
-                      onChange={handleDraftChange}
-                      onRecord={handleRecordAudio}
-                      recording={recording}
-                      transcript={audioTranscript}
-                    />
+                    <>
+                      <NoteEditor
+                        id="draft-input"
+                        value={draftText}
+                        onChange={handleDraftChange}
+                        onRecord={handleRecordAudio}
+                        recording={recording}
+                      />
+                      {audioTranscript && (
+                        <div className="transcript-display">
+                          <strong>{t('noteEditor.transcript')}</strong> {audioTranscript}
+                        </div>
+                      )}
+                    </>
                   ) : (
                     activeTab === 'beautified' ? (
                       <div className="beautified-view">{beautified}</div>
