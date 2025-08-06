@@ -21,6 +21,8 @@
     "codingDistribution": "Coding Distribution",
     "denialRates": "Denial Rates",
     "denialRateLabel": "Denial Rate (%)",
+    "deficiencyRateLabel": "Deficiency Rate (%)",
+    "allClinicians": "All Clinicians",
     "cards": {
       "totalNotes": "Total Notes Created",
       "beautifiedNotes": "Beautified Notes",

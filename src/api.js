@@ -319,6 +319,7 @@ export async function getMetrics(filters = {}) {
       denial_rate: 0,
       denial_rates: {},
       deficiency_rate: 0,
+      clinicians: [],
       timeseries: { daily: [], weekly: [] },
     };
   }

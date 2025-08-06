@@ -21,6 +21,8 @@
     "codingDistribution": "Distribución de códigos",
     "denialRates": "Tasas de denegación",
     "denialRateLabel": "Tasa de denegación (%)",
+    "deficiencyRateLabel": "Tasa de deficiencia (%)",
+    "allClinicians": "Todos los clínicos",
     "cards": {
       "totalNotes": "Notas totales creadas",
       "beautifiedNotes": "Notas embellecidas",
