@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build_args: -l
+            artifacts: |
+              dist/*.AppImage
+              dist/*.deb
+          - os: macos-latest
+            build_args: -m
+            artifacts: |
+              dist/*.dmg
+          - os: windows-latest
+            build_args: -w
+            artifacts: |
+              dist/*.exe
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - run: npm ci
+        shell: bash
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup environment
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          ICON_PNG_URL: ${{ secrets.ICON_PNG_URL }}
+          ICON_ICO_URL: ${{ secrets.ICON_ICO_URL }}
+          ICON_ICNS_URL: ${{ secrets.ICON_ICNS_URL }}
+          UPDATE_SERVER_URL: ${{ secrets.UPDATE_SERVER_URL }}
+        run: yes '' | npm run setup-env
+        shell: bash
+
+      - name: Build installer
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run electron:build -- ${{ matrix.build_args }} --publish never
+        shell: bash
+
+      - name: Upload update files to S3
+        env:
+          UPDATE_SERVER_URL: ${{ secrets.UPDATE_SERVER_URL }}
+        run: |
+          aws s3 sync dist/ "$UPDATE_SERVER_URL" --exclude "*" --include "*.yml" --include "*.json" --include "*.blockmap"
+        shell: bash
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.artifacts }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
