@@ -2,6 +2,7 @@ import json
 import sqlite3
 import hashlib
 import logging
+import json
 
 
 import pytest
@@ -222,12 +223,22 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
 
 def test_summarize_and_fallback(client, monkeypatch, caplog):
 
-    monkeypatch.setattr(main, "call_openai", lambda msgs: "great summary")
+    monkeypatch.setattr(
+        main,
+        "call_openai",
+        lambda msgs: json.dumps(
+            {"summary": "great summary", "recommendations": ["do"], "warnings": []}
+        ),
+    )
     token = main.create_token("u", "user")
     resp = client.post(
         "/summarize", json={"text": "hello"}, headers=auth_header(token)
     )
-    assert resp.json()["summary"] == "great summary"
+    assert resp.json() == {
+        "summary": "great summary",
+        "recommendations": ["do"],
+        "warnings": [],
+    }
 
     def boom(_):
         raise RuntimeError("no key")
@@ -239,20 +250,28 @@ def test_summarize_and_fallback(client, monkeypatch, caplog):
             "/summarize", json={"text": long_text}, headers=auth_header(token)
         )
     assert resp.status_code == 200
-    assert len(resp.json()["summary"]) <= 203  # truncated fallback
+    data = resp.json()
+    assert len(data["summary"]) <= 203  # truncated fallback
+    assert data["recommendations"] == []
+    assert data["warnings"] == []
     assert "Error during summary LLM call" in caplog.text
 
 
 def test_summarize_spanish_language(client, monkeypatch):
     def fake_call_openai(msgs):
-        # Ensure the system prompt is in Spanish
+        # Ensure the system prompt is in Spanish and includes age guidance
         assert "comunicador clínico" in msgs[0]["content"]
-        return "resumen"
+        assert "10-year-old" in msgs[0]["content"]
+        return json.dumps(
+            {"summary": "resumen", "recommendations": [], "warnings": []}
+        )
 
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
     token = main.create_token("u", "user")
     resp = client.post(
-        "/summarize", json={"text": "hola", "lang": "es"}, headers=auth_header(token)
+        "/summarize",
+        json={"text": "hola", "lang": "es", "patientAge": 10},
+        headers=auth_header(token),
     )
     assert resp.status_code == 200
     assert resp.json()["summary"] == "resumen"
