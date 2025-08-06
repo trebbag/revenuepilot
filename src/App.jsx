@@ -129,6 +129,7 @@ function App() {
     enablePublicHealth: true,
     enableDifferentials: true,
     lang: 'en',
+    summaryLang: 'en',
     specialty: '',
     payer: '',
     // Array of custom clinical rules supplied by the user.  When non‑empty,
@@ -318,7 +319,7 @@ function App() {
     summarizeNote(plain, {
       chart: chartText,
       audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
-      lang: settingsState.lang,
+      lang: settingsState.summaryLang,
       specialty: settingsState.specialty,
       payer: settingsState.payer,
       useLocalModels: settingsState.useLocalModels,

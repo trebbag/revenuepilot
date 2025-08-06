@@ -25,13 +25,15 @@ function Login({ onLoggedIn }) {
       const { token, refreshToken, settings } = await login(
         username,
         password,
-        lang
+        lang,
       );
       if (typeof window !== 'undefined') {
         localStorage.setItem('token', token);
         localStorage.setItem('refreshToken', refreshToken);
       }
-      const newSettings = settings ? { ...settings, lang } : { lang };
+      const newSettings = settings
+        ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+        : { lang, summaryLang: lang };
       onLoggedIn(token, newSettings);
     } catch (err) {
       const msg =

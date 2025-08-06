@@ -158,6 +158,7 @@
     "customRulesHelp": "Introduzca una regla por línea. Estas reglas se pasarán al modelo de IA para personalizar las sugerencias según requisitos del pagador o de la clínica.",
     "customRulesPlaceholder": "p. ej., El pagador comercial X requiere tres ROS para 99214; Incluir tiempo dedicado a asesoría para CPT 99406",
     "language": "Idioma",
+    "summaryLanguage": "Idioma del resumen",
     "specialty": "Especialidad",
     "payer": "Pagador",
     "templates": "Plantillas",

@@ -25,7 +25,7 @@ test('successful login stores token and calls callback', async () => {
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
   fireEvent.click(getAllByRole('button', { name: /login/i })[0]);
   await waitFor(() =>
-    expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern', lang: 'en' })
+    expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern', lang: 'en', summaryLang: 'en' })
   );
   expect(login).toHaveBeenCalledWith('u', 'p', 'en');
   expect(localStorage.getItem('token')).toBe('token123');

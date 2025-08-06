@@ -158,6 +158,7 @@
     "customRulesHelp": "Enter one rule per line. These rules will be passed to the AI model to customise suggestions based on payer or clinic‑specific requirements.",
     "customRulesPlaceholder": "e.g. Commercial payer X requires three ROS for 99214; Include time spent on counselling for CPT 99406",
     "language": "Language",
+    "summaryLanguage": "Summary language",
     "specialty": "Specialty",
     "payer": "Payer",
     "templates": "Templates",
