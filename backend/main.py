@@ -417,7 +417,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 
 
 @app.post("/login")
-async def login(model: LoginModel) -> Dict[str, str]:
+async def login(model: LoginModel) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
@@ -751,7 +751,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
+        ("DATE", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1229,6 +1229,8 @@ async def get_metrics(
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+            ,SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials
+            ,SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
         FROM events {where_current}
         GROUP BY date
         ORDER BY date
@@ -1248,6 +1250,8 @@ async def get_metrics(
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+            ,SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials
+            ,SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
         FROM events {where_current}
         GROUP BY week
         ORDER BY week
