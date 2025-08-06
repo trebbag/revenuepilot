@@ -112,6 +112,15 @@
     "loading": "Cargando…",
     "none": "No se han registrado eventos."
   },
+  "auditLog": {
+    "title": "Registro de auditoría",
+    "timestamp": "Marca de tiempo",
+    "username": "Usuario",
+    "action": "Acción",
+    "details": "Detalles",
+    "loading": "Cargando…",
+    "none": "Sin entradas de auditoría"
+  },
   "noteEditor": {
     "stopRecording": "Detener grabación",
     "recordAudio": "Grabar audio",

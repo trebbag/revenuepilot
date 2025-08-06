@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import AuditLog from './AuditLog.jsx';
 
 function AdminUsers({ token }) {
   const { t } = useTranslation();
@@ -123,6 +124,7 @@ function AdminUsers({ token }) {
           ))}
         </tbody>
       </table>
+      <AuditLog token={token} />
     </div>
   );
 }
