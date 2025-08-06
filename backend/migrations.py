@@ -24,22 +24,17 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     )
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
-    if "categories" not in columns:
-        conn.execute(
-            "ALTER TABLE settings ADD COLUMN categories TEXT NOT NULL DEFAULT '{}'"
-        )
-    if "rules" not in columns:
-        conn.execute(
-            "ALTER TABLE settings ADD COLUMN rules TEXT NOT NULL DEFAULT '[]'"
-        )
-    if "lang" not in columns:
-        conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
-    if "specialty" not in columns:
-        conn.execute("ALTER TABLE settings ADD COLUMN specialty TEXT")
-    if "payer" not in columns:
-        conn.execute("ALTER TABLE settings ADD COLUMN payer TEXT")
-    if "region" not in columns:
-        conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
+    required = {
+        "categories": "TEXT NOT NULL DEFAULT '{}'",
+        "rules": "TEXT NOT NULL DEFAULT '[]'",
+        "lang": "TEXT NOT NULL DEFAULT 'en'",
+        "specialty": "TEXT",
+        "payer": "TEXT",
+        "region": "TEXT",
+    }
+    for col, ddl in required.items():
+        if col not in columns:
+            conn.execute(f"ALTER TABLE settings ADD COLUMN {col} {ddl}")
     conn.commit()
 
 def ensure_templates_table(conn: sqlite3.Connection) -> None:

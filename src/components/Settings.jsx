@@ -145,7 +145,8 @@ function Settings({ settings, updateSettings }) {
   };
 
   const handleSpecialtyChange = async (event) => {
-    const updated = { ...settings, specialty: event.target.value };
+    const value = event.target.value || '';
+    const updated = { ...settings, specialty: value };
     try {
       const saved = await saveSettings(updated);
       updateSettings(saved);
@@ -155,7 +156,8 @@ function Settings({ settings, updateSettings }) {
   };
 
   const handlePayerChange = async (event) => {
-    const updated = { ...settings, payer: event.target.value };
+    const value = event.target.value || '';
+    const updated = { ...settings, payer: value };
     try {
       const saved = await saveSettings(updated);
       updateSettings(saved);
@@ -165,7 +167,8 @@ function Settings({ settings, updateSettings }) {
   };
 
   const handleRegionChange = async (event) => {
-    const updated = { ...settings, region: event.target.value };
+    const value = event.target.value.toUpperCase().trim();
+    const updated = { ...settings, region: value };
     try {
       const saved = await saveSettings(updated);
       updateSettings(saved);
@@ -317,6 +320,7 @@ function Settings({ settings, updateSettings }) {
       <select
         value={settings.specialty || ''}
         onChange={handleSpecialtyChange}
+        aria-label={t('settings.specialty')}
         style={{
           width: '100%',
           padding: '0.5rem',
@@ -336,6 +340,7 @@ function Settings({ settings, updateSettings }) {
       <select
         value={settings.payer || ''}
         onChange={handlePayerChange}
+        aria-label={t('settings.payer')}
         style={{
           width: '100%',
           padding: '0.5rem',
@@ -356,6 +361,7 @@ function Settings({ settings, updateSettings }) {
         value={settings.region || ''}
         onChange={handleRegionChange}
         placeholder={t('settings.regionPlaceholder')}
+        aria-label={t('settings.region')}
         style={{
           width: '100%',
           padding: '0.5rem',

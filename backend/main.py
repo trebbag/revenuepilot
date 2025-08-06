@@ -15,6 +15,7 @@ import shutil
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
+from collections import deque
 
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -789,7 +790,7 @@ def deidentify(text: str) -> str:
         re.IGNORECASE,
     )
     dob_pattern = re.compile(
-        r"\bDOB[:\s-]*\d{1,2}/\d{1,2}/\d{2,4}\b",
+        r"\bDOB[:\s-]*(\d{1,2}/\d{1,2}/\d{2,4})\b",
         re.IGNORECASE,
     )
     date_pattern = re.compile(
@@ -824,7 +825,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -838,7 +839,10 @@ def deidentify(text: str) -> str:
     ]
 
     for token, pattern in patterns:
-        text = pattern.sub(lambda m: _placeholder(token, m.group(0)), text)
+        text = pattern.sub(
+            lambda m: _placeholder(token, m.group(1) if m.lastindex else m.group(0)),
+            text,
+        )
 
     return text
 
