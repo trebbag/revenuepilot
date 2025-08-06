@@ -1,4 +1,3 @@
-import hashlib
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -20,7 +19,7 @@ def setup_module(module):
         'CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)'
     )
     # Seed an initial admin user
-    admin_hash = hashlib.sha256(b'secret').hexdigest()
+    admin_hash = main.hash_password('secret')
     main.db_conn.execute(
         'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
         ('admin', admin_hash, 'admin'),
@@ -49,6 +48,15 @@ def test_register_and_login():
     token = resp.json()['access_token']
     payload = main.jwt.decode(token, main.JWT_SECRET, algorithms=[main.JWT_ALGORITHM])
     assert payload['role'] == 'user'
+
+    # Password stored in DB should be a bcrypt hash and verify correctly
+    row = main.db_conn.execute(
+        'SELECT password_hash FROM users WHERE username=?',
+        ('alice',),
+    ).fetchone()
+    assert row is not None
+    assert row['password_hash'].startswith('$2b$')
+    assert main.verify_password('pw', row['password_hash'])
 
 
 def test_role_enforcement():

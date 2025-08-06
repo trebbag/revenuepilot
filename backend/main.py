@@ -55,6 +55,12 @@ import json
 import sqlite3
 import hashlib
 
+from passlib.context import CryptContext
+
+# Password hashing context using bcrypt
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
 # for running the API in environments without network access.
@@ -407,8 +413,16 @@ class UserSettings(BaseModel):
 
 
 def hash_password(password: str) -> str:
-    """Return a SHA-256 hash of the provided password."""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """Hash the provided password using bcrypt with a per-password salt."""
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a plain password against the stored hash."""
+    try:
+        return pwd_context.verify(password, hashed)
+    except Exception:
+        return False
 
 
 @app.post("/register")
@@ -483,7 +497,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         db_conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
             (time.time(), model.username, "failed_login", "invalid credentials"),
@@ -521,7 +535,7 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
         "SELECT password_hash FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -805,7 +819,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
+        ("DATE", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1330,6 +1344,48 @@ async def get_metrics(
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
 
+    daily_query = f"""
+        SELECT
+            date(datetime(timestamp, 'unixepoch')) AS date,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+            AVG(revenue) AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_current}
+        GROUP BY date
+        ORDER BY date
+    """
+    cursor.execute(daily_query, base_params)
+    daily_list = [dict(r) for r in cursor.fetchall()]
+
+    weekly_query = f"""
+        SELECT
+            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+            AVG(revenue) AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+        FROM events {where_current}
+        GROUP BY week
+        ORDER BY week
+    """
+    cursor.execute(weekly_query, base_params)
+    weekly_list = [dict(r) for r in cursor.fetchall()]
+
 
     daily_list: List[Dict[str, Any]] = []
     if daily:
@@ -1395,6 +1451,39 @@ async def get_metrics(
         for entry in weekly_list:
             bt = beautify_weekly.get(entry["week"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+
+    def _add_rolling(records: List[Dict[str, Any]], window: int) -> None:
+        """Attach rolling averages for key metrics."""
+        fields = [
+            "notes",
+            "beautify",
+            "suggest",
+            "summary",
+            "chart_upload",
+            "audio",
+            "avg_note_length",
+            "avg_beautify_time",
+            "avg_close_time",
+            "revenue_per_visit",
+            "denials",
+            "deficiencies",
+        ]
+        sums: Dict[str, float] = {f: 0.0 for f in fields}
+        queues: Dict[str, deque] = {f: deque() for f in fields}
+        for rec in records:
+            for f in fields:
+                val = float(rec.get(f, 0) or 0)
+                q = queues[f]
+                q.append(val)
+                sums[f] += val
+                if len(q) > window:
+                    sums[f] -= q.popleft()
+                rec[f"rolling_{f}"] = sums[f] / len(q) if q else 0
+
+    if daily:
+        _add_rolling(daily_list, 7)
+    if weekly:
+        _add_rolling(weekly_list, 4)
 
     timeseries: Dict[str, List[Dict[str, Any]]] = {}
     if daily:

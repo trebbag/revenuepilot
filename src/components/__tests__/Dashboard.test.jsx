@@ -7,9 +7,15 @@ import i18n from '../../i18n.js';
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
 vi.mock('react-chartjs-2', () => ({
-  Line: (props) => <canvas {...props} />,
-  Bar: (props) => <canvas {...props} />,
-  Pie: (props) => <canvas {...props} />,
+  Line: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
+  Bar: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
+  Pie: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
 }));
 
 vi.mock('../../api.js', () => ({
@@ -161,5 +167,21 @@ test('applies quick range filter', async () => {
   getByText('Apply').click();
   await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
   expect(getMetrics).toHaveBeenLastCalledWith({ start, end, clinician: '' });
+
+});
+
+test('exports metrics as CSV', async () => {
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(() => {});
+  global.URL.createObjectURL = vi.fn(() => 'blob:mock');
+  global.URL.revokeObjectURL = vi.fn();
+
+  const { getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  fireEvent.click(getByText('Export'));
+  expect(clickSpy).toHaveBeenCalled();
+
+  clickSpy.mockRestore();
 
 });

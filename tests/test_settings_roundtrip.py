@@ -1,4 +1,3 @@
-import hashlib
 import sqlite3
 
 import pytest
@@ -15,7 +14,7 @@ def client(monkeypatch):
     db.execute(
         'CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)'
     )
-    pwd = hashlib.sha256(b'pw').hexdigest()
+    pwd = main.hash_password('pw')
     db.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', ('alice', pwd, 'user'))
     db.commit()
     monkeypatch.setattr(main, 'db_conn', db)

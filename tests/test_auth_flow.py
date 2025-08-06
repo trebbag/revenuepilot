@@ -1,5 +1,4 @@
 import sqlite3
-import hashlib
 from fastapi.testclient import TestClient
 
 from backend import main
@@ -21,7 +20,7 @@ def setup_module(module):
     )
     main.ensure_settings_table(db)
     # Seed admin user
-    admin_hash = hashlib.sha256(b"secret").hexdigest()
+    admin_hash = main.hash_password("secret")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", admin_hash, "admin"),
@@ -72,3 +71,13 @@ def test_registration_login_refresh_and_roles():
     # Admin token can access admin endpoint
     resp = client.get("/metrics", headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 200
+
+    # Regular user cannot view audit log
+    resp = client.get("/audit", headers={"Authorization": f"Bearer {new_access}"})
+    assert resp.status_code == 403
+
+    # Admin can view audit log and see metrics entry
+    resp = client.get("/audit", headers={"Authorization": f"Bearer {admin_token}"})
+    assert resp.status_code == 200
+    logs = resp.json()
+    assert any(log["details"] == "/metrics" for log in logs)

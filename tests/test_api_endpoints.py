@@ -3,6 +3,7 @@ import sqlite3
 import hashlib
 import logging
 
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,7 +25,7 @@ def client(monkeypatch, tmp_path):
         "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
     )
     migrations.ensure_settings_table(db)
-    pwd = hashlib.sha256(b"pw").hexdigest()
+    pwd = main.hash_password("pw")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", pwd, "admin"),
@@ -56,6 +57,11 @@ def test_endpoints_require_auth(client):
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
     assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
+
+
+def test_get_transcribe_requires_auth(client):
+    resp = client.get('/transcribe')
+    assert resp.status_code in {401, 403}
 
 
 def test_login_and_settings(client):
@@ -211,7 +217,9 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
     assert resp.json()["status"] == "exported"
 
 
+
 def test_summarize_and_fallback(client, monkeypatch, caplog):
+
     monkeypatch.setattr(main, "call_openai", lambda msgs: "great summary")
     token = main.create_token("u", "user")
     resp = client.post(
