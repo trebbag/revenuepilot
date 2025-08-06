@@ -1,7 +1,7 @@
 {
   "default": {
     "beautify": {
-      "en": "Base instruction applied to all notes.",
+      "en": "Base instruction applied to all notes. Focus on clarity, avoid duplicating information or adding disclaimers, and remove filler words.",
       "examples": [
         {
           "user": {
@@ -16,7 +16,7 @@
       ]
     },
     "suggest": {
-      "en": "Base suggestion guidance.",
+      "en": "Base suggestion guidance. Provide succinct, actionable items and avoid extraneous commentary.",
       "examples": [
         {
           "user": "Example suggest note",
@@ -25,7 +25,7 @@
       ]
     },
     "summary": {
-      "en": "Base summary guidance.",
+      "en": "Base summary guidance. Keep summaries brief and patient-friendly.",
       "examples": [
         {
           "user": "Example summary note",
@@ -35,17 +35,17 @@
     }
   },
   "specialty_modifiers": {
-      "cardiology": {
-        "en": "Remember to include cardiac-specific terminology.",
-        "es": "Recuerda incluir terminología cardiaca."
-      },
+    "cardiology": {
+      "en": "Remember to include cardiac-specific terminology and avoid extraneous detail.",
+      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios."
+    },
     "paediatrics": {
-      "en": "Adjust tone for pediatric cases."
+      "en": "Adjust tone for pediatric cases and use family-friendly language."
     }
   },
   "payer_modifiers": {
     "medicare": {
-      "en": "Apply Medicare reimbursement guidelines."
+      "en": "Apply Medicare reimbursement guidelines and reference relevant policy."
     }
   },
   "specialty": {
