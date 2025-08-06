@@ -93,6 +93,7 @@ function App() {
     compliance: [],
     publicHealth: [],
     differentials: [],
+    followUp: null,
   });
 
   // Default values for theme and suggestion category settings.
@@ -397,7 +398,7 @@ function App() {
   useEffect(() => {
     // If the draft is empty, clear suggestions and skip API call
     if (!draftText.trim()) {
-      setSuggestions({ codes: [], compliance: [], publicHealth: [], differentials: [] });
+      setSuggestions({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null });
       return;
     }
     // Set loading state and start a timeout to call the API
@@ -619,6 +620,7 @@ function App() {
                   compliance: settingsState.enableCompliance ? suggestions.compliance : [],
                   publicHealth: settingsState.enablePublicHealth ? suggestions.publicHealth : [],
                   differentials: settingsState.enableDifferentials ? suggestions.differentials : [],
+                  followUp: suggestions.followUp,
                 };
                 return (
                   <SuggestionPanel

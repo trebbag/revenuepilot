@@ -130,7 +130,9 @@
     "publicHealth": "Public Health",
     "differentials": "Differentials",
     "loading": "Loading suggestions...",
-    "none": "No suggestions yet"
+    "none": "No suggestions yet",
+    "followUp": "Follow-Up",
+    "addToCalendar": "Add to calendar"
   },
   "templatesModal": {
     "title": "Templates",
