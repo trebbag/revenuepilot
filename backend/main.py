@@ -34,6 +34,7 @@ from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
+from .migrations import ensure_settings_table
 
 import json
 import sqlite3
@@ -157,18 +158,8 @@ db_conn.commit()
 
 
 # Persisted user preferences for theme, enabled categories and custom rules.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS settings ("
-    "user_id INTEGER PRIMARY KEY,"
-    "theme TEXT NOT NULL,"
-    "categories TEXT NOT NULL,"
-    "rules TEXT NOT NULL,"
-    "lang TEXT NOT NULL,"
-    "FOREIGN KEY(user_id) REFERENCES users(id)"
-
-    ")"
-)
-db_conn.commit()
+# Ensure the table exists and contains the latest schema (including ``lang``).
+ensure_settings_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -298,17 +289,10 @@ async def login(model: LoginModel) -> Dict[str, str]:
 @app.get("/settings")
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
-    try:
-        row = db_conn.execute(
-            "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-            (user["sub"],),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
-        row = db_conn.execute(
-            "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-            (user["sub"],),
-        ).fetchone()
+    row = db_conn.execute(
+        "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
     if row:
         return {
             "theme": row["theme"],
@@ -328,29 +312,16 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
-    try:
-        db_conn.execute(
-            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
-            (
-                row["id"],
-                model.theme,
-                json.dumps(model.categories),
-                json.dumps(model.rules),
-                model.lang,
-            ),
-        )
-    except sqlite3.OperationalError:
-        db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
-        db_conn.execute(
-            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
-            (
-                row["id"],
-                model.theme,
-                json.dumps(model.categories),
-                json.dumps(model.rules),
-                model.lang,
-            ),
-        )
+    db_conn.execute(
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
+        (
+            row["id"],
+            model.theme,
+            json.dumps(model.categories),
+            json.dumps(model.rules),
+            model.lang,
+        ),
+    )
     db_conn.commit()
     return model.dict()
 
