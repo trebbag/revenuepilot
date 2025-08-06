@@ -79,7 +79,7 @@ test('renders charts and calls API', async () => {
   expect(getMetrics).toHaveBeenCalled();
   expect(document.querySelector('[data-testid="daily-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="weekly-line"]')).toBeTruthy();
-  expect(document.querySelector('[data-testid="codes-bar"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="codes-pie"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-def-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="revenue-line"]')).toBeTruthy();
