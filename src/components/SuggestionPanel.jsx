@@ -71,6 +71,11 @@ import { useTranslation } from 'react-i18next';
                 {t('suggestion.upgradeTo')} {item.upgrade_to}
               </span>
             )}
+            {item.upgradePath && (
+              <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#555' }}>
+                {t('suggestion.upgradePath')} {item.upgradePath}
+              </span>
+            )}
           </li>
         );
       }
@@ -83,19 +88,29 @@ import { useTranslation } from 'react-i18next';
             onClick={() => onInsert && onInsert(item.recommendation)}
           >
             {item.recommendation}
+            {item.reason && (
+              <div style={{ fontStyle: 'italic', color: '#555' }}>{item.reason}</div>
+            )}
           </li>
         );
       }
       if (type === 'differentials' && typeof item === 'object' && item !== null) {
-        const score = item.score !== undefined && item.score !== null ? ` — ${item.score}%` : '';
+        const isValidScore =
+          typeof item.score === 'number' &&
+          !Number.isNaN(item.score) &&
+          item.score >= 0 &&
+          item.score <= 1;
+        const pct = isValidScore ? Math.round(item.score * 100) : null;
+        const scoreText = pct !== null ? ` — ${pct}%` : '';
         return (
           <li
             key={idx}
-            title={score ? `${item.diagnosis}${score}` : item.diagnosis}
+            title={pct !== null ? `${item.diagnosis} — ${pct}%` : item.diagnosis}
             style={{ cursor: 'pointer' }}
             onClick={() => onInsert && onInsert(item.diagnosis)}
           >
-            {item.diagnosis}{score}
+            {item.diagnosis}
+            {scoreText}
           </li>
         );
       }

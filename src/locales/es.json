@@ -109,7 +109,9 @@
     "stopRecording": "Detener grabación",
     "recordAudio": "Grabar audio",
     "transcript": "Transcripción:",
-    "placeholder": "Escriba aquí su nota clínica..."
+    "placeholder": "Escriba aquí su nota clínica...",
+    "undo": "Deshacer",
+    "redo": "Rehacer"
   },
   "settings": {
     "title": "Configuración",
@@ -160,7 +162,8 @@
     "none": "Sin sugerencias aún",
     "followUp": "Seguimiento",
     "addToCalendar": "Agregar al calendario",
-    "upgradeTo": "Mejorar a"
+    "upgradeTo": "Mejorar a",
+    "upgradePath": "Ruta de mejora"
   },
   "templatesModal": {
     "title": "Plantillas",

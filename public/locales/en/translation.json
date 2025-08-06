@@ -93,7 +93,9 @@
     "stopRecording": "Stop Recording",
     "recordAudio": "Record Audio",
     "transcript": "Transcript:",
-    "placeholder": "Type your clinical note here..."
+    "placeholder": "Type your clinical note here...",
+    "undo": "Undo",
+    "redo": "Redo"
   },
   "settings": {
     "title": "Settings",
@@ -144,7 +146,8 @@
     "none": "No suggestions yet",
     "followUp": "Follow-Up",
     "addToCalendar": "Add to calendar",
-    "upgradeTo": "Upgrade to"
+    "upgradeTo": "Upgrade to",
+    "upgradePath": "Upgrade path"
   },
   "templatesModal": {
     "title": "Templates",

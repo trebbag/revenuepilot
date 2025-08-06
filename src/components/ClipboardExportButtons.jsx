@@ -71,12 +71,14 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
   };
 
 
+
   const calcRevenue = (codes = []) => {
     const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
     return (codes || []).reduce((sum, c) => sum + (map[c.code || c] || 0), 0);
   };
 
   const exportRtf = async () => {
+
     try {
       const ipcRenderer = window.require
         ? window.require('electron').ipcRenderer
@@ -116,6 +118,7 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
     } catch {
       setFeedback(t('clipboard.exportFailed'));
     }
+
   };
 
   return (
