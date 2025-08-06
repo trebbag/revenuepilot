@@ -35,14 +35,32 @@ export async function login(username, password, lang = 'en') {
   const data = await resp.json();
   const token = data.access_token;
   const refreshToken = data.refresh_token;
-  // Fetch persisted settings after successful login
-  let settings = null;
-  try {
-    const s = await getSettings(token);
-    settings = { ...s, lang, summaryLang: s.summaryLang || lang };
-  } catch (e) {
-    console.error('Failed to fetch settings', e);
+  const settings = data.settings
+    ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
+    : { lang, summaryLang: lang };
+  return { token, refreshToken, settings };
+}
+
+export async function register(username, password, lang = 'en') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await rawFetch(`${baseUrl}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, lang }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || err.message || 'Registration failed');
   }
+  const data = await resp.json();
+  const token = data.access_token;
+  const refreshToken = data.refresh_token;
+  const settings = data.settings
+    ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
+    : { lang, summaryLang: lang };
   return { token, refreshToken, settings };
 }
 

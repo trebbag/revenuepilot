@@ -105,7 +105,10 @@
     "resetSuccess": "Password reset, please login",
     "resetFailed": "Password reset failed",
     "newPassword": "New Password",
-    "loginFailed": "Login failed"
+    "loginFailed": "Login failed",
+    "register": "Register",
+    "registering": "Registering…",
+    "registerFailed": "Registration failed"
   },
   "logs": {
     "title": "Event Log",
