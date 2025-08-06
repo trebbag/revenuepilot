@@ -25,6 +25,9 @@ const quillFormats = [
   'bullet',
 ];
 
+// Maximum number of history entries to retain for undo/redo in beautified mode
+const HISTORY_LIMIT = 20;
+
 function useAudioRecorder(onTranscribed) {
   const { t } = useTranslation();
   const [recording, setRecording] = useState(false);
@@ -119,7 +122,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       if (current === value) return prev;
       const base = prev.slice(0, historyIndex + 1);
       const appended = [...base, value];
-      const newHist = appended.slice(-5);
+      const newHist = appended.slice(-HISTORY_LIMIT);
       setHistoryIndex(newHist.length - 1);
       return newHist;
     });

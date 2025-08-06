@@ -17,6 +17,7 @@ vi.mock('../../api.js', () => ({
 
 }));
 
+import { fetchLastTranscript } from '../../api.js';
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
 import { exportToEhr } from '../../api.js';
@@ -68,6 +69,28 @@ test('selecting template inserts content', async () => {
   await waitFor(() => expect(editor.innerHTML).toContain('Hello'));
 });
 
+test('inserts template and merges audio transcript', async () => {
+  fetchLastTranscript.mockResolvedValue({ provider: 'Hi there', patient: '' });
+
+  function Wrapper() {
+    const [val, setVal] = useState('');
+    return <NoteEditor id="m" value={val} onChange={setVal} />;
+  }
+
+  const { findByLabelText, container, findAllByText } = render(<Wrapper />);
+  const select = await findByLabelText('Templates');
+  fireEvent.change(select, { target: { value: '1' } });
+  const [insertProvider] = await findAllByText('Insert');
+  fireEvent.click(insertProvider);
+
+  const editor = container.querySelector('.ql-editor');
+  await waitFor(() => {
+    expect(editor.innerHTML).toContain('Hello');
+    expect(editor.innerHTML).toContain('Hi there');
+  });
+  fetchLastTranscript.mockResolvedValue({ provider: '', patient: '' });
+});
+
 test('maintains beautified history with undo/redo', () => {
   const onChange = vi.fn();
   const { rerender, getByText } = render(
@@ -83,18 +106,17 @@ test('maintains beautified history with undo/redo', () => {
   expect(onChange).toHaveBeenLastCalledWith('Second');
 });
 
-test('limits beautified history to five entries', () => {
-  const { rerender, getByText, queryByText } = render(
+test('supports undo beyond five beautified entries', () => {
+  const { rerender, getByText } = render(
     <NoteEditor id="c" value="1" onChange={() => {}} mode="beautified" />
   );
-  ['2', '3', '4', '5', '6'].forEach((v) =>
+  ['2', '3', '4', '5', '6', '7'].forEach((v) =>
     rerender(<NoteEditor id="c" value={v} onChange={() => {}} mode="beautified" />)
   );
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < 6; i += 1) {
     fireEvent.click(getByText('Undo'));
   }
-  expect(queryByText('1')).toBeNull();
-  expect(getByText('2')).toBeTruthy();
+  expect(getByText('1')).toBeTruthy();
 });
 
 test('EHR export button triggers API call', async () => {
