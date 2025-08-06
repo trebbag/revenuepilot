@@ -1,3 +1,4 @@
+import logging
 import pytest
 from backend import public_health
 
@@ -46,13 +47,15 @@ def test_get_public_health_suggestions_combines(monkeypatch):
     assert result == ["Flu shot", "BP check"]
 
 
-def test_fetch_vaccination_recommendations_error(monkeypatch):
+def test_fetch_vaccination_recommendations_error(monkeypatch, caplog):
     def fake_guidelines(*args, **kwargs):
         raise Exception("boom")
 
     monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
-    result = public_health.fetch_vaccination_recommendations(40, "male", "US")
+    with caplog.at_level(logging.WARNING):
+        result = public_health.fetch_vaccination_recommendations(40, "male", "US")
     assert result == []
+    assert "Vaccination API error" in caplog.text
 
 
 def test_caching_avoids_repeated_calls(monkeypatch):
