@@ -1181,6 +1181,8 @@ class ExportRequest(BaseModel):
 
     note: str
     codes: List[str] = Field(default_factory=list)
+    patientId: Optional[str] = None
+    encounterId: Optional[str] = None
 
 
 @app.post("/export_to_ehr")
@@ -1197,7 +1199,9 @@ async def export_to_ehr(
     try:
         from . import ehr_integration
 
-        result = ehr_integration.post_note_and_codes(req.note, req.codes)
+        result = ehr_integration.post_note_and_codes(
+            req.note, req.codes, req.patientId, req.encounterId
+        )
     except Exception as exc:  # pragma: no cover - network failures
         raise HTTPException(status_code=502, detail=str(exc))
 

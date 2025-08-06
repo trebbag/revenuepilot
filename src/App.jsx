@@ -103,7 +103,8 @@ function App() {
   const [templateContext, setTemplateContext] = useState('');
 
   // Track the current patient ID for draft saving
-  const [patientID, setPatientID] = useState('');
+    const [patientID, setPatientID] = useState('');
+    const [encounterID, setEncounterID] = useState('');
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
@@ -668,28 +669,35 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-                    <NoteEditor
-                      ref={editorRef}
-                      id="draft-input"
-                      value={draftText}
-                      onChange={handleDraftChange}
-                      onTranscriptChange={handleTranscriptChange}
-                      error={transcriptionError}
-                      templateContext={templateContext}
-                      suggestionContext={suggestionContext}
-                      onSuggestions={handleSuggestions}
-                      onSuggestionsLoading={setLoadingSuggestions}
-                    />
-                  ) : activeTab === 'beautified' ? (
-                    <NoteEditor
-                      id="beautified-output"
-                      value={beautified}
-                      onChange={setBeautified}
-                      mode="beautified"
-                    />
-                  ) : (
-                    <div className="beautified-view">{summaryText}</div>
-                  )}
+                      <NoteEditor
+                        ref={editorRef}
+                        id="draft-input"
+                        value={draftText}
+                        onChange={handleDraftChange}
+                        onTranscriptChange={handleTranscriptChange}
+                        error={transcriptionError}
+                        templateContext={templateContext}
+                        suggestionContext={suggestionContext}
+                        onSuggestions={handleSuggestions}
+                        onSuggestionsLoading={setLoadingSuggestions}
+                        role={userRole}
+                        patientId={patientID}
+                        encounterId={encounterID}
+                      />
+                    ) : activeTab === 'beautified' ? (
+                      <NoteEditor
+                        id="beautified-output"
+                        value={beautified}
+                        onChange={setBeautified}
+                        mode="beautified"
+                        codes={suggestions.codes.map((c) => c.code)}
+                        patientId={patientID}
+                        encounterId={encounterID}
+                        role={userRole}
+                      />
+                    ) : (
+                      <div className="beautified-view">{summaryText}</div>
+                    )}
                 </div>
               </div>
               {(() => {

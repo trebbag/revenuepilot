@@ -830,9 +830,19 @@ export async function setApiKey(key) {
 /**
  * Export a note to an EHR system. Requires an admin token.
  * @param {string} note
+ * @param {string[]} [codes]
+ * @param {string} [patientId]
+ * @param {string} [encounterId]
  * @param {string} [token]
  */
-export async function exportToEhr(note, codes = [], direct = false, token) {
+export async function exportToEhr(
+  note,
+  codes = [],
+  patientId = '',
+  encounterId = '',
+  direct = false,
+  token,
+) {
   // ``direct`` acts as a frontend toggle. When false the function resolves
   // immediately without contacting the backend so the caller can simply copy
   // the note manually. This keeps the UI logic straightforward while allowing
@@ -855,7 +865,7 @@ export async function exportToEhr(note, codes = [], direct = false, token) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify({ note, codes }),
+    body: JSON.stringify({ note, codes, patientId, encounterId }),
   });
   if (!resp.ok) throw new Error('Export failed');
   return await resp.json();

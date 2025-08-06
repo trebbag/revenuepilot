@@ -169,6 +169,8 @@
     "invalidPromptTemplates": "Invalid template format",
     "english": "English",
     "spanish": "Spanish",
+    "french": "French",
+    "german": "German",
     "region": "Region",
     "regionPlaceholder": "e.g., US",
     "specialties": {

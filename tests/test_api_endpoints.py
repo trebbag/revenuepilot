@@ -202,9 +202,11 @@ def test_export_to_ehr_requires_admin(client, monkeypatch):
     ).json()["access_token"]
 
     # Avoid real HTTP calls by stubbing the FHIR helper
-    def fake_post(note, codes):
+    def fake_post(note, codes, patient_id=None, encounter_id=None):
         assert note == "hi"
         assert codes == []
+        assert patient_id is None
+        assert encounter_id is None
         return {"status": "exported"}
 
     monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
