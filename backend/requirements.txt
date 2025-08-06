@@ -15,4 +15,5 @@ philter
 pyannote.audio
 torchaudio
 passlib[bcrypt]
+llama-cpp-python
 
