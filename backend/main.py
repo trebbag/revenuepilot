@@ -225,19 +225,38 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
+# Short-lived access tokens (minutes) and longer lived refresh tokens (days)
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-def create_token(username: str, role: str, clinic: str | None = None) -> str:
-    """Create a signed JWT for the given user and role.
 
-    Optionally include a clinic identifier so templates can be scoped per clinic."""
+def create_access_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Create a signed JWT access token for the given user."""
     payload = {
         "sub": username,
         "role": role,
-        "exp": datetime.utcnow() + timedelta(hours=12),
+        "type": "access",
+        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     if clinic is not None:
         payload["clinic"] = clinic
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_refresh_token(username: str, role: str) -> str:
+    """Create a refresh token with a longer expiry."""
+    payload = {
+        "sub": username,
+        "role": role,
+        "type": "refresh",
+        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def create_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Backward compatible wrapper returning an access token."""
+    return create_access_token(username, role, clinic)
 
 
 def get_current_user(
@@ -290,6 +309,10 @@ class LoginModel(BaseModel):
     password: str
 
 
+class RefreshModel(BaseModel):
+    refresh_token: str
+
+
 class ResetPasswordModel(BaseModel):
     """Schema used when a user wishes to reset their password."""
     username: str
@@ -333,9 +356,48 @@ async def register(model: RegisterModel, user=Depends(require_role("admin"))):
     return {"status": "registered"}
 
 
+@app.get("/users")
+async def list_users(user=Depends(require_role("admin"))) -> List[Dict[str, str]]:
+    """Return all registered users (admin only)."""
+    rows = db_conn.execute("SELECT username, role FROM users").fetchall()
+    return [{"username": r["username"], "role": r["role"]} for r in rows]
+
+
+class UpdateUserModel(BaseModel):
+    role: Optional[str] = None
+    password: Optional[str] = None
+
+
+@app.put("/users/{username}")
+async def update_user(username: str, model: UpdateUserModel, user=Depends(require_role("admin"))):
+    """Update a user's role or password."""
+    fields = []
+    values: List[Any] = []
+    if model.role:
+        fields.append("role=?")
+        values.append(model.role)
+    if model.password:
+        fields.append("password_hash=?")
+        values.append(hash_password(model.password))
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    values.append(username)
+    db_conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE username=?", values)
+    db_conn.commit()
+    return {"status": "updated"}
+
+
+@app.delete("/users/{username}")
+async def delete_user(username: str, user=Depends(require_role("admin"))):
+    """Remove a user account."""
+    db_conn.execute("DELETE FROM users WHERE username=?", (username,))
+    db_conn.commit()
+    return {"status": "deleted"}
+
+
 @app.post("/login")
-async def login(model: LoginModel) -> Dict[str, str]:
-    """Validate credentials and return a JWT on success."""
+async def login(model: LoginModel) -> Dict[str, Any]:
+    """Validate credentials and return access and refresh tokens on success."""
     row = db_conn.execute(
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
@@ -344,8 +406,26 @@ async def login(model: LoginModel) -> Dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
-    token = create_token(model.username, row["role"])
-    return {"access_token": token}
+    access_token = create_access_token(model.username, row["role"])
+    refresh_token = create_refresh_token(model.username, row["role"])
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    }
+
+
+@app.post("/refresh")
+async def refresh(model: RefreshModel) -> Dict[str, Any]:
+    """Issue a new access token given a valid refresh token."""
+    try:
+        data = jwt.decode(model.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("type") != "refresh":
+            raise jwt.PyJWTError()
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
+    return {"access_token": access_token, "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60}
 
 
 @app.post("/reset-password")

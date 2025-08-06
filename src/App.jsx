@@ -12,13 +12,16 @@ import {
   logEvent,
   summarizeNote,
   getSettings,
+  refreshAccessToken,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
+import AdminUsers from './components/AdminUsers.jsx';
 import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
+
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -29,10 +32,24 @@ function stripHtml(html) {
   return html ? html.replace(/<[^>]+>/g, '') : '';
 }
 
+function parseJwt(tok) {
+  try {
+    return JSON.parse(atob(tok.split('.')[1]));
+  } catch {
+    return null;
+  }
+}
+
 // Basic skeleton component implementing the toolbar, tab system and suggestion panel.
 function App() {
   const [token, setToken] = useState(() =>
     typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  );
+  const [refreshToken, setRefreshToken] = useState(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null
+  );
+  const [userRole, setUserRole] = useState(() =>
+    token ? parseJwt(token)?.role : null
   );
   const { t } = useTranslation();
   // Track which tab is active: 'draft' or 'beautified'
@@ -129,10 +146,20 @@ function App() {
     setSettingsState(newSettings);
   };
 
-  const handleUnauthorized = () => {
-    alert(t('sessionExpired'));
+  const logout = () => {
+    setToken(null);
+    setRefreshToken(null);
+    setUserRole(null);
     if (typeof window !== 'undefined') {
       localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
+    }
+  };
+
+  const handleUnauthorized = () => {
+    alert(t('sessionExpired'));
+    logout();
+    if (typeof window !== 'undefined') {
       window.location.href = '/';
     }
   };
@@ -148,6 +175,39 @@ function App() {
     sex,
     region: settingsState.region,
   };
+
+  useEffect(() => {
+    if (token) {
+      setUserRole(parseJwt(token)?.role || null);
+    } else {
+      setUserRole(null);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!token || !refreshToken) return;
+    const payload = parseJwt(token);
+    if (!payload?.exp) return;
+    const delay = payload.exp * 1000 - Date.now() - 60000;
+    if (delay <= 0) {
+      doRefresh();
+      return;
+    }
+    const id = setTimeout(doRefresh, delay);
+    return () => clearTimeout(id);
+  }, [token, refreshToken]);
+
+  async function doRefresh() {
+    try {
+      const data = await refreshAccessToken(refreshToken);
+      setToken(data.access_token);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', data.access_token);
+      }
+    } catch (e) {
+      handleUnauthorized();
+    }
+  }
 
   useEffect(() => {
     if (!token) return;
@@ -183,6 +243,9 @@ function App() {
       <Login
         onLoggedIn={(tok, settings) => {
           setToken(tok);
+          setRefreshToken(
+            typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null
+          );
           if (settings) {
             const merged = { ...defaultSettings, ...settings };
             updateSettings(merged);
@@ -434,6 +497,8 @@ function App() {
           // always starts on the draft tab.
           setActiveTab('draft');
         }}
+        role={userRole}
+        onLogout={logout}
       />
       <div className={`content ${sidebarCollapsed ? 'collapsed' : ''}`}>
         <header className="toolbar">
@@ -593,6 +658,9 @@ function App() {
             />
           )}
         {view === 'logs' && <Logs />}
+        {view === 'admin-users' && userRole === 'admin' && (
+          <AdminUsers token={token} />
+        )}
         </div>
       </div>
       {showTemplatesModal && (

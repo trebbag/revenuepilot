@@ -154,6 +154,8 @@
     "logs": "Logs",
     "settings": "Settings",
     "help": "Help",
+    "users": "Users",
+    "logout": "Logout",
     "expand": "Expand sidebar",
     "collapse": "Collapse sidebar"
   },
