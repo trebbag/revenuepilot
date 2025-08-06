@@ -31,21 +31,66 @@ except Exception:  # pragma: no cover - dependency may be missing
     _DIARISATION_AVAILABLE = False
 
 
-_LOCAL_MODEL: Any | None = None
+_LOCAL_MODELS: Dict[str, Any] = {}
+_DIARISATION_PIPELINE: Any | None = None
 
 
-def _load_local_model() -> Any:  # pragma: no cover - heavy optional dependency
-    """Lazily load and cache the Whisper model for offline use."""
-    global _LOCAL_MODEL
-    if _LOCAL_MODEL is None:
+def _select_model(language: str | None) -> str:
+    """Return the Whisper model name for ``language``.
+
+    When ``WHISPER_MODEL`` is set it takes precedence.  Otherwise
+    English uses the smaller ``medium.en`` model while other languages
+    default to the multilingual ``medium``.
+    """
+
+    env_model = os.getenv("WHISPER_MODEL")
+    if env_model:
+        return env_model
+    if language and language.lower().startswith("en"):
+        return "medium.en"
+    return "medium"
+
+
+def _load_local_model(language: str | None) -> Any:  # pragma: no cover - heavy optional dependency
+    """Lazily load and cache Whisper models for offline use."""
+
+    model_name = _select_model(language)
+    model = _LOCAL_MODELS.get(model_name)
+    if model is None:
         import whisper  # type: ignore
 
-        model_name = os.getenv("WHISPER_MODEL", "base")
-        _LOCAL_MODEL = whisper.load_model(model_name)
-    return _LOCAL_MODEL
+        model = whisper.load_model(model_name)
+        _LOCAL_MODELS[model_name] = model
+    return model
 
 
-def _transcribe_bytes(data: bytes) -> str:
+def _reduce_noise(waveform, sample_rate):
+    """Apply a simple bandpass filter to reduce noise when possible."""
+
+    if torchaudio is None:  # pragma: no cover - optional dependency
+        return waveform
+    try:  # pragma: no cover - effect not critical for tests
+        return torchaudio.functional.bandpass_biquad(waveform, sample_rate, 300.0, 3000.0)
+    except Exception:
+        return waveform
+
+
+def _get_diarization_pipeline() -> Any:  # pragma: no cover - heavy optional dependency
+    """Lazily load the pyannote diarisation pipeline."""
+
+    global _DIARISATION_PIPELINE
+    if _DIARISATION_PIPELINE is None:
+        token = os.getenv("PYANNOTE_TOKEN")
+        if token:
+            _DIARISATION_PIPELINE = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization", use_auth_token=token
+            )
+        else:
+            _DIARISATION_PIPELINE = Pipeline.from_pretrained("pyannote/speaker-diarization")
+    return _DIARISATION_PIPELINE
+
+
+def _transcribe_bytes(data: bytes, language: str | None = None) -> str:
     """Helper that attempts to transcribe ``data`` using Whisper.
 
     If transcription fails for any reason (missing key, invalid audio,
@@ -59,11 +104,11 @@ def _transcribe_bytes(data: bytes) -> str:
     offline = os.getenv("OFFLINE_TRANSCRIBE", "").lower() == "true"
     if offline:
         try:
-            model = _load_local_model()
+            model = _load_local_model(language)
             with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
                 tmp.write(data)
                 tmp.flush()
-                result = model.transcribe(tmp.name)
+                result = model.transcribe(tmp.name, language=language)
             text = result.get("text", "")
             if text:
                 return text.strip()
@@ -76,7 +121,7 @@ def _transcribe_bytes(data: bytes) -> str:
             client = OpenAI(api_key=api_key)
             with io.BytesIO(data) as buf:
                 resp = client.audio.transcriptions.create(
-                    model="whisper-1", file=buf
+                    model="whisper-1", file=buf, language=language
                 )
             text = getattr(resp, "text", "") if resp else ""
             if text:
@@ -96,7 +141,7 @@ def _transcribe_bytes(data: bytes) -> str:
     return f"[transcribed {len(data)} bytes]"
 
 
-def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
+def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> Dict[str, object]:
     """Transcribe audio and attempt speaker diarisation.
 
     When diarisation succeeds the return value contains provider and
@@ -118,23 +163,26 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
             with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
                 tmp.write(audio_bytes)
                 tmp.flush()
-                pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization")
+                pipeline = _get_diarization_pipeline()
                 diarization = pipeline(tmp.name)
                 audio = Audio()
                 speaker_text: Dict[str, str] = {}
                 raw_segments = []
                 for turn, _, speaker in diarization.itertracks(yield_label=True):
                     waveform, sr = audio.crop(tmp.name, turn)
+                    waveform = _reduce_noise(waveform, sr)
                     buf = io.BytesIO()
                     torchaudio.save(buf, waveform, sr, format="wav")
                     buf.seek(0)
-                    text = simple_transcribe(buf.read())
-                    raw_segments.append({
-                        "speaker": speaker,
-                        "start": float(getattr(turn, "start", 0.0)),
-                        "end": float(getattr(turn, "end", 0.0)),
-                        "text": text,
-                    })
+                    text = simple_transcribe(buf.read(), language=language)
+                    raw_segments.append(
+                        {
+                            "speaker": speaker,
+                            "start": float(getattr(turn, "start", 0.0)),
+                            "end": float(getattr(turn, "end", 0.0)),
+                            "text": text,
+                        }
+                    )
                     if text:
                         speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
                 # Map first two speakers to provider/patient roles
@@ -151,12 +199,14 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
                         role = "patient"
                     else:
                         role = seg["speaker"]
-                    mapped_segments.append({
-                        "speaker": role,
-                        "start": seg["start"],
-                        "end": seg["end"],
-                        "text": seg["text"],
-                    })
+                    mapped_segments.append(
+                        {
+                            "speaker": role,
+                            "start": seg["start"],
+                            "end": seg["end"],
+                            "text": seg["text"],
+                        }
+                    )
                 if provider or patient:
                     return {
                         "provider": provider,
@@ -170,7 +220,7 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
         error_msg = "diarisation unavailable"
 
     # Fallback: single-speaker transcription
-    text = simple_transcribe(audio_bytes)
+    text = simple_transcribe(audio_bytes, language=language)
     if not text:
         # Ensure a deterministic placeholder is returned when transcription
         # ultimately fails so callers always receive some text.
@@ -185,7 +235,7 @@ def diarize_and_transcribe(audio_bytes: bytes) -> Dict[str, object]:
     return result
 
 
-def simple_transcribe(audio_bytes: bytes) -> str:
+def simple_transcribe(audio_bytes: bytes, language: str | None = None) -> str:
     """Transcribe audio without attempting speaker separation.
 
     This is a thin wrapper around :func:`_transcribe_bytes` that exposes
@@ -195,7 +245,7 @@ def simple_transcribe(audio_bytes: bytes) -> str:
     if not audio_bytes:
         return ""
     try:
-        text = _transcribe_bytes(audio_bytes)
+        text = _transcribe_bytes(audio_bytes, language=language)
     except Exception:
         text = ""
     if text.strip():

@@ -35,14 +35,32 @@ export async function login(username, password, lang = 'en') {
   const data = await resp.json();
   const token = data.access_token;
   const refreshToken = data.refresh_token;
-  // Fetch persisted settings after successful login
-  let settings = null;
-  try {
-    const s = await getSettings(token);
-    settings = { ...s, lang, summaryLang: s.summaryLang || lang };
-  } catch (e) {
-    console.error('Failed to fetch settings', e);
+  const settings = data.settings
+    ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
+    : { lang, summaryLang: lang };
+  return { token, refreshToken, settings };
+}
+
+export async function register(username, password, lang = 'en') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await rawFetch(`${baseUrl}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, lang }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || err.message || 'Registration failed');
   }
+  const data = await resp.json();
+  const token = data.access_token;
+  const refreshToken = data.refresh_token;
+  const settings = data.settings
+    ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
+    : { lang, summaryLang: lang };
   return { token, refreshToken, settings };
 }
 
@@ -173,6 +191,7 @@ export async function getSettings(token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    template: data.template || null,
     useLocalModels: data.useLocalModels || false,
   };
 }
@@ -207,6 +226,7 @@ export async function saveSettings(settings, token) {
     specialty: settings.specialty || null,
     payer: settings.payer || null,
     region: settings.region || '',
+    template: settings.template || null,
     useLocalModels: settings.useLocalModels || false,
   };
   const resp = await fetch(`${baseUrl}/settings`, {
@@ -232,6 +252,7 @@ export async function saveSettings(settings, token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    template: data.template || null,
     useLocalModels: data.useLocalModels || false,
   };
 }
@@ -628,7 +649,7 @@ export async function getMetrics(filters = {}) {
  * Returns an empty array if the backend is unreachable.
  * @returns {Promise<Array<{id:number,name:string,content:string}>>}
  */
-export async function getTemplates(specialty) {
+export async function getTemplates(specialty, payer) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -637,7 +658,10 @@ export async function getTemplates(specialty) {
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const query = specialty ? `?specialty=${encodeURIComponent(specialty)}` : '';
+  const params = new URLSearchParams();
+  if (specialty) params.append('specialty', specialty);
+  if (payer) params.append('payer', payer);
+  const query = params.toString() ? `?${params.toString()}` : '';
   const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
@@ -830,9 +854,19 @@ export async function setApiKey(key) {
 /**
  * Export a note to an EHR system. Requires an admin token.
  * @param {string} note
+ * @param {string[]} [codes]
+ * @param {string} [patientId]
+ * @param {string} [encounterId]
  * @param {string} [token]
  */
-export async function exportToEhr(note, codes = [], direct = false, token) {
+export async function exportToEhr(
+  note,
+  codes = [],
+  patientId = '',
+  encounterId = '',
+  direct = false,
+  token,
+) {
   // ``direct`` acts as a frontend toggle. When false the function resolves
   // immediately without contacting the backend so the caller can simply copy
   // the note manually. This keeps the UI logic straightforward while allowing
@@ -855,7 +889,7 @@ export async function exportToEhr(note, codes = [], direct = false, token) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify({ note, codes }),
+    body: JSON.stringify({ note, codes, patientId, encounterId }),
   });
   if (!resp.ok) throw new Error('Export failed');
   return await resp.json();
@@ -878,6 +912,7 @@ export async function summarizeNote(text, context = {}) {
   if (baseUrl) {
     const payload = { text };
     if (context.lang) payload.lang = context.lang;
+    if (context.patientAge != null) payload.patientAge = context.patientAge;
     if (context.chart) payload.chart = context.chart;
     if (context.audio) payload.audio = context.audio;
     if (context.specialty) payload.specialty = context.specialty;
@@ -902,14 +937,18 @@ export async function summarizeNote(text, context = {}) {
         throw new Error('Unauthorized');
       }
       const data = await resp.json();
-      return data.summary || '';
+      return {
+        summary: data.summary || '',
+        recommendations: data.recommendations || [],
+        warnings: data.warnings || [],
+      };
     } catch (err) {
       console.error('Error summarizing note:', err);
       // fall through to stub behaviour
     }
   }
   // fallback: return the first sentence or first 200 characters
-  if (!text) return '';
+  if (!text) return { summary: '', recommendations: [], warnings: [] };
   // Try to extract the first sentence by splitting on period; otherwise truncate
   const sentences = text.split(/\.(\s|$)/);
   let summary = sentences[0];
@@ -920,7 +959,7 @@ export async function summarizeNote(text, context = {}) {
     summary = summary.trim();
     if (!summary.endsWith('...')) summary += '...';
   }
-  return summary;
+  return { summary, recommendations: [], warnings: [] };
 }
 
 /**

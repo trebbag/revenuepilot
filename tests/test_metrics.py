@@ -132,6 +132,63 @@ def test_metrics_combined_filters():
     assert data['current']['revenue_per_visit'] == pytest.approx(200.0)
 
 
+def test_metrics_filters_denial_rate():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    events = [
+        {
+            "eventType": "note_closed",
+            "timestamp": 1000,
+            "clinician": "alice",
+            "codes": ["99213"],
+            "revenue": 100.0,
+            "denial": True,
+            "timeToClose": 50.0,
+        },
+        {
+            "eventType": "note_closed",
+            "timestamp": 2000,
+            "clinician": "alice",
+            "codes": ["99214"],
+            "revenue": 200.0,
+            "denial": False,
+            "timeToClose": 150.0,
+        },
+        {
+            "eventType": "note_closed",
+            "timestamp": 3000,
+            "clinician": "bob",
+            "codes": ["99215"],
+            "revenue": 300.0,
+            "denial": True,
+            "timeToClose": 200.0,
+        },
+    ]
+    token = main.create_token('logger', 'user')
+    for ev in events:
+        assert (
+            client.post('/event', json=ev, headers={"Authorization": f"Bearer {token}"}).status_code
+            == 200
+        )
+    admin_token = main.create_token('admin', 'admin')
+    start = datetime.utcfromtimestamp(1500).isoformat()
+    end = datetime.utcfromtimestamp(2500).isoformat()
+    resp = client.get(
+        '/metrics',
+        params={'start': start, 'end': end, 'clinician': 'alice'},
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    data = resp.json()
+    assert data['coding_distribution'] == {'99214': 1}
+    assert data['current']['revenue_per_visit'] == pytest.approx(200.0)
+    assert data['current']['denial_rate'] == 0
+    assert data['current']['avg_close_time'] == pytest.approx(150.0)
+    daily = data['timeseries']['daily']
+    assert len(daily) == 1
+    assert daily[0]['revenue_per_visit'] == pytest.approx(200.0)
+    assert daily[0]['denial_rate'] == 0
+
+
 def test_metrics_timeseries_and_range():
     client = TestClient(main.app)
     main.db_conn.execute('DELETE FROM events')

@@ -15,6 +15,17 @@ def test_acute_code_interval():
     res = scheduling.recommend_follow_up(["S93.401A"], [])
     assert res["interval"] == "2 weeks"
 
+def test_code_specific_intervals():
+    note = "Upper respiratory infection"
+    codes = ["J06.9"]
+    assert scheduling.recommend_follow_up(note, codes, use_llm=False) == "2 weeks"
+
+def test_export_ics():
+    ics = scheduling.export_ics("2 weeks")
+    assert "BEGIN:VCALENDAR" in ics
+    assert "DTSTART" in ics
+
+
 
 @pytest.fixture
 def client(monkeypatch):

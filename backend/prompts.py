@@ -50,6 +50,9 @@ def _resolve_lang(entry: Any, lang: str) -> Optional[str]:
     return None
 
 
+SPECIALTY_ALIASES = {"pediatrics": "paediatrics"}
+
+
 def _get_custom_instruction(
     category: str, lang: str, specialty: Optional[str], payer: Optional[str]
 ) -> str:
@@ -77,7 +80,7 @@ def _get_custom_instruction(
     parts = []
     parts.append(extract(templates.get("default", {})))
     if specialty:
-        specialty_key = specialty.lower()
+        specialty_key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
         parts.append(
             _resolve_lang(
                 templates.get("specialty_modifiers", {}).get(specialty_key, {}), lang
@@ -116,11 +119,10 @@ def _get_custom_examples(
     messages: List[Dict[str, str]] = []
     messages.extend(collect(templates.get("default", {}).get(category, {})))
     if specialty:
+        key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
         messages.extend(
             collect(
-                templates.get("specialty", {})
-                .get(specialty.lower(), {})
-                .get(category, {})
+                templates.get("specialty", {}).get(key, {}).get(category, {})
             )
         )
     if payer:
@@ -170,13 +172,39 @@ def build_beautify_prompt(
             "legibilidad y devuelva únicamente la nota limpia con los encabezados SOAP y sin "
             "comentarios adicionales ni marcas. La nota devuelta debe estar en español."
         ),
+        "fr": (
+            "Vous êtes un spécialiste hautement qualifié de la documentation clinique. "
+            "Votre tâche consiste à prendre une note non formatée et à en retourner une version "
+            "polie et professionnelle. N'inventez ni n'inférez de nouvelles informations "
+            "cliniques et supprimez tout identifiant du patient ou toute information de santé protégée. "
+            "Organisez le contenu en sections claires 'Subjectif :', 'Objectif :', 'Évaluation :' et 'Plan :', "
+            "en utilisant exactement ces intitulés et en préservant chaque détail clinique du texte original. "
+            "Si une section manque dans la source, omettez l'intitulé au lieu de créer du contenu nouveau. "
+            "Corrigez la grammaire et l'orthographe, améliorez la clarté et la lisibilité et renvoyez uniquement "
+            "la note nettoyée avec les en-têtes SOAP, sans commentaire ou balisage supplémentaire. La note retournée doit être en français."
+        ),
+        "de": (
+            "Sie sind ein hochqualifizierter Spezialist für klinische Dokumentation. Ihre Aufgabe besteht darin, "
+            "einen unformatierten Entwurf zu übernehmen und eine überarbeitete, professionelle Version zurückzugeben. "
+            "Erfinden oder vermuten Sie keine neuen klinischen Informationen und entfernen Sie alle Patientenkennungen "
+            "oder geschützten Gesundheitsinformationen (PHI). Gliedern Sie den Inhalt in die Abschnitte 'Subjektiv:', 'Objektiv:', "
+            "'Beurteilung:' und 'Plan:', verwenden Sie genau diese Überschriften und bewahren Sie jedes klinische Detail aus dem Originaltext. "
+            "Fehlt ein Abschnitt in der Quelle, lassen Sie die Überschrift weg, anstatt neuen Inhalt zu erstellen. "
+            "Korrigieren Sie Grammatik und Rechtschreibung, verbessern Sie Klarheit und Lesbarkeit und geben Sie nur die bereinigte Notiz "
+            "mit den SOAP-Überschriften ohne zusätzlichen Kommentar oder Markup zurück. Die Notiz muss auf Deutsch sein."
+        ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
     extra = _get_custom_instruction("beautify", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
-    if lang == "es":
-        instructions = f"{instructions} Responde en español."
+    lang_suffix = {
+        "es": "Responde en español.",
+        "fr": "Réponds en français.",
+        "de": "Antworte auf Deutsch.",
+    }
+    if lang in lang_suffix:
+        instructions = f"{instructions} {lang_suffix[lang]}"
     messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
     messages.extend(_get_custom_examples("beautify", lang, specialty, payer))
     messages.append({"role": "user", "content": text})
@@ -244,27 +272,37 @@ def build_summary_prompt(
     lang: str = "en",
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
+    patient_age: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     """Build a summary prompt in the requested language."""
     default_instructions = {
         "en": (
-            "You are an expert clinical communicator.  Rewrite the following clinical note "
-            "into a concise summary that a patient can easily understand.  Preserve all "
-            "important medical facts (symptoms, diagnoses, treatments, follow‑up), but remove "
-            "billing codes and technical jargon.  Write in plain language at about an 8th "
-            "grade reading level.  Do not invent information that is not present in the note. "
-            "Do not include any patient identifiers or PHI."
+            "You are an expert clinical communicator. Rewrite the following clinical note into a JSON object with keys 'summary', 'recommendations' and 'warnings'. 'summary' should be a brief paragraph in plain language that a patient can easily understand. 'recommendations' should be a bullet list of next steps for the patient. 'warnings' should be a bullet list of any urgent issues. Avoid billing codes and technical jargon. Do not invent information that is not present in the note. Do not include any patient identifiers or PHI."
         ),
         "es": (
-            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un resumen conciso que un paciente pueda entender fácilmente. Preserve todos los hechos médicos importantes (síntomas, diagnósticos, tratamientos, seguimiento), pero elimine los códigos de facturación y la jerga técnica. Escriba en un lenguaje sencillo equivalente a un nivel de lectura de octavo grado. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
+            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un objeto JSON con claves 'summary', 'recommendations' y 'warnings'. 'summary' debe ser un breve párrafo en lenguaje sencillo que un paciente pueda entender. 'recommendations' debe ser una lista con viñetas de próximos pasos para el paciente. 'warnings' debe ser una lista con viñetas de cualquier problema urgente. Evite códigos de facturación y jerga técnica. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
+        ),
+        "fr": (
+            "Vous êtes un expert en communication clinique. Réécrivez la note clinique suivante "
+            "en un résumé concis qu'un patient peut comprendre facilement. Préservez tous les faits médicaux importants (symptômes, diagnostics, traitements, suivi) mais supprimez les codes de facturation et le jargon technique. Rédigez dans un langage simple d'un niveau d'environ la classe de 4e. N'inventez pas d'informations absentes de la note et n'incluez aucun identifiant patient ni PHI. Le résumé doit être en français."
+        ),
+        "de": (
+            "Sie sind ein Experte für klinische Kommunikation. Formulieren Sie die folgende klinische Notiz zu einer prägnanten Zusammenfassung um, die ein Patient leicht verstehen kann. Erhalten Sie alle wichtigen medizinischen Fakten (Symptome, Diagnosen, Behandlungen, Nachsorge), entfernen Sie jedoch Abrechnungscodes und Fachjargon. Schreiben Sie in einfacher Sprache auf etwa Achtklassen-Niveau. Erfinden Sie keine Informationen, die nicht in der Notiz stehen, und fügen Sie keine Patientenkennungen oder PHI hinzu. Die Zusammenfassung muss auf Deutsch sein."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    if patient_age is not None:
+        instructions = f"{instructions} Use words a {patient_age}-year-old would understand."
     extra = _get_custom_instruction("summary", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
-    if lang == "es":
-        instructions = f"{instructions} Responde en español."
+    lang_suffix = {
+        "es": "Responde en español.",
+        "fr": "Réponds en français.",
+        "de": "Antworte auf Deutsch.",
+    }
+    if lang in lang_suffix:
+        instructions = f"{instructions} {lang_suffix[lang]}"
     messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
     messages.extend(_get_custom_examples("summary", lang, specialty, payer))
     messages.append({"role": "user", "content": text})

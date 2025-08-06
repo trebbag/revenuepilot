@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useState } from 'react';
-import { login, resetPassword } from '../api.js';
+import { login, resetPassword, register } from '../api.js';
 
 /**
  * Simple login form that authenticates against the backend and stores the
@@ -15,6 +15,7 @@ function Login({ onLoggedIn }) {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [resetMode, setResetMode] = useState(false);
+  const [registerMode, setRegisterMode] = useState(false);
   const [lang, setLang] = useState('en');
 
   const handleSubmit = async (e) => {
@@ -48,6 +49,31 @@ function Login({ onLoggedIn }) {
     }
   };
 
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const { token, refreshToken, settings } = await register(
+        username,
+        password,
+        lang,
+      );
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('token', token);
+        localStorage.setItem('refreshToken', refreshToken);
+      }
+      const newSettings = settings
+        ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+        : { lang, summaryLang: lang };
+      onLoggedIn(token, newSettings);
+    } catch (err) {
+      setError(err.message || t('login.registerFailed'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleReset = async (e) => {
     e.preventDefault();
     setError(null);
@@ -71,7 +97,7 @@ function Login({ onLoggedIn }) {
       style={{ maxWidth: '20rem', margin: '2rem auto' }}
     >
       <h2>{t('login.title')}</h2>
-      <form onSubmit={resetMode ? handleReset : handleSubmit}>
+      <form onSubmit={registerMode ? handleRegister : resetMode ? handleReset : handleSubmit}>
         <div style={{ marginBottom: '0.5rem' }}>
           <label>
             {t('login.username')}
@@ -96,6 +122,8 @@ function Login({ onLoggedIn }) {
             >
               <option value="en">{t('settings.english')}</option>
               <option value="es">{t('settings.spanish')}</option>
+              <option value="fr">{t('settings.french')}</option>
+              <option value="de">{t('settings.german')}</option>
             </select>
           </label>
         </div>
@@ -130,10 +158,22 @@ function Login({ onLoggedIn }) {
         )}
         <button type="submit" disabled={loading}>
           {loading
-            ? t(resetMode ? 'login.resetting' : 'login.loggingIn')
-            : t(resetMode ? 'login.resetPassword' : 'login.login')}
+            ? t(
+                resetMode
+                  ? 'login.resetting'
+                  : registerMode
+                  ? 'login.registering'
+                  : 'login.loggingIn'
+              )
+            : t(
+                resetMode
+                  ? 'login.resetPassword'
+                  : registerMode
+                  ? 'login.register'
+                  : 'login.login'
+              )}
         </button>
-        {!resetMode && (
+        {!resetMode && !registerMode && (
           <button
             type="button"
             style={{ marginLeft: '0.5rem' }}
@@ -145,6 +185,18 @@ function Login({ onLoggedIn }) {
             {t('login.resetPassword')}
           </button>
         )}
+        {!resetMode && !registerMode && (
+          <button
+            type="button"
+            style={{ marginLeft: '0.5rem' }}
+            onClick={() => {
+              setError(null);
+              setRegisterMode(true);
+            }}
+          >
+            {t('login.register')}
+          </button>
+        )}
         {resetMode && (
           <button
             type="button"
@@ -152,6 +204,18 @@ function Login({ onLoggedIn }) {
             onClick={() => {
               setError(null);
               setResetMode(false);
+            }}
+          >
+            {t('login.backToLogin')}
+          </button>
+        )}
+        {registerMode && (
+          <button
+            type="button"
+            style={{ marginLeft: '0.5rem' }}
+            onClick={() => {
+              setError(null);
+              setRegisterMode(false);
             }}
           >
             {t('login.backToLogin')}

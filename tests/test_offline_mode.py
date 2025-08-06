@@ -43,25 +43,37 @@ def offline_client(monkeypatch):
 def test_offline_beautify(offline_client):
     client, main_module = offline_client
     token = main_module.create_token("u", "user")
-    resp = client.post("/beautify", json={"text": "hello"}, headers=auth_header(token))
-    assert resp.status_code == 200
-    assert resp.json()["beautified"]
+    payload = {"text": "hello"}
+    resp1 = client.post("/beautify", json=payload, headers=auth_header(token))
+    resp2 = client.post("/beautify", json=payload, headers=auth_header(token))
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert resp1.json()["beautified"] == "Beautified (offline): hello"
+    assert resp1.json()["beautified"] == resp2.json()["beautified"]
 
 
 def test_offline_suggest(offline_client):
     client, main_module = offline_client
     token = main_module.create_token("u", "user")
-    resp = client.post("/suggest", json={"text": "note"}, headers=auth_header(token))
-    data = resp.json()
-    assert data["codes"]
-    assert data["compliance"]
-    assert data["publicHealth"]
-    assert data["differentials"]
+    payload = {"text": "note"}
+    r1 = client.post("/suggest", json=payload, headers=auth_header(token)).json()
+    r2 = client.post("/suggest", json=payload, headers=auth_header(token)).json()
+    assert r1 == r2
+    assert r1["codes"]
+    assert r1["compliance"]
+    assert r1["publicHealth"]
+    assert r1["differentials"]
 
 
 def test_offline_summarize(offline_client):
     client, main_module = offline_client
     token = main_module.create_token("u", "user")
-    resp = client.post("/summarize", json={"text": "hello"}, headers=auth_header(token))
+    resp = client.post(
+        "/summarize", json={"text": "hello"}, headers=auth_header(token)
+    )
     assert resp.status_code == 200
-    assert resp.json()["summary"]
+    data = resp.json()
+    assert data["summary"]
+    assert data["recommendations"] == []
+    assert data["warnings"] == []
+

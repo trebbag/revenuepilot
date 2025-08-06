@@ -30,24 +30,27 @@ afterEach(() => {
 });
 
 test('transcript persists across reloads', async () => {
-  const { findByText, unmount } = render(
+  const { findByText, getByText, unmount } = render(
     <NoteEditor id="n1" value="" onChange={() => {}} />
   );
+  fireEvent.click(getByText('Transcript:'));
   await findByText(/Provider:/);
   expect(fetchLastTranscript).toHaveBeenCalledTimes(1);
   unmount();
-  const { findByText: findByText2 } = render(
+  const { findByText: findByText2, getByText: getByText2 } = render(
     <NoteEditor id="n1" value="" onChange={() => {}} />
   );
+  fireEvent.click(getByText2('Transcript:'));
   await findByText2(/Provider:/);
   expect(fetchLastTranscript).toHaveBeenCalledTimes(2);
 });
 
 test('shows diarised output when available', async () => {
   fetchLastTranscript.mockResolvedValue({ provider: 'Doc', patient: 'Pat' });
-  const { findByText } = render(
+  const { findByText, getByText } = render(
     <NoteEditor id="n2" value="" onChange={() => {}} />
   );
+  fireEvent.click(getByText('Transcript:'));
   await findByText(/Provider:/);
   await findByText(/Patient:/);
 });
@@ -61,9 +64,15 @@ test('displays error when transcript load fails', async () => {
 });
 
 test('EHR export button triggers API call', async () => {
-  const { getByText } = render(
-    <NoteEditor id="be" value="Final" onChange={() => {}} mode="beautified" />,
-  );
+    const { getByText } = render(
+      <NoteEditor
+        id="be"
+        value="Final"
+        onChange={() => {}}
+        mode="beautified"
+        role="admin"
+      />,
+    );
   fireEvent.click(getByText('EHR Export'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });
