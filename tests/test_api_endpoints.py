@@ -39,6 +39,19 @@ def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_endpoints_require_auth(client):
+    assert client.get('/metrics').status_code in {401, 403}
+    assert client.get('/events').status_code in {401, 403}
+    assert client.post('/beautify', json={'text': 'hi'}).status_code in {401, 403}
+    assert client.post('/suggest', json={'text': 'hi'}).status_code in {401, 403}
+    assert client.post('/summarize', json={'text': 'hi'}).status_code in {401, 403}
+    assert (
+        client.post('/transcribe', files={'file': ('a.wav', b'bytes')}).status_code
+        in {401, 403}
+    )
+    assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
+
+
 def test_login_and_settings(client):
     pwd = main.hash_password("pw")
     main.db_conn.execute(
@@ -136,7 +149,11 @@ def test_events_metrics_with_auth(client):
     token_admin = client.post(
         "/login", json={"username": "a", "password": "pw"}
     ).json()["access_token"]
-    client.post("/event", json={"eventType": "note_started"})
+    client.post(
+        "/event",
+        json={"eventType": "note_started"},
+        headers=auth_header(token_admin),
+    )
     resp = client.get("/events", headers=auth_header(token_admin))
     assert resp.status_code == 200
     assert len(resp.json()) == 1
@@ -148,7 +165,10 @@ def test_events_metrics_with_auth(client):
 
 def test_summarize_and_fallback(client, monkeypatch):
     monkeypatch.setattr(main, "call_openai", lambda msgs: "great summary")
-    resp = client.post("/summarize", json={"text": "hello"})
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/summarize", json={"text": "hello"}, headers=auth_header(token)
+    )
     assert resp.json()["summary"] == "great summary"
 
     def boom(_):
@@ -156,7 +176,9 @@ def test_summarize_and_fallback(client, monkeypatch):
 
     monkeypatch.setattr(main, "call_openai", boom)
     long_text = "a" * 300
-    resp = client.post("/summarize", json={"text": long_text})
+    resp = client.post(
+        "/summarize", json={"text": long_text}, headers=auth_header(token)
+    )
     assert resp.status_code == 200
     assert len(resp.json()["summary"]) <= 203  # truncated fallback
 
@@ -168,7 +190,10 @@ def test_summarize_spanish_language(client, monkeypatch):
         return "resumen"
 
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
-    resp = client.post("/summarize", json={"text": "hola", "lang": "es"})
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/summarize", json={"text": "hola", "lang": "es"}, headers=auth_header(token)
+    )
     assert resp.status_code == 200
     assert resp.json()["summary"] == "resumen"
 
@@ -178,41 +203,54 @@ def test_transcribe_endpoint(client, monkeypatch):
     monkeypatch.setattr(
         main, "diarize_and_transcribe", lambda b: {"provider": "p", "patient": "q"}
     )
-    resp = client.post("/transcribe", files={"file": ("a.wav", b"bytes")})
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/transcribe", files={"file": ("a.wav", b"bytes")}, headers=auth_header(token)
+    )
     assert resp.json()["provider"] == "hello"
 
     resp = client.post(
-        "/transcribe?diarise=true", files={"file": ("a.wav", b"bytes")}
+        "/transcribe?diarise=true",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
     )
     assert resp.json() == {"provider": "p", "patient": "q"}
 
-    resp = client.post("/transcribe")
+    resp = client.post("/transcribe", headers=auth_header(token))
     assert resp.status_code == 422
 
 
 def test_apikey_validation(client, monkeypatch):
     monkeypatch.setattr(main, "save_api_key", lambda key: None)
+    token = main.create_token("admin", "admin")
     valid = "sk-" + "a" * 22
-    resp = client.post("/apikey", json={"key": valid})
+    resp = client.post(
+        "/apikey", json={"key": valid}, headers=auth_header(token)
+    )
     assert resp.json()["status"] == "saved"
 
-    resp = client.post("/apikey", json={"key": ""})
+    resp = client.post("/apikey", json={"key": ""}, headers=auth_header(token))
     assert resp.status_code == 400
 
-    resp = client.post("/apikey", json={"key": "abc"})
+    resp = client.post("/apikey", json={"key": "abc"}, headers=auth_header(token))
     assert resp.status_code == 400
 
 
 def test_beautify_and_fallback(client, monkeypatch):
     monkeypatch.setattr(main, "call_openai", lambda msgs: "nice note")
-    resp = client.post("/beautify", json={"text": "hello"})
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/beautify", json={"text": "hello"}, headers=auth_header(token)
+    )
     assert resp.json()["beautified"] == "nice note"
 
     def fail(_):
         raise ValueError("bad")
 
     monkeypatch.setattr(main, "call_openai", fail)
-    resp = client.post("/beautify", json={"text": "hi"})
+    resp = client.post(
+        "/beautify", json={"text": "hi"}, headers=auth_header(token)
+    )
     assert resp.json()["beautified"] == "HI"
 
 
@@ -229,7 +267,8 @@ def test_suggest_and_fallback(client, monkeypatch):
             }
         ),
     )
-    resp = client.post("/suggest", json={"text": "note"})
+    token = main.create_token("u", "user")
+    resp = client.post("/suggest", json={"text": "note"}, headers=auth_header(token))
     data = resp.json()
     assert data["codes"][0]["code"] == "A1"
     
@@ -241,7 +280,10 @@ def test_beautify_spanish(client, monkeypatch):
         return "nota en español"
 
     monkeypatch.setattr(main, "call_openai", fake_call)
-    resp = client.post("/beautify", json={"text": "hola", "lang": "es"})
+    token_b = main.create_token("u", "user")
+    resp = client.post(
+        "/beautify", json={"text": "hola", "lang": "es"}, headers=auth_header(token_b)
+    )
     assert resp.json()["beautified"] == "nota en español"
 
 
@@ -264,9 +306,11 @@ def test_suggest_with_demographics(client, monkeypatch):
 
     monkeypatch.setattr(prompts, "get_guidelines", fake_get)
 
+    token_c = main.create_token("u", "user")
     resp = client.post(
         "/suggest",
         json={"text": "note", "age": 30, "sex": "female", "region": "US"},
+        headers=auth_header(token_c),
     )
     assert resp.status_code == 200
 
@@ -286,9 +330,11 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
 
     monkeypatch.setattr(main, "get_public_health_suggestions", fake_ph)
 
+    token_d = main.create_token("u", "user")
     resp = client.post(
         "/suggest",
         json={"text": "note", "age": 50, "sex": "male", "region": "US"},
+        headers=auth_header(token_d),
     )
     assert resp.status_code == 200
     data = resp.json()

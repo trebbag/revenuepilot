@@ -38,11 +38,15 @@ def test_metrics_aggregation():
             "timeToClose": 120.0,
         },
     ]
+    token = main.create_token('logger', 'user')
     for ev in events:
-        assert client.post('/event', json=ev).status_code == 200
+        assert (
+            client.post('/event', json=ev, headers={"Authorization": f"Bearer {token}"}).status_code
+            == 200
+        )
     # Unfiltered metrics
-    token = main.create_token('tester', 'admin')
-    resp = client.get('/metrics', headers={'Authorization': f'Bearer {token}'})
+    admin_token = main.create_token('tester', 'admin')
+    resp = client.get('/metrics', headers={'Authorization': f'Bearer {admin_token}'})
     data = resp.json()
     assert data['revenue_per_visit'] == pytest.approx(150.0)
     assert data['coding_distribution']['99213'] == 1
@@ -51,7 +55,9 @@ def test_metrics_aggregation():
     assert data['deficiency_rate'] == pytest.approx(0.5)
     assert data['avg_close_time'] == pytest.approx(90.0)
     # Filter by clinician
-    resp = client.get('/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {token}'})
+    resp = client.get(
+        '/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {admin_token}'}
+    )
     data = resp.json()
     assert data['revenue_per_visit'] == pytest.approx(100.0)
     assert data['coding_distribution'] == {'99213': 1}

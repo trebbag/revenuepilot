@@ -31,6 +31,8 @@ function formatTimestamp(ts) {
         setEvents(data);
       } catch (err) {
         if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert('Access denied');
+          localStorage.removeItem('token');
           window.location.href = '/';
         } else {
           setError(err.message);
