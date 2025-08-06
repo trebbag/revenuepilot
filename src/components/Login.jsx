@@ -19,11 +19,11 @@ function Login({ onLoggedIn }) {
     setError(null);
     setLoading(true);
     try {
-      const token = await login(username, password);
+      const { token, settings } = await login(username, password);
       if (typeof window !== 'undefined') {
         localStorage.setItem('token', token);
       }
-      onLoggedIn(token);
+      onLoggedIn(token, settings);
     } catch (err) {
       setError(err.message || 'Login failed');
     } finally {

@@ -129,7 +129,8 @@
     "content": "Content",
     "save": "Save",
     "close": "Close",
-    "delete": "Delete"
+    "delete": "Delete",
+    "edit": "Edit"
   },
   "app": {
     "back": "Back to Notes",

@@ -4,13 +4,15 @@
 // operations with dummy data.
 
 /**
- * Authenticate a user and retrieve a JWT from the backend. The token is
- * returned to the caller so it can be persisted in localStorage or other
- * storage. Throws an error when authentication fails.
+ * Authenticate a user and retrieve a JWT from the backend. After a
+ * successful login the user's persisted settings are also fetched.
+ * Both the token and settings are returned to the caller so they can be
+ * stored in application state or cached in localStorage. Throws an error
+ * when authentication fails.
  *
  * @param {string} username
  * @param {string} password
- * @returns {Promise<string>} JWT access token
+ * @returns {Promise<{token: string, settings: object|null}>}
  */
 export async function login(username, password) {
   const baseUrl =
@@ -27,47 +29,60 @@ export async function login(username, password) {
     throw new Error(err.message || 'Login failed');
   }
   const data = await resp.json();
-  // Backend returns token under access_token
-  return data.access_token;
+  const token = data.access_token;
+  // Fetch persisted settings after successful login
+  let settings = null;
+  try {
+    const s = await getSettings(token);
+    settings = s;
+  } catch (e) {
+    console.error('Failed to fetch settings', e);
+  }
+  return { token, settings };
 }
 
 /**
- * Fetch persisted user settings from the backend.
- * Requires a valid JWT stored in localStorage.
+ * Fetch persisted user settings from the backend.  A JWT must be
+ * provided; if omitted the token is read from localStorage which acts as
+ * a cache.
+ * @param {string} [token]
  * @returns {Promise<object>}
  */
-export async function getSettings() {
+export async function getSettings(token) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  if (!token) throw new Error('Not authenticated');
+  const auth =
+    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+  if (!auth) throw new Error('Not authenticated');
   const resp = await fetch(`${baseUrl}/settings`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${auth}` },
   });
   if (!resp.ok) throw new Error('Failed to fetch settings');
   return await resp.json();
 }
 
 /**
- * Persist user settings to the backend.
- * Requires authentication and mirrors the payload returned from getSettings.
+ * Persist user settings to the backend. A JWT may be provided explicitly
+ * or will be read from localStorage as a fallback.
  * @param {object} settings
+ * @param {string} [token]
  * @returns {Promise<object>}
  */
-export async function saveSettings(settings) {
+export async function saveSettings(settings, token) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  if (!token) throw new Error('Not authenticated');
+  const auth =
+    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+  if (!auth) throw new Error('Not authenticated');
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${auth}`,
     },
     body: JSON.stringify(settings),
   });
@@ -299,6 +314,30 @@ export async function createTemplate(tpl) {
     : { 'Content-Type': 'application/json' };
   const resp = await fetch(`${baseUrl}/templates`, {
     method: 'POST',
+    headers,
+    body: JSON.stringify(tpl),
+  });
+  return await resp.json();
+}
+
+/**
+ * Update an existing custom template by id.
+ * @param {number} id
+ * @param {{name:string, content:string}} tpl
+ * @returns {Promise<object>}
+ */
+export async function updateTemplate(id, tpl) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return { id, ...tpl };
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/templates/${id}`, {
+    method: 'PUT',
     headers,
     body: JSON.stringify(tpl),
   });

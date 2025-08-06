@@ -9,8 +9,8 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - run: pip install -r backend/requirements.txt pytest pytest-cov
-      - run: pytest --cov=backend
+      - run: pip install -r backend/requirements.txt pytest pytest-cov pytest-asyncio httpx
+      - run: pytest
   frontend:
     runs-on: ubuntu-latest
     steps:

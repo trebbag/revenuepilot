@@ -35,6 +35,8 @@ from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from .public_health import get_public_health_suggestions
+from .migrations import ensure_settings_table
+
 
 import json
 import sqlite3
@@ -158,18 +160,8 @@ db_conn.commit()
 
 
 # Persisted user preferences for theme, enabled categories and custom rules.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS settings ("
-    "user_id INTEGER PRIMARY KEY,"
-    "theme TEXT NOT NULL,"
-    "categories TEXT NOT NULL,"
-    "rules TEXT NOT NULL,"
-    "lang TEXT NOT NULL,"
-    "FOREIGN KEY(user_id) REFERENCES users(id)"
-
-    ")"
-)
-db_conn.commit()
+# Ensure the table exists and contains the latest schema (including ``lang``).
+ensure_settings_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -190,13 +182,17 @@ JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
 
-def create_token(username: str, role: str) -> str:
-    """Create a signed JWT for the given user and role."""
+def create_token(username: str, role: str, clinic: str | None = None) -> str:
+    """Create a signed JWT for the given user and role.
+
+    Optionally include a clinic identifier so templates can be scoped per clinic."""
     payload = {
         "sub": username,
         "role": role,
         "exp": datetime.utcnow() + timedelta(hours=12),
     }
+    if clinic is not None:
+        payload["clinic"] = clinic
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -318,6 +314,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             "SELECT theme, categories, rules, lang, region FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
             (user["sub"],),
         ).fetchone()
+
     if row:
         return {
             "theme": row["theme"],
@@ -370,6 +367,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
                 model.region,
             ),
         )
+
     db_conn.commit()
     return model.dict()
 
@@ -655,6 +653,21 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> T
     db_conn.commit()
     tpl_id = cursor.lastrowid
     return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
+
+
+@app.put("/templates/{template_id}", response_model=TemplateModel)
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+    """Update an existing custom template owned by the current user."""
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "UPDATE templates SET name=?, content=? WHERE id=? AND user=?",
+        (tpl.name, tpl.content, template_id, user["sub"]),
+    )
+    db_conn.commit()
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return TemplateModel(id=template_id, name=tpl.name, content=tpl.content)
 
 
 @app.delete("/templates/{template_id}")

@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { render, fireEvent, cleanup } from '@testing-library/react';
+import { render, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { vi, test, expect, afterEach } from 'vitest';
 import '../../i18n.js';
 import TemplatesModal from '../TemplatesModal.jsx';
@@ -7,6 +7,8 @@ import TemplatesModal from '../TemplatesModal.jsx';
 vi.mock('../../api.js', () => ({
   getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Custom', content: 'C' }]),
   createTemplate: vi.fn(async (tpl) => ({ id: 2, ...tpl })),
+  updateTemplate: vi.fn(async (id, tpl) => ({ id, ...tpl })),
+  deleteTemplate: vi.fn(async () => {}),
 }));
 
 afterEach(() => {
@@ -35,4 +37,17 @@ test('creates template', async () => {
   fireEvent.change(getByPlaceholderText('Content'), { target: { value: 'X' } });
   fireEvent.click(getByText('Save'));
   await findByText('Extra');
+});
+
+test('edits and deletes template', async () => {
+  const { getByText, getByPlaceholderText, findByText, queryByText } = render(
+    <TemplatesModal baseTemplates={[]} onSelect={() => {}} onClose={() => {}} />,
+  );
+  await findByText('Custom');
+  fireEvent.click(getByText('Edit'));
+  fireEvent.change(getByPlaceholderText('Name'), { target: { value: 'Edited' } });
+  fireEvent.click(getByText('Save'));
+  await findByText('Edited');
+  fireEvent.click(getByText('Delete'));
+  await waitFor(() => expect(queryByText('Edited')).toBeNull());
 });
