@@ -1,6 +1,5 @@
 import hashlib
 import sqlite3
-import hashlib
 
 from fastapi.testclient import TestClient
 
@@ -16,6 +15,9 @@ def setup_module(module):
     )
     main.db_conn.execute(
         'CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)'
+    )
+    main.db_conn.execute(
+        'CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)'
     )
     # Seed an initial admin user
     admin_hash = hashlib.sha256(b'secret').hexdigest()
@@ -70,3 +72,35 @@ def test_invalid_token_rejected():
     # An obviously invalid token should return 401 rather than 403
     resp = client.get('/settings', headers={'Authorization': 'Bearer badtoken'})
     assert resp.status_code == 401
+
+
+def test_login_lockout():
+    client = TestClient(main.app)
+    admin_token = client.post('/login', json={'username': 'admin', 'password': 'secret'}).json()['access_token']
+    client.post(
+        '/register',
+        json={'username': 'charlie', 'password': 'pw', 'role': 'user'},
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    for _ in range(5):
+        resp = client.post('/login', json={'username': 'charlie', 'password': 'bad'})
+        assert resp.status_code == 401
+    resp = client.post('/login', json={'username': 'charlie', 'password': 'pw'})
+    assert resp.status_code == 423
+
+
+def test_audit_endpoint():
+    client = TestClient(main.app)
+    client.post('/login', json={'username': 'nosuch', 'password': 'bad'})
+    admin_token = client.post('/login', json={'username': 'admin', 'password': 'secret'}).json()['access_token']
+    resp = client.get('/audit', headers={'Authorization': f'Bearer {admin_token}'})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(entry['action'] == 'failed_login' for entry in data)
+    client.post(
+        '/register',
+        json={'username': 'bob', 'password': 'pw', 'role': 'user'},
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    user_token = client.post('/login', json={'username': 'bob', 'password': 'pw'}).json()['access_token']
+    assert client.get('/audit', headers={'Authorization': f'Bearer {user_token}'}).status_code == 403
