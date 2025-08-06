@@ -28,7 +28,8 @@
           "user": "Example suggest note",
           "assistant": "{\"codes\": [], \"compliance\": [], \"public_health\": [], \"differentials\": []}"
         }
-      ]
+      ],
+      "fr": "Conseils de base pour les suggestions. Fournissez des éléments concis et actionnables et évitez les commentaires superflus."
     },
     "summary": {
       "en": "Base summary guidance. Keep summaries brief and patient-friendly.",
@@ -37,21 +38,25 @@
           "user": "Example summary note",
           "assistant": "Example patient-friendly summary."
         }
-      ]
+      ],
+      "fr": "Instruction de résumé de base. Gardez les résumés concis et adaptés aux patients."
     }
   },
   "specialty_modifiers": {
     "cardiology": {
       "en": "Remember to include cardiac-specific terminology and avoid extraneous detail. Emphasise cholesterol screening and lipid management when appropriate.",
-      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios. Destaca el control del colesterol y el manejo de lípidos cuando sea apropiado."
+      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios. Destaca el control del colesterol y el manejo de lípidos cuando sea apropiado.",
+      "fr": "N'oubliez pas d'inclure une terminologie spécifique au cœur et d'éviter les détails superflus. Mettez l'accent sur le dépistage du cholestérol et la gestion des lipides lorsque cela est approprié."
     },
     "paediatrics": {
-      "en": "Adjust tone for pediatric cases and use family-friendly language. Include immunisation schedules and vaccine reminders where relevant."
+      "en": "Adjust tone for pediatric cases and use family-friendly language. Include immunisation schedules and vaccine reminders where relevant.",
+      "fr": "Adaptez le ton pour les cas pédiatriques et utilisez un langage adapté aux familles. Incluez les calendriers de vaccination et les rappels de vaccins lorsque cela est pertinent."
     }
   },
   "payer_modifiers": {
     "medicare": {
-      "en": "Apply Medicare reimbursement guidelines and reference relevant policy. Highlight preventive services covered under Medicare."
+      "en": "Apply Medicare reimbursement guidelines and reference relevant policy. Highlight preventive services covered under Medicare.",
+      "fr": "Appliquez les directives de remboursement de Medicare et référencez la politique pertinente. Mettez en avant les services préventifs couverts par Medicare."
     }
   },
   "specialty": {

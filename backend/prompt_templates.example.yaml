@@ -4,18 +4,22 @@
 
 default:
   beautify:
-    en: "Base instruction applied to all notes"
+    en: 'Base instruction applied to all notes'
+    fr: 'Instruction de base appliquée à toutes les notes'
 
 specialty:
   cardiology:
     beautify:
-      en: "Cardiology specific beautify instruction"
-      es: "Instrucción de embellecer específica de cardiología"
+      en: 'Cardiology specific beautify instruction'
+      es: 'Instrucción de embellecer específica de cardiología'
+      fr: "Instruction d'embellissement spécifique à la cardiologie"
 
 payer:
   medicare:
     suggest:
-      en: "Follow Medicare coding rules"
-      es: "Siga las reglas de codificación de Medicare"
+      en: 'Follow Medicare coding rules'
+      es: 'Siga las reglas de codificación de Medicare'
+      fr: 'Suivez les règles de codage de Medicare'
     beautify:
-      en: "Ensure documentation meets Medicare standards"
+      en: 'Ensure documentation meets Medicare standards'
+      fr: 'Assurez-vous que la documentation respecte les normes de Medicare'
