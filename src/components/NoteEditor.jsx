@@ -7,9 +7,9 @@
 // component will gracefully fall back to a simple <textarea> so that
 // development can proceed without breaking the UI.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript } from '../api.js';
+import { fetchLastTranscript, getSuggestions } from '../api.js';
 let ReactQuill;
 try {
   // Dynamically require ReactQuill to avoid breaking when the package is
@@ -50,16 +50,36 @@ function QuillToolbar({ toolbarId }) {
   );
 }
 
-function NoteEditor({
-  id,
-  value,
-  onChange,
-  onRecord,
-  recording = false,
-  transcribing = false,
-  onTranscriptChange,
-  error = '',
-}) {
+// Naive HTML stripping to extract plain text for the suggestions API.
+function stripHtml(html) {
+  return html ? html.replace(/<[^>]+>/g, '') : '';
+}
+
+const emptySuggestions = {
+  codes: [],
+  compliance: [],
+  publicHealth: [],
+  differentials: [],
+  followUp: null,
+};
+
+const NoteEditor = forwardRef(function NoteEditor(
+  {
+    id,
+    value,
+    onChange,
+    onRecord,
+    recording = false,
+    transcribing = false,
+    onTranscriptChange,
+    error = '',
+    templateContext = '',
+    suggestionContext = {},
+    onSuggestions = () => {},
+    onSuggestionsLoading = () => {},
+  },
+  ref,
+) {
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
@@ -68,6 +88,8 @@ function NoteEditor({
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const quillRef = useRef(null);
+  const textAreaRef = useRef(null);
 
   // Keep the internal state in sync with the parent value.  When using
   // ReactQuill the parent `value` prop is passed directly, so this
@@ -111,6 +133,31 @@ function NoteEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcribing]);
 
+  // Debounced suggestion fetching.  When the note value or template context
+  // changes, wait a short period before calling the /suggest endpoint.  This
+  // avoids firing a request on every keystroke.
+  useEffect(() => {
+    const plain = stripHtml(value);
+    if (!plain.trim()) {
+      onSuggestions(emptySuggestions);
+      return;
+    }
+    onSuggestionsLoading(true);
+    const timer = setTimeout(() => {
+      getSuggestions(plain, { ...suggestionContext, template: templateContext })
+        .then((data) => {
+          onSuggestions(data);
+        })
+        .catch(() => {
+          // Swallow errors; logging handled upstream
+        })
+        .finally(() => {
+          onSuggestionsLoading(false);
+        });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [value, templateContext, suggestionContext, onSuggestions, onSuggestionsLoading]);
+
   const audioControls = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
@@ -127,6 +174,34 @@ function NoteEditor({
     </div>
   );
 
+  // Expose an imperative method so the parent component can insert text at the
+  // current cursor position when a suggestion is chosen.
+  useImperativeHandle(ref, () => ({
+    insertAtCursor: (text) => {
+      if (ReactQuill && quillRef.current) {
+        const quill = quillRef.current.getEditor();
+        const range = quill.getSelection(true);
+        const index = range ? range.index : quill.getLength();
+        quill.insertText(index, text);
+        quill.setSelection(index + text.length);
+      } else if (textAreaRef.current) {
+        const el = textAreaRef.current;
+        const start = el.selectionStart;
+        const end = el.selectionEnd;
+        const newVal = `${localValue.slice(0, start)}${text}${localValue.slice(end)}`;
+        setLocalValue(newVal);
+        onChange(newVal);
+        setTimeout(() => {
+          el.selectionStart = el.selectionEnd = start + text.length;
+        }, 0);
+      } else {
+        const newVal = `${localValue}${text}`;
+        setLocalValue(newVal);
+        onChange(newVal);
+      }
+    },
+  }));
+
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
     const toolbarId = `${id || 'editor'}-toolbar`;
@@ -136,6 +211,7 @@ function NoteEditor({
         {audioControls}
         <QuillToolbar toolbarId={toolbarId} />
         <ReactQuill
+          ref={quillRef}
           id={id}
           theme="snow"
           value={value}
@@ -173,6 +249,7 @@ function NoteEditor({
     <div style={{ width: '100%', height: '100%' }}>
       {audioControls}
       <textarea
+        ref={textAreaRef}
         id={id}
         value={localValue}
         onChange={handleTextAreaChange}
@@ -200,6 +277,6 @@ function NoteEditor({
       {loadingTranscript && <p>Loading transcript...</p>}
     </div>
   );
-}
+});
 
 export default NoteEditor;

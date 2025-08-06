@@ -4,6 +4,9 @@ import { vi, expect, test, afterEach } from 'vitest';
 
 vi.mock('../../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+  getSuggestions: vi
+    .fn()
+    .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
 }));
 
 import '../../i18n.js';
