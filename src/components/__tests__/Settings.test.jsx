@@ -3,7 +3,14 @@ import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, expect, test, beforeEach, afterEach } from 'vitest';
 import i18n from '../../i18n.js';
 
-vi.mock('../../api.js', () => ({ setApiKey: vi.fn(), saveSettings: vi.fn() }));
+vi.mock('../../api.js', () => ({
+  setApiKey: vi.fn(),
+  saveSettings: vi.fn(),
+  getTemplates: vi.fn().mockResolvedValue([]),
+  createTemplate: vi.fn(),
+  updateTemplate: vi.fn(),
+  deleteTemplate: vi.fn(),
+}));
 import { saveSettings, setApiKey } from '../../api.js';
 import Settings from '../Settings.jsx';
 
