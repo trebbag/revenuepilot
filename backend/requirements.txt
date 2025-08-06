@@ -5,6 +5,7 @@ openai
 keyring
 platformdirs
 pyjwt
+python-dotenv
 scrubadub
 python-multipart
 presidio-analyzer
