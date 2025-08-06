@@ -87,15 +87,22 @@ import { useTranslation } from 'react-i18next';
         );
       }
       if (type === 'differentials' && typeof item === 'object' && item !== null) {
-        const score = item.score !== undefined && item.score !== null ? ` — ${item.score}%` : '';
+        const isValidScore =
+          typeof item.score === 'number' &&
+          !Number.isNaN(item.score) &&
+          item.score >= 0 &&
+          item.score <= 1;
+        const pct = isValidScore ? Math.round(item.score * 100) : null;
+        const scoreText = pct !== null ? ` — ${pct}%` : '';
         return (
           <li
             key={idx}
-            title={score ? `${item.diagnosis}${score}` : item.diagnosis}
+            title={pct !== null ? `${item.diagnosis} — ${pct}%` : item.diagnosis}
             style={{ cursor: 'pointer' }}
             onClick={() => onInsert && onInsert(item.diagnosis)}
           >
-            {item.diagnosis}{score}
+            {item.diagnosis}
+            {scoreText}
           </li>
         );
       }
