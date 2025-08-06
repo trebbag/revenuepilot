@@ -25,30 +25,26 @@ try {
   ReactQuill = null;
 }
 
-// Formats allowed in the editor.  These correspond to the buttons rendered in
-// ``QuillToolbar`` below.
-const quillFormats = ['header', 'bold', 'italic', 'underline', 'list', 'bullet'];
+// Formats and modules allowed in the editor. The toolbar provides headings,
+// basic formatting, lists and code blocks.
+const quillFormats = [
+  'header',
+  'bold',
+  'italic',
+  'underline',
+  'list',
+  'bullet',
+  'code-block',
+];
 
-// Custom toolbar markup so we can provide accessible labels for the icons.
-// Quill will hook into this container via the ``modules.toolbar`` option.
-function QuillToolbar({ toolbarId }) {
-  return (
-    <div id={toolbarId} className="ql-toolbar ql-snow">
-      <span className="ql-formats">
-        <select className="ql-header" defaultValue="" aria-label="Heading">
-          <option value="1">H1</option>
-          <option value="2">H2</option>
-          <option value="">Normal</option>
-        </select>
-        <button className="ql-bold" aria-label="Bold" />
-        <button className="ql-italic" aria-label="Italic" />
-        <button className="ql-underline" aria-label="Underline" />
-        <button className="ql-list" value="ordered" aria-label="Ordered List" />
-        <button className="ql-list" value="bullet" aria-label="Bullet List" />
-      </span>
-    </div>
-  );
-}
+const quillModules = {
+  toolbar: [
+    [{ header: [1, 2, false] }],
+    ['bold', 'italic', 'underline'],
+    [{ list: 'ordered' }, { list: 'bullet' }],
+    ['code-block'],
+  ],
+};
 
 function NoteEditor({
   id,
@@ -129,24 +125,30 @@ function NoteEditor({
 
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
-    const toolbarId = `${id || 'editor'}-toolbar`;
-    const modules = { toolbar: { container: `#${toolbarId}` } };
     return (
-      <div style={{ height: '100%', width: '100%' }}>
-        {audioControls}
-        <QuillToolbar toolbarId={toolbarId} />
-        <ReactQuill
-          id={id}
-          theme="snow"
-          value={value}
-          modules={modules}
-          formats={quillFormats}
-          // ReactQuill's onChange passes the new HTML string as the first
-          // argument.  We ignore the other args (delta, source, editor) and
-          // forward the HTML string to the parent onChange.
-          onChange={(content) => onChange(content)}
-          style={{ height: '100%', width: '100%' }}
-        />
+      <>
+        <div
+          style={{
+            height: '100%',
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          {audioControls}
+          <ReactQuill
+            id={id}
+            theme="snow"
+            value={value}
+            modules={quillModules}
+            formats={quillFormats}
+            // ReactQuill's onChange passes the new HTML string as the first
+            // argument.  We ignore the other args (delta, source, editor) and
+            // forward the HTML string to the parent onChange.
+            onChange={(content) => onChange(content)}
+            style={{ flex: 1 }}
+          />
+        </div>
         {(transcript.provider || transcript.patient) && (
           <div style={{ marginTop: '0.5rem' }}>
             <strong>{t('noteEditor.transcript')}</strong>
@@ -166,19 +168,28 @@ function NoteEditor({
           <p style={{ color: 'red' }}>{error || fetchError}</p>
         )}
         {loadingTranscript && <p>Loading transcript...</p>}
-      </div>
+      </>
     );
   }
   return (
-    <div style={{ width: '100%', height: '100%' }}>
-      {audioControls}
-      <textarea
-        id={id}
-        value={localValue}
-        onChange={handleTextAreaChange}
-        style={{ width: '100%', height: '100%', padding: '0.5rem' }}
-        placeholder={t('noteEditor.placeholder')}
-      />
+    <>
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {audioControls}
+        <textarea
+          id={id}
+          value={localValue}
+          onChange={handleTextAreaChange}
+          style={{ width: '100%', flex: 1, padding: '0.5rem' }}
+          placeholder={t('noteEditor.placeholder')}
+        />
+      </div>
       {(transcript.provider || transcript.patient) && (
         <div style={{ marginTop: '0.5rem' }}>
           <strong>{t('noteEditor.transcript')}</strong>
@@ -198,7 +209,7 @@ function NoteEditor({
         <p style={{ color: 'red' }}>{error || fetchError}</p>
       )}
       {loadingTranscript && <p>Loading transcript...</p>}
-    </div>
+    </>
   );
 }
 
