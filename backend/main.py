@@ -309,7 +309,8 @@ async def login(model: LoginModel) -> Dict[str, str]:
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, specialty, payer FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region "
+        "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
 
@@ -321,7 +322,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             "lang": row["lang"],
             "specialty": row["specialty"],
             "payer": row["payer"],
-
+            "region": row["region"] or "",
         }
     return UserSettings().dict()
 
@@ -336,7 +337,8 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
@@ -345,6 +347,7 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
             model.lang,
             model.specialty,
             model.payer,
+            model.region,
         ),
     )
 
@@ -707,7 +710,7 @@ async def get_metrics(
         except Exception:
             pass
     if clinician:
-        conditions.append("json_extract(details, '$.clinician') = ?")
+        conditions.append("json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.clinician') = ?")
         params.append(clinician)
 
     where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
@@ -723,9 +726,9 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
-            AVG(CAST(json_extract(details, '$.length')      AS REAL))     AS avg_note_length,
-            AVG(CAST(json_extract(details, '$.revenue')     AS REAL))     AS revenue_per_visit,
-            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL))     AS avg_close_time
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL))     AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL))     AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL))     AS avg_close_time
         FROM events {where_clause}
     """
     cursor.execute(totals_query, params)
@@ -754,9 +757,9 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(details, '$.length')      AS REAL)) AS avg_note_length,
-            AVG(CAST(json_extract(details, '$.revenue')     AS REAL)) AS revenue_per_visit,
-            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL)) AS avg_close_time
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
         FROM events {where_clause}
         GROUP BY date
         ORDER BY date
@@ -773,9 +776,9 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(details, '$.length')      AS REAL)) AS avg_note_length,
-            AVG(CAST(json_extract(details, '$.revenue')     AS REAL)) AS revenue_per_visit,
-            AVG(CAST(json_extract(details, '$.timeToClose') AS REAL)) AS avg_close_time
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
         FROM events {where_clause}
         GROUP BY week
         ORDER BY week

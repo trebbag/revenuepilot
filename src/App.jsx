@@ -93,9 +93,7 @@ function App() {
     differentials: [],
   });
 
-  // Default values for theme and suggestion category settings.  These are
-  // merged with any values persisted in ``localStorage`` so user preferences
-  // survive page reloads.
+  // Default values for theme and suggestion category settings.
   const defaultSettings = {
     theme: 'modern',
     enableCodes: true,
@@ -112,22 +110,11 @@ function App() {
     region: '',
   };
   // User settings controlling theme and which suggestion categories are enabled.
-  // Load any previously saved settings from ``localStorage`` on first render.
-  const [settingsState, setSettingsState] = useState(() => {
-    try {
-      const stored = typeof window !== 'undefined' ? JSON.parse(localStorage.getItem('settings') || '{}') : {};
-      return { ...defaultSettings, ...stored };
-    } catch {
-      return defaultSettings;
-    }
-  });
+  const [settingsState, setSettingsState] = useState(defaultSettings);
 
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('settings', JSON.stringify(newSettings));
-    }
   };
 
   useEffect(() => {
@@ -138,9 +125,6 @@ function App() {
         const merged = { ...defaultSettings, ...remote };
         setSettingsState(merged);
         i18n.changeLanguage(merged.lang);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('settings', JSON.stringify(merged));
-        }
       } catch (e) {
         console.error('Failed to load settings', e);
       }
@@ -392,6 +376,7 @@ function App() {
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
   }, [draftText, audioTranscript, age, sex, settingsState.region, settingsState.specialty, settingsState.payer]);
+
 
 
   // Effect: apply theme colours to CSS variables when the theme changes

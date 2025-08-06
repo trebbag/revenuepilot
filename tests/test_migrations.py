@@ -11,5 +11,14 @@ def test_ensure_settings_table_adds_columns():
     )
     ensure_settings_table(conn)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
-    assert {"user_id", "theme", "categories", "rules", "lang", "specialty", "payer"} <= cols
+    assert {
+        "user_id",
+        "theme",
+        "categories",
+        "rules",
+        "lang",
+        "specialty",
+        "payer",
+        "region",
+    } <= cols
     conn.close()
