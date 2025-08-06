@@ -9,9 +9,7 @@ import Help from './components/Help.jsx';
 import Settings from './components/Settings.jsx';
 import {
   beautifyNote,
-  getSuggestions,
   logEvent,
-  transcribeAudio,
   summarizeNote,
   getSettings,
 } from './api.js';
@@ -68,12 +66,15 @@ function App() {
     provider: '',
     patient: '',
   });
+
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcriptionError, setTranscriptionError] = useState('');
   // References for MediaRecorder and audio chunks
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const editorRef = useRef(null);
+
   // Track whether the sidebar is collapsed
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -81,6 +82,7 @@ function App() {
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [baseTemplates, setBaseTemplates] = useState([]);
+  const [templateContext, setTemplateContext] = useState('');
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
@@ -131,6 +133,18 @@ function App() {
       localStorage.removeItem('token');
       window.location.href = '/';
     }
+  };
+
+  const suggestionContext = {
+    chart: chartText,
+    rules: settingsState.rules,
+    audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
+    lang: settingsState.lang,
+    specialty: settingsState.specialty,
+    payer: settingsState.payer,
+    age: age ? parseInt(age, 10) : undefined,
+    sex,
+    region: settingsState.region,
   };
 
   useEffect(() => {
@@ -289,23 +303,35 @@ function App() {
   // Insert template into the draft
   const insertTemplate = (content) => {
     setDraftText(content);
+    setTemplateContext(content);
     setActiveTab('draft');
   };
 
-  // Insert a suggestion into the draft note.  Appends the text to the
-  // current draft and focuses the draft tab so the user can continue
-  // editing after inserting a suggestion.
+  // Insert a suggestion into the draft note at the current cursor position
+  // and focus the draft tab so the user can continue editing.
   const handleInsertSuggestion = (text) => {
-    setDraftText((prev) => {
-      const usesHtml = /<[^>]+>/.test(prev);
-      if (usesHtml) {
-        // Append as a new paragraph in the HTML string
-        return `${prev}<p>${text}</p>`;
-      }
-      const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
-      return `${prev}${prefix}${text}`;
-    });
+    if (editorRef.current && typeof editorRef.current.insertAtCursor === 'function') {
+      editorRef.current.insertAtCursor(text);
+    } else {
+      setDraftText((prev) => `${prev}${prev && !prev.endsWith('\n') ? '\n' : ''}${text}`);
+    }
     setActiveTab('draft');
+  };
+
+  const handleSuggestions = (data) => {
+    setSuggestions(data);
+    if (patientID) {
+      const codes = data.codes.map((c) => c.code);
+      const revenue = calcRevenue(codes);
+      logEvent('suggest', {
+        patientID,
+        length: draftText.length,
+        codes,
+        revenue,
+        compliance: data.compliance,
+        publicHealth: data.publicHealth.length > 0,
+      }).catch(() => {});
+    }
   };
 
   /**
@@ -329,57 +355,6 @@ function App() {
     reader.readAsText(file);
   };
 
-  /**
-   * Start or stop audio recording.  Uses the browser's MediaRecorder API to
-   * capture audio from the user's microphone.  When recording stops the
-   * resulting ``Blob`` is uploaded to the backend ``/transcribe`` endpoint
-   * and the returned transcript stored in ``audioTranscript``.  The raw
-   * audio is never persisted locally.
-   */
-  const handleRecordAudio = async () => {
-    if (!recording) {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
-        audioChunksRef.current = [];
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data);
-        };
-        mediaRecorder.onstop = async () => {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          setTranscribing(true);
-          try {
-            await transcribeAudio(blob, true);
-            setTranscriptionError('');
-          } catch (err) {
-            if (err.message === 'Unauthorized') {
-              handleUnauthorized();
-            } else {
-              console.error('Transcription failed', err);
-              setTranscriptionError('Transcription failed');
-            }
-          } finally {
-            setTranscribing(false);
-          }
-          if (patientID) {
-            logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
-          }
-        };
-        mediaRecorder.start();
-        setRecording(true);
-      } catch (err) {
-        console.error('Error accessing microphone', err);
-        setTranscriptionError('Error accessing microphone');
-      }
-    } else {
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.stop();
-      }
-      setRecording(false);
-    }
-  };
 
   const handleTranscriptChange = (data) => {
     setAudioTranscript({
@@ -410,75 +385,6 @@ function App() {
     }
     prevDraftRef.current = draftText;
   }, [draftText, patientID]);
-
-  /*
-   * Debounce the suggestion API calls.  When the draft text changes, wait
-   * a short delay before fetching new suggestions.  This prevents making
-   * a network request on every keystroke and improves responsiveness.  If
-   * the user continues typing, the timer resets.  When the timer completes,
-   * call the API and update the suggestions.
-   */
-  useEffect(() => {
-    // If the draft is empty, clear suggestions and skip API call
-    if (!draftText.trim()) {
-      setSuggestions({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null });
-      return;
-    }
-    // Set loading state and start a timeout to call the API
-    setLoadingSuggestions(true);
-    const timer = setTimeout(() => {
-      // Strip HTML tags before sending to the backend for suggestions.
-      const plain = stripHtml(draftText);
-      getSuggestions(plain, {
-        chart: chartText,
-        rules: settingsState.rules,
-        audio: `${audioTranscript.provider} ${audioTranscript.patient}`.trim(),
-        lang: settingsState.lang,
-        specialty: settingsState.specialty,
-        payer: settingsState.payer,
-        age: age ? parseInt(age, 10) : undefined,
-        sex,
-        region: settingsState.region,
-      })
-        .then((data) => {
-          setSuggestions(data);
-          // Log a suggest event once suggestions are fetched
-          if (patientID) {
-            const codes = data.codes.map((c) => c.code);
-            const revenue = calcRevenue(codes);
-            logEvent('suggest', {
-              patientID,
-              length: draftText.length,
-              codes,
-              revenue,
-              compliance: data.compliance,
-              publicHealth: data.publicHealth.length > 0,
-            }).catch(() => {});
-          }
-        })
-        .catch((e) => {
-          if (e.message === 'Unauthorized') {
-            handleUnauthorized();
-          } else {
-            console.error('Suggestions failed', e);
-          }
-        })
-        .finally(() => setLoadingSuggestions(false));
-    }, 600); // 600ms delay
-    // Cleanup function cancels the previous timer if draftText changes again
-    return () => clearTimeout(timer);
-  }, [
-    draftText,
-    audioTranscript,
-    age,
-    sex,
-    settingsState.region,
-    settingsState.specialty,
-    settingsState.payer,
-    settingsState.lang,
-  ]);
-
-
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
@@ -633,14 +539,17 @@ function App() {
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
                     <NoteEditor
+                      ref={editorRef}
                       id="draft-input"
                       value={draftText}
                       onChange={handleDraftChange}
-                      onRecord={handleRecordAudio}
-                      recording={recording}
-                      transcribing={transcribing}
                       onTranscriptChange={handleTranscriptChange}
                       error={transcriptionError}
+                      templateContext={templateContext}
+                      suggestionContext={suggestionContext}
+                      onSuggestions={handleSuggestions}
+                      onSuggestionsLoading={setLoadingSuggestions}
+
                     />
                   ) : activeTab === 'beautified' ? (
                     <NoteEditor
