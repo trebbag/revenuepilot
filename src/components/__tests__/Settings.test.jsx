@@ -43,6 +43,7 @@ test('renders Spanish translations when lang is es', () => {
     enableDifferentials: true,
     rules: [],
     lang: 'es',
+    region: '',
   };
   i18n.changeLanguage('es');
   const { getAllByText } = render(

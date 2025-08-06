@@ -18,6 +18,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "lang TEXT NOT NULL DEFAULT 'en',"
         "specialty TEXT,"
         "payer TEXT,"
+        "region TEXT,"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -28,4 +29,6 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE settings ADD COLUMN specialty TEXT")
     if "payer" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN payer TEXT")
+    if "region" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
     conn.commit()
