@@ -101,7 +101,8 @@
     "templates": "Plantillas",
     "noTemplates": "Sin plantillas",
     "english": "Inglés",
-    "spanish": "Español"
+    "spanish": "Español",
+    "region": "Región"
   },
   "sidebar": {
     "notes": "Notas",

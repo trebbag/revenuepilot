@@ -101,7 +101,8 @@
     "templates": "Templates",
     "noTemplates": "No templates",
     "english": "English",
-    "spanish": "Spanish"
+    "spanish": "Spanish",
+    "region": "Region"
   },
   "sidebar": {
     "notes": "Notes",

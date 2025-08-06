@@ -246,3 +246,27 @@ def test_suggest_with_demographics(client, monkeypatch):
         json={"text": "note", "age": 30, "sex": "female", "region": "US"},
     )
     assert resp.status_code == 200
+
+
+def test_suggest_includes_public_health_from_api(client, monkeypatch):
+    def fake_call_openai(msgs):
+        return json.dumps({"codes": [], "compliance": [], "publicHealth": [], "differentials": []})
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+    monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
+
+    def fake_ph(age, sex, region):
+        assert age == 50
+        assert sex == "male"
+        assert region == "US"
+        return ["Shingles vaccine"]
+
+    monkeypatch.setattr(main, "get_public_health_suggestions", fake_ph)
+
+    resp = client.post(
+        "/suggest",
+        json={"text": "note", "age": 50, "sex": "male", "region": "US"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "Shingles vaccine" in data["publicHealth"]

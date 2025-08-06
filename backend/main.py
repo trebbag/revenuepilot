@@ -34,7 +34,9 @@ from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
+from .public_health import get_public_health_suggestions
 from .migrations import ensure_settings_table
+
 
 import json
 import sqlite3
@@ -253,6 +255,7 @@ class UserSettings(BaseModel):
     }
     rules: List[str] = []
     lang: str = "en"
+    region: str = ""
 
 
 def hash_password(password: str) -> str:
@@ -293,16 +296,32 @@ async def login(model: LoginModel) -> Dict[str, str]:
 @app.get("/settings")
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
-    row = db_conn.execute(
-        "SELECT theme, categories, rules, lang FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
+    try:
+        row = db_conn.execute(
+            "SELECT theme, categories, rules, lang, region FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+            (user["sub"],),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        try:
+            db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+        except Exception:
+            pass
+        try:
+            db_conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
+        except Exception:
+            pass
+        row = db_conn.execute(
+            "SELECT theme, categories, rules, lang, region FROM settings s JOIN users u ON s.user_id=u.id WHERE u.username=?",
+            (user["sub"],),
+        ).fetchone()
+
     if row:
         return {
             "theme": row["theme"],
             "categories": json.loads(row["categories"]),
             "rules": json.loads(row["rules"]),
             "lang": row["lang"],
+            "region": row["region"] or "",
         }
     return UserSettings().dict()
 
@@ -316,16 +335,39 @@ async def save_user_settings(model: UserSettings, user=Depends(require_role("use
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
-    db_conn.execute(
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang) VALUES (?, ?, ?, ?, ?)",
-        (
-            row["id"],
-            model.theme,
-            json.dumps(model.categories),
-            json.dumps(model.rules),
-            model.lang,
-        ),
-    )
+    try:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, region) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                row["id"],
+                model.theme,
+                json.dumps(model.categories),
+                json.dumps(model.rules),
+                model.lang,
+                model.region,
+            ),
+        )
+    except sqlite3.OperationalError:
+        try:
+            db_conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+        except Exception:
+            pass
+        try:
+            db_conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
+        except Exception:
+            pass
+        db_conn.execute(
+            "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, region) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                row["id"],
+                model.theme,
+                json.dumps(model.categories),
+                json.dumps(model.rules),
+                model.lang,
+                model.region,
+            ),
+        )
+
     db_conn.commit()
     return model.dict()
 
@@ -1057,6 +1099,10 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
         public_health_raw = data.get("publicHealth", data.get("public_health", []))
         public_health = [str(x) for x in public_health_raw]
         diffs = [str(x) for x in data.get("differentials", [])]
+        # Augment public health suggestions with external guidelines
+        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        if extra_ph:
+            public_health = list(dict.fromkeys(public_health + extra_ph))
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
@@ -1120,6 +1166,9 @@ async def suggest(req: NoteRequest) -> SuggestionsResponse:
             public_health.append("Consider influenza vaccine")
         if not diffs:
             diffs.append("Routine follow-up")
+        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        if extra_ph:
+            public_health = list(dict.fromkeys(public_health + extra_ph))
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,
