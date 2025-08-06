@@ -56,6 +56,7 @@ def test_audio_transcription_returns_text(monkeypatch):
     resp = client.post(
         "/transcribe",
         files={"file": ("audio.webm", dummy_audio, "audio/webm")},
+        headers={"Authorization": f"Bearer {create_token('tester', 'user')}"},
     )
     data = resp.json()
     assert data["provider"].strip()

@@ -20,7 +20,6 @@ import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
-import defaultTemplates from './templates.json';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -79,6 +78,7 @@ function App() {
   // Control visibility of the suggestion panel (for sliding effect)
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  const [baseTemplates, setBaseTemplates] = useState([]);
 
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
@@ -144,8 +144,14 @@ function App() {
     i18n.changeLanguage(settingsState.lang);
   }, [settingsState.lang]);
 
-  // Templates for quick note creation loaded from a JSON file
-  const templates = defaultTemplates;
+  // Load default templates from a JSON file at runtime so deployments can
+  // customise them without rebuilding the frontend bundle.
+  useEffect(() => {
+    fetch('/templates.json')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setBaseTemplates(data))
+      .catch(() => setBaseTemplates([]));
+  }, []);
 
   // If there is no JWT stored, show the login form instead of the main app
   if (!token) {
@@ -636,7 +642,7 @@ function App() {
       </div>
       {showTemplatesModal && (
         <TemplatesModal
-          baseTemplates={templates}
+          baseTemplates={baseTemplates}
           onSelect={(content) => {
             insertTemplate(content);
             setShowTemplatesModal(false);
