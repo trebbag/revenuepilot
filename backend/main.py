@@ -48,8 +48,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import DEFAULT_TEMPLATES
-from .templates import TemplateModel
+from .templates import TemplateModel, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
 
 

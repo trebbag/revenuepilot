@@ -60,6 +60,7 @@ def test_specialty_and_payer_overrides():
     )
     scontent = sugg[0]["content"]
     assert "Cardiology specific suggestion instruction." in scontent
+    assert "cholesterol screening" in scontent
     assert "Follow Medicare coding rules." in scontent
     texts = [m["content"] for m in sugg]
     assert "Example suggest note" in texts
@@ -82,6 +83,7 @@ def test_specialty_payer_modifiers_spanish():
     content = msgs[0]["content"]
     assert "terminología cardiaca" in content
     assert "Medicare reimbursement guidelines" in content
+    assert "control del colesterol" in content
 
 
 def test_guideline_tips_added(monkeypatch):
@@ -109,6 +111,12 @@ def test_additional_specialties_and_payers():
     scontent = sugg[0]["content"]
     assert "Geriatrics specific suggestion instruction." in scontent
     assert "Follow Aetna coding rules." in scontent
+
+    ped = prompts.build_suggest_prompt(
+        "note", lang="en", specialty="pediatrics", payer=None
+    )
+    ped_content = ped[0]["content"]
+    assert "immunisation schedules" in ped_content
 
 
 def test_fallback_to_default_when_override_missing():

@@ -36,16 +36,16 @@
   },
   "specialty_modifiers": {
     "cardiology": {
-      "en": "Remember to include cardiac-specific terminology and avoid extraneous detail.",
-      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios."
+      "en": "Remember to include cardiac-specific terminology and avoid extraneous detail. Emphasise cholesterol screening and lipid management when appropriate.",
+      "es": "Recuerda incluir terminología cardiaca y evitar detalles innecesarios. Destaca el control del colesterol y el manejo de lípidos cuando sea apropiado."
     },
     "paediatrics": {
-      "en": "Adjust tone for pediatric cases and use family-friendly language."
+      "en": "Adjust tone for pediatric cases and use family-friendly language. Include immunisation schedules and vaccine reminders where relevant."
     }
   },
   "payer_modifiers": {
     "medicare": {
-      "en": "Apply Medicare reimbursement guidelines and reference relevant policy."
+      "en": "Apply Medicare reimbursement guidelines and reference relevant policy. Highlight preventive services covered under Medicare."
     }
   },
   "specialty": {
@@ -60,7 +60,7 @@
         ]
       },
       "suggest": {
-        "en": "Cardiology specific suggestion instruction."
+        "en": "Cardiology specific suggestion instruction. Emphasise cholesterol screening and lipid management."
       },
       "summary": {
         "en": "Cardiology specific summary instruction."
@@ -71,7 +71,7 @@
         "en": "Paediatrics specific beautify instruction."
       },
       "suggest": {
-        "en": "Paediatrics specific suggestion instruction."
+        "en": "Paediatrics specific suggestion instruction. Include immunisation schedules and age-appropriate preventative care."
       },
       "summary": {
         "en": "Paediatrics specific summary instruction."
@@ -95,7 +95,7 @@
         "en": "Ensure documentation meets Medicare standards."
       },
       "suggest": {
-        "en": "Follow Medicare coding rules.",
+        "en": "Follow Medicare coding rules. Ensure recommendations align with Medicare coverage policies.",
         "examples": [
           {
             "user": "Medicare suggest note",
