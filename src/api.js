@@ -205,6 +205,7 @@ export async function getSuggestions(text, context = {}) {
     if (context.region) payload.region = context.region;
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
+    if (context.template) payload.template = context.template;
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }

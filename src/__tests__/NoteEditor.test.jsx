@@ -4,6 +4,11 @@ import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../api.js', () => ({
   fetchLastTranscript: vi.fn(),
+
+  getSuggestions: vi
+    .fn()
+    .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
+
   getTemplates: vi.fn().mockResolvedValue([]),
   transcribeAudio: vi.fn(),
 

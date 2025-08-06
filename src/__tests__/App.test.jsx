@@ -16,7 +16,13 @@ vi.mock('../api.js', () => ({
     region: '',
   }),
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+
+  getSuggestions: vi
+    .fn()
+    .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
+
   getTemplates: vi.fn().mockResolvedValue([]),
+
 }));
 
 // Mock fetch for loading default templates and reset state before each test

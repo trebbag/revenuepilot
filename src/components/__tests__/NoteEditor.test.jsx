@@ -5,8 +5,14 @@ import { useState } from 'react';
 
 vi.mock('../../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+
+  getSuggestions: vi
+    .fn()
+    .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
+
   getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Tpl', content: 'Hello' }]),
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+
 
 }));
 
