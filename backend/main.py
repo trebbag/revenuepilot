@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -360,6 +361,7 @@ class RegisterModel(BaseModel):
 class LoginModel(BaseModel):
     username: str
     password: str
+    lang: str = "en"
 
 
 class RefreshModel(BaseModel):
@@ -824,7 +826,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
