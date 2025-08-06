@@ -68,6 +68,35 @@ app into an Electron shell for desktop deployment.
 
 Set the environment variable `USE_OFFLINE_MODEL=true` before starting the backend to bypass calls to external AI services. In this mode the `/beautify`, `/suggest` and `/summarize` endpoints return deterministic placeholder data so the app can run without network access or an API key.
 
+### Local Whisper transcription
+
+For speech-to-text without the OpenAI API, install the open source
+[Whisper](https://github.com/openai/whisper) library and download a model:
+
+```bash
+pip install openai-whisper
+# Whisper relies on ffmpeg for audio conversion
+sudo apt-get install ffmpeg  # macOS: brew install ffmpeg
+
+# Download the default "base" model so it is available offline
+python - <<'PY'
+import whisper
+whisper.load_model('base')
+PY
+```
+
+Start the backend with `OFFLINE_TRANSCRIBE=true` to force use of this local
+model:
+
+```bash
+export OFFLINE_TRANSCRIBE=true      # macOS/Linux
+set OFFLINE_TRANSCRIBE=true         # Windows PowerShell
+```
+
+When this flag is set and no `OPENAI_API_KEY` is present, `backend/audio_processing.py`
+falls back to the local Whisper model for transcription. Set `WHISPER_MODEL`
+to choose a different model size (e.g. `tiny`, `small`).
+
 ### Advanced PHI de-identification
 
 The backend can optionally use machine-learning based scrubbers to remove names, dates, addresses, Social Security numbers and phone numbers from notes.

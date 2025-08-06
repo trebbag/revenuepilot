@@ -86,3 +86,15 @@ def test_transcribe_placeholder_on_failure(monkeypatch):
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
     result = ap.simple_transcribe(b"\xff\xfe")
     assert result == "[transcribed 2 bytes]"
+
+
+def test_offline_transcribe_uses_local_model(monkeypatch):
+    class DummyModel:
+        def transcribe(self, path):  # noqa: ARG002
+            return {"text": "offline text"}
+
+    monkeypatch.setattr(ap, "_load_local_model", lambda: DummyModel())
+    monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
+    monkeypatch.setattr(ap, "get_api_key", lambda: None)
+    result = ap.simple_transcribe(b"data")
+    assert result == "offline text"
