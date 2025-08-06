@@ -12,6 +12,7 @@ describe('ClipboardExportButtons', () => {
 
   afterEach(() => {
     cleanup();
+    delete window.require;
   });
 
   test('copies beautified text to clipboard and logs event', async () => {
@@ -62,6 +63,24 @@ describe('ClipboardExportButtons', () => {
       expect(invoke).toHaveBeenCalledWith('export-note', { beautified: 'b', summary: 's' });
       expect(logSpy).toHaveBeenCalledWith('export', {
         patientID: 'p3',
+        beautifiedLength: 1,
+        summaryLength: 1,
+      });
+    });
+  });
+
+  test('exports RTF via ipc and logs event', async () => {
+    const invoke = vi.fn().mockResolvedValue();
+    window.require = vi.fn().mockReturnValue({ ipcRenderer: { invoke } });
+    const logSpy = vi.spyOn(api, 'logEvent').mockResolvedValue();
+    const { getByText } = render(
+      <ClipboardExportButtons beautified="b" summary="s" patientID="p4" />
+    );
+    fireEvent.click(getByText('Export RTF'));
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('export-rtf', { beautified: 'b', summary: 's' });
+      expect(logSpy).toHaveBeenCalledWith('export-rtf', {
+        patientID: 'p4',
         beautifiedLength: 1,
         summaryLength: 1,
       });

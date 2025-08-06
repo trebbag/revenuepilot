@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const PDFDocument = require('pdfkit');
 const http = require('http');
+const { writeRtfFile } = require('./rtfExporter');
 
 let backendProcess;
 const backendUrl =
@@ -40,6 +41,14 @@ ipcMain.handle('export-note', async (_event, { beautified, summary }) => {
     const content = `Beautified Note:\n${beautified || ''}\n\nSummary:\n${summary || ''}`;
     fs.writeFileSync(filePath, content);
   }
+});
+
+ipcMain.handle('export-rtf', async (_event, { beautified, summary }) => {
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    filters: [{ name: 'Rich Text', extensions: ['rtf'] }],
+  });
+  if (canceled || !filePath) return;
+  writeRtfFile(filePath, beautified, summary);
 });
 
 function waitForServer(url, timeout = 10000) {

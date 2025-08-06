@@ -18,6 +18,7 @@ vi.mock('../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   getMetrics: vi.fn().mockResolvedValue({}),
   getTemplates: vi.fn().mockResolvedValue([]),
+  getPromptTemplates: vi.fn().mockResolvedValue([]),
   createTemplate: vi.fn(),
   updateTemplate: vi.fn(),
   deleteTemplate: vi.fn(),

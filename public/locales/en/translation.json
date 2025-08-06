@@ -3,6 +3,7 @@
     "copyBeautified": "Copy Beautified",
     "copySummary": "Copy Summary",
     "export": "Export",
+    "exportRtf": "Export RTF",
     "beautifiedCopied": "Beautified copied",
     "summaryCopied": "Summary copied",
     "copyFailed": "Copy failed",
