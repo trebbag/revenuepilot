@@ -165,6 +165,31 @@ test('setApiKey called when saving API key', async () => {
   await waitFor(() => expect(setApiKey).toHaveBeenCalled());
 });
 
+test('invalid API key shows error and does not call setApiKey', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    region: '',
+  };
+  const { getAllByPlaceholderText, getByText, getAllByText } = render(
+    <Settings settings={settings} updateSettings={() => {}} />,
+  );
+  const input = getAllByPlaceholderText('sk-... (e.g., sk-proj-...)')[0];
+  fireEvent.change(input, {
+    target: { value: 'invalid-key' },
+  });
+  fireEvent.click(getAllByText('Save Key')[0]);
+  await waitFor(() => expect(setApiKey).not.toHaveBeenCalled());
+  await waitFor(() => {
+    expect(getByText('Invalid API key format')).toBeTruthy();
+  });
+});
+
 test('changing theme triggers saveSettings', async () => {
   const settings = {
     theme: 'modern',

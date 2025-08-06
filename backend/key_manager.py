@@ -4,8 +4,13 @@ from typing import Optional
 
 try:
     import keyring
+    from keyring.errors import KeyringError
 except Exception:  # pragma: no cover - keyring may not be installed
     keyring = None
+
+    class KeyringError(Exception):
+        """Fallback error when keyring is unavailable."""
+        pass
 
 from platformdirs import user_data_dir
 
@@ -28,7 +33,7 @@ def get_api_key() -> Optional[str]:
     if keyring:
         try:
             key = keyring.get_password(SERVICE_NAME, "api_key")
-        except Exception:
+        except KeyringError:
             key = None
         if key:
             os.environ["OPENAI_API_KEY"] = key
@@ -41,7 +46,7 @@ def get_api_key() -> Optional[str]:
             if key:
                 os.environ["OPENAI_API_KEY"] = key
                 return key
-        except Exception:
+        except OSError:
             pass
     return None
 
@@ -53,11 +58,18 @@ def save_api_key(key: str) -> None:
             keyring.set_password(SERVICE_NAME, "api_key", key)
             os.environ["OPENAI_API_KEY"] = key
             return
-        except Exception:
+        except KeyringError:
             # fall back to file storage
             pass
     path = _file_path()
     with open(path, "w", encoding="utf-8") as f:
         f.write(key)
-    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        if os.name == "nt":
+            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+        else:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        # Best effort; ignore if permissions cannot be set
+        pass
     os.environ["OPENAI_API_KEY"] = key
