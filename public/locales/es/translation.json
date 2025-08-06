@@ -9,6 +9,11 @@
     "exported": "Exportado",
     "exportFailed": "Error al exportar"
   },
+  "export": "Exportar",
+  "sessionExpired": "Sesión expirada",
+  "saved": "Guardado",
+  "templateManager": "Gestor de plantillas",
+  "ehrExport": "Exportar a EHR",
   "dashboard": {
     "accessDenied": "Acceso denegado",
     "title": "Panel de análisis",

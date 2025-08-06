@@ -78,3 +78,10 @@ def test_guideline_tips_added(monkeypatch):
     user_msg = msgs[-1]["content"]
     assert "Flu" in user_msg and "BP" in user_msg
 
+
+def test_new_categories_spanish():
+    tpl = prompts.build_template_prompt("contenido", lang="es")
+    exp = prompts.build_export_prompt("nota", lang="es")
+    assert "en español" in tpl[0]["content"]
+    assert "en español" in exp[0]["content"]
+
