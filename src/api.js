@@ -917,8 +917,15 @@ export async function exportToEhr(
     },
     body: JSON.stringify({ note, codes, patientId, encounterId }),
   });
-  if (!resp.ok) throw new Error('Export failed');
-  return await resp.json();
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = data.detail || data.message || 'Export failed';
+    throw new Error(msg);
+  }
+  if (data.status && data.status !== 'exported' && data.detail) {
+    throw new Error(data.detail);
+  }
+  return data;
 }
 
 /**
