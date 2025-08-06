@@ -48,6 +48,8 @@ def test_specialty_and_payer_overrides():
     assert "Base instruction applied to all notes." in content
     assert "Cardiology specific beautify instruction." in content
     assert "Ensure documentation meets Medicare standards." in content
+    assert "cardiac-specific terminology" in content
+    assert "Medicare reimbursement guidelines" in content
     # Default and specialty examples should be included
     texts = [m["content"] for m in beauty]
     assert any("chief complaint: cough for 3 days" in t for t in texts)
@@ -71,6 +73,15 @@ def test_specialty_and_payer_overrides():
     assert "Follow Medicare summary requirements." in sc
     texts = [m["content"] for m in summary]
     assert "Example summary note" in texts
+
+
+def test_specialty_payer_modifiers_spanish():
+    msgs = prompts.build_beautify_prompt(
+        "nota", lang="es", specialty="cardiology", payer="medicare"
+    )
+    content = msgs[0]["content"]
+    assert "terminología cardiaca" in content
+    assert "Medicare reimbursement guidelines" in content
 
 
 def test_guideline_tips_added(monkeypatch):
