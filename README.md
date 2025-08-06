@@ -66,7 +66,27 @@ app into an Electron shell for desktop deployment.
 
 ### Offline model mode (experimental)
 
-Set the environment variable `USE_OFFLINE_MODEL=true` before starting the backend to bypass calls to external AI services. In this mode the `/beautify`, `/suggest` and `/summarize` endpoints return deterministic placeholder data so the app can run without network access or an API key.
+Set the environment variable `USE_OFFLINE_MODEL=true` before starting the
+backend to bypass calls to external AI services. In this mode the
+`/beautify`, `/suggest` and `/summarize` endpoints return deterministic
+placeholder data so the app can run without network access or an API key.
+
+To evaluate lightweight local models instead of the fixed placeholders, set
+`USE_LOCAL_MODELS=true` and provide model names for any of the endpoints you
+wish to test:
+
+```bash
+export USE_OFFLINE_MODEL=true
+export USE_LOCAL_MODELS=true
+export LOCAL_BEAUTIFY_MODEL=hf-internal-testing/tiny-random-t5
+export LOCAL_SUMMARIZE_MODEL=sshleifer/tiny-bart-large-cnn
+export LOCAL_SUGGEST_MODEL=hf-internal-testing/tiny-random-gpt2
+```
+
+Models are loaded with the `transformers` pipeline and must therefore be
+available locally or downloadable from the Hugging Face Hub. If a model fails
+to load or does not return the expected structure, the deterministic offline
+placeholders are used as a fallback so the API always responds.
 
 ### Local Whisper transcription
 
