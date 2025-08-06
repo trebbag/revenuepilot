@@ -64,6 +64,12 @@ app into an Electron shell for desktop deployment.
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
+### Advanced PHI de-identification
+
+The backend can optionally use machine-learning based scrubbers to remove names, dates, addresses, Social Security numbers and phone numbers from notes.
+Install either [Microsoft Presidio](https://github.com/microsoft/presidio) or [Philter](https://github.com/Bitscopic/philter) and set `USE_ADVANCED_SCRUBBER=true` before starting the backend to enable this feature.
+If the flag is unset or the libraries are missing, a simpler regex-based scrubber is used instead.
+
 5. **Run the Electron shell**.  The project includes scripts to launch
    an Electron wrapper for development and to build distributable binaries:
 
