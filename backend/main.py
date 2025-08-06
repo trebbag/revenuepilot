@@ -13,11 +13,9 @@ import os
 import re
 import shutil
 import time
-from collections import deque
+from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
-from collections import deque
-
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -48,7 +46,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel
+from .templates import TemplateModel, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
 
 
@@ -168,10 +166,13 @@ app.add_middleware(
 # to a database.
 events: List[Dict[str, Any]] = []
 
-# Last audio transcript returned by the ``/transcribe`` endpoint.  This is a
-# simple in-memory store so the frontend can fetch or re-use the most recent
-# transcript without re-uploading the audio.  It is reset on server restart.
-last_transcript: Dict[str, Any] = {"provider": "", "patient": "", "segments": []}
+# Cache of recent audio transcripts per user.  Each user retains the last
+# ``TRANSCRIPT_HISTORY_LIMIT`` transcripts so clinicians can revisit previous
+# conversations.  The cache is stored in-memory and reset on server restart.
+TRANSCRIPT_HISTORY_LIMIT = int(os.getenv("TRANSCRIPT_HISTORY", "5"))
+transcript_history: Dict[str, deque] = defaultdict(
+    lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
+)
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
@@ -1680,6 +1681,7 @@ async def summarize(
 async def transcribe(
     file: UploadFile = File(...),
     diarise: bool = False,
+    lang: Optional[str] = None,
     user=Depends(require_role("user")),
 ) -> Dict[str, Any]:
     """Transcribe uploaded audio.
@@ -1694,9 +1696,9 @@ async def transcribe(
 
     audio_bytes = await file.read()
     if diarise:
-        result = diarize_and_transcribe(audio_bytes)
+        result = diarize_and_transcribe(audio_bytes, language=lang)
     else:
-        text = simple_transcribe(audio_bytes)
+        text = simple_transcribe(audio_bytes, language=lang)
         result = {
             "provider": text,
             "patient": "",
@@ -1704,25 +1706,17 @@ async def transcribe(
                 {"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}
             ],
         }
-    # Store the most recent transcript so other endpoints or subsequent
-    # requests can reuse it without reprocessing the audio.  Replace the
-    # previous contents entirely so stale keys (e.g. error messages) do
-    # not persist across requests.
-    last_transcript.clear()
-    last_transcript.update(result)
+    # Store the transcript in the user's history so it can be revisited
+    transcript_history[user["sub"]].append(result)
     return result
 
 
 @app.get("/transcribe")
 async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    """Return the most recent audio transcript.
+    """Return recent audio transcripts for the current user."""
 
-    This endpoint allows the frontend to retrieve the last transcript
-    produced by :func:`transcribe` without uploading the audio again.
-    The transcript is stored in-memory and reset when the server restarts.
-    """
-
-    return last_transcript
+    history = list(transcript_history.get(user["sub"], []))
+    return {"history": history}
 
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
