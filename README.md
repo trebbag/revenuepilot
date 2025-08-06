@@ -194,7 +194,10 @@ deploy RevenuePilot, consider the following steps:
 
 1. **Install dependencies**: Ensure `react-quill` and `openai` are installed
    via `npm install` and `pip install -r backend/requirements.txt`.  The
-   installer script (`install.sh`) automates most of this setup.
+   backend can optionally perform speaker diarisation using
+   `pyannote.audio`; to enable this run `pip install pyannote.audio
+   torchaudio` in addition to the base requirements.  The installer script
+   (`install.sh`) automates most of this setup.
 
 2. **Configure your OpenAI API key**: Set the environment variable
    `OPENAI_API_KEY` before starting the backend.  For example:

@@ -11,3 +11,6 @@ presidio-analyzer
 presidio-anonymizer
 pyyaml
 philter
+pyannote.audio
+torchaudio
+
