@@ -328,7 +328,9 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
         assert region == "US"
         return ["Shingles vaccine"]
 
-    monkeypatch.setattr(main, "get_public_health_suggestions", fake_ph)
+    monkeypatch.setattr(
+        main.public_health_api, "get_public_health_suggestions", fake_ph
+    )
 
     token_d = main.create_token("u", "user")
     resp = client.post(
