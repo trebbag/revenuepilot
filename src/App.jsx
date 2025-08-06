@@ -117,6 +117,14 @@ function App() {
     setSettingsState(newSettings);
   };
 
+  const handleUnauthorized = () => {
+    alert('Session expired');
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('token');
+      window.location.href = '/';
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     async function fetchSettings() {
@@ -174,6 +182,13 @@ function App() {
           logEvent('beautify', { patientID, length: draftText.length }).catch(() => {});
         }
       })
+      .catch((e) => {
+        if (e.message === 'Unauthorized') {
+          handleUnauthorized();
+        } else {
+          console.error('Beautify failed', e);
+        }
+      })
       .finally(() => {
         setLoadingBeautify(false);
       });
@@ -202,6 +217,13 @@ function App() {
         setActiveTab('summary');
         if (patientID) {
           logEvent('summary', { patientID, length: draftText.length }).catch(() => {});
+        }
+      })
+      .catch((e) => {
+        if (e.message === 'Unauthorized') {
+          handleUnauthorized();
+        } else {
+          console.error('Summary failed', e);
         }
       })
       .finally(() => setLoadingSummary(false));
@@ -313,8 +335,12 @@ function App() {
               setActiveTab('draft');
             }
           } catch (err) {
-            console.error('Transcription failed', err);
-            setAudioTranscript({ provider: '', patient: '' });
+            if (err.message === 'Unauthorized') {
+              handleUnauthorized();
+            } else {
+              console.error('Transcription failed', err);
+              setAudioTranscript({ provider: '', patient: '' });
+            }
           }
           if (patientID) {
             logEvent('audio_recorded', { patientID, size: blob.size }).catch(() => {});
@@ -381,6 +407,13 @@ function App() {
           // Log a suggest event once suggestions are fetched
           if (patientID) {
             logEvent('suggest', { patientID, length: draftText.length }).catch(() => {});
+          }
+        })
+        .catch((e) => {
+          if (e.message === 'Unauthorized') {
+            handleUnauthorized();
+          } else {
+            console.error('Suggestions failed', e);
           }
         })
         .finally(() => setLoadingSuggestions(false));

@@ -570,7 +570,7 @@ async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]
 # a note, beautifying a note, requesting suggestions).  Events are
 # stored in the global `events` list.  Returns a simple status.
 @app.post("/event")
-async def log_event(event: EventModel) -> Dict[str, str]:
+async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Dict[str, str]:
     data = {
         "eventType": event.eventType,
         "details": event.details or {},
@@ -897,7 +897,7 @@ async def get_metrics(
         "timeseries": {"daily": daily_list, "weekly": weekly_list},
     }
 @app.post("/summarize")
-async def summarize(req: NoteRequest) -> Dict[str, str]:
+async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dict[str, str]:
     """
     Generate a patient‑friendly summary of a clinical note.  This endpoint
     combines the draft text with any optional chart and audio transcript,
@@ -934,7 +934,7 @@ async def summarize(req: NoteRequest) -> Dict[str, str]:
 
 @app.post("/transcribe")
 async def transcribe(
-    file: UploadFile = File(...), diarise: bool = False
+    file: UploadFile = File(...), diarise: bool = False, user=Depends(require_role("user"))
 ) -> Dict[str, str]:
     """Transcribe uploaded audio.
 
@@ -962,7 +962,7 @@ async def transcribe(
 # process use the new key.  This enables users to configure the key
 # through the UI without editing environment variables directly.
 @app.post("/apikey")
-async def set_api_key(model: ApiKeyModel):
+async def set_api_key(model: ApiKeyModel, user=Depends(require_role("admin"))):
     """
     Store and validate an OpenAI API key.  Accepts a JSON body with a
     single field "key" and writes it to a local file.  Validation is
@@ -999,7 +999,7 @@ async def set_api_key(model: ApiKeyModel):
 
 
 @app.post("/beautify")
-async def beautify_note(req: NoteRequest) -> dict:
+async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) -> dict:
     """
     Beautify (reformat) a clinical note.  This endpoint de‑identifies the
     incoming note and then calls an LLM to rephrase it into a professional
@@ -1031,7 +1031,7 @@ async def beautify_note(req: NoteRequest) -> dict:
 
 
 @app.post("/suggest", response_model=SuggestionsResponse)
-async def suggest(req: NoteRequest) -> SuggestionsResponse:
+async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> SuggestionsResponse:
     """
     Generate coding and compliance suggestions for a clinical note.  This
     endpoint de‑identifies the text and then calls an AI model to

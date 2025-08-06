@@ -106,11 +106,18 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
     const payload = { text, lang };
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      : { 'Content-Type': 'application/json' };
     const resp = await fetch(`${baseUrl}/beautify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
     const data = await resp.json();
     return data.beautified;
   }
@@ -145,11 +152,18 @@ export async function getSuggestions(text, context = {}) {
     if (context.region) payload.region = context.region;
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      : { 'Content-Type': 'application/json' };
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
     return await resp.json();
   }
   // fallback: simulate network delay and return stub suggestions
@@ -191,10 +205,16 @@ export async function transcribeAudio(blob, diarise = false) {
     const form = new FormData();
     form.append('file', blob, 'audio.webm');
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
         method: 'POST',
         body: form,
+        headers,
       });
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Unauthorized');
+      }
       const data = await resp.json();
       if (data.provider || data.patient) {
         return { provider: data.provider || '', patient: data.patient || '' };
@@ -227,11 +247,18 @@ export async function logEvent(eventType, details = {}) {
     return;
   }
   try {
-    await fetch(`${baseUrl}/event`, {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+      : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${baseUrl}/event`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ eventType, details }),
     });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
   } catch (err) {
     // Suppress errors; analytics should not block UI
     console.error('Failed to log event', err);
@@ -424,11 +451,18 @@ export async function setApiKey(key) {
   if (!baseUrl) {
     throw new Error('Backend URL not set');
   }
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
   const resp = await fetch(`${baseUrl}/apikey`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ key }),
   });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
   if (!resp.ok) {
     const err = await resp.json();
     throw new Error(err.message || 'Failed to save key');
@@ -457,11 +491,18 @@ export async function summarizeNote(text, context = {}) {
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
     try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const headers = token
+        ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+        : { 'Content-Type': 'application/json' };
       const resp = await fetch(`${baseUrl}/summarize`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(payload),
       });
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error('Unauthorized');
+      }
       const data = await resp.json();
       return data.summary || '';
     } catch (err) {

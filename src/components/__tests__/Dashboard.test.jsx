@@ -95,9 +95,15 @@ test('applies date range filters', async () => {
 });
 
 test('denies access when user not admin', () => {
-  localStorage.setItem('token',
-    [btoa(JSON.stringify({ alg: 'none', typ: 'JWT' })), btoa(JSON.stringify({ role: 'user' })), ''].join('.')
+  localStorage.setItem(
+    'token',
+    [
+      btoa(JSON.stringify({ alg: 'none', typ: 'JWT' })),
+      btoa(JSON.stringify({ role: 'user' })),
+      '',
+    ].join('.')
   );
-  const { getByText } = render(<Dashboard />);
-  expect(getByText('Access denied')).toBeTruthy();
+  const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+  render(<Dashboard />);
+  expect(alertSpy).toHaveBeenCalled();
 });

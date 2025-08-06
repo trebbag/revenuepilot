@@ -41,9 +41,13 @@ ChartJS.register(
       role = null;
     }
   }
-    if (role !== 'admin') {
-      return <p>{t('dashboard.accessDenied')}</p>;
+  if (role !== 'admin') {
+    if (typeof window !== 'undefined') {
+      alert(t('dashboard.accessDenied'));
+      window.location.href = '/';
     }
+    return null;
+  }
 
   // Metrics returned from the API and filter state.
   const [metrics, setMetrics] = useState({});
@@ -56,6 +60,8 @@ ChartJS.register(
       .then((data) => setMetrics(data))
       .catch((err) => {
         if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert(t('dashboard.accessDenied'));
+          localStorage.removeItem('token');
           window.location.href = '/';
         } else {
           setError(err.message);

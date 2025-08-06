@@ -15,6 +15,8 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       .then((data) => setTemplates([...baseTemplates, ...data]))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert('Access denied');
+          localStorage.removeItem('token');
           window.location.href = '/';
         } else {
           setError(e.message);
@@ -37,6 +39,8 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       setEditingId(null);
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
         window.location.href = '/';
       } else {
         setError(e.message);
@@ -56,6 +60,8 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       setTemplates((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
         window.location.href = '/';
       } else {
         setError(e.message);
