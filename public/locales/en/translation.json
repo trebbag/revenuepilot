@@ -9,6 +9,11 @@
     "exported": "Exported",
     "exportFailed": "Export failed"
   },
+  "export": "Export",
+  "sessionExpired": "Session expired",
+  "saved": "Saved",
+  "templateManager": "Template Manager",
+  "ehrExport": "EHR Export",
   "dashboard": {
     "accessDenied": "Access denied",
     "title": "Analytics Dashboard",

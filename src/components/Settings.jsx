@@ -36,7 +36,7 @@ function Settings({ settings, updateSettings }) {
       .then((data) => setTemplates(data))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-          alert('Access denied');
+          alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
           window.location.href = '/';
         } else {
@@ -62,7 +62,7 @@ function Settings({ settings, updateSettings }) {
       setTemplates((prev) => prev.filter((tpl) => tpl.id !== id));
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
@@ -134,7 +134,7 @@ function Settings({ settings, updateSettings }) {
       setTplError(null);
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
@@ -168,7 +168,7 @@ function Settings({ settings, updateSettings }) {
       // The backend returns {status: 'saved'} on success or an
       // object with a message on failure.  Display the appropriate
       // status message.
-      setApiKeyStatus(res.status === 'saved' ? 'Saved' : res.message);
+      setApiKeyStatus(res.status === 'saved' ? t('saved') : res.message);
     } catch (e) {
       // If the API call throws, surface the error message to the user.
       setApiKeyStatus(e.message);
