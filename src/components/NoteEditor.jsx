@@ -59,12 +59,16 @@ function NoteEditor({
   transcribing = false,
   onTranscriptChange,
   error = '',
+  mode = 'draft',
 }) {
   const { t } = useTranslation();
   // Maintain a local state for the editor's HTML value when using the
   // fallback <textarea>.  This allows the component to behave as a
   // controlled input in both modes.
   const [localValue, setLocalValue] = useState(value || '');
+  // History stack for beautified notes (up to 5 entries).
+  const [history, setHistory] = useState(value ? [value] : []);
+  const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
   const [transcript, setTranscript] = useState({ provider: '', patient: '' });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
@@ -73,8 +77,25 @@ function NoteEditor({
   // ReactQuill the parent `value` prop is passed directly, so this
   // effect only runs for the fallback <textarea> case.
   useEffect(() => {
-    setLocalValue(value || '');
-  }, [value]);
+    if (mode === 'draft') {
+      setLocalValue(value || '');
+    }
+  }, [value, mode]);
+
+  // Track beautified history when in beautified mode.
+  useEffect(() => {
+    if (mode !== 'beautified') return;
+    setHistory((prev) => {
+      const current = historyIndex >= 0 ? prev[historyIndex] : undefined;
+      if (current === value) return prev;
+      const base = prev.slice(0, historyIndex + 1);
+      const appended = [...base, value];
+      const newHist = appended.slice(-5);
+      setHistoryIndex(newHist.length - 1);
+      return newHist;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, mode]);
 
   // Handler for changes from the fallback <textarea>.
   const handleTextAreaChange = (e) => {
@@ -100,32 +121,76 @@ function NoteEditor({
   };
 
   useEffect(() => {
-    loadTranscript();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!transcribing) {
+    if (mode === 'draft') {
       loadTranscript();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcribing]);
+  }, [mode]);
 
-  const audioControls = (
-    <div style={{ marginBottom: '0.5rem' }}>
-      {onRecord && (
-        <button
-          type="button"
-          onClick={onRecord}
-          aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-        >
-          {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
-        </button>
-      )}
-      {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
-      {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
-    </div>
-  );
+  useEffect(() => {
+    if (mode === 'draft' && !transcribing) {
+      loadTranscript();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcribing, mode]);
+
+  const audioControls =
+    mode === 'draft' && (
+      <div style={{ marginBottom: '0.5rem' }}>
+        {onRecord && (
+          <button
+            type="button"
+            onClick={onRecord}
+            aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+          >
+            {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+          </button>
+        )}
+        {recording && <span style={{ marginLeft: '0.5rem' }}>Recording...</span>}
+        {transcribing && <span style={{ marginLeft: '0.5rem' }}>Transcribing...</span>}
+      </div>
+    );
+
+  const handleUndo = () => {
+    setHistoryIndex((idx) => {
+      if (idx <= 0) return idx;
+      const newIndex = idx - 1;
+      onChange(history[newIndex]);
+      return newIndex;
+    });
+  };
+
+  const handleRedo = () => {
+    setHistoryIndex((idx) => {
+      if (idx >= history.length - 1) return idx;
+      const newIndex = idx + 1;
+      onChange(history[newIndex]);
+      return newIndex;
+    });
+  };
+
+  if (mode === 'beautified') {
+    return (
+      <div style={{ width: '100%', height: '100%' }}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <button type="button" onClick={handleUndo} disabled={historyIndex <= 0}>
+            {t('noteEditor.undo')}
+          </button>
+          <button
+            type="button"
+            onClick={handleRedo}
+            disabled={historyIndex >= history.length - 1}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            {t('noteEditor.redo')}
+          </button>
+        </div>
+        <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
+          {history[historyIndex] || ''}
+        </div>
+      </div>
+    );
+  }
 
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {

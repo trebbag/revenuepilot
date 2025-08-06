@@ -92,7 +92,9 @@
     "stopRecording": "Detener grabación",
     "recordAudio": "Grabar audio",
     "transcript": "Transcripción:",
-    "placeholder": "Escriba aquí su nota clínica..."
+    "placeholder": "Escriba aquí su nota clínica...",
+    "undo": "Deshacer",
+    "redo": "Rehacer"
   },
   "settings": {
     "title": "Configuración",
