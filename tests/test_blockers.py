@@ -12,6 +12,7 @@ import pytest
 import subprocess
 import time
 from urllib.request import urlopen
+from collections import defaultdict, deque
 
 from fastapi.testclient import TestClient
 
@@ -33,6 +34,11 @@ def test_audio_transcription_returns_text(monkeypatch):
     raw bytes or a deterministic placeholder so callers always receive
     some text.  Both simple and diarising paths are exercised here.
     """
+
+    from backend import main as backend_main
+    backend_main.transcript_history = defaultdict(
+        lambda: deque(maxlen=backend_main.TRANSCRIPT_HISTORY_LIMIT)
+    )
 
     class DummyCreate:
         def create(self, model, file):  # noqa: ARG002
@@ -61,9 +67,7 @@ def test_audio_transcription_returns_text(monkeypatch):
     )
     data = resp.json()
     assert data["provider"].strip()
-    from backend import main as backend_main
-
-    assert backend_main.last_transcript["provider"].strip()
+    assert backend_main.transcript_history["test"][0]["provider"].strip()
 
 
 def test_deidentify_handles_complex_phi():

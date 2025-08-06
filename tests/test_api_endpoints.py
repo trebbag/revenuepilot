@@ -2,7 +2,8 @@ import json
 import sqlite3
 import hashlib
 import logging
-import json
+from collections import defaultdict, deque
+
 
 
 import pytest
@@ -38,6 +39,11 @@ def client(monkeypatch, tmp_path):
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
     monkeypatch.setattr(main, "events", [])
+    monkeypatch.setattr(
+        main,
+        "transcript_history",
+        defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT)),
+    )
     return TestClient(main.app)
 
 
@@ -278,11 +284,11 @@ def test_summarize_spanish_language(client, monkeypatch):
 
 
 def test_transcribe_endpoint(client, monkeypatch):
-    monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(main, "simple_transcribe", lambda b, language=None: "hello")
     monkeypatch.setattr(
         main,
         "diarize_and_transcribe",
-        lambda b: {
+        lambda b, language=None: {
             "provider": "p",
             "patient": "q",
             "segments": [
@@ -325,7 +331,7 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
 
     monkeypatch.setattr(ap, "Pipeline", FailPipeline)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "fallback")
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "fallback")
     token = main.create_token("u", "user")
     resp = client.post(
         "/transcribe?diarise=true",
@@ -340,14 +346,28 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
     assert "error" in data
 
 
+def test_transcribe_language_param(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        main, "simple_transcribe", lambda b, language=None: captured.setdefault("lang", language) or "text"
+    )
+    token = main.create_token("u", "user")
+    client.post(
+        "/transcribe?lang=es",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    assert captured["lang"] == "es"
+
+
 def test_transcribe_endpoint_offline(client, monkeypatch):
     import backend.audio_processing as ap
 
     class DummyModel:
-        def transcribe(self, path):  # noqa: ARG002
+        def transcribe(self, path, language=None):  # noqa: ARG002
             return {"text": "offline text"}
 
-    monkeypatch.setattr(ap, "_load_local_model", lambda: DummyModel())
+    monkeypatch.setattr(ap, "_load_local_model", lambda lang: DummyModel())
     monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
     monkeypatch.setattr(ap, "get_api_key", lambda: None)
     token = main.create_token("u", "user")
@@ -364,11 +384,11 @@ def test_transcribe_endpoint_offline(client, monkeypatch):
 
 
 def test_get_last_transcript(client, monkeypatch):
-    monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(main, "simple_transcribe", lambda b, language=None: "hello")
     monkeypatch.setattr(
         main,
         "diarize_and_transcribe",
-        lambda b: {
+        lambda b, language=None: {
             "provider": "p",
             "patient": "q",
             "segments": [
@@ -386,11 +406,15 @@ def test_get_last_transcript(client, monkeypatch):
     )
     resp = client.get("/transcribe", headers=auth_header(token))
     assert resp.json() == {
-        "provider": "hello",
-        "patient": "",
-        "segments": [
-            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
-        ],
+        "history": [
+            {
+                "provider": "hello",
+                "patient": "",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
+                ],
+            }
+        ]
     }
 
     # Now call with diarisation and ensure both parts returned
@@ -401,12 +425,23 @@ def test_get_last_transcript(client, monkeypatch):
     )
     resp = client.get("/transcribe", headers=auth_header(token))
     assert resp.json() == {
-        "provider": "p",
-        "patient": "q",
-        "segments": [
-            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
-            {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
-        ],
+        "history": [
+            {
+                "provider": "hello",
+                "patient": "",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "hello"}
+                ],
+            },
+            {
+                "provider": "p",
+                "patient": "q",
+                "segments": [
+                    {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+                    {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+                ],
+            },
+        ]
     }
 
 
