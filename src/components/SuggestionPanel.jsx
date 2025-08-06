@@ -71,6 +71,11 @@ import { useTranslation } from 'react-i18next';
                 {t('suggestion.upgradeTo')} {item.upgrade_to}
               </span>
             )}
+            {item.upgradePath && (
+              <span style={{ marginLeft: '0.5em', fontSize: '0.85em', color: '#555' }}>
+                {t('suggestion.upgradePath')} {item.upgradePath}
+              </span>
+            )}
           </li>
         );
       }
