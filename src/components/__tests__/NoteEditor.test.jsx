@@ -1,10 +1,13 @@
 /* @vitest-environment jsdom */
-import { render, cleanup, fireEvent } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
+import { useState } from 'react';
 
 vi.mock('../../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+  getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Tpl', content: 'Hello' }]),
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+
 }));
 
 import '../../i18n.js';
@@ -43,4 +46,16 @@ test('record button toggles recording state', async () => {
   await findByText('Stop Recording');
   fireEvent.click(getByText('Stop Recording'));
   await findByText('Record Audio');
+});
+
+test('selecting template inserts content', async () => {
+  function Wrapper() {
+    const [val, setVal] = useState('');
+    return <NoteEditor id="t" value={val} onChange={setVal} />;
+  }
+  const { findByLabelText, container } = render(<Wrapper />);
+  const select = await findByLabelText('Templates');
+  fireEvent.change(select, { target: { value: '1' } });
+  const editor = container.querySelector('.ql-editor');
+  await waitFor(() => expect(editor.innerHTML).toContain('Hello'));
 });
