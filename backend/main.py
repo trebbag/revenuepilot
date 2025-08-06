@@ -780,7 +780,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DATE", dob_pattern),
+        ("DOB", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
