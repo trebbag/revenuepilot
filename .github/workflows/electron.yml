@@ -18,13 +18,21 @@ jobs:
         run: |
           openssl req -new -newkey rsa:2048 -nodes -x509 -days 1 -subj "/CN=test" -keyout key.pem -out cert.pem
           openssl pkcs12 -export -out cert.p12 -inkey key.pem -in cert.pem -passout pass:password
-      - name: Build electron app
+      - name: Setup environment
         env:
+          OPENAI_API_KEY: dummy
+          VITE_API_URL: http://localhost:8000
+          ICON_PNG_URL: ''
+          ICON_ICO_URL: ''
+          ICON_ICNS_URL: ''
           UPDATE_SERVER_URL: http://localhost:8080
           WIN_CSC_LINK: cert.p12
           WIN_CSC_KEY_PASSWORD: password
           CSC_LINK: cert.p12
           CSC_KEY_PASSWORD: password
+        run: yes '' | npm run setup-env
+      - name: Build electron app
+        env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run electron:build -- -l
       - name: Archive installers
@@ -53,6 +61,24 @@ jobs:
           name: installers
           path: dist
       - run: tar -xzf dist/installers.tar.gz -C dist
+      - name: Run packaged app headlessly and ping backend
+        run: |
+          APP=$(find dist -path "*linux-unpacked*" -type f -executable | head -n 1)
+          xvfb-run --auto-servernum "$APP" > app.log 2>&1 &
+          APP_PID=$!
+          for i in {1..50}; do
+            if curl -sf http://127.0.0.1:8000/docs > /dev/null; then
+              FOUND=1
+              break
+            fi
+            sleep 0.2
+          done
+          kill $APP_PID
+          if [ -z "$FOUND" ]; then
+            echo "Backend did not respond" >&2
+            cat app.log >&2 || true
+            exit 1
+          fi
       - name: Run update server
         run: |
           npm run update-server &
