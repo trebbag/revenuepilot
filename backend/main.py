@@ -251,7 +251,12 @@ get_api_key()
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
 # ---------------------------------------------------------------------------
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    if ENVIRONMENT not in {"development", "dev"}:
+        raise RuntimeError("JWT_SECRET environment variable is required")
+    JWT_SECRET = "dev-secret"
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 
