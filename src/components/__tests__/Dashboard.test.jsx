@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { render, waitFor, cleanup } from '@testing-library/react';
+import { render, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import Dashboard from '../Dashboard.jsx';
 import { vi, beforeEach, test, expect, afterEach } from 'vitest';
 import '../../i18n.js';
@@ -28,7 +28,30 @@ vi.mock('../../api.js', () => ({
     denial_rate: 0.1,
     denial_rates: { '99213': 0.1 },
     deficiency_rate: 0.2,
-    timeseries: { daily: [{ date: '2024-01-01', count: 1 }], weekly: [{ week: '2024-01', count: 1 }] },
+    timeseries: {
+      daily: [
+        {
+          date: '2024-01-01',
+          notes: 1,
+          beautify: 1,
+          suggest: 0,
+          summary: 0,
+          chart_upload: 0,
+          audio: 0,
+        },
+      ],
+      weekly: [
+        {
+          week: '2024-01',
+          notes: 1,
+          beautify: 1,
+          suggest: 0,
+          summary: 0,
+          chart_upload: 0,
+          audio: 0,
+        },
+      ],
+    },
   }),
 }));
 import { getMetrics } from '../../api.js';
@@ -57,6 +80,18 @@ test('renders charts and calls API', async () => {
   expect(document.querySelector('[data-testid="weekly-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="codes-pie"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
+});
+
+test('applies date range filters', async () => {
+  const { getByLabelText, getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  const startInput = getByLabelText('Start');
+  const endInput = getByLabelText('End');
+  fireEvent.change(startInput, { target: { value: '2024-01-01' } });
+  fireEvent.change(endInput, { target: { value: '2024-01-07' } });
+  getByText('Apply').click();
+  await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
+  expect(getMetrics).toHaveBeenLastCalledWith({ start: '2024-01-01', end: '2024-01-07', clinician: '' });
 });
 
 test('denies access when user not admin', () => {
