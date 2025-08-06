@@ -176,16 +176,11 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
-# Determine whether the advanced scrubber is enabled.  If the environment
-# variable ``USE_ADVANCED_SCRUBBER`` is explicitly set, respect it.  Otherwise
-# automatically enable advanced scrubbing when either Presidio or Philter is
-# available.  This makes the richer recognizers the default behaviour without
-# requiring any configuration.
-_env_flag = os.getenv("USE_ADVANCED_SCRUBBER")
-if _env_flag is None:
-    USE_ADVANCED_SCRUBBER = _PRESIDIO_AVAILABLE or _PHILTER_AVAILABLE
-else:  # pragma: no cover - environment override is rarely used in tests
-    USE_ADVANCED_SCRUBBER = _env_flag.lower() == "true"
+# Attempt to use rich PHI scrubbers by default.  When Presidio or Philter is
+# installed they will be used automatically.  No environment variable is
+# required to enable them, keeping the behaviour simple out of the box.  Tests
+# may monkeypatch ``_PRESIDIO_AVAILABLE`` or ``_PHILTER_AVAILABLE`` to force the
+# fallback implementation when these optional dependencies are missing.
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -443,7 +438,7 @@ def deidentify(text: str) -> str:
         ``[NAME]`` or ``[PHONE]``.
     """
 
-    if USE_ADVANCED_SCRUBBER and _PRESIDIO_AVAILABLE:
+    if _PRESIDIO_AVAILABLE:
         try:
             entities = [
                 "PERSON",
@@ -475,7 +470,7 @@ def deidentify(text: str) -> str:
         except Exception as exc:  # pragma: no cover - best effort
             logging.warning("Advanced scrubber failed: %s", exc)
 
-    if USE_ADVANCED_SCRUBBER and _PHILTER_AVAILABLE:
+    if _PHILTER_AVAILABLE:
         try:
             # Philter replaces detected PHI with the literal "**PHI**".
             if hasattr(_philter, "philter"):
