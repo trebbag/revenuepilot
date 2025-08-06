@@ -60,3 +60,8 @@ def load_builtin_templates() -> List[TemplateModel]:
 
     return templates
 
+
+# Preload built-in templates at import time so that other modules can
+# reference them without repeatedly parsing the JSON file.
+DEFAULT_TEMPLATES: List[TemplateModel] = load_builtin_templates()
+
