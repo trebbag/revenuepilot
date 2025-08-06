@@ -96,6 +96,11 @@ function App() {
     followUp: null,
   });
 
+  const calcRevenue = (codes = []) => {
+    const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
+    return (codes || []).reduce((sum, c) => sum + (map[c] || 0), 0);
+  };
+
   // Default values for theme and suggestion category settings.
   const defaultSettings = {
     theme: 'modern',
@@ -188,7 +193,16 @@ function App() {
         setActiveTab('beautified');
         // Log a beautify event with patient ID and note length
         if (patientID) {
-          logEvent('beautify', { patientID, length: draftText.length }).catch(() => {});
+          const codes = suggestions.codes.map((c) => c.code);
+          const revenue = calcRevenue(codes);
+          logEvent('beautify', {
+            patientID,
+            length: draftText.length,
+            codes,
+            revenue,
+            compliance: suggestions.compliance,
+            publicHealth: suggestions.publicHealth.length > 0,
+          }).catch(() => {});
         }
       })
       .catch((e) => {
@@ -225,7 +239,16 @@ function App() {
         setSummaryText(summary);
         setActiveTab('summary');
         if (patientID) {
-          logEvent('summary', { patientID, length: draftText.length }).catch(() => {});
+          const codes = suggestions.codes.map((c) => c.code);
+          const revenue = calcRevenue(codes);
+          logEvent('summary', {
+            patientID,
+            length: draftText.length,
+            codes,
+            revenue,
+            compliance: suggestions.compliance,
+            publicHealth: suggestions.publicHealth.length > 0,
+          }).catch(() => {});
         }
       })
       .catch((e) => {
@@ -421,7 +444,16 @@ function App() {
           setSuggestions(data);
           // Log a suggest event once suggestions are fetched
           if (patientID) {
-            logEvent('suggest', { patientID, length: draftText.length }).catch(() => {});
+            const codes = data.codes.map((c) => c.code);
+            const revenue = calcRevenue(codes);
+            logEvent('suggest', {
+              patientID,
+              length: draftText.length,
+              codes,
+              revenue,
+              compliance: data.compliance,
+              publicHealth: data.publicHealth.length > 0,
+            }).catch(() => {});
           }
         })
         .catch((e) => {
@@ -530,6 +562,7 @@ function App() {
                 beautified={beautified}
                 summary={summaryText}
                 patientID={patientID}
+                suggestions={suggestions}
               />
               <button
                 disabled={!patientID || !draftText.trim()}

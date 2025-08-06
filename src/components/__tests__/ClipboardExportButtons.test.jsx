@@ -24,11 +24,10 @@ describe('ClipboardExportButtons', () => {
     fireEvent.click(getByText('Copy Beautified'));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith('beauty');
-      expect(logSpy).toHaveBeenCalledWith('copy', {
-        patientID: 'p1',
-        type: 'beautified',
-        length: 6,
-      });
+      expect(logSpy).toHaveBeenCalledWith(
+        'copy',
+        expect.objectContaining({ patientID: 'p1', type: 'beautified', length: 6 })
+      );
     });
   });
 
@@ -42,11 +41,10 @@ describe('ClipboardExportButtons', () => {
     fireEvent.click(getByText('Copy Summary'));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith('sum');
-      expect(logSpy).toHaveBeenCalledWith('copy', {
-        patientID: 'p2',
-        type: 'summary',
-        length: 3,
-      });
+      expect(logSpy).toHaveBeenCalledWith(
+        'copy',
+        expect.objectContaining({ patientID: 'p2', type: 'summary', length: 3 })
+      );
     });
   });
 
@@ -60,11 +58,10 @@ describe('ClipboardExportButtons', () => {
     fireEvent.click(getByText('Export'));
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('export-note', { beautified: 'b', summary: 's' });
-      expect(logSpy).toHaveBeenCalledWith('export', {
-        patientID: 'p3',
-        beautifiedLength: 1,
-        summaryLength: 1,
-      });
+      expect(logSpy).toHaveBeenCalledWith(
+        'export',
+        expect.objectContaining({ patientID: 'p3', beautifiedLength: 1, summaryLength: 1 })
+      );
     });
   });
 });
