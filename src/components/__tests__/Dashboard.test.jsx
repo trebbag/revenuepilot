@@ -46,6 +46,7 @@ vi.mock('../../api.js', () => ({
     coding_distribution: { '99213': 2 },
     denial_rates: { '99213': 0.1 },
     compliance_counts: {},
+    top_compliance: [{ gap: 'Missing ROS', count: 1 }],
     avg_satisfaction: 0,
     public_health_rate: 0,
     clinicians: ['alice', 'bob'],
@@ -146,4 +147,24 @@ test('applies clinician filter', async () => {
     end: '',
     clinician: 'alice',
   });
+});
+
+test('shows message when timeseries empty', async () => {
+  getMetrics.mockResolvedValueOnce({
+    baseline: {},
+    current: {},
+    improvement: {},
+    coding_distribution: {},
+    denial_rates: {},
+    compliance_counts: {},
+    avg_satisfaction: 0,
+    public_health_rate: 0,
+    clinicians: [],
+    timeseries: { daily: [], weekly: [] },
+  });
+  render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="no-daily-data"]'));
+  expect(document.querySelector('[data-testid="daily-line"]')).toBeNull();
+  expect(document.querySelector('[data-testid="weekly-line"]')).toBeNull();
+  expect(document.querySelector('[data-testid="revenue-line"]')).toBeNull();
 });
