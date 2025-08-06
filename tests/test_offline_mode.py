@@ -62,6 +62,11 @@ def test_offline_suggest(offline_client):
 def test_offline_summarize(offline_client):
     client, main_module = offline_client
     token = main_module.create_token("u", "user")
-    resp = client.post("/summarize", json={"text": "hello"}, headers=auth_header(token))
+    resp = client.post(
+        "/summarize", json={"text": "hello"}, headers=auth_header(token)
+    )
     assert resp.status_code == 200
-    assert resp.json()["summary"]
+    data = resp.json()
+    assert data["summary"]
+    assert data["recommendations"] == []
+    assert data["warnings"] == []

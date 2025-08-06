@@ -48,7 +48,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel
+from .templates import TemplateModel, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
 
 
@@ -650,10 +650,13 @@ class NoteRequest(BaseModel):
     lang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
-    age: Optional[int] = None
+    age: Optional[int] = Field(None, alias="patientAge")
     sex: Optional[str] = None
     region: Optional[str] = None
     useLocalModels: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
 
 
 class CodeSuggestion(BaseModel):
@@ -1634,7 +1637,7 @@ async def get_metrics(
 @app.post("/summarize")
 async def summarize(
     req: NoteRequest, user=Depends(require_role("user"))
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """
     Generate a patient‑friendly summary of a clinical note.  This endpoint
     combines the draft text with any optional chart and audio transcript,
@@ -1645,7 +1648,7 @@ async def summarize(
     Args:
         req: NoteRequest with the clinical note and optional context.
     Returns:
-        A dictionary containing the summary under the key "summary".
+        A dictionary containing "summary", "recommendations" and "warnings".
     """
     combined = req.text or ""
     if req.chart:
@@ -1656,14 +1659,21 @@ async def summarize(
     if USE_OFFLINE_MODEL:
         from .offline_model import summarize as offline_summarize
 
-        summary = offline_summarize(
-            cleaned, req.lang, req.specialty, req.payer, use_local=req.useLocalModels
+        data = offline_summarize(
+            cleaned,
+            req.lang,
+            req.specialty,
+            req.payer,
+            req.age,
+            use_local=req.useLocalModels,
         )
     else:
         try:
-            messages = build_summary_prompt(cleaned, req.lang, req.specialty, req.payer)
+            messages = build_summary_prompt(
+                cleaned, req.lang, req.specialty, req.payer, req.age
+            )
             response_content = call_openai(messages)
-            summary = response_content.strip()
+            data = json.loads(response_content)
         except Exception as exc:
             # If the LLM call fails, fall back to a simple truncation of the
             # cleaned text.  Take the first 200 characters and append ellipsis
@@ -1673,7 +1683,8 @@ async def summarize(
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
-    return {"summary": summary}
+            data = {"summary": summary, "recommendations": [], "warnings": []}
+    return data
 
 
 @app.post("/transcribe")

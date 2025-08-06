@@ -35,7 +35,11 @@ def test_local_summarize(monkeypatch):
             return [{"summary_text": "short"}]
 
     monkeypatch.setattr(om, "_get_pipeline", lambda task, model: Pipe())
-    assert om.summarize("long note") == "short"
+    assert om.summarize("long note") == {
+        "summary": "short",
+        "recommendations": [],
+        "warnings": [],
+    }
 
 
 def test_local_summarize_fallback(monkeypatch):
@@ -46,7 +50,10 @@ def test_local_summarize_fallback(monkeypatch):
         raise RuntimeError("no model")
 
     monkeypatch.setattr(om, "_get_pipeline", raiser)
-    assert om.summarize("note").startswith("Summary (offline):")
+    out = om.summarize("note")
+    assert out["summary"].startswith("Summary (offline):")
+    assert out["recommendations"] == []
+    assert out["warnings"] == []
 
 
 def test_local_suggest(monkeypatch):

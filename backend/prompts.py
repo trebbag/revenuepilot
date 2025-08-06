@@ -244,22 +244,20 @@ def build_summary_prompt(
     lang: str = "en",
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
+    patient_age: Optional[int] = None,
 ) -> List[Dict[str, str]]:
     """Build a summary prompt in the requested language."""
     default_instructions = {
         "en": (
-            "You are an expert clinical communicator.  Rewrite the following clinical note "
-            "into a concise summary that a patient can easily understand.  Preserve all "
-            "important medical facts (symptoms, diagnoses, treatments, follow‑up), but remove "
-            "billing codes and technical jargon.  Write in plain language at about an 8th "
-            "grade reading level.  Do not invent information that is not present in the note. "
-            "Do not include any patient identifiers or PHI."
+            "You are an expert clinical communicator. Rewrite the following clinical note into a JSON object with keys 'summary', 'recommendations' and 'warnings'. 'summary' should be a brief paragraph in plain language that a patient can easily understand. 'recommendations' should be a bullet list of next steps for the patient. 'warnings' should be a bullet list of any urgent issues. Avoid billing codes and technical jargon. Do not invent information that is not present in the note. Do not include any patient identifiers or PHI."
         ),
         "es": (
-            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un resumen conciso que un paciente pueda entender fácilmente. Preserve todos los hechos médicos importantes (síntomas, diagnósticos, tratamientos, seguimiento), pero elimine los códigos de facturación y la jerga técnica. Escriba en un lenguaje sencillo equivalente a un nivel de lectura de octavo grado. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
+            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un objeto JSON con claves 'summary', 'recommendations' y 'warnings'. 'summary' debe ser un breve párrafo en lenguaje sencillo que un paciente pueda entender. 'recommendations' debe ser una lista con viñetas de próximos pasos para el paciente. 'warnings' debe ser una lista con viñetas de cualquier problema urgente. Evite códigos de facturación y jerga técnica. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    if patient_age is not None:
+        instructions = f"{instructions} Use words a {patient_age}-year-old would understand."
     extra = _get_custom_instruction("summary", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"

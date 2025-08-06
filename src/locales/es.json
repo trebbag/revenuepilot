@@ -235,6 +235,8 @@
     "back": "Volver a las notas",
     "file": "Archivo",
     "patientId": "ID de paciente",
+    "patientLanguage": "Idioma del paciente",
+    "patientAge": "Edad del paciente",
     "templates": "Plantillas",
     "beautifying": "Embelleciendo…",
     "beautify": "Embellecer",
