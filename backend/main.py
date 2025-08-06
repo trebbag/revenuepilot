@@ -417,7 +417,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 
 
 @app.post("/login")
-async def login(model: LoginModel) -> Dict[str, str]:
+async def login(model: LoginModel) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
@@ -751,7 +751,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
+        ("DATE", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -995,6 +995,8 @@ async def get_metrics(
     start: Optional[str] = None,
     end: Optional[str] = None,
     clinician: Optional[str] = None,
+    daily: bool = True,
+    weekly: bool = True,
     user=Depends(require_role("admin")),
 ) -> Dict[str, Any]:
     """Aggregate analytics separately for baseline and current events.
@@ -1217,44 +1219,51 @@ async def get_metrics(
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
 
-    daily_query = f"""
-        SELECT
-            date(datetime(timestamp, 'unixepoch')) AS date,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY date
-        ORDER BY date
-    """
-    cursor.execute(daily_query, base_params)
-    daily_list = [dict(r) for r in cursor.fetchall()]
+    daily_list: List[Dict[str, Any]] = []
+    if daily:
+        daily_query = f"""
+            SELECT
+                date(datetime(timestamp, 'unixepoch')) AS date,
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue) AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+            FROM events {where_current}
+            GROUP BY date
+            ORDER BY date
+        """
+        cursor.execute(daily_query, base_params)
+        daily_list = [dict(r) for r in cursor.fetchall()]
 
-    weekly_query = f"""
-        SELECT
-            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY week
-        ORDER BY week
-    """
-    cursor.execute(weekly_query, base_params)
-    weekly_list = [dict(r) for r in cursor.fetchall()]
-
+    weekly_list: List[Dict[str, Any]] = []
+    if weekly:
+        weekly_query = f"""
+            SELECT
+                strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                AVG(revenue) AS revenue_per_visit,
+                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+            FROM events {where_current}
+            GROUP BY week
+            ORDER BY week
+        """
+        cursor.execute(weekly_query, base_params)
+        weekly_list = [dict(r) for r in cursor.fetchall()]
 
 
     top_compliance = [
@@ -1265,12 +1274,20 @@ async def get_metrics(
     ]
 
     # attach beautify averages to the SQL-produced time series
-    for entry in daily_list:
-        bt = beautify_daily.get(entry["date"])
-        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
-    for entry in weekly_list:
-        bt = beautify_weekly.get(entry["week"])
-        entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+    if daily:
+        for entry in daily_list:
+            bt = beautify_daily.get(entry["date"])
+            entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+    if weekly:
+        for entry in weekly_list:
+            bt = beautify_weekly.get(entry["week"])
+            entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+
+    timeseries: Dict[str, List[Dict[str, Any]]] = {}
+    if daily:
+        timeseries["daily"] = daily_list
+    if weekly:
+        timeseries["weekly"] = weekly_list
 
     def pct_change(b: float, c: float) -> float | None:
         return ((c - b) / b * 100) if b else None
@@ -1305,7 +1322,7 @@ async def get_metrics(
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "clinicians": clinicians,
-        "timeseries": {"daily": daily_list, "weekly": weekly_list},
+        "timeseries": timeseries,
     }
 @app.post("/summarize")
 async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dict[str, str]:
