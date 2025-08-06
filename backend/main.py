@@ -48,7 +48,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel
+from .templates import TemplateModel, DEFAULT_TEMPLATES
 from .scheduling import recommend_follow_up, export_ics
 
 
@@ -1450,48 +1450,6 @@ async def get_metrics(
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
 
-    daily_query = f"""
-        SELECT
-            date(datetime(timestamp, 'unixepoch')) AS date,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY date
-        ORDER BY date
-    """
-    cursor.execute(daily_query, base_params)
-    daily_list = [dict(r) for r in cursor.fetchall()]
-
-    weekly_query = f"""
-        SELECT
-            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-            AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
-        FROM events {where_current}
-        GROUP BY week
-        ORDER BY week
-    """
-    cursor.execute(weekly_query, base_params)
-    weekly_list = [dict(r) for r in cursor.fetchall()]
-
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
@@ -1550,10 +1508,16 @@ async def get_metrics(
         for entry in daily_list:
             bt = beautify_daily.get(entry["date"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+            notes = entry.get("notes") or 0
+            entry["denial_rate"] = (entry.get("denials", 0) / notes) if notes else 0
+            entry["deficiency_rate"] = (entry.get("deficiencies", 0) / notes) if notes else 0
     if weekly:
         for entry in weekly_list:
             bt = beautify_weekly.get(entry["week"])
             entry["avg_beautify_time"] = bt[0] / bt[1] if bt and bt[1] else 0
+            notes = entry.get("notes") or 0
+            entry["denial_rate"] = (entry.get("denials", 0) / notes) if notes else 0
+            entry["deficiency_rate"] = (entry.get("deficiencies", 0) / notes) if notes else 0
 
     def _add_rolling(records: List[Dict[str, Any]], window: int) -> None:
         """Attach rolling averages for key metrics."""
@@ -1588,11 +1552,37 @@ async def get_metrics(
     if weekly:
         _add_rolling(weekly_list, 4)
 
+    def _code_timeseries(period_sql: str) -> Dict[str, Dict[str, int]]:
+        query = f"""
+            SELECT {period_sql} AS period, json_each.value AS code, COUNT(*) AS count
+            FROM events
+            JOIN json_each(COALESCE(events.codes, '[]'))
+            {where_current}
+            GROUP BY period, code
+            ORDER BY period
+        """
+        cursor.execute(query, base_params)
+        result: Dict[str, Dict[str, int]] = {}
+        for r in cursor.fetchall():
+            period = r["period"]
+            code_map = result.setdefault(period, {})
+            code_map[r["code"]] = r["count"]
+        return result
+
+    codes_daily: Dict[str, Dict[str, int]] = {}
+    codes_weekly: Dict[str, Dict[str, int]] = {}
+    if daily:
+        codes_daily = _code_timeseries("date(datetime(timestamp, 'unixepoch'))")
+    if weekly:
+        codes_weekly = _code_timeseries("strftime('%Y-%W', datetime(timestamp, 'unixepoch'))")
+
     timeseries: Dict[str, List[Dict[str, Any]]] = {}
     if daily:
         timeseries["daily"] = daily_list
+        timeseries["codes_daily"] = codes_daily
     if weekly:
         timeseries["weekly"] = weekly_list
+        timeseries["codes_weekly"] = codes_weekly
 
     def pct_change(b: float, c: float) -> float | None:
         return ((c - b) / b * 100) if b else None
