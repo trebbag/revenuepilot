@@ -327,7 +327,7 @@ function Settings({ settings, updateSettings }) {
       >
         {SPECIALTIES.map((s) => (
           <option key={s} value={s}>
-            {s || '--'}
+            {s ? t(`settings.specialties.${s}`) : '--'}
           </option>
         ))}
       </select>
@@ -345,7 +345,7 @@ function Settings({ settings, updateSettings }) {
       >
         {PAYERS.map((p) => (
           <option key={p} value={p}>
-            {p || '--'}
+            {p ? t(`settings.payers.${p}`) : '--'}
           </option>
         ))}
       </select>
@@ -355,7 +355,7 @@ function Settings({ settings, updateSettings }) {
         type="text"
         value={settings.region || ''}
         onChange={handleRegionChange}
-        placeholder="e.g., US"
+        placeholder={t('settings.regionPlaceholder')}
         style={{
           width: '100%',
           padding: '0.5rem',

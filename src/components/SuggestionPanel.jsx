@@ -209,7 +209,7 @@ function SuggestionPanel({
       date.setFullYear(start.getFullYear() + value);
     const fmt = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
     const dt = fmt(date);
-    const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:Follow-up appointment\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
+    const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${t('suggestion.followUpAppointment')}\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
     return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
   };
 
