@@ -48,13 +48,15 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
-from .templates import TemplateModel, DEFAULT_TEMPLATES
-from .scheduling import recommend_follow_up
+from .templates import TemplateModel
+from .scheduling import recommend_follow_up, export_ics
+
 
 
 import json
 import sqlite3
 import hashlib
+from collections import deque
 
 from passlib.context import CryptContext
 
@@ -685,6 +687,18 @@ class SuggestionsResponse(BaseModel):
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
     followUp: Optional[str] = None
+
+
+class ScheduleRequest(BaseModel):
+    """Request payload for the /schedule endpoint."""
+    text: str
+    codes: Optional[List[str]] = None
+
+
+class ScheduleResponse(BaseModel):
+    """Response model containing recommended interval and optional ICS."""
+    interval: Optional[str]
+    ics: Optional[str] = None
 
 
 # Schema for logging events from the frontend.  Each event should include
@@ -2115,3 +2129,19 @@ async def suggest(
             differentials=diffs,
             followUp=follow_up,
         )
+
+
+@app.post("/schedule", response_model=ScheduleResponse)
+async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> ScheduleResponse:
+    """
+    Recommend a follow-up interval for a clinical note and provide an ICS export.
+
+    Args:
+        req: ScheduleRequest containing note text and optional codes.
+    Returns:
+        ScheduleResponse with the recommended interval and ICS string.
+    """
+    cleaned = deidentify(req.text or "")
+    interval = recommend_follow_up(cleaned, req.codes or [])
+    ics = export_ics(interval) if interval else None
+    return ScheduleResponse(interval=interval, ics=ics)
