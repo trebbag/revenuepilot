@@ -61,13 +61,29 @@ test('shows loading and toggles sections', () => {
 test('renders follow-up with calendar link', () => {
   const { getByText } = render(
     <SuggestionPanel
-      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: '3 months' }}
-      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [],
+        differentials: [],
+        followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' },
+      }}
+      settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true, enableFollowUp: true }}
     />
   );
   expect(getByText('3 months')).toBeTruthy();
   const href = getByText('Add to calendar').getAttribute('href');
   expect(href).toContain('text/calendar');
+});
+
+test('hides follow-up when disabled', () => {
+  const { queryByText } = render(
+    <SuggestionPanel
+      suggestions={{ followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' } }}
+      settingsState={{ enableFollowUp: false }}
+    />
+  );
+  expect(queryByText('3 months')).toBeNull();
 });
 
 test('renders differential scores as percentages', () => {

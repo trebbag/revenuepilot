@@ -11,7 +11,7 @@ function SuggestionPanel({
   onInsert,
 }) {
   const { t } = useTranslation();
-  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: string }
+  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics}|string }
   const cards = [];
   if (!settingsState || settingsState.enableCodes) {
     cards.push({
@@ -58,12 +58,14 @@ function SuggestionPanel({
       items: suggestions?.differentials || [],
     });
   }
-  cards.push({
-    type: 'follow-up',
-    key: 'followUp',
-    title: t('suggestion.followUp'),
-    items: suggestions?.followUp ? [suggestions.followUp] : [],
-  });
+  if (!settingsState || settingsState.enableFollowUp !== false) {
+    cards.push({
+      type: 'follow-up',
+      key: 'followUp',
+      title: t('suggestion.followUp'),
+      items: suggestions?.followUp ? [suggestions.followUp] : [],
+    });
+  }
 
   const [openState, setOpenState] = useState({
     codes: true,
@@ -179,10 +181,15 @@ function SuggestionPanel({
         );
       }
       if (type === 'follow-up') {
-        const ics = generateIcs(item);
+        const interval = typeof item === 'object' && item !== null ? item.interval : item;
+        const icsText = typeof item === 'object' && item !== null ? item.ics : null;
+        const ics =
+          icsText
+            ? `data:text/calendar;charset=utf8,${encodeURIComponent(icsText)}`
+            : generateIcs(interval);
         return (
           <li key={idx}>
-            {item}
+            {interval}
             {ics && (
               <a
                 href={ics}
