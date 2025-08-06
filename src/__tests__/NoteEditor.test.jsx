@@ -1,5 +1,5 @@
 /* @vitest-environment jsdom */
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { test, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../api.js', () => ({
@@ -11,10 +11,12 @@ vi.mock('../api.js', () => ({
 
   getTemplates: vi.fn().mockResolvedValue([]),
   transcribeAudio: vi.fn(),
+  exportToEhr: vi.fn().mockResolvedValue({ status: 'exported' }),
 
 }));
 
 import { fetchLastTranscript } from '../api.js';
+import { exportToEhr } from '../api.js';
 import '../i18n.js';
 import NoteEditor from '../components/NoteEditor.jsx';
 
@@ -56,4 +58,12 @@ test('displays error when transcript load fails', async () => {
     <NoteEditor id="n3" value="" onChange={() => {}} />
   );
   await findByText('Failed to load transcript');
+});
+
+test('EHR export button triggers API call', async () => {
+  const { getByText } = render(
+    <NoteEditor id="be" value="Final" onChange={() => {}} mode="beautified" />,
+  );
+  fireEvent.click(getByText('EHR Export'));
+  await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });

@@ -18,7 +18,7 @@ const rawFetch = globalThis.fetch.bind(globalThis);
  * @param {string} password
  * @returns {Promise<{token: string, settings: object|null}>}
  */
-export async function login(username, password) {
+export async function login(username, password, lang = 'en') {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -26,7 +26,7 @@ export async function login(username, password) {
   const resp = await rawFetch(`${baseUrl}/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, lang }),
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -39,7 +39,7 @@ export async function login(username, password) {
   let settings = null;
   try {
     const s = await getSettings(token);
-    settings = s;
+    settings = { ...s, lang };
   } catch (e) {
     console.error('Failed to fetch settings', e);
   }
@@ -102,7 +102,9 @@ async function authFetch(input, init = {}, retry = true) {
   let resp = await rawFetch(input, init);
   if ((resp.status === 401 || resp.status === 403) && retry) {
     const refreshToken =
-      typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+      typeof window !== 'undefined'
+        ? localStorage.getItem('refreshToken')
+        : null;
     if (!refreshToken) {
       refreshFailures += 1;
       if (refreshFailures >= 2) clearStoredTokens();
@@ -150,7 +152,8 @@ export async function getSettings(token) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   const auth =
-    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+    token ||
+    (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
   const resp = await fetch(`${baseUrl}/settings`, {
     headers: { Authorization: `Bearer ${auth}` },
@@ -169,6 +172,7 @@ export async function getSettings(token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    useLocalModels: data.useLocalModels || false,
   };
 }
 
@@ -185,7 +189,8 @@ export async function saveSettings(settings, token) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   const auth =
-    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+    token ||
+    (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
   const payload = {
     theme: settings.theme,
@@ -200,6 +205,7 @@ export async function saveSettings(settings, token) {
     specialty: settings.specialty || null,
     payer: settings.payer || null,
     region: settings.region || '',
+    useLocalModels: settings.useLocalModels || false,
   };
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
@@ -223,6 +229,7 @@ export async function saveSettings(settings, token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    useLocalModels: data.useLocalModels || false,
   };
 }
 
@@ -242,7 +249,10 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
     const payload = { text, lang };
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    if (typeof context.useLocalModels === 'boolean')
+      payload.useLocalModels = context.useLocalModels;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       : { 'Content-Type': 'application/json' };
@@ -280,7 +290,11 @@ export async function getSuggestions(text, context = {}) {
     // should ignore any empty or missing fields.
     const payload = { text, lang: context.lang };
     if (context.chart) payload.chart = context.chart;
-    if (context.rules && Array.isArray(context.rules) && context.rules.length > 0) {
+    if (
+      context.rules &&
+      Array.isArray(context.rules) &&
+      context.rules.length > 0
+    ) {
       payload.rules = context.rules;
     }
     if (context.audio) payload.audio = context.audio;
@@ -290,10 +304,13 @@ export async function getSuggestions(text, context = {}) {
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
     if (context.template) payload.template = context.template;
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       : { 'Content-Type': 'application/json' };
+    if (typeof context.useLocalModels === 'boolean')
+      payload.useLocalModels = context.useLocalModels;
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers,
@@ -325,9 +342,15 @@ export async function getSuggestions(text, context = {}) {
       },
       { code: '99395', rationale: 'Annual preventive visit' },
     ],
-    compliance: ['Include duration of symptoms', 'Add ROS for cardiovascular system'],
+    compliance: [
+      'Include duration of symptoms',
+      'Add ROS for cardiovascular system',
+    ],
     publicHealth: [
-      { recommendation: 'Consider flu vaccine', reason: 'Seasonal influenza prevention' },
+      {
+        recommendation: 'Consider flu vaccine',
+        reason: 'Seasonal influenza prevention',
+      },
       { recommendation: 'Screen for depression', reason: 'Common in adults' },
     ],
     differentials: [
@@ -381,7 +404,8 @@ export async function transcribeAudio(blob, diarise = false) {
     const form = new FormData();
     form.append('file', blob, 'audio.webm');
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const token =
+        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
         method: 'POST',
@@ -413,7 +437,12 @@ export async function transcribeAudio(blob, diarise = false) {
     }
   }
   // Fallback placeholder when no backend is available
-  return { provider: `[transcribed ${blob.size} bytes]`, patient: '', segments: [], error: '' };
+  return {
+    provider: `[transcribed ${blob.size} bytes]`,
+    patient: '',
+    segments: [],
+    error: '',
+  };
 }
 
 /**
@@ -427,7 +456,8 @@ export async function fetchLastTranscript() {
     window.location.origin;
   if (baseUrl) {
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const token =
+        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const resp = await fetch(`${baseUrl}/transcribe`, { headers });
       if (resp.status === 401 || resp.status === 403) {
@@ -464,7 +494,8 @@ export async function logEvent(eventType, details = {}) {
     return;
   }
   try {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       : { 'Content-Type': 'application/json' };
@@ -494,7 +525,8 @@ export async function submitSurvey(rating, feedback = '') {
     window.location.origin;
   if (!baseUrl) return;
   try {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
       ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
       : { 'Content-Type': 'application/json' };
@@ -567,9 +599,12 @@ export async function getMetrics(filters = {}) {
   if (filters.start) params.append('start', filters.start);
   if (filters.end) params.append('end', filters.end);
   if (filters.clinician) params.append('clinician', filters.clinician);
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, { headers });
+  const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, {
+    headers,
+  });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
   }
@@ -596,7 +631,8 @@ export async function getTemplates(specialty) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return [];
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const query = specialty ? `?specialty=${encodeURIComponent(specialty)}` : '';
   const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
@@ -620,7 +656,8 @@ export async function createTemplate(tpl) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return tpl;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -650,7 +687,8 @@ export async function updateTemplate(id, tpl) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return { id, ...tpl };
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -679,7 +717,8 @@ export async function deleteTemplate(id) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const resp = await fetch(`${baseUrl}/templates/${id}`, {
     method: 'DELETE',
@@ -699,7 +738,8 @@ export async function getPromptTemplates() {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return {};
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const resp = await fetch(`${baseUrl}/prompt-templates`, { headers });
   if (resp.status === 401 || resp.status === 403) {
@@ -717,7 +757,8 @@ export async function savePromptTemplates(data) {
     window.__BACKEND_URL__ ||
     window.location.origin;
   if (!baseUrl) return data;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -763,7 +804,8 @@ export async function setApiKey(key) {
   if (!baseUrl) {
     throw new Error('Backend URL not set');
   }
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -787,12 +829,7 @@ export async function setApiKey(key) {
  * @param {string} note
  * @param {string} [token]
  */
-export async function exportToEhr(
-  note,
-  codes = [],
-  direct = false,
-  token
-) {
+export async function exportToEhr(note, codes = [], direct = false, token) {
   // ``direct`` acts as a frontend toggle. When false the function resolves
   // immediately without contacting the backend so the caller can simply copy
   // the note manually. This keeps the UI logic straightforward while allowing
@@ -806,7 +843,8 @@ export async function exportToEhr(
     window.__BACKEND_URL__ ||
     window.location.origin;
   const auth =
-    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+    token ||
+    (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
   const resp = await fetch(`${baseUrl}/export_to_ehr`, {
     method: 'POST',
@@ -840,10 +878,16 @@ export async function summarizeNote(text, context = {}) {
     if (context.audio) payload.audio = context.audio;
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
+    if (typeof context.useLocalModels === 'boolean')
+      payload.useLocalModels = context.useLocalModels;
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+      const token =
+        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
       const headers = token
-        ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+        ? {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          }
         : { 'Content-Type': 'application/json' };
       const resp = await fetch(`${baseUrl}/summarize`, {
         method: 'POST',
@@ -890,7 +934,8 @@ export async function getEvents() {
     return [];
   }
   try {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const resp = await fetch(`${baseUrl}/events`, { headers });
     if (resp.status === 401 || resp.status === 403) {

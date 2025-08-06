@@ -77,7 +77,11 @@ placeholder data so the app can run without network access or an API key.
 
 To evaluate lightweight local models instead of the fixed placeholders, set
 `USE_LOCAL_MODELS=true` and provide model names for any of the endpoints you
-wish to test:
+wish to test. The weights must be downloaded ahead of time; see
+[`docs/LOCAL_MODELS.md`](docs/LOCAL_MODELS.md) for sample commands. Once the
+models are cached locally you can enable them at runtime from the app's
+**Settings → Enable local models** toggle or via the environment variables
+below:
 
 ```bash
 export USE_OFFLINE_MODEL=true

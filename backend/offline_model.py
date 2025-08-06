@@ -42,10 +42,19 @@ def _use_local() -> bool:
     return os.getenv("USE_LOCAL_MODELS", "").lower() in {"1", "true", "yes"}
 
 
-def beautify(text: str, lang: str = "en", specialty: Optional[str] = None, payer: Optional[str] = None) -> str:
+def beautify(
+    text: str,
+    lang: str = "en",
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+    use_local: Optional[bool] = None,
+) -> str:
     """Beautify ``text`` using a local model or deterministic placeholder."""
 
-    if _use_local():
+    if use_local is None:
+        use_local = _use_local()
+
+    if use_local:
         model = os.getenv("LOCAL_BEAUTIFY_MODEL")
         if model:
             try:
@@ -56,10 +65,19 @@ def beautify(text: str, lang: str = "en", specialty: Optional[str] = None, payer
     return f"Beautified (offline): {text.strip()}"
 
 
-def summarize(text: str, lang: str = "en", specialty: Optional[str] = None, payer: Optional[str] = None) -> str:
+def summarize(
+    text: str,
+    lang: str = "en",
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+    use_local: Optional[bool] = None,
+) -> str:
     """Summarise ``text`` with a local model or deterministic placeholder."""
 
-    if _use_local():
+    if use_local is None:
+        use_local = _use_local()
+
+    if use_local:
         model = os.getenv("LOCAL_SUMMARIZE_MODEL")
         if model:
             try:
@@ -80,10 +98,14 @@ def suggest(
     age: Optional[int] = None,
     sex: Optional[str] = None,
     region: Optional[str] = None,
+    use_local: Optional[bool] = None,
 ) -> Dict[str, List]:
     """Return suggestions via a local model or deterministic placeholder."""
 
-    if _use_local():
+    if use_local is None:
+        use_local = _use_local()
+
+    if use_local:
         model = os.getenv("LOCAL_SUGGEST_MODEL")
         if model:
             try:

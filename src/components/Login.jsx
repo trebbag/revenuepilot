@@ -8,25 +8,31 @@ import { login, resetPassword } from '../api.js';
  * so the application can render the secured views.
  */
 function Login({ onLoggedIn }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [resetMode, setResetMode] = useState(false);
+  const [lang, setLang] = useState('en');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      const { token, refreshToken, settings } = await login(username, password);
+      const { token, refreshToken, settings } = await login(
+        username,
+        password,
+        lang
+      );
       if (typeof window !== 'undefined') {
         localStorage.setItem('token', token);
         localStorage.setItem('refreshToken', refreshToken);
       }
-      onLoggedIn(token, settings);
+      const newSettings = settings ? { ...settings, lang } : { lang };
+      onLoggedIn(token, newSettings);
     } catch (err) {
       const msg =
         err.message === 'Login failed' ? t('login.loginFailed') : err.message;
@@ -73,6 +79,22 @@ function Login({ onLoggedIn }) {
               onChange={(e) => setUsername(e.target.value)}
               required
             />
+          </label>
+        </div>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <label>
+            {t('settings.language')}
+            <select
+              value={lang}
+              onChange={(e) => {
+                const l = e.target.value;
+                setLang(l);
+                i18n.changeLanguage(l);
+              }}
+            >
+              <option value="en">{t('settings.english')}</option>
+              <option value="es">{t('settings.spanish')}</option>
+            </select>
           </label>
         </div>
         <div style={{ marginBottom: '0.5rem' }}>
