@@ -13,8 +13,8 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS settings ("
         "user_id INTEGER PRIMARY KEY,"
         "theme TEXT NOT NULL,"
-        "categories TEXT NOT NULL,"
-        "rules TEXT NOT NULL,"
+        "categories TEXT NOT NULL DEFAULT '{}',"
+        "rules TEXT NOT NULL DEFAULT '[]',"
         "lang TEXT NOT NULL DEFAULT 'en',"
         "specialty TEXT,"
         "payer TEXT,"
@@ -22,7 +22,16 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
+
     columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
+    if "categories" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN categories TEXT NOT NULL DEFAULT '{}'"
+        )
+    if "rules" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN rules TEXT NOT NULL DEFAULT '[]'"
+        )
     if "lang" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
     if "specialty" not in columns:

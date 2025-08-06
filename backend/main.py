@@ -34,7 +34,7 @@ from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
-from .public_health import get_public_health_suggestions
+from . import public_health as public_health_api
 from .migrations import ensure_settings_table
 
 
@@ -693,22 +693,25 @@ async def get_metrics(
     # ------------------------------------------------------------------
     # Build a WHERE clause based on optional query parameters
     # ------------------------------------------------------------------
+    def _parse_iso_ts(value: str) -> float | None:
+        """Best effort parse of an ISO date/datetime string to a timestamp."""
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except Exception:
+            return None
+
     conditions: List[str] = []
     params: List[Any] = []
     if start:
-        try:
-            start_ts = datetime.fromisoformat(start).timestamp()
+        start_ts = _parse_iso_ts(start)
+        if start_ts is not None:
             conditions.append("timestamp >= ?")
             params.append(start_ts)
-        except Exception:
-            pass
     if end:
-        try:
-            end_ts = datetime.fromisoformat(end).timestamp()
+        end_ts = _parse_iso_ts(end)
+        if end_ts is not None:
             conditions.append("timestamp <= ?")
             params.append(end_ts)
-        except Exception:
-            pass
     if clinician:
         conditions.append("json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.clinician') = ?")
         params.append(clinician)
@@ -1091,7 +1094,9 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         public_health = [str(x) for x in public_health_raw]
         diffs = [str(x) for x in data.get("differentials", [])]
         # Augment public health suggestions with external guidelines
-        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        extra_ph = public_health_api.get_public_health_suggestions(
+            req.age, req.sex, req.region
+        )
         if extra_ph:
             public_health = list(dict.fromkeys(public_health + extra_ph))
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
@@ -1157,7 +1162,9 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
             public_health.append("Consider influenza vaccine")
         if not diffs:
             diffs.append("Routine follow-up")
-        extra_ph = get_public_health_suggestions(req.age, req.sex, req.region)
+        extra_ph = public_health_api.get_public_health_suggestions(
+            req.age, req.sex, req.region
+        )
         if extra_ph:
             public_health = list(dict.fromkeys(public_health + extra_ph))
         return SuggestionsResponse(

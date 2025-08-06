@@ -195,7 +195,11 @@ function Settings({ settings, updateSettings }) {
         placeholder={t('settings.customRulesPlaceholder')}
       />
   <h3>{t('settings.language')}</h3>
-  <select value={settings.lang} onChange={handleLangChange}>
+  <select
+    value={settings.lang}
+    onChange={handleLangChange}
+    aria-label={t('settings.language')}
+  >
     <option value="en">{t('settings.english')}</option>
     <option value="es">{t('settings.spanish')}</option>
   </select>
