@@ -8,9 +8,14 @@ afterEach(() => cleanup());
 
 test('renders suggestions and handles click', () => {
   const onInsert = vi.fn();
-  const { getAllByText } = render(
+  const { getAllByText, getByText } = render(
     <SuggestionPanel
-      suggestions={{ codes: [{ code: 'A', rationale: 'reason' }], compliance: [], publicHealth: [], differentials: [] }}
+      suggestions={{
+        codes: [{ code: 'A', rationale: 'reason' }],
+        compliance: [],
+        publicHealth: [{ recommendation: 'Flu shot', reason: 'Prevents influenza' }],
+        differentials: [],
+      }}
       settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
       onInsert={onInsert}
     />
@@ -20,6 +25,7 @@ test('renders suggestions and handles click', () => {
   );
   fireEvent.click(el);
   expect(onInsert).toHaveBeenCalledWith('A — reason');
+  expect(getByText('Prevents influenza')).toBeTruthy();
 });
 
 test('shows loading and toggles sections', () => {
