@@ -499,6 +499,15 @@ class EventModel(BaseModel):
     baseline: Optional[bool] = None
 
 
+class SurveyModel(BaseModel):
+    """Schema for clinician feedback after completing a note."""
+
+    rating: int = Field(..., ge=1, le=5)
+    feedback: Optional[str] = None
+    patientID: Optional[str] = None
+    clinician: Optional[str] = None
+
+
 class TemplateModel(BaseModel):
     """Template structure for note creation snippets."""
 
@@ -715,6 +724,40 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
     except Exception as exc:
         print(f"Error inserting event into database: {exc}")
     return {"status": "logged"}
+
+
+@app.post("/survey")
+async def submit_survey(survey: SurveyModel, user=Depends(require_role("user"))) -> Dict[str, str]:
+    """Record a satisfaction survey with optional free-text feedback."""
+
+    ts = datetime.utcnow().timestamp()
+    details = {
+        "satisfaction": survey.rating,
+        "feedback": survey.feedback or "",
+    }
+    if survey.patientID:
+        details["patientID"] = survey.patientID
+    if survey.clinician:
+        details["clinician"] = survey.clinician
+    events.append({"eventType": "survey", "details": details, "timestamp": ts})
+    try:
+        db_conn.execute(
+            "INSERT INTO events (eventType, timestamp, details, revenue, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "survey",
+                ts,
+                json.dumps(details, ensure_ascii=False),
+                None,
+                None,
+                None,
+                None,
+                survey.rating,
+            ),
+        )
+        db_conn.commit()
+    except Exception as exc:
+        print(f"Error inserting survey into database: {exc}")
+    return {"status": "recorded"}
 
 
 def _validate_prompt_templates(data: Dict[str, Any]) -> None:

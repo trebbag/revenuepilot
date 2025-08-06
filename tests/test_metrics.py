@@ -151,3 +151,16 @@ def test_timeseries_always_present():
     assert 'weekly' in data['timeseries']
     assert isinstance(data['timeseries']['daily'], list)
     assert isinstance(data['timeseries']['weekly'], list)
+
+
+def test_survey_endpoint_and_avg_rating():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    main.db_conn.commit()
+    user_token = main.create_token('survey_user', 'user')
+    resp = client.post('/survey', json={'rating': 4, 'feedback': 'ok'}, headers={'Authorization': f'Bearer {user_token}'})
+    assert resp.status_code == 200
+    admin_token = main.create_token('admin_user', 'admin')
+    resp = client.get('/metrics', headers={'Authorization': f'Bearer {admin_token}'})
+    data = resp.json()
+    assert data['avg_satisfaction'] == pytest.approx(4.0)

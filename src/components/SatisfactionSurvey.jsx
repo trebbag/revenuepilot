@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { logEvent } from '../api.js';
+import { submitSurvey } from '../api.js';
 
 /**
  * Modal survey asking providers to rate their documentation confidence.
@@ -24,9 +24,8 @@ export default function SatisfactionSurvey({ open, onClose }) {
 
   const submit = async () => {
     try {
-      await logEvent('satisfaction', { rating, comments, satisfaction: rating });
+      await submitSurvey(rating, comments);
     } catch (e) {
-      // best effort only
       console.error(e);
     }
     onClose();

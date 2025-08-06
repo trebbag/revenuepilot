@@ -181,6 +181,12 @@ ChartJS.register(
       improvement: metrics.improvement?.deficiency_rate,
       direction: 'lower',
     },
+    {
+      title: t('dashboard.cards.avgSatisfaction'),
+      baseline: 0,
+      current: metrics.avg_satisfaction ? metrics.avg_satisfaction.toFixed(1) : 0,
+      direction: 'higher',
+    },
   ];
 
 
@@ -198,6 +204,7 @@ ChartJS.register(
       'avg_close_time',
       'revenue_per_visit',
       'denial_rate',
+      'avg_satisfaction',
       'deficiency_rate',
     ];
     topLevel.forEach((k) => {
