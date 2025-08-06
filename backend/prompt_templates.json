@@ -45,6 +45,28 @@
       "summary": {
         "en": "Cardiology specific summary instruction."
       }
+    },
+    "paediatrics": {
+      "beautify": {
+        "en": "Paediatrics specific beautify instruction."
+      },
+      "suggest": {
+        "en": "Paediatrics specific suggestion instruction."
+      },
+      "summary": {
+        "en": "Paediatrics specific summary instruction."
+      }
+    },
+    "geriatrics": {
+      "beautify": {
+        "en": "Geriatrics specific beautify instruction."
+      },
+      "suggest": {
+        "en": "Geriatrics specific suggestion instruction."
+      },
+      "summary": {
+        "en": "Geriatrics specific summary instruction."
+      }
     }
   },
   "payer": {
@@ -63,6 +85,28 @@
       },
       "summary": {
         "en": "Follow Medicare summary requirements."
+      }
+    },
+    "medicaid": {
+      "beautify": {
+        "en": "Ensure documentation meets Medicaid requirements."
+      },
+      "suggest": {
+        "en": "Follow Medicaid coding rules."
+      },
+      "summary": {
+        "en": "Follow Medicaid summary requirements."
+      }
+    },
+    "aetna": {
+      "beautify": {
+        "en": "Ensure documentation meets Aetna standards."
+      },
+      "suggest": {
+        "en": "Follow Aetna coding rules."
+      },
+      "summary": {
+        "en": "Follow Aetna summary requirements."
       }
     }
   }

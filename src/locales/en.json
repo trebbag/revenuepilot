@@ -115,6 +115,10 @@
     "payer": "Payer",
     "templates": "Templates",
     "noTemplates": "No templates",
+    "promptTemplates": "Prompt Templates",
+    "promptTemplatesHelp": "Edit JSON instructions or upload a file to customise prompts.",
+    "savePromptTemplates": "Save Templates",
+    "invalidPromptTemplates": "Invalid template format",
     "english": "English",
     "spanish": "Spanish",
     "region": "Region"
