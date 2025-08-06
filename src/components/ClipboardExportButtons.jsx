@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { logEvent } from '../api.js';
 import SatisfactionSurvey from './SatisfactionSurvey.jsx';
+import html2pdf from 'html2pdf.js';
 
 function ClipboardExportButtons({ beautified, summary, patientID, suggestions = {} }) {
   const { t } = useTranslation();
@@ -98,6 +99,28 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
     }
   };
 
+  const exportPdf = async () => {
+    try {
+      const element = document.createElement('div');
+      element.innerHTML = beautified;
+      const filename = patientID ? `note-${patientID}.pdf` : 'note.pdf';
+      const options = { filename, margin: 10, html2canvas: { scale: 2 } };
+      await html2pdf().set(options).from(element).save();
+      setFeedback(t('clipboard.exported'));
+      if (patientID) {
+        logEvent('export-pdf', {
+          patientID,
+          beautifiedLength: beautified.length,
+          summaryLength: summary.length,
+        }).catch(() => {});
+      }
+      setTimeout(() => setFeedback(''), 2000);
+    } catch {
+      setFeedback(t('clipboard.exportFailed'));
+    }
+
+  };
+
   return (
     <>
         <button disabled={!beautified} onClick={() => copy(beautified, 'beautified')}>
@@ -111,6 +134,9 @@ function ClipboardExportButtons({ beautified, summary, patientID, suggestions = 
         </button>
         <button disabled={!beautified && !summary} onClick={exportRtf}>
           {t('clipboard.exportRtf')}
+        </button>
+        <button disabled={!beautified} onClick={exportPdf}>
+          {t('clipboard.exportPdf')}
         </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
       <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />

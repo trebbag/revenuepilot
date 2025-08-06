@@ -4,6 +4,7 @@
     "copySummary": "Copiar resumen",
     "export": "Exportar",
     "exportRtf": "Exportar RTF",
+    "exportPdf": "Exportar PDF",
     "beautifiedCopied": "Nota embellecida copiada",
     "summaryCopied": "Resumen copiado",
     "copyFailed": "Error al copiar",

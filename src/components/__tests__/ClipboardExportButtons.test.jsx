@@ -2,8 +2,20 @@
 import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import { vi, describe, test, expect, beforeEach, afterEach } from 'vitest';
 import '../../i18n.js';
-import ClipboardExportButtons from '../ClipboardExportButtons.jsx';
 import * as api from '../../api.js';
+
+var saveMock;
+vi.mock('html2pdf.js', () => {
+  saveMock = vi.fn().mockResolvedValue();
+  const instance = {
+    set: vi.fn().mockReturnThis(),
+    from: vi.fn().mockReturnThis(),
+    save: saveMock,
+  };
+  return { default: vi.fn().mockReturnValue(instance) };
+});
+
+import ClipboardExportButtons from '../ClipboardExportButtons.jsx';
 
 describe('ClipboardExportButtons', () => {
   beforeEach(() => {
@@ -78,6 +90,22 @@ describe('ClipboardExportButtons', () => {
       expect(invoke).toHaveBeenCalledWith('export-rtf', { beautified: 'b', summary: 's' });
       expect(logSpy).toHaveBeenCalledWith('export-rtf', {
         patientID: 'p4',
+        beautifiedLength: 1,
+        summaryLength: 1,
+      });
+    });
+  });
+
+  test('exports PDF using html2pdf and logs event', async () => {
+    const logSpy = vi.spyOn(api, 'logEvent').mockResolvedValue();
+    const { getByText } = render(
+      <ClipboardExportButtons beautified="b" summary="s" patientID="p5" />
+    );
+    fireEvent.click(getByText('Export PDF'));
+    await waitFor(() => {
+      expect(saveMock).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('export-pdf', {
+        patientID: 'p5',
         beautifiedLength: 1,
         summaryLength: 1,
       });
