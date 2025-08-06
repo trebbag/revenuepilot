@@ -510,9 +510,12 @@ function App() {
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
-              <button onClick={() => setShowTemplatesModal(true)}>
-                {t('app.templates')}
-              </button>
+                <button
+                  onClick={() => setShowTemplatesModal(true)}
+                  aria-label={t('app.templates')}
+                >
+                  {t('app.templates')}
+                </button>
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}

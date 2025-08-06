@@ -25,6 +25,31 @@ try {
   ReactQuill = null;
 }
 
+// Formats allowed in the editor.  These correspond to the buttons rendered in
+// ``QuillToolbar`` below.
+const quillFormats = ['header', 'bold', 'italic', 'underline', 'list', 'bullet'];
+
+// Custom toolbar markup so we can provide accessible labels for the icons.
+// Quill will hook into this container via the ``modules.toolbar`` option.
+function QuillToolbar({ toolbarId }) {
+  return (
+    <div id={toolbarId} className="ql-toolbar ql-snow">
+      <span className="ql-formats">
+        <select className="ql-header" defaultValue="" aria-label="Heading">
+          <option value="1">H1</option>
+          <option value="2">H2</option>
+          <option value="">Normal</option>
+        </select>
+        <button className="ql-bold" aria-label="Bold" />
+        <button className="ql-italic" aria-label="Italic" />
+        <button className="ql-underline" aria-label="Underline" />
+        <button className="ql-list" value="ordered" aria-label="Ordered List" />
+        <button className="ql-list" value="bullet" aria-label="Bullet List" />
+      </span>
+    </div>
+  );
+}
+
 function NoteEditor({
   id,
   value,
@@ -86,10 +111,14 @@ function NoteEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcribing]);
 
-  const toolbar = (
+  const audioControls = (
     <div style={{ marginBottom: '0.5rem' }}>
       {onRecord && (
-        <button type="button" onClick={onRecord}>
+        <button
+          type="button"
+          onClick={onRecord}
+          aria-label={recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
+        >
           {recording ? t('noteEditor.stopRecording') : t('noteEditor.recordAudio')}
         </button>
       )}
@@ -100,13 +129,18 @@ function NoteEditor({
 
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
+    const toolbarId = `${id || 'editor'}-toolbar`;
+    const modules = { toolbar: { container: `#${toolbarId}` } };
     return (
       <div style={{ height: '100%', width: '100%' }}>
-        {toolbar}
+        {audioControls}
+        <QuillToolbar toolbarId={toolbarId} />
         <ReactQuill
           id={id}
           theme="snow"
           value={value}
+          modules={modules}
+          formats={quillFormats}
           // ReactQuill's onChange passes the new HTML string as the first
           // argument.  We ignore the other args (delta, source, editor) and
           // forward the HTML string to the parent onChange.
@@ -137,7 +171,7 @@ function NoteEditor({
   }
   return (
     <div style={{ width: '100%', height: '100%' }}>
-      {toolbar}
+      {audioControls}
       <textarea
         id={id}
         value={localValue}
