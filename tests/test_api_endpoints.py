@@ -220,6 +220,31 @@ def test_transcribe_endpoint(client, monkeypatch):
     assert resp.status_code == 422
 
 
+def test_get_last_transcript(client, monkeypatch):
+    monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
+    monkeypatch.setattr(
+        main, "diarize_and_transcribe", lambda b: {"provider": "p", "patient": "q"}
+    )
+    token = main.create_token("u", "user")
+    # First call without diarisation
+    client.post(
+        "/transcribe",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    resp = client.get("/transcribe", headers=auth_header(token))
+    assert resp.json() == {"provider": "hello", "patient": ""}
+
+    # Now call with diarisation and ensure both parts returned
+    client.post(
+        "/transcribe?diarise=true",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    resp = client.get("/transcribe", headers=auth_header(token))
+    assert resp.json() == {"provider": "p", "patient": "q"}
+
+
 def test_apikey_validation(client, monkeypatch):
     monkeypatch.setattr(main, "save_api_key", lambda key: None)
     token = main.create_token("admin", "admin")

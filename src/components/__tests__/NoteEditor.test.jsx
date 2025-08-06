@@ -1,6 +1,11 @@
 /* @vitest-environment jsdom */
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
+
+vi.mock('../../api.js', () => ({
+  fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
+}));
+
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
 

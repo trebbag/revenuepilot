@@ -959,6 +959,18 @@ async def transcribe(
     last_transcript.update(result)
     return result
 
+
+@app.get("/transcribe")
+async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, str]:
+    """Return the most recent audio transcript.
+
+    This endpoint allows the frontend to retrieve the last transcript
+    produced by :func:`transcribe` without uploading the audio again.
+    The transcript is stored in-memory and reset when the server restarts.
+    """
+
+    return last_transcript
+
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
 # field "key" and stores it in a local file.  Also updates the
 # environment variable OPENAI_API_KEY so future requests in this
