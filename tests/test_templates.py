@@ -9,7 +9,7 @@ def setup_module(module):
     main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     main.db_conn.execute(
-        'CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, name TEXT, content TEXT)'
+        'CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, specialty TEXT, name TEXT, content TEXT)'
     )
     main.db_conn.commit()
 
@@ -19,7 +19,7 @@ def test_create_update_and_list_templates():
     token = main.create_token('alice', 'user', clinic='clinic1')
     resp = client.post(
         '/templates',
-        json={'name': 'Custom', 'content': 'Note'},
+        json={'name': 'Custom', 'content': 'Note', 'specialty': 'cardiology'},
         headers={'Authorization': f'Bearer {token}'},
     )
     assert resp.status_code == 200
@@ -27,7 +27,7 @@ def test_create_update_and_list_templates():
     assert tpl_id
     resp = client.put(
         f'/templates/{tpl_id}',
-        json={'name': 'Updated', 'content': 'New'},
+        json={'name': 'Updated', 'content': 'New', 'specialty': 'cardiology'},
         headers={'Authorization': f'Bearer {token}'},
     )
     assert resp.status_code == 200
@@ -42,7 +42,7 @@ def test_delete_template():
     token = main.create_token('alice', 'user', clinic='clinic1')
     resp = client.post(
         '/templates',
-        json={'name': 'Temp', 'content': 'X'},
+        json={'name': 'Temp', 'content': 'X', 'specialty': 'cardiology'},
         headers={'Authorization': f'Bearer {token}'},
     )
     tpl_id = resp.json()['id']
@@ -55,14 +55,21 @@ def test_delete_template():
 def test_template_scoped_by_clinic():
     client = TestClient(main.app)
     token_a = main.create_token('alice', 'user', clinic='clinicA')
+    # Admin creates clinic-wide template
+    admin_token = main.create_token('admin', 'admin', clinic='clinicA')
     resp = client.post(
         '/templates',
-        json={'name': 'Scoped', 'content': 'S'},
-        headers={'Authorization': f'Bearer {token_a}'},
+        json={'name': 'Scoped', 'content': 'S', 'specialty': 'cardiology'},
+        headers={'Authorization': f'Bearer {admin_token}'},
     )
     tpl_id = resp.json()['id']
-    token_b = main.create_token('alice', 'user', clinic='clinicB')
-    resp = client.get('/templates', headers={'Authorization': f'Bearer {token_b}'})
+    # User in same clinic sees the template
+    token_a = main.create_token('alice', 'user', clinic='clinicA')
+    resp = client.get('/templates?specialty=cardiology', headers={'Authorization': f'Bearer {token_a}'})
+    assert any(t['id'] == tpl_id for t in resp.json())
+    # User in different clinic does not
+    token_b = main.create_token('bob', 'user', clinic='clinicB')
+    resp = client.get('/templates?specialty=cardiology', headers={'Authorization': f'Bearer {token_b}'})
     assert all(t['id'] != tpl_id for t in resp.json())
 
 

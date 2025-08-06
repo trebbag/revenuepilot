@@ -10,6 +10,7 @@ vi.mock('../../api.js', () => ({
   updateTemplate: vi.fn(async (id, tpl) => ({ id, ...tpl })),
   deleteTemplate: vi.fn(async () => {}),
 }));
+import * as api from '../../api.js';
 
 afterEach(() => {
   cleanup();
@@ -20,6 +21,7 @@ test('lists and selects templates', async () => {
   const { getByText, findByText } = render(
     <TemplatesModal
       baseTemplates={[{ name: 'Base', content: 'B' }]}
+      specialty="cardiology"
       onSelect={onSelect}
       onClose={() => {}}
     />,
@@ -27,11 +29,12 @@ test('lists and selects templates', async () => {
   await findByText('Custom');
   fireEvent.click(getByText('Base'));
   expect(onSelect).toHaveBeenCalledWith('B');
+  expect(api.getTemplates).toHaveBeenCalledWith('cardiology');
 });
 
 test('creates template', async () => {
   const { getByPlaceholderText, getByText, findByText } = render(
-    <TemplatesModal baseTemplates={[]} onSelect={() => {}} onClose={() => {}} />,
+    <TemplatesModal baseTemplates={[]} specialty="cardiology" onSelect={() => {}} onClose={() => {}} />,
   );
   fireEvent.change(getByPlaceholderText('Name'), { target: { value: 'Extra' } });
   fireEvent.change(getByPlaceholderText('Content'), { target: { value: 'X' } });
@@ -41,7 +44,7 @@ test('creates template', async () => {
 
 test('edits and deletes template', async () => {
   const { getByText, getByPlaceholderText, findByText, queryByText } = render(
-    <TemplatesModal baseTemplates={[]} onSelect={() => {}} onClose={() => {}} />,
+    <TemplatesModal baseTemplates={[]} specialty="cardiology" onSelect={() => {}} onClose={() => {}} />,
   );
   await findByText('Custom');
   fireEvent.click(getByText('Edit'));

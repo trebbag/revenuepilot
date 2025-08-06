@@ -551,7 +551,7 @@ export async function getMetrics(filters = {}) {
  * Returns an empty array if the backend is unreachable.
  * @returns {Promise<Array<{id:number,name:string,content:string}>>}
  */
-export async function getTemplates() {
+export async function getTemplates(specialty) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -559,7 +559,8 @@ export async function getTemplates() {
   if (!baseUrl) return [];
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/templates`, { headers });
+  const query = specialty ? `?specialty=${encodeURIComponent(specialty)}` : '';
+  const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
   }

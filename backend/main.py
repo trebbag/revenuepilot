@@ -46,6 +46,7 @@ from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
 from .migrations import ensure_settings_table, ensure_templates_table
+from .templates import TemplateModel
 from .scheduling import recommend_follow_up
 
 
@@ -649,14 +650,6 @@ class SurveyModel(BaseModel):
     clinician: Optional[str] = None
 
 
-class TemplateModel(BaseModel):
-    """Template structure for note creation snippets."""
-
-    id: Optional[int] = None
-    name: str
-    content: str
-
-
 def deidentify(text: str) -> str:
     """Redact common protected health information from ``text``.
 
@@ -948,57 +941,96 @@ def save_prompt_templates(data: Dict[str, Any], user=Depends(require_role("admin
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
-    """Return custom templates for the current user and clinic."""
+def get_templates(
+    specialty: Optional[str] = None, user=Depends(require_role("user"))
+) -> List[TemplateModel]:
+    """Return templates for the current user and clinic, optionally filtered by specialty."""
 
     clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    rows = cursor.execute(
-        "SELECT id, name, content FROM templates WHERE user=? AND (clinic=? OR clinic IS NULL)",
-        (user["sub"], clinic),
-    ).fetchall()
-    return [TemplateModel(id=row["id"], name=row["name"], content=row["content"]) for row in rows]
+    if specialty:
+        rows = cursor.execute(
+            "SELECT id, name, content, specialty FROM templates "
+            "WHERE (user=? OR (user IS NULL AND clinic=?)) AND specialty=?",
+            (user["sub"], clinic, specialty),
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            "SELECT id, name, content, specialty FROM templates "
+            "WHERE (user=? OR (user IS NULL AND clinic=?))",
+            (user["sub"], clinic),
+        ).fetchall()
+    return [
+        TemplateModel(
+            id=row["id"], name=row["name"], content=row["content"], specialty=row["specialty"]
+        )
+        for row in rows
+    ]
 
 
 @app.post("/templates", response_model=TemplateModel)
 def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
-    """Create a new custom template for the user."""
+    """Create a new template for the user or clinic."""
 
     clinic = user.get("clinic")
+    owner = None if user.get("role") == "admin" else user["sub"]
     cursor = db_conn.cursor()
     cursor.execute(
-        "INSERT INTO templates (user, clinic, name, content) VALUES (?, ?, ?, ?)",
-        (user["sub"], clinic, tpl.name, tpl.content),
+        "INSERT INTO templates (user, clinic, specialty, name, content) VALUES (?, ?, ?, ?, ?)",
+        (owner, clinic, tpl.specialty, tpl.name, tpl.content),
     )
     db_conn.commit()
     tpl_id = cursor.lastrowid
-    return TemplateModel(id=tpl_id, name=tpl.name, content=tpl.content)
+    return TemplateModel(
+        id=tpl_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+    )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
-def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
-    """Update an existing custom template owned by the current user."""
+def update_template(
+    template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
+) -> TemplateModel:
+    """Update an existing template owned by the user or clinic."""
 
+    clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    cursor.execute(
-        "UPDATE templates SET name=?, content=? WHERE id=? AND user=?",
-        (tpl.name, tpl.content, template_id, user["sub"]),
-    )
+    if user.get("role") == "admin":
+        cursor.execute(
+            "UPDATE templates SET name=?, content=?, specialty=? "
+            "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
+            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"], clinic),
+        )
+    else:
+        cursor.execute(
+            "UPDATE templates SET name=?, content=?, specialty=? WHERE id=? AND user=?",
+            (tpl.name, tpl.content, tpl.specialty, template_id, user["sub"]),
+        )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
-    return TemplateModel(id=template_id, name=tpl.name, content=tpl.content)
+    return TemplateModel(
+        id=template_id, name=tpl.name, content=tpl.content, specialty=tpl.specialty
+    )
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
-    """Delete a custom template owned by the current user."""
+def delete_template(
+    template_id: int, user=Depends(require_role("user"))
+) -> Dict[str, str]:
+    """Delete a template owned by the user or clinic."""
 
+    clinic = user.get("clinic")
     cursor = db_conn.cursor()
-    cursor.execute(
-        "DELETE FROM templates WHERE id=? AND user=?",
-        (template_id, user["sub"]),
-    )
+    if user.get("role") == "admin":
+        cursor.execute(
+            "DELETE FROM templates WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
+            (template_id, user["sub"], clinic),
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM templates WHERE id=? AND user=?",
+            (template_id, user["sub"]),
+        )
     db_conn.commit()
     if cursor.rowcount == 0:
         raise HTTPException(status_code=404, detail="Template not found")
