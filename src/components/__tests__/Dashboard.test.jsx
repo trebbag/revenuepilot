@@ -45,7 +45,7 @@ vi.mock('../../api.js', () => ({
     improvement: {},
     coding_distribution: { '99213': 2 },
     denial_rates: { '99213': 0.1 },
-    compliance_counts: {},
+    compliance_counts: { Missing: 1 },
     avg_satisfaction: 0,
     public_health_rate: 0,
     clinicians: ['alice', 'bob'],
@@ -146,4 +146,19 @@ test('applies clinician filter', async () => {
     end: '',
     clinician: 'alice',
   });
+});
+
+test('applies quick range filter', async () => {
+  const { findByLabelText, getByText } = render(<Dashboard />);
+  await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
+  const rangeSelect = await findByLabelText('dashboard.range');
+  fireEvent.change(rangeSelect, { target: { value: '7' } });
+  const now = new Date();
+  const end = now.toISOString().slice(0, 10);
+  const startDate = new Date();
+  startDate.setDate(now.getDate() - 7);
+  const start = startDate.toISOString().slice(0, 10);
+  getByText('Apply').click();
+  await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
+  expect(getMetrics).toHaveBeenLastCalledWith({ start, end, clinician: '' });
 });
