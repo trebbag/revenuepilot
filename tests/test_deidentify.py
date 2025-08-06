@@ -96,3 +96,47 @@ def test_deidentify_engines(monkeypatch, engine, available, expected):
     cleaned = bm.deidentify(text)
     for token in expected:
         assert token in cleaned
+
+
+def test_presidio_fallback_to_regex(monkeypatch):
+    """Presidio failures should fall back to regex patterns."""
+
+    class Boom:
+        def analyze(self, *args, **kwargs):  # pragma: no cover - intentional failure
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(bm, "_DEID_ENGINE", "presidio")
+    monkeypatch.setattr(bm, "_PRESIDIO_AVAILABLE", True)
+    monkeypatch.setattr(bm, "_analyzer", Boom())
+
+    text = "John Doe 555-123-4567"
+    cleaned = bm.deidentify(text)
+    assert "[NAME:" in cleaned
+    assert "[PHONE:" in cleaned
+
+
+def test_philter_fallback_to_regex(monkeypatch):
+    """Philter errors should fall back to regex patterns."""
+
+    class Boom:
+        def philter(self, text):  # pragma: no cover - intentional failure
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(bm, "_DEID_ENGINE", "philter")
+    monkeypatch.setattr(bm, "_PHILTER_AVAILABLE", True)
+    monkeypatch.setattr(bm, "_philter", Boom())
+
+    text = "John Doe 555-123-4567"
+    cleaned = bm.deidentify(text)
+    assert "[NAME:" in cleaned
+    assert "[PHONE:" in cleaned
+
+
+def test_regex_engine(monkeypatch):
+    """Explicit regex engine continues to scrub PHI."""
+
+    monkeypatch.setattr(bm, "_DEID_ENGINE", "regex")
+    text = "John Doe 555-123-4567"
+    cleaned = bm.deidentify(text)
+    assert "[NAME:" in cleaned
+    assert "[PHONE:" in cleaned

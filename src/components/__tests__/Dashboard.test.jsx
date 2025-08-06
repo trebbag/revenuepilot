@@ -7,9 +7,15 @@ import i18n from '../../i18n.js';
 HTMLCanvasElement.prototype.getContext = vi.fn();
 
 vi.mock('react-chartjs-2', () => ({
-  Line: (props) => <canvas {...props} />,
-  Bar: (props) => <canvas {...props} />,
-  Pie: (props) => <canvas {...props} />,
+  Line: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
+  Bar: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
+  Pie: ({ data, ...props }) => (
+    <canvas data-chart={JSON.stringify(data)} {...props} />
+  ),
 }));
 
 vi.mock('../../api.js', () => ({
@@ -177,4 +183,5 @@ test('exports metrics as CSV', async () => {
   expect(clickSpy).toHaveBeenCalled();
 
   clickSpy.mockRestore();
+
 });
