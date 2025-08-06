@@ -96,18 +96,18 @@ function Settings({ settings, updateSettings }) {
   };
   const handleToggle = async (key) => {
     const updated = { ...settings, [key]: !settings[key] };
-    updateSettings(updated);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
   };
   const handleThemeChange = async (event) => {
     const updated = { ...settings, theme: event.target.value };
-    updateSettings(updated);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
@@ -135,10 +135,10 @@ function Settings({ settings, updateSettings }) {
     const newLang = event.target.value;
     if (newLang === settings.lang) return;
     const updated = { ...settings, lang: newLang };
-    updateSettings(updated);
     i18n.changeLanguage(newLang);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
@@ -146,9 +146,9 @@ function Settings({ settings, updateSettings }) {
 
   const handleSpecialtyChange = async (event) => {
     const updated = { ...settings, specialty: event.target.value };
-    updateSettings(updated);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
@@ -156,9 +156,9 @@ function Settings({ settings, updateSettings }) {
 
   const handlePayerChange = async (event) => {
     const updated = { ...settings, payer: event.target.value };
-    updateSettings(updated);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
@@ -166,9 +166,9 @@ function Settings({ settings, updateSettings }) {
 
   const handleRegionChange = async (event) => {
     const updated = { ...settings, region: event.target.value };
-    updateSettings(updated);
     try {
-      await saveSettings(updated);
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
     } catch (e) {
       console.error(e);
     }
@@ -286,9 +286,9 @@ function Settings({ settings, updateSettings }) {
             .map((line) => line.trim())
             .filter(Boolean);
           const updated = { ...settings, rules: lines };
-          updateSettings(updated);
           try {
-            await saveSettings(updated);
+            const saved = await saveSettings(updated);
+            updateSettings(saved);
           } catch (err) {
             console.error(err);
           }
