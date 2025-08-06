@@ -321,6 +321,30 @@ export async function createTemplate(tpl) {
 }
 
 /**
+ * Update an existing custom template by id.
+ * @param {number} id
+ * @param {{name:string, content:string}} tpl
+ * @returns {Promise<object>}
+ */
+export async function updateTemplate(id, tpl) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return { id, ...tpl };
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/templates/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(tpl),
+  });
+  return await resp.json();
+}
+
+/**
  * Delete a custom template by its identifier.
  * @param {number} id
  * @returns {Promise<void>}

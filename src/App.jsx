@@ -20,6 +20,7 @@ import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
+import defaultTemplates from './templates.json';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -145,49 +146,8 @@ function App() {
     i18n.changeLanguage(settingsState.lang);
   }, [settingsState.lang]);
 
-  // Templates for quick note creation
-  const templates = [
-    {
-      name: 'SOAP Note Template',
-      content:
-        'Subjective: \n\nObjective: \n\nAssessment: \n\nPlan: ',
-    },
-    {
-      name: 'Wellness Visit Template',
-      content:
-        'Chief Complaint: Annual wellness visit\n\nHistory of Present Illness: \n\nPast Medical History: \n\nMedications: \n\nAllergies: \n\nPhysical Exam: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Follow-up Visit Template',
-      content:
-        'Chief Complaint: \n\nInterval History: \n\nReview of Systems: \n\nPhysical Exam: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Paediatrics Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nGrowth Parameters: \n\nDevelopment: \n\nImmunisations: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Geriatrics Template',
-      content:
-        'Chief Complaint: \n\nFunctional Status: \n\nCognitive Assessment: \n\nMedications: \n\nSupport Systems: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Psychiatry Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nMental Status Exam: \n\nRisk Assessment: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Cardiology Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nCardiac Risk Factors: \n\nExam: \n\nDiagnostics: \n\nAssessment & Plan: ',
-    },
-    {
-      name: 'Dermatology Template',
-      content:
-        'Chief Complaint: \n\nHistory of Present Illness: \n\nSkin Exam: \n\nAssessment: \n\nPlan: ',
-    },
-  ];
+  // Templates for quick note creation loaded from a JSON file
+  const templates = defaultTemplates;
 
   // If there is no JWT stored, show the login form instead of the main app
   if (!token) {
