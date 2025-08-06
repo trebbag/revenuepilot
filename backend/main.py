@@ -693,22 +693,25 @@ async def get_metrics(
     # ------------------------------------------------------------------
     # Build a WHERE clause based on optional query parameters
     # ------------------------------------------------------------------
+    def _parse_iso_ts(value: str) -> float | None:
+        """Best effort parse of an ISO date/datetime string to a timestamp."""
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except Exception:
+            return None
+
     conditions: List[str] = []
     params: List[Any] = []
     if start:
-        try:
-            start_ts = datetime.fromisoformat(start).timestamp()
+        start_ts = _parse_iso_ts(start)
+        if start_ts is not None:
             conditions.append("timestamp >= ?")
             params.append(start_ts)
-        except Exception:
-            pass
     if end:
-        try:
-            end_ts = datetime.fromisoformat(end).timestamp()
+        end_ts = _parse_iso_ts(end)
+        if end_ts is not None:
             conditions.append("timestamp <= ?")
             params.append(end_ts)
-        except Exception:
-            pass
     if clinician:
         conditions.append("json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.clinician') = ?")
         params.append(clinician)
