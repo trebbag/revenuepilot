@@ -20,5 +20,7 @@ def test_ensure_settings_table_adds_columns():
         "specialty",
         "payer",
         "region",
+        "use_local_models",
+        "agencies",
     } <= cols
     conn.close()

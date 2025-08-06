@@ -56,7 +56,13 @@ def test_local_suggest(monkeypatch):
     sample = {
         "codes": [{"code": "12345"}],
         "compliance": ["ok"],
-        "publicHealth": [{"recommendation": "do"}],
+        "publicHealth": [
+            {
+                "recommendation": "do",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
+        ],
         "differentials": [{"diagnosis": "dx", "score": 0.1}],
     }
 

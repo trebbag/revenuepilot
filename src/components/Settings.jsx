@@ -113,6 +113,19 @@ function Settings({ settings, updateSettings }) {
       console.error(e);
     }
   };
+
+  const handleAgencyToggle = async (agency) => {
+    const current = new Set(settings.agencies || []);
+    if (current.has(agency)) current.delete(agency);
+    else current.add(agency);
+    const updated = { ...settings, agencies: Array.from(current) };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+    } catch (e) {
+      console.error(e);
+    }
+  };
   const handleSaveKey = async () => {
     const trimmed = apiKeyInput.trim();
     if (!trimmed) return;
@@ -412,6 +425,24 @@ function Settings({ settings, updateSettings }) {
           borderRadius: '4px',
         }}
       />
+
+      <h3>{t('settings.agencies')}</h3>
+      <label style={{ display: 'block' }}>
+        <input
+          type="checkbox"
+          checked={(settings.agencies || []).includes('CDC')}
+          onChange={() => handleAgencyToggle('CDC')}
+        />{' '}
+        {t('settings.cdc')}
+      </label>
+      <label style={{ display: 'block' }}>
+        <input
+          type="checkbox"
+          checked={(settings.agencies || []).includes('WHO')}
+          onChange={() => handleAgencyToggle('WHO')}
+        />{' '}
+        {t('settings.who')}
+      </label>
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}

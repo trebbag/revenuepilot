@@ -174,6 +174,12 @@ function SuggestionPanel({
                 {item.reason}
               </div>
             )}
+            {item.source && (
+              <div style={{ fontSize: '0.85em', color: '#555' }}>
+                {item.source}
+                {item.evidenceLevel ? ` (${item.evidenceLevel})` : ''}
+              </div>
+            )}
           </li>
         );
       }

@@ -42,6 +42,7 @@ def test_settings_roundtrip(monkeypatch):
         "specialty": "cardiology",
         "payer": "medicare",
         "region": "us",
+        "agencies": ["CDC"],
     }
 
     resp = client.post(
@@ -57,4 +58,5 @@ def test_settings_roundtrip(monkeypatch):
     assert data["specialty"] == "cardiology"
     assert data["payer"] == "medicare"
     assert data["region"] == "us"
+    assert data["agencies"] == ["CDC"]
 

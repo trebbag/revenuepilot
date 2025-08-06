@@ -208,6 +208,7 @@ export async function saveSettings(settings, token) {
     payer: settings.payer || null,
     region: settings.region || '',
     useLocalModels: settings.useLocalModels || false,
+    agencies: settings.agencies || [],
   };
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
@@ -233,6 +234,7 @@ export async function saveSettings(settings, token) {
     payer: data.payer || '',
     region: data.region || '',
     useLocalModels: data.useLocalModels || false,
+    agencies: data.agencies || [],
   };
 }
 
@@ -307,6 +309,12 @@ export async function getSuggestions(text, context = {}) {
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
     if (context.template) payload.template = context.template;
+    if (
+      context.agencies &&
+      Array.isArray(context.agencies) &&
+      context.agencies.length > 0
+    )
+      payload.agencies = context.agencies;
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
@@ -353,8 +361,15 @@ export async function getSuggestions(text, context = {}) {
       {
         recommendation: 'Consider flu vaccine',
         reason: 'Seasonal influenza prevention',
+        source: 'CDC',
+        evidenceLevel: 'A',
       },
-      { recommendation: 'Screen for depression', reason: 'Common in adults' },
+      {
+        recommendation: 'Screen for depression',
+        reason: 'Common in adults',
+        source: 'WHO',
+        evidenceLevel: 'B',
+      },
     ],
     differentials: [
       { diagnosis: 'Influenza', score: 0.6 },

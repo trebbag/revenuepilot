@@ -45,6 +45,10 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN use_local_models INTEGER NOT NULL DEFAULT 0"
         )
+    if "agencies" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN agencies TEXT NOT NULL DEFAULT '[]'"
+        )
 
     conn.commit()
 
