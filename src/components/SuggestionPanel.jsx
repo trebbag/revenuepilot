@@ -213,18 +213,19 @@ function SuggestionPanel({
         );
       }
       if (type === 'follow-up') {
-        const interval = typeof item === 'object' && item !== null ? item.interval : item;
-        const icsText = typeof item === 'object' && item !== null ? item.ics : null;
-        const ics =
-          icsText
-            ? `data:text/calendar;charset=utf8,${encodeURIComponent(icsText)}`
-            : generateIcs(interval);
+        const interval =
+          typeof item === 'object' && item !== null ? item.interval : item;
+        const icsText =
+          typeof item === 'object' && item !== null ? item.ics : null;
+        const icsHref = icsText
+          ? `data:text/calendar;charset=utf8,${encodeURIComponent(icsText)}`
+          : null;
         return (
           <li key={idx}>
             {interval}
-            {ics && (
+            {icsHref && (
               <a
-                href={ics}
+                href={icsHref}
                 download="follow-up.ics"
                 style={{ marginLeft: '0.5em' }}
               >
@@ -247,41 +248,21 @@ function SuggestionPanel({
     });
   };
 
-  const specialtyOptions = [
-    'cardiology',
-    'paediatrics',
-    'geriatrics',
-  ];
+  const specialtyOptions = ['cardiology', 'paediatrics', 'geriatrics'];
   const payerOptions = ['medicare', 'medicaid', 'aetna'];
 
   const onSpecialtyChange = (e) => {
     const value = e.target.value;
     setSpecialty(value);
-    if (text && fetchSuggestions) fetchSuggestions(text, { specialty: value, payer });
+    if (text && fetchSuggestions)
+      fetchSuggestions(text, { specialty: value, payer });
   };
 
   const onPayerChange = (e) => {
     const value = e.target.value;
     setPayer(value);
-    if (text && fetchSuggestions) fetchSuggestions(text, { specialty, payer: value });
-  };
-
-  const generateIcs = (interval) => {
-    const match = interval?.match(/(\d+)\s*(day|week|month|year)/i);
-    if (!match) return null;
-    const value = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    const start = new Date();
-    const date = new Date(start);
-    if (unit.startsWith('day')) date.setDate(start.getDate() + value);
-    else if (unit.startsWith('week')) date.setDate(start.getDate() + 7 * value);
-    else if (unit.startsWith('month')) date.setMonth(start.getMonth() + value);
-    else if (unit.startsWith('year'))
-      date.setFullYear(start.getFullYear() + value);
-    const fmt = (d) => d.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-    const dt = fmt(date);
-    const ics = `BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:${t('suggestion.followUpAppointment')}\nDTSTART:${dt}\nDTEND:${dt}\nEND:VEVENT\nEND:VCALENDAR`;
-    return `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
+    if (text && fetchSuggestions)
+      fetchSuggestions(text, { specialty, payer: value });
   };
 
   return (
