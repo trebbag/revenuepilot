@@ -417,7 +417,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 
 
 @app.post("/login")
-async def login(model: LoginModel) -> Dict[str, str]:
+async def login(model: LoginModel) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
@@ -751,7 +751,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
+        ("DATE", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1226,6 +1226,8 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
@@ -1245,6 +1247,8 @@ async def get_metrics(
             SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
@@ -1373,7 +1377,10 @@ async def transcribe(
             "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
         }
     # Store the most recent transcript so other endpoints or subsequent
-    # requests can reuse it without reprocessing the audio.
+    # requests can reuse it without reprocessing the audio.  Replace the
+    # previous contents entirely so stale keys (e.g. error messages) do
+    # not persist across requests.
+    last_transcript.clear()
     last_transcript.update(result)
     return result
 

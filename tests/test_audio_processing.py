@@ -71,7 +71,25 @@ def test_diarize_fallback_when_unavailable(monkeypatch):
         "segments": [
             {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "full text"}
         ],
+        "error": "diarisation unavailable",
     }
+
+
+def test_diarize_reports_error_on_failure(monkeypatch):
+    class FailPipeline:
+        @classmethod
+        def from_pretrained(cls, name):  # noqa: ARG002
+            raise RuntimeError("bad model")
+
+    monkeypatch.setattr(ap, "Pipeline", FailPipeline)
+    monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "fallback")
+    result = ap.diarize_and_transcribe(b"bytes")
+    assert result["provider"] == "fallback"
+    assert result["segments"] == [
+        {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "fallback"}
+    ]
+    assert "error" in result and "bad model" in result["error"]
 
 
 def test_transcribe_placeholder_on_failure(monkeypatch):
