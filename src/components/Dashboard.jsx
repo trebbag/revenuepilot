@@ -364,6 +364,15 @@ function Dashboard() {
         backgroundColor: 'rgba(255,99,71,0.2)',
         yAxisID: 'y1',
       },
+      {
+        label: t('dashboard.cards.deficiencyRate'),
+        data:
+          metrics.timeseries?.daily?.map((d) => (d.deficiency_rate || 0) * 100) ||
+          [],
+        borderColor: 'rgba(0,128,128,1)',
+        backgroundColor: 'rgba(0,128,128,0.2)',
+        yAxisID: 'y1',
+      },
     ],
   };
 
@@ -472,6 +481,15 @@ function Dashboard() {
           [],
         borderColor: 'rgba(255,99,71,1)',
         backgroundColor: 'rgba(255,99,71,0.2)',
+        yAxisID: 'y1',
+      },
+      {
+        label: t('dashboard.cards.deficiencyRate'),
+        data:
+          metrics.timeseries?.weekly?.map((w) => (w.deficiency_rate || 0) * 100) ||
+          [],
+        borderColor: 'rgba(0,128,128,1)',
+        backgroundColor: 'rgba(0,128,128,0.2)',
         yAxisID: 'y1',
       },
     ],
