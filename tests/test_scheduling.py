@@ -23,3 +23,15 @@ def test_export_ics():
     assert "BEGIN:VCALENDAR" in ics
     assert "DTSTART" in ics
 
+
+def test_custom_interval_override():
+    res = scheduling.recommend_follow_up(["E11.9"], [], code_intervals={"E11": "6 months"})
+    assert res["interval"] == "6 months"
+    assert "BEGIN:VCALENDAR" in res["ics"]
+
+
+def test_clinician_override_interval():
+    text = "Patient should follow up in 10 days for evaluation."
+    res = scheduling.recommend_follow_up([], [text])
+    assert res["interval"] == "10 days"
+

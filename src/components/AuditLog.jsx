@@ -27,12 +27,12 @@ export default function AuditLog({ token }) {
         const resp = await fetch(`${baseUrl}/audit`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!resp.ok) throw new Error('Failed to fetch');
+        if (!resp.ok) throw new Error(t('auditLog.fetchError'));
         const data = await resp.json();
         setEntries(data);
         setError(null);
       } catch (err) {
-        setError(err.message);
+        setError(err.message || t('auditLog.fetchError'));
       } finally {
         setLoading(false);
       }

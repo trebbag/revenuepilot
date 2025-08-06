@@ -36,10 +36,13 @@ def test_settings_roundtrip(client):
     assert data['rules'] == []
 
     assert data['lang'] == 'en'
+    assert data['summaryLang'] == 'en'
     assert data['specialty'] is None
     assert data['payer'] is None
     assert data['agencies'] == ['CDC', 'WHO']
     assert data.get('template') is None
+    assert data['region'] == ''
+    assert data['useLocalModels'] is False
 
 
     new_settings = {
@@ -52,11 +55,13 @@ def test_settings_roundtrip(client):
         },
         'rules': ['r1', 'r2'],
         'lang': 'es',
+        'summaryLang': 'fr',
         'specialty': 'cardiology',
         'payer': 'medicare',
-        'region': '',
+        'region': 'US',
         'agencies': ['CDC'],
         'template': -1,
+        'useLocalModels': True,
     }
     resp = client.post('/settings', json=new_settings, headers=auth_header(token))
     assert resp.status_code == 200
@@ -68,10 +73,13 @@ def test_settings_roundtrip(client):
     assert data['categories']['publicHealth'] is False
     assert data['rules'] == ['r1', 'r2']
     assert data['lang'] == 'es'
+    assert data['summaryLang'] == 'fr'
     assert data['specialty'] == 'cardiology'
     assert data['payer'] == 'medicare'
+    assert data['region'] == 'US'
     assert data['agencies'] == ['CDC']
     assert data['template'] == -1
+    assert data['useLocalModels'] is True
 
 
 

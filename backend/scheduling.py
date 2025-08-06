@@ -9,14 +9,22 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
+
+
+# Default intervals for broad condition categories.  These are defined as
+# constants so they can be reused when configuring or overriding mappings.
+DEFAULT_CHRONIC_INTERVAL = "3 months"
+DEFAULT_ACUTE_INTERVAL = "2 weeks"
+DEFAULT_GENERIC_INTERVAL = "4 weeks"
+
 
 CODE_INTERVALS = {
-    "E11": "3 months",
-    "I10": "3 months",
-    "J45": "3 months",
-    "J06": "2 weeks",
-    "S93": "2 weeks",
+    "E11": DEFAULT_CHRONIC_INTERVAL,
+    "I10": DEFAULT_CHRONIC_INTERVAL,
+    "J45": DEFAULT_CHRONIC_INTERVAL,
+    "J06": DEFAULT_ACUTE_INTERVAL,
+    "S93": DEFAULT_ACUTE_INTERVAL,
 }
 
 # Prefixes of ICD-10 codes considered indicative of chronic or acute
@@ -27,6 +35,15 @@ ACUTE_CODE_PREFIXES = ["J06", "S93"]
 
 CHRONIC_KEYWORDS = {"chronic", "diabetes", "hypertension", "asthma"}
 ACUTE_KEYWORDS = {"sprain", "acute", "infection", "injury"}
+
+
+# Clinicians sometimes specify an explicit follow-up interval in their note.
+# This regex attempts to capture phrases like "follow up in 2 weeks" or
+# "return in 10 days" and override any heuristic recommendations.
+CLINICIAN_OVERRIDE_RE = re.compile(
+    r"(?:follow(?:-|\s)?up|return(?:\s+visit)?)\s+(?:in|after)\s+(\d+\s*(?:day|week|month|year)s?)",
+    re.I,
+)
 
 
 def _has_prefix(codes: Iterable[str], prefixes: Iterable[str]) -> bool:
@@ -40,6 +57,7 @@ def recommend_follow_up(
     diagnoses: Optional[Sequence[str]] = None,
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
+    code_intervals: Optional[Mapping[str, str]] = None,
 ) -> dict:
     """Return a follow-up interval and ICS string.
 
@@ -48,26 +66,52 @@ def recommend_follow_up(
     for future expansion but currently unused.
     """
 
-    diag_text = " ".join(diagnoses or []).lower()
+    diag_text = " ".join(diagnoses or [])
+    diag_text_lower = diag_text.lower()
     codes = [c.upper() for c in codes if c]
 
+    # Allow caller to provide custom code-to-interval mappings.  These override
+    # the defaults defined in ``CODE_INTERVALS``.
+    mapping = CODE_INTERVALS.copy()
+    if code_intervals:
+        mapping.update({k.upper(): v for k, v in code_intervals.items()})
 
-    if _has_prefix(codes, CHRONIC_CODE_PREFIXES) or any(
-        kw in diag_text for kw in CHRONIC_KEYWORDS
-    ):
-        interval = "3 months"
-    elif _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
-        kw in diag_text for kw in ACUTE_KEYWORDS
-    ):
-        interval = "2 weeks"
+    # Clinician-provided interval overrides any heuristics.
+    override = CLINICIAN_OVERRIDE_RE.search(diag_text)
+    if override:
+        interval = override.group(1)
     else:
-        interval = "4 weeks"
+        # First check explicit mappings.
+        interval = None
+        for code in codes:
+            for prefix, value in mapping.items():
+                if code.startswith(prefix):
+                    interval = value
+                    break
+            if interval:
+                break
 
+        # Fall back to heuristic prefixes/keywords.
+        if not interval:
+            if _has_prefix(codes, CHRONIC_CODE_PREFIXES) or any(
+                kw in diag_text_lower for kw in CHRONIC_KEYWORDS
+            ):
+                interval = DEFAULT_CHRONIC_INTERVAL
+            elif _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
+                kw in diag_text_lower for kw in ACUTE_KEYWORDS
+            ):
+                interval = DEFAULT_ACUTE_INTERVAL
+            else:
+                interval = DEFAULT_GENERIC_INTERVAL
 
     return {"interval": interval, "ics": export_ics(interval)}
 
 
-def export_ics(interval: str, summary: str = "Follow-up appointment") -> Optional[str]:
+# Summary used for exported calendar events.
+DEFAULT_EVENT_SUMMARY = "Follow-up appointment"
+
+
+def export_ics(interval: str, summary: str = DEFAULT_EVENT_SUMMARY) -> Optional[str]:
     """Return an ICS string for the provided interval.
 
     Parameters

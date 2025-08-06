@@ -410,12 +410,16 @@ class UserSettings(BaseModel):
     categories: CategorySettings = CategorySettings()
     rules: List[str] = []
     lang: str = "en"
+    summaryLang: str = "en"
     specialty: Optional[str] = None
     payer: Optional[str] = None
     region: str = ""
     template: Optional[int] = None
     useLocalModels: StrictBool = False
     agencies: List[str] = Field(default_factory=lambda: ["CDC", "WHO"])
+    beautifyModel: Optional[str] = None
+    suggestModel: Optional[str] = None
+    summarizeModel: Optional[str] = None
 
     @validator("theme")
     def validate_theme(cls, v: str) -> str:
@@ -524,7 +528,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models FROM settings WHERE user_id=?",
+        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=?",
         (user_id,),
     ).fetchone()
     if settings_row:
@@ -533,10 +537,17 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             "categories": json.loads(settings_row["categories"]),
             "rules": json.loads(settings_row["rules"]),
             "lang": settings_row["lang"],
+            "summaryLang": settings_row["summary_lang"] or settings_row["lang"],
             "specialty": settings_row["specialty"],
             "payer": settings_row["payer"],
             "region": settings_row["region"] or "",
+            "template": settings_row["template"],
             "useLocalModels": bool(settings_row["use_local_models"]),
+            "agencies": json.loads(settings_row["agencies"]) if settings_row["agencies"] else ["CDC", "WHO"],
+            "template": settings_row["template"],
+            "beautifyModel": settings_row["beautify_model"],
+            "suggestModel": settings_row["suggest_model"],
+            "summarizeModel": settings_row["summarize_model"],
         }
     else:
         settings = UserSettings().dict()
@@ -599,6 +610,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
         "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template "
+
         "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
@@ -609,12 +621,16 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             categories=json.loads(row["categories"]),
             rules=json.loads(row["rules"]),
             lang=row["lang"],
+            summaryLang=row["summary_lang"] or row["lang"],
             specialty=row["specialty"],
             payer=row["payer"],
             region=row["region"] or "",
             template=row["template"],
             useLocalModels=bool(row["use_local_models"]),
             agencies=json.loads(row["agencies"]) if row["agencies"] else ["CDC", "WHO"],
+            beautifyModel=row["beautify_model"],
+            suggestModel=row["suggest_model"],
+            summarizeModel=row["summarize_model"],
         )
         return settings.dict()
     return UserSettings().dict()
@@ -632,20 +648,28 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
+
         "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies, template) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+
         (
             row["id"],
             model.theme,
             json.dumps(model.categories.dict()),
             json.dumps(model.rules),
             model.lang,
+            model.summaryLang,
             model.specialty,
             model.payer,
             model.region,
+            model.template,
             int(model.useLocalModels),
             json.dumps(model.agencies),
-            model.template,
+            model.beautifyModel,
+            model.suggestModel,
+            model.summarizeModel,
+
+
         ),
     )
 
@@ -674,6 +698,9 @@ class NoteRequest(BaseModel):
     region: Optional[str] = None
     useLocalModels: Optional[bool] = False
     agencies: Optional[List[str]] = None
+    beautifyModel: Optional[str] = None
+    suggestModel: Optional[str] = None
+    summarizeModel: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -1248,6 +1275,8 @@ class ExportRequest(BaseModel):
     codes: List[str] = Field(default_factory=list)
     patientId: Optional[str] = None
     encounterId: Optional[str] = None
+    procedures: List[str] = Field(default_factory=list)
+    medications: List[str] = Field(default_factory=list)
 
 
 @app.post("/export_to_ehr")
@@ -1265,7 +1294,12 @@ async def export_to_ehr(
         from . import ehr_integration
 
         result = ehr_integration.post_note_and_codes(
-            req.note, req.codes, req.patientId, req.encounterId
+            req.note,
+            req.codes,
+            req.patientId,
+            req.encounterId,
+            req.procedures,
+            req.medications,
         )
     except Exception as exc:  # pragma: no cover - network failures
         raise HTTPException(status_code=502, detail=str(exc))
@@ -1725,6 +1759,7 @@ async def summarize(
             req.payer,
             req.age,
             use_local=req.useLocalModels,
+            model_path=req.summarizeModel,
         )
     else:
         try:
@@ -1850,7 +1885,12 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         from .offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
-            cleaned, req.lang, req.specialty, req.payer, use_local=True
+            cleaned,
+            req.lang,
+            req.specialty,
+            req.payer,
+            use_local=req.useLocalModels,
+            model_path=req.beautifyModel,
         )
         return {"beautified": beautified}
     # Attempt to call the LLM to beautify the note. If the call
@@ -1917,7 +1957,8 @@ async def suggest(
             req.age,
             req.sex,
             req.region,
-            use_local=True,
+            use_local=req.useLocalModels,
+            model_path=req.suggestModel,
         )
         public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
         extra_ph = public_health_api.get_public_health_suggestions(

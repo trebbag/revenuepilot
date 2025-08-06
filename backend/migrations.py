@@ -16,10 +16,13 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "categories TEXT NOT NULL DEFAULT '{}',"
         "rules TEXT NOT NULL DEFAULT '[]',"
         "lang TEXT NOT NULL DEFAULT 'en',"
+        "summary_lang TEXT NOT NULL DEFAULT 'en',"
         "specialty TEXT,"
         "payer TEXT,"
         "region TEXT,"
         "template INTEGER,"
+        "use_local_models INTEGER NOT NULL DEFAULT 0,"
+        "agencies TEXT NOT NULL DEFAULT '[]',"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -36,6 +39,10 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         )
     if "lang" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
+    if "summary_lang" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN summary_lang TEXT NOT NULL DEFAULT 'en'"
+        )
     if "specialty" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN specialty TEXT")
     if "payer" not in columns:
@@ -54,6 +61,13 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
 
     if "template" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN template INTEGER")
+
+    if "beautify_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN beautify_model TEXT")
+    if "suggest_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN suggest_model TEXT")
+    if "summarize_model" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN summarize_model TEXT")
 
 
     conn.commit()

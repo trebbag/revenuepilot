@@ -17,6 +17,7 @@ import {
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
+const AGENCIES = ['CDC', 'WHO'];
 const API_KEY_REGEX = /^sk-(?:proj-)?[A-Za-z0-9]{16,}$/;
 // Region/country codes are user-entered to keep the list flexible
 
@@ -270,6 +271,16 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleModelChange = async (key, value) => {
+    const updated = { ...settings, [key]: value };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div
       className="settings-page"
@@ -287,7 +298,7 @@ function Settings({ settings, updateSettings }) {
           type="password"
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
-          placeholder="sk-... (e.g., sk-proj-...)"
+          placeholder={t('settings.apiKeyPlaceholder')}
           style={{
             flexGrow: 1,
             padding: '0.5rem',
@@ -314,6 +325,52 @@ function Settings({ settings, updateSettings }) {
       <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
         {t('settings.useLocalModelsHelp')}
       </p>
+
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.beautifyModel')}
+        <input
+          type="text"
+          value={settings.beautifyModel || ''}
+          onChange={(e) => handleModelChange('beautifyModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.suggestModel')}
+        <input
+          type="text"
+          value={settings.suggestModel || ''}
+          onChange={(e) => handleModelChange('suggestModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        {t('settings.summarizeModel')}
+        <input
+          type="text"
+          value={settings.summarizeModel || ''}
+          onChange={(e) => handleModelChange('summarizeModel', e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+            marginTop: '0.25rem',
+          }}
+        />
+      </label>
 
       <h3>{t('settings.theme')}</h3>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
@@ -491,22 +548,16 @@ function Settings({ settings, updateSettings }) {
       />
 
       <h3>{t('settings.agencies')}</h3>
-      <label style={{ display: 'block' }}>
-        <input
-          type="checkbox"
-          checked={(settings.agencies || []).includes('CDC')}
-          onChange={() => handleAgencyToggle('CDC')}
-        />{' '}
-        {t('settings.cdc')}
-      </label>
-      <label style={{ display: 'block' }}>
-        <input
-          type="checkbox"
-          checked={(settings.agencies || []).includes('WHO')}
-          onChange={() => handleAgencyToggle('WHO')}
-        />{' '}
-        {t('settings.who')}
-      </label>
+      {AGENCIES.map((agency) => (
+        <label key={agency} style={{ display: 'block' }}>
+          <input
+            type="checkbox"
+            checked={(settings.agencies || []).includes(agency)}
+            onChange={() => handleAgencyToggle(agency)}
+          />{' '}
+          {t(`settings.${agency.toLowerCase()}`)}
+        </label>
+      ))}
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}

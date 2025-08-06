@@ -1,0 +1,23 @@
+{
+  "followUp": {
+    "recommend": "Recommander",
+    "placeholder": "ex. : 2 semaines"
+  },
+  "auditLog": {
+    "fetchError": "Échec du chargement du journal d'audit"
+  },
+  "logs": {
+    "fetchFailed": "Échec du chargement des événements"
+  },
+  "settings": {
+    "apiKeyPlaceholder": "sk-... (p. ex., sk-proj-...)",
+    "english": "Anglais",
+    "spanish": "Espagnol",
+    "french": "Français",
+    "german": "Allemand"
+  },
+  "suggestion": {
+    "addToCalendar": "Ajouter au calendrier",
+    "followUpAppointment": "Rendez-vous de suivi"
+  }
+}

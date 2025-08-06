@@ -193,6 +193,9 @@ export async function getSettings(token) {
     region: data.region || '',
     template: data.template || null,
     useLocalModels: data.useLocalModels || false,
+    beautifyModel: data.beautifyModel || '',
+    suggestModel: data.suggestModel || '',
+    summarizeModel: data.summarizeModel || '',
   };
 }
 
@@ -229,6 +232,9 @@ export async function saveSettings(settings, token) {
     template: settings.template || null,
     useLocalModels: settings.useLocalModels || false,
     agencies: settings.agencies || [],
+    beautifyModel: settings.beautifyModel || null,
+    suggestModel: settings.suggestModel || null,
+    summarizeModel: settings.summarizeModel || null,
   };
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
@@ -256,6 +262,9 @@ export async function saveSettings(settings, token) {
     template: data.template || null,
     useLocalModels: data.useLocalModels || false,
     agencies: data.agencies || [],
+    beautifyModel: data.beautifyModel || '',
+    suggestModel: data.suggestModel || '',
+    summarizeModel: data.summarizeModel || '',
   };
 }
 
@@ -277,6 +286,7 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
     if (context.payer) payload.payer = context.payer;
     if (typeof context.useLocalModels === 'boolean')
       payload.useLocalModels = context.useLocalModels;
+    if (context.beautifyModel) payload.beautifyModel = context.beautifyModel;
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token
@@ -343,6 +353,7 @@ export async function getSuggestions(text, context = {}) {
       : { 'Content-Type': 'application/json' };
     if (typeof context.useLocalModels === 'boolean')
       payload.useLocalModels = context.useLocalModels;
+    if (context.suggestModel) payload.suggestModel = context.suggestModel;
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
       headers,
@@ -906,8 +917,15 @@ export async function exportToEhr(
     },
     body: JSON.stringify({ note, codes, patientId, encounterId }),
   });
-  if (!resp.ok) throw new Error('Export failed');
-  return await resp.json();
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = data.detail || data.message || 'Export failed';
+    throw new Error(msg);
+  }
+  if (data.status && data.status !== 'exported' && data.detail) {
+    throw new Error(data.detail);
+  }
+  return data;
 }
 
 /**
@@ -934,6 +952,7 @@ export async function summarizeNote(text, context = {}) {
     if (context.payer) payload.payer = context.payer;
     if (typeof context.useLocalModels === 'boolean')
       payload.useLocalModels = context.useLocalModels;
+    if (context.summarizeModel) payload.summarizeModel = context.summarizeModel;
     try {
       const token =
         typeof window !== 'undefined' ? localStorage.getItem('token') : null;
