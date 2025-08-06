@@ -137,7 +137,7 @@ events: List[Dict[str, Any]] = []
 # Last audio transcript returned by the ``/transcribe`` endpoint.  This is a
 # simple in-memory store so the frontend can fetch or re-use the most recent
 # transcript without re-uploading the audio.  It is reset on server restart.
-last_transcript: Dict[str, str] = {"provider": "", "patient": ""}
+last_transcript: Dict[str, Any] = {"provider": "", "patient": "", "segments": []}
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
@@ -1297,7 +1297,7 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
 @app.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...), diarise: bool = False, user=Depends(require_role("user"))
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Transcribe uploaded audio.
 
     The endpoint accepts an audio file (e.g. from the browser's
@@ -1312,7 +1312,12 @@ async def transcribe(
     if diarise:
         result = diarize_and_transcribe(audio_bytes)
     else:
-        result = {"provider": simple_transcribe(audio_bytes), "patient": ""}
+        text = simple_transcribe(audio_bytes)
+        result = {
+            "provider": text,
+            "patient": "",
+            "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
+        }
     # Store the most recent transcript so other endpoints or subsequent
     # requests can reuse it without reprocessing the audio.
     last_transcript.update(result)
@@ -1320,7 +1325,7 @@ async def transcribe(
 
 
 @app.get("/transcribe")
-async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, str]:
+async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the most recent audio transcript.
 
     This endpoint allows the frontend to retrieve the last transcript

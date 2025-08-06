@@ -53,14 +53,25 @@ def test_diarize_and_transcribe(monkeypatch):
     monkeypatch.setattr(ap, "simple_transcribe", fake_simple)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
     result = ap.diarize_and_transcribe(b"bytes")
-    assert result == {"provider": "provider text", "patient": "patient text"}
+    assert result["provider"] == "provider text"
+    assert result["patient"] == "patient text"
+    assert result["segments"] == [
+        {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "provider text"},
+        {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "patient text"},
+    ]
 
 
 def test_diarize_fallback_when_unavailable(monkeypatch):
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", False)
     monkeypatch.setattr(ap, "simple_transcribe", lambda b: "full text")
     result = ap.diarize_and_transcribe(b"bytes")
-    assert result == {"provider": "full text", "patient": ""}
+    assert result == {
+        "provider": "full text",
+        "patient": "",
+        "segments": [
+            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "full text"}
+        ],
+    }
 
 
 def test_transcribe_placeholder_on_failure(monkeypatch):
