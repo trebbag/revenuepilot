@@ -8,9 +8,18 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
   const [name, setName] = useState('');
   const [content, setContent] = useState('');
   const [editingId, setEditingId] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    getTemplates().then((data) => setTemplates([...baseTemplates, ...data]));
+    getTemplates()
+      .then((data) => setTemplates([...baseTemplates, ...data]))
+      .catch((e) => {
+        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          window.location.href = '/';
+        } else {
+          setError(e.message);
+        }
+      });
   }, [baseTemplates]);
 
   const handleSave = async () => {
@@ -27,7 +36,11 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       setContent('');
       setEditingId(null);
     } catch (e) {
-      console.error(e);
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        window.location.href = '/';
+      } else {
+        setError(e.message);
+      }
     }
   };
 
@@ -42,7 +55,11 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       await deleteTemplate(id);
       setTemplates((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
-      console.error(e);
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        window.location.href = '/';
+      } else {
+        setError(e.message);
+      }
     }
   };
 
@@ -50,6 +67,7 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
     <div className="modal-overlay">
         <div className="modal card">
           <h3>{t('templatesModal.title')}</h3>
+          {error && <p style={{ color: 'red' }}>{error}</p>}
           <ul>
             {templates.map((tpl) => (
               <li key={tpl.id || tpl.name}>
