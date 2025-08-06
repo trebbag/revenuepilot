@@ -80,7 +80,6 @@ function App() {
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
-  const [region, setRegion] = useState('');
   // Suggestions fetched from the API
   const [suggestions, setSuggestions] = useState({
     codes: [],
@@ -103,6 +102,7 @@ function App() {
     // these rules are appended to the prompt sent to the AI model.  Each
     // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
+    region: '',
   };
   // User settings controlling theme and which suggestion categories are enabled.
   // Load any previously saved settings from ``localStorage`` on first render.
@@ -393,6 +393,9 @@ function App() {
         rules: settingsState.rules,
         audio: audioTranscript,
         lang: settingsState.lang,
+        age: age ? parseInt(age, 10) : undefined,
+        sex,
+        region: settingsState.region,
       })
         .then((data) => {
           setSuggestions(data);
@@ -405,7 +408,7 @@ function App() {
     }, 600); // 600ms delay
     // Cleanup function cancels the previous timer if draftText changes again
     return () => clearTimeout(timer);
-  }, [draftText, audioTranscript, age, sex, region]);
+  }, [draftText, audioTranscript, age, sex, settingsState.region]);
 
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {

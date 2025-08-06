@@ -169,14 +169,30 @@ function Settings({ settings, updateSettings }) {
         style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
         placeholder={t('settings.customRulesPlaceholder')}
       />
-      <h3>{t('settings.language')}</h3>
-      <select value={settings.lang} onChange={handleLangChange}>
-        <option value="en">{t('settings.english')}</option>
-        <option value="es">{t('settings.spanish')}</option>
-      </select>
+  <h3>{t('settings.language')}</h3>
+  <select value={settings.lang} onChange={handleLangChange}>
+    <option value="en">{t('settings.english')}</option>
+    <option value="es">{t('settings.spanish')}</option>
+  </select>
 
-      <h3>{t('settings.templates')}</h3>
-      <ul>
+  <h3>{t('settings.region')}</h3>
+  <input
+    type="text"
+    value={settings.region || ''}
+    onChange={async (e) => {
+      const updated = { ...settings, region: e.target.value };
+      updateSettings(updated);
+      try {
+        await saveSettings(updated);
+      } catch (err) {
+        console.error(err);
+      }
+    }}
+    style={{ width: '100%', marginBottom: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
+  />
+
+  <h3>{t('settings.templates')}</h3>
+  <ul>
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}
