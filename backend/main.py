@@ -780,7 +780,7 @@ def deidentify(text: str) -> str:
 
     patterns = [
         ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
+        ("DATE", dob_pattern),
         ("DATE", date_pattern),
         ("EMAIL", email_pattern),
         ("SSN", ssn_pattern),
@@ -1441,7 +1441,10 @@ async def transcribe(
             "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
         }
     # Store the most recent transcript so other endpoints or subsequent
-    # requests can reuse it without reprocessing the audio.
+    # requests can reuse it without reprocessing the audio.  Replace the
+    # previous contents entirely so stale keys (e.g. error messages) do
+    # not persist across requests.
+    last_transcript.clear()
     last_transcript.update(result)
     return result
 

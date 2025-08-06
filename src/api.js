@@ -306,17 +306,23 @@ export async function transcribeAudio(blob, diarise = false) {
           provider: data.provider || '',
           patient: data.patient || '',
           segments: data.segments || [],
+          error: data.error || '',
         };
       }
       if (data.transcript) {
-        return { provider: data.transcript, patient: '', segments: data.segments || [] };
+        return {
+          provider: data.transcript,
+          patient: '',
+          segments: data.segments || [],
+          error: data.error || '',
+        };
       }
     } catch (err) {
       console.error('Transcription error', err);
     }
   }
   // Fallback placeholder when no backend is available
-  return { provider: `[transcribed ${blob.size} bytes]`, patient: '', segments: [] };
+  return { provider: `[transcribed ${blob.size} bytes]`, patient: '', segments: [], error: '' };
 }
 
 /**
@@ -341,12 +347,13 @@ export async function fetchLastTranscript() {
         provider: data.provider || '',
         patient: data.patient || '',
         segments: data.segments || [],
+        error: data.error || '',
       };
     } catch (err) {
       console.error('fetchLastTranscript error', err);
     }
   }
-  return { provider: '', patient: '', segments: [] };
+  return { provider: '', patient: '', segments: [], error: '' };
 }
 
 /**

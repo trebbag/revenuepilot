@@ -274,6 +274,54 @@ def test_transcribe_endpoint(client, monkeypatch):
     assert resp.status_code == 422
 
 
+def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
+    import backend.audio_processing as ap
+
+    class FailPipeline:
+        @classmethod
+        def from_pretrained(cls, name):  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(ap, "Pipeline", FailPipeline)
+    monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
+    monkeypatch.setattr(ap, "simple_transcribe", lambda b: "fallback")
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/transcribe?diarise=true",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    data = resp.json()
+    assert data["provider"] == "fallback"
+    assert data["segments"] == [
+        {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "fallback"}
+    ]
+    assert "error" in data
+
+
+def test_transcribe_endpoint_offline(client, monkeypatch):
+    import backend.audio_processing as ap
+
+    class DummyModel:
+        def transcribe(self, path):  # noqa: ARG002
+            return {"text": "offline text"}
+
+    monkeypatch.setattr(ap, "_load_local_model", lambda: DummyModel())
+    monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
+    monkeypatch.setattr(ap, "get_api_key", lambda: None)
+    token = main.create_token("u", "user")
+    resp = client.post(
+        "/transcribe",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    data = resp.json()
+    assert data["provider"] == "offline text"
+    assert data["segments"] == [
+        {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "offline text"}
+    ]
+
+
 def test_get_last_transcript(client, monkeypatch):
     monkeypatch.setattr(main, "simple_transcribe", lambda b: "hello")
     monkeypatch.setattr(
