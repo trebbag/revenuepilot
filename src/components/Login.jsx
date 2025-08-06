@@ -52,80 +52,83 @@ function Login({ onLoggedIn }) {
   };
 
   return (
-    <div className="login-form" style={{ maxWidth: '20rem', margin: '2rem auto' }}>
-        <h2>{t('login.title')}</h2>
-        <form onSubmit={resetMode ? handleReset : handleSubmit}>
+    <div
+      className="login-form"
+      style={{ maxWidth: '20rem', margin: '2rem auto' }}
+    >
+      <h2>{t('login.title')}</h2>
+      <form onSubmit={resetMode ? handleReset : handleSubmit}>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <label>
+            {t('login.username')}
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </label>
+        </div>
+        <div style={{ marginBottom: '0.5rem' }}>
+          <label>
+            {t('login.password')}
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+        </div>
+        {resetMode && (
           <div style={{ marginBottom: '0.5rem' }}>
             <label>
-              {t('login.username')}
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </label>
-          </div>
-          <div style={{ marginBottom: '0.5rem' }}>
-            <label>
-              {t('login.password')}
+              {t('login.newPassword')}
               <input
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
                 required
               />
             </label>
           </div>
-          {resetMode && (
-            <div style={{ marginBottom: '0.5rem' }}>
-              <label>
-                {t('login.newPassword')}
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  required
-                />
-              </label>
-            </div>
-          )}
+        )}
         {error && (
           <p style={{ color: 'red' }} data-testid="login-error">
             {error}
           </p>
         )}
-          <button type="submit" disabled={loading}>
-            {loading
-              ? t(resetMode ? 'login.resetting' : 'login.loggingIn')
-              : t(resetMode ? 'login.resetPassword' : 'login.login')}
+        <button type="submit" disabled={loading}>
+          {loading
+            ? t(resetMode ? 'login.resetting' : 'login.loggingIn')
+            : t(resetMode ? 'login.resetPassword' : 'login.login')}
+        </button>
+        {!resetMode && (
+          <button
+            type="button"
+            style={{ marginLeft: '0.5rem' }}
+            onClick={() => {
+              setError(null);
+              setResetMode(true);
+            }}
+          >
+            {t('login.resetPassword')}
           </button>
-          {!resetMode && (
-            <button
-              type="button"
-              style={{ marginLeft: '0.5rem' }}
-              onClick={() => {
-                setError(null);
-                setResetMode(true);
-              }}
-            >
-              {t('login.resetPassword')}
-            </button>
-          )}
-          {resetMode && (
-            <button
-              type="button"
-              style={{ marginLeft: '0.5rem' }}
-              onClick={() => {
-                setError(null);
-                setResetMode(false);
-              }}
-            >
-              {t('login.backToLogin')}
-            </button>
-          )}
-        </form>
-      </div>
+        )}
+        {resetMode && (
+          <button
+            type="button"
+            style={{ marginLeft: '0.5rem' }}
+            onClick={() => {
+              setError(null);
+              setResetMode(false);
+            }}
+          >
+            {t('login.backToLogin')}
+          </button>
+        )}
+      </form>
+    </div>
   );
 }
 

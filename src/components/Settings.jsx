@@ -11,16 +11,11 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
-  getPromptTemplates,
-  savePromptTemplates,
 } from '../api.js';
-
-
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
 // Region/country codes are user-entered to keep the list flexible
-
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
@@ -31,8 +26,6 @@ function Settings({ settings, updateSettings }) {
   const [tplContent, setTplContent] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [tplError, setTplError] = useState(null);
-  const [promptText, setPromptText] = useState('');
-  const [promptError, setPromptError] = useState(null);
 
   useEffect(() => {
     getTemplates()
@@ -44,17 +37,6 @@ function Settings({ settings, updateSettings }) {
           window.location.href = '/';
         } else {
           setTplError(e.message);
-        }
-      });
-    getPromptTemplates()
-      .then((data) => setPromptText(JSON.stringify(data, null, 2)))
-      .catch((e) => {
-        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-          alert('Access denied');
-          localStorage.removeItem('token');
-          window.location.href = '/';
-        } else {
-          setPromptError(e.message);
         }
       });
   }, []);
@@ -74,41 +56,6 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
-  const handlePromptFile = (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (evt) => {
-      setPromptText(evt.target.result);
-    };
-    reader.readAsText(file);
-  };
-
-  const handleSavePromptTemplates = async () => {
-    let data;
-    try {
-      data = JSON.parse(promptText);
-      if (typeof data !== 'object' || Array.isArray(data)) {
-        throw new Error('invalid');
-      }
-    } catch (err) {
-      setPromptError(t('settings.invalidPromptTemplates'));
-      return;
-    }
-    try {
-      await savePromptTemplates(data);
-      setPromptError(null);
-    } catch (e) {
-      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
-        localStorage.removeItem('token');
-        window.location.href = '/';
-      } else {
-        setPromptError(e.message);
-      }
-    }
-  };
-
   const handleEditTemplate = (tpl) => {
     setEditingId(tpl.id);
     setTplName(tpl.name);
@@ -123,7 +70,9 @@ function Settings({ settings, updateSettings }) {
           name: tplName.trim(),
           content: tplContent.trim(),
         });
-        setTemplates((prev) => prev.map((t) => (t.id === editingId ? updated : t)));
+        setTemplates((prev) =>
+          prev.map((t) => (t.id === editingId ? updated : t)),
+        );
       } else {
         const created = await createTemplate({
           name: tplName.trim(),
@@ -153,7 +102,6 @@ function Settings({ settings, updateSettings }) {
     } catch (e) {
       console.error(e);
     }
-
   };
   const handleThemeChange = async (event) => {
     const updated = { ...settings, theme: event.target.value };
@@ -227,21 +175,37 @@ function Settings({ settings, updateSettings }) {
   };
 
   return (
-    <div className="settings-page" style={{ padding: '1rem', overflowY: 'auto' }}>
+    <div
+      className="settings-page"
+      style={{ padding: '1rem', overflowY: 'auto' }}
+    >
       <h2>{t('settings.title')}</h2>
       <h3>{t('settings.apiKey')}</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.apiKeyHelp')}</p>
-      <div style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
+        {t('settings.apiKeyHelp')}
+      </p>
+      <div
+        style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}
+      >
         <input
           type="password"
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
           placeholder="sk-... (e.g., sk-proj-...)"
-          style={{ flexGrow: 1, padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+          style={{
+            flexGrow: 1,
+            padding: '0.5rem',
+            border: '1px solid var(--disabled)',
+            borderRadius: '4px',
+          }}
         />
-        <button onClick={handleSaveKey} style={{ marginLeft: '0.5rem' }}>{t('settings.saveKey')}</button>
+        <button onClick={handleSaveKey} style={{ marginLeft: '0.5rem' }}>
+          {t('settings.saveKey')}
+        </button>
       </div>
-      {apiKeyStatus && <p style={{ color: 'var(--secondary)' }}>{apiKeyStatus}</p>}
+      {apiKeyStatus && (
+        <p style={{ color: 'var(--secondary)' }}>{apiKeyStatus}</p>
+      )}
 
       <h3>{t('settings.theme')}</h3>
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
@@ -311,7 +275,9 @@ function Settings({ settings, updateSettings }) {
       </label>
 
       <h3>{t('settings.customRules')}</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.customRulesHelp')}</p>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
+        {t('settings.customRulesHelp')}
+      </p>
       <textarea
         value={(settings.rules || []).join('\n')}
         onChange={async (e) => {
@@ -328,24 +294,36 @@ function Settings({ settings, updateSettings }) {
           }
         }}
         rows={5}
-        style={{ width: '100%', marginTop: '0.5rem', padding: '0.5rem', borderRadius: '4px', border: '1px solid var(--disabled)' }}
+        style={{
+          width: '100%',
+          marginTop: '0.5rem',
+          padding: '0.5rem',
+          borderRadius: '4px',
+          border: '1px solid var(--disabled)',
+        }}
         placeholder={t('settings.customRulesPlaceholder')}
       />
-  <h3>{t('settings.language')}</h3>
-  <select
-    value={settings.lang}
-    onChange={handleLangChange}
-    aria-label={t('settings.language')}
-  >
-    <option value="en">{t('settings.english')}</option>
-    <option value="es">{t('settings.spanish')}</option>
-  </select>
+      <h3>{t('settings.language')}</h3>
+      <select
+        value={settings.lang}
+        onChange={handleLangChange}
+        aria-label={t('settings.language')}
+      >
+        <option value="en">{t('settings.english')}</option>
+        <option value="es">{t('settings.spanish')}</option>
+      </select>
 
       <h3>{t('settings.specialty')}</h3>
       <select
         value={settings.specialty || ''}
         onChange={handleSpecialtyChange}
-        style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+        style={{
+          width: '100%',
+          padding: '0.5rem',
+          marginBottom: '0.5rem',
+          border: '1px solid var(--disabled)',
+          borderRadius: '4px',
+        }}
       >
         {SPECIALTIES.map((s) => (
           <option key={s} value={s}>
@@ -358,7 +336,12 @@ function Settings({ settings, updateSettings }) {
       <select
         value={settings.payer || ''}
         onChange={handlePayerChange}
-        style={{ width: '100%', padding: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+        style={{
+          width: '100%',
+          padding: '0.5rem',
+          border: '1px solid var(--disabled)',
+          borderRadius: '4px',
+        }}
       >
         {PAYERS.map((p) => (
           <option key={p} value={p}>
@@ -367,16 +350,20 @@ function Settings({ settings, updateSettings }) {
         ))}
       </select>
 
-
       <h3>{t('settings.region')}</h3>
       <input
         type="text"
         value={settings.region || ''}
         onChange={handleRegionChange}
         placeholder="e.g., US"
-        style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+        style={{
+          width: '100%',
+          padding: '0.5rem',
+          marginBottom: '0.5rem',
+          border: '1px solid var(--disabled)',
+          borderRadius: '4px',
+        }}
       />
-
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
@@ -384,10 +371,16 @@ function Settings({ settings, updateSettings }) {
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}
-            <button onClick={() => handleEditTemplate(tpl)} style={{ marginLeft: '0.25rem' }}>
+            <button
+              onClick={() => handleEditTemplate(tpl)}
+              style={{ marginLeft: '0.25rem' }}
+            >
               {t('templatesModal.edit')}
             </button>
-            <button onClick={() => handleDeleteTemplate(tpl.id)} style={{ marginLeft: '0.25rem' }}>
+            <button
+              onClick={() => handleDeleteTemplate(tpl.id)}
+              style={{ marginLeft: '0.25rem' }}
+            >
               {t('templatesModal.delete')}
             </button>
           </li>
@@ -410,7 +403,10 @@ function Settings({ settings, updateSettings }) {
           style={{ width: '100%' }}
         />
         <div style={{ marginTop: '0.5rem' }}>
-          <button onClick={handleSaveTemplate} disabled={!tplName.trim() || !tplContent.trim()}>
+          <button
+            onClick={handleSaveTemplate}
+            disabled={!tplName.trim() || !tplContent.trim()}
+          >
             {t('templatesModal.save')}
           </button>
           {editingId && (

@@ -42,14 +42,14 @@ function Drafts({ onOpenDraft }) {
   };
 
   return (
-      <div className="drafts-view">
-        <h2>{t('drafts.title')}</h2>
-        {drafts.length === 0 ? (
-          <p>{t('drafts.none')}</p>
-        ) : (
-          <ul className="drafts-list">
-            {drafts.map((draft) => (
-              <li key={draft.patientID} className="draft-item">
+    <div className="drafts-view">
+      <h2>{t('drafts.title')}</h2>
+      {drafts.length === 0 ? (
+        <p>{t('drafts.none')}</p>
+      ) : (
+        <ul className="drafts-list">
+          {drafts.map((draft) => (
+            <li key={draft.patientID} className="draft-item">
               <div className="draft-info">
                 <button
                   className="draft-open-btn"
@@ -57,16 +57,19 @@ function Drafts({ onOpenDraft }) {
                 >
                   {draft.patientID}
                 </button>
-                <span className="draft-snippet">{draft.snippet}{draft.snippet.length >= 100 ? '…' : ''}</span>
+                <span className="draft-snippet">
+                  {draft.snippet}
+                  {draft.snippet.length >= 100 ? '…' : ''}
+                </span>
               </div>
-                <button
-                  className="draft-delete-btn"
-                  onClick={() => handleDelete(draft.patientID)}
-                  title={t('drafts.delete')}
-                >
-                  ✕
-                </button>
-              </li>
+              <button
+                className="draft-delete-btn"
+                onClick={() => handleDelete(draft.patientID)}
+                title={t('drafts.delete')}
+              >
+                ✕
+              </button>
+            </li>
           ))}
         </ul>
       )}

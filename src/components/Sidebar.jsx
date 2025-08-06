@@ -19,10 +19,10 @@ function Sidebar({ collapsed, toggleCollapsed, onNavigate, role, onLogout }) {
       <button
         className="collapse-btn"
         onClick={toggleCollapsed}
-          title={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
-        >
-          ☰
-        </button>
+        title={collapsed ? t('sidebar.expand') : t('sidebar.collapse')}
+      >
+        ☰
+      </button>
       <nav className="nav-items">
         {items.map((item) => (
           <button key={item.key} onClick={() => onNavigate(item.key)}>

@@ -8,7 +8,7 @@ variable `OPENAI_API_KEY`.  If the key is not available or the network
 call fails, an exception will be raised.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict
 import openai
 
 from .key_manager import get_api_key
