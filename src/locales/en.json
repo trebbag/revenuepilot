@@ -14,6 +14,13 @@
   "saved": "Saved",
   "templateManager": "Template Manager",
   "ehrExport": "EHR Export",
+  "survey": {
+    "title": "Quick Survey",
+    "question": "How confident are you in today's documentation?",
+    "comments": "Additional comments (optional)",
+    "submit": "Submit",
+    "skip": "Skip"
+  },
   "dashboard": {
     "accessDenied": "Access denied",
     "title": "Analytics Dashboard",
@@ -25,9 +32,18 @@
     "weeklyEvents": "Weekly Events",
     "codingDistribution": "Coding Distribution",
     "denialRates": "Denial Rates",
+    "denialDefRates": "Denial and Deficiency Rates",
     "denialRateLabel": "Denial Rate (%)",
     "deficiencyRateLabel": "Deficiency Rate (%)",
     "allClinicians": "All Clinicians",
+    "range": "Range",
+    "customRange": "Custom",
+    "days": "days",
+    "metric": "Metric",
+    "change": "Change",
+    "rate": "Rate",
+    "revenueOverTime": "Revenue per Visit Over Time",
+    "codeDistribution": "E/M Code Distribution",
     "cards": {
       "totalNotes": "Total Notes Created",
       "beautifiedNotes": "Beautified Notes",
@@ -40,7 +56,9 @@
       "revenuePerVisit": "Revenue per Visit",
       "avgCloseTime": "Average Time to Close Note (s)",
       "denialRate": "Denial Rate (%)",
-      "deficiencyRate": "Deficiency Rate (%)"
+      "deficiencyRate": "Deficiency Rate (%)",
+      "avgSatisfaction": "Average Satisfaction",
+      "publicHealthAcceptance": "Public Health Acceptance (%)"
     },
     "baseline": "Baseline:",
     "current": "Current:"

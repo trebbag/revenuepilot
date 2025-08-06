@@ -1,10 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { logEvent } from '../api.js';
+import SatisfactionSurvey from './SatisfactionSurvey.jsx';
 
-function ClipboardExportButtons({ beautified, summary, patientID }) {
+function ClipboardExportButtons({ beautified, summary, patientID, suggestions = {} }) {
   const { t } = useTranslation();
   const [feedback, setFeedback] = useState('');
+  const [showSurvey, setShowSurvey] = useState(false);
+
+  useEffect(() => {
+    const handler = (e) => {
+      setShowSurvey(true);
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, []);
 
   const copy = async (text, type) => {
     try {
@@ -15,7 +27,15 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
             : t('clipboard.summaryCopied')
         );
       if (patientID) {
-        logEvent('copy', { patientID, type, length: text.length }).catch(() => {});
+        logEvent('copy', {
+          patientID,
+          type,
+          length: text.length,
+          codes: suggestions.codes?.map((c) => c.code),
+          revenue: calcRevenue(suggestions.codes),
+          compliance: suggestions.compliance,
+          publicHealth: suggestions.publicHealth?.length > 0,
+        }).catch(() => {});
       }
       setTimeout(() => setFeedback(''), 2000);
     } catch {
@@ -36,13 +56,23 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
           patientID,
           beautifiedLength: beautified.length,
           summaryLength: summary.length,
+          codes: suggestions.codes?.map((c) => c.code),
+          revenue: calcRevenue(suggestions.codes),
+          compliance: suggestions.compliance,
+          publicHealth: suggestions.publicHealth?.length > 0,
         }).catch(() => {});
       }
+      setShowSurvey(true);
       setTimeout(() => setFeedback(''), 2000);
     } catch {
         setFeedback(t('clipboard.exportFailed'));
     }
   };
+
+
+  const calcRevenue = (codes = []) => {
+    const map = { '99212': 50, '99213': 75, '99214': 110, '99215': 160 };
+    return (codes || []).reduce((sum, c) => sum + (map[c.code || c] || 0), 0);
 
   const exportRtf = async () => {
     try {
@@ -63,6 +93,7 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
     } catch {
       setFeedback(t('clipboard.exportFailed'));
     }
+
   };
 
   return (
@@ -80,6 +111,7 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
           {t('clipboard.exportRtf')}
         </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
+      <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />
     </>
   );
 }

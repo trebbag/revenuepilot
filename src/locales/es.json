@@ -14,6 +14,13 @@
   "saved": "Guardado",
   "templateManager": "Gestor de plantillas",
   "ehrExport": "Exportar a EHR",
+  "survey": {
+    "title": "Encuesta rápida",
+    "question": "¿Qué tan confiado está en la documentación de hoy?",
+    "comments": "Comentarios adicionales (opcional)",
+    "submit": "Enviar",
+    "skip": "Omitir"
+  },
   "dashboard": {
     "accessDenied": "Acceso denegado",
     "title": "Panel de análisis",
@@ -25,9 +32,18 @@
     "weeklyEvents": "Eventos semanales",
     "codingDistribution": "Distribución de códigos",
     "denialRates": "Tasas de denegación",
+    "denialDefRates": "Tasas de denegación y deficiencia",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
     "allClinicians": "Todos los clínicos",
+    "range": "Rango",
+    "customRange": "Personalizado",
+    "days": "días",
+    "metric": "Métrica",
+    "change": "Cambio",
+    "rate": "Tasa",
+    "revenueOverTime": "Ingresos por visita a lo largo del tiempo",
+    "codeDistribution": "Distribución de códigos E/M",
     "cards": {
       "totalNotes": "Notas totales creadas",
       "beautifiedNotes": "Notas embellecidas",
@@ -40,7 +56,9 @@
       "revenuePerVisit": "Ingresos por visita",
       "avgCloseTime": "Tiempo medio para cerrar la nota (s)",
       "denialRate": "Tasa de denegación (%)",
-      "deficiencyRate": "Tasa de deficiencia (%)"
+      "deficiencyRate": "Tasa de deficiencia (%)",
+      "avgSatisfaction": "Satisfacción promedio",
+      "publicHealthAcceptance": "Aceptación de salud pública (%)"
     },
     "baseline": "Línea base:",
     "current": "Actual:"

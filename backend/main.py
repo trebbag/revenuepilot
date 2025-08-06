@@ -154,14 +154,33 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
         pass
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+# Expanded events table storing structured analytics fields.  Older
+# installations may lack these columns; ``ALTER TABLE`` statements add them
+# defensively so the application can upgrade the schema in place.
 db_conn.execute(
     "CREATE TABLE IF NOT EXISTS events ("
     "id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "eventType TEXT NOT NULL,"
     "timestamp REAL NOT NULL,"
-    "details TEXT"
+    "details TEXT,"
+    "revenue REAL,"
+    "codes TEXT,"
+    "compliance_flags TEXT,"
+    "public_health INTEGER,"
+    "satisfaction INTEGER"
     ")"
 )
+for col, typ in [
+    ("revenue", "REAL"),
+    ("codes", "TEXT"),
+    ("compliance_flags", "TEXT"),
+    ("public_health", "INTEGER"),
+    ("satisfaction", "INTEGER"),
+]:
+    try:
+        db_conn.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
+    except sqlite3.OperationalError:
+        pass
 db_conn.commit()
 
 
@@ -471,6 +490,9 @@ class EventModel(BaseModel):
     timeToClose: Optional[float] = None
     clinician: Optional[str] = None
     deficiency: Optional[bool] = None
+    compliance: Optional[List[str]] = None
+    publicHealth: Optional[bool] = None
+    satisfaction: Optional[int] = None
 
 
 class TemplateModel(BaseModel):
@@ -657,6 +679,9 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
         "timeToClose",
         "clinician",
         "deficiency",
+        "compliance",
+        "publicHealth",
+        "satisfaction",
     ]:
         value = getattr(event, key)
         if value is not None:
@@ -669,11 +694,16 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
     # writes or using an async database driver.
     try:
         db_conn.execute(
-            "INSERT INTO events (eventType, timestamp, details) VALUES (?, ?, ?)",
+            "INSERT INTO events (eventType, timestamp, details, revenue, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["eventType"],
                 data["timestamp"],
                 json.dumps(data["details"], ensure_ascii=False),
+                data["details"].get("revenue"),
+                json.dumps(data["details"].get("codes")) if data["details"].get("codes") is not None else None,
+                json.dumps(data["details"].get("compliance")) if data["details"].get("compliance") is not None else None,
+                1 if data["details"].get("publicHealth") is True else 0 if data["details"].get("publicHealth") is False else None,
+                data["details"].get("satisfaction"),
             ),
         )
         db_conn.commit()
@@ -853,8 +883,10 @@ async def get_metrics(
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL))     AS avg_note_length,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL))     AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL))     AS avg_close_time
+            AVG(revenue)     AS revenue_per_visit,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL))     AS avg_close_time,
+            AVG(satisfaction) AS avg_satisfaction,
+            AVG(public_health) AS public_health_rate
         FROM events {where_clause}
     """
     cursor.execute(totals_query, params)
@@ -884,7 +916,7 @@ async def get_metrics(
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
         FROM events {where_clause}
         GROUP BY date
@@ -903,7 +935,7 @@ async def get_metrics(
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.revenue')     AS REAL)) AS revenue_per_visit,
+            AVG(revenue) AS revenue_per_visit,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
         FROM events {where_clause}
         GROUP BY week
@@ -917,7 +949,7 @@ async def get_metrics(
     # (e.g. denial rates, coding distribution, beautify time)
     # ------------------------------------------------------------------
     cursor.execute(
-        f"SELECT eventType, timestamp, details FROM events {where_clause} ORDER BY timestamp",
+        f"SELECT eventType, timestamp, details, codes, compliance_flags, public_health, satisfaction FROM events {where_clause} ORDER BY timestamp",
         params,
     )
     rows = cursor.fetchall()
@@ -926,6 +958,9 @@ async def get_metrics(
     denial_counts: Dict[str, List[int]] = {}
     denial_totals = [0, 0]
     deficiency_totals = [0, 0]
+    compliance_counts: Dict[str, int] = {}
+    public_health_totals = [0, 0]
+    satisfaction_sum = satisfaction_count = 0
 
     beautify_time_sum = beautify_time_count = 0.0
     beautify_daily: Dict[str, List[float]] = {}
@@ -940,7 +975,11 @@ async def get_metrics(
         except Exception:
             details = {}
 
-        codes = details.get("codes")
+        codes_val = row["codes"]
+        try:
+            codes = json.loads(codes_val) if codes_val else []
+        except Exception:
+            codes = []
         if isinstance(codes, list):
             denial_flag = details.get("denial") if isinstance(details.get("denial"), bool) else None
             for code in codes:
@@ -951,6 +990,25 @@ async def get_metrics(
                     if denial_flag:
                         totals[1] += 1
                     denial_counts[code] = totals
+
+        comp_val = row["compliance_flags"]
+        try:
+            comp_list = json.loads(comp_val) if comp_val else []
+        except Exception:
+            comp_list = []
+        for flag in comp_list:
+            compliance_counts[flag] = compliance_counts.get(flag, 0) + 1
+
+        public_health = row["public_health"]
+        if isinstance(public_health, int):
+            public_health_totals[0] += 1
+            if public_health:
+                public_health_totals[1] += 1
+
+        satisfaction = row["satisfaction"]
+        if isinstance(satisfaction, (int, float)):
+            satisfaction_sum += float(satisfaction)
+            satisfaction_count += 1
 
         denial = details.get("denial")
         if isinstance(denial, bool):
@@ -1004,6 +1062,14 @@ async def get_metrics(
     deficiency_rate = (
         deficiency_totals[1] / deficiency_totals[0] if deficiency_totals[0] else 0
     )
+    public_health_rate = (
+        public_health_totals[1] / public_health_totals[0]
+        if public_health_totals[0]
+        else 0
+    )
+    avg_satisfaction = (
+        satisfaction_sum / satisfaction_count if satisfaction_count else 0
+    )
 
     return {
         "total_notes": total_notes,
@@ -1020,6 +1086,9 @@ async def get_metrics(
         "denial_rate": overall_denial,
         "denial_rates": denial_rates,
         "deficiency_rate": deficiency_rate,
+        "compliance_counts": compliance_counts,
+        "public_health_rate": public_health_rate,
+        "avg_satisfaction": avg_satisfaction,
         "clinicians": clinicians,
         "timeseries": {"daily": daily_list, "weekly": weekly_list},
     }

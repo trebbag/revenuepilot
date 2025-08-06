@@ -2,6 +2,7 @@ import json
 import sqlite3
 import hashlib
 import importlib
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +22,7 @@ def offline_client(monkeypatch):
     db = sqlite3.connect(":memory:", check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.execute(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT)"
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
     )
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"

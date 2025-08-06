@@ -52,8 +52,20 @@ ChartJS.register(
   // Metrics returned from the API and filter state.
   const [metrics, setMetrics] = useState({});
   const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
-  const [inputs, setInputs] = useState(filters);
+  const [inputs, setInputs] = useState({ ...filters, range: '' });
   const [error, setError] = useState(null);
+
+  const applyFilters = () => {
+    let { start, end, clinician, range } = inputs;
+    if (range) {
+      const now = new Date();
+      end = now.toISOString().slice(0, 10);
+      const s = new Date();
+      s.setDate(now.getDate() - parseInt(range, 10));
+      start = s.toISOString().slice(0, 10);
+    }
+    setFilters({ start, end, clinician });
+  };
 
   useEffect(() => {
     getMetrics(filters)
@@ -385,62 +397,81 @@ ChartJS.register(
     },
   };
 
-  const codingData = {
-    labels: Object.keys(metrics.coding_distribution || {}),
+  const revenueLineData = {
+    labels: dailyLabels,
     datasets: [
       {
-        data: Object.values(metrics.coding_distribution || {}),
-        backgroundColor: [
-          '#FF6384',
-          '#36A2EB',
-          '#FFCE56',
-          '#4BC0C0',
-          '#9966FF',
-          '#FF9F40',
+        label: t('dashboard.cards.revenuePerVisit'),
+        data:
+          metrics.timeseries?.daily?.map((d) => d.revenue_per_visit || 0) || [],
+        borderColor: 'rgba(201,90,90,1)',
+        backgroundColor: 'rgba(201,90,90,0.2)',
+      },
+    ],
+  };
+
+  const emCodes = ['99212', '99213', '99214', '99215'];
+  const totalCodes = emCodes.reduce(
+    (sum, c) => sum + (metrics.coding_distribution?.[c] || 0),
+    0
+  );
+  const codeBarData = {
+    labels: ['E/M'],
+    datasets: emCodes.map((c, idx) => ({
+      label: c,
+      data: [
+        totalCodes
+          ? ((metrics.coding_distribution?.[c] || 0) / totalCodes) * 100
+          : 0,
+      ],
+      backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'][idx],
+    })),
+  };
+  const codeBarOptions = {
+    scales: { x: { stacked: true, max: 100 }, y: { stacked: true, beginAtZero: true } },
+  };
+  const denialDefData = {
+    labels: [t('dashboard.cards.denialRate'), t('dashboard.cards.deficiencyRate')],
+    datasets: [
+      {
+        label: t('dashboard.rate'),
+        data: [
+          metrics.denial_rate ? metrics.denial_rate * 100 : 0,
+          metrics.deficiency_rate ? metrics.deficiency_rate * 100 : 0,
         ],
+        backgroundColor: ['rgba(255,159,64,0.6)', 'rgba(75, 192, 192, 0.6)'],
       },
     ],
   };
   const rateOptions = { scales: { y: { beginAtZero: true, max: 100 } } };
 
-  const denialRateData = {
-    labels: [t('dashboard.denialRateLabel')],
+  const denialData = {
+    labels: Object.keys(metrics.denial_rates || {}),
     datasets: [
       {
         label: t('dashboard.denialRateLabel'),
-        data: [metrics.denial_rate ? metrics.denial_rate * 100 : 0],
+        data: Object.values(metrics.denial_rates || {}).map((r) => r * 100),
         backgroundColor: 'rgba(255, 159, 64, 0.6)',
       },
     ],
   };
-
-  const deficiencyRateData = {
-    labels: [t('dashboard.deficiencyRateLabel')],
-    datasets: [
-      {
-        label: t('dashboard.deficiencyRateLabel'),
-        data: [metrics.deficiency_rate ? metrics.deficiency_rate * 100 : 0],
-        backgroundColor: 'rgba(75, 192, 192, 0.6)',
-      },
-    ],
-  };
-
-    const denialData = {
-      labels: Object.keys(metrics.denial_rates || {}),
-      datasets: [
-        {
-          label: t('dashboard.denialRateLabel'),
-          data: Object.values(metrics.denial_rates || {}).map((r) => r * 100),
-          backgroundColor: 'rgba(255, 159, 64, 0.6)',
-        },
-      ],
-    };
   return (
       <div className="dashboard">
         <h2>{t('dashboard.title')}</h2>
         {error && <p style={{ color: 'red' }}>{error}</p>}
         <div className="filters" style={{ marginBottom: '1rem' }}>
           <label>
+            {t('dashboard.range')}
+            <select
+              value={inputs.range}
+              onChange={(e) => setInputs({ ...inputs, range: e.target.value })}
+            >
+              <option value="">{t('dashboard.customRange')}</option>
+              <option value="7">7 {t('dashboard.days')}</option>
+              <option value="30">30 {t('dashboard.days')}</option>
+            </select>
+          </label>
+          <label style={{ marginLeft: '0.5rem' }}>
             {t('dashboard.start')}
             <input
               type="date"
@@ -474,7 +505,7 @@ ChartJS.register(
           </label>
           <button
             style={{ marginLeft: '0.5rem' }}
-            onClick={() => setFilters(inputs)}
+            onClick={applyFilters}
           >
             {t('dashboard.apply')}
           </button>
@@ -482,48 +513,32 @@ ChartJS.register(
             {t('export')}
           </button>
         </div>
-      <div className="metrics-grid">
-        {cards.map((m) => {
-          const change = computeChange(m);
-          const arrow = change.dir === 'up' ? '↑' : change.dir === 'down' ? '↓' : '';
-          const colour = change.dir === 'up' ? '#2E7D32' : change.dir === 'down' ? '#E57373' : 'inherit';
-          const diffLabel = change.diff != null ? `${arrow} ${change.diff}` : '';
-          let ratio = null;
-          if (change.diff != null && change.dir) {
-            const baseVal = parseNumeric(m.baseline.toString());
-            const curVal = parseNumeric(m.current.toString());
-            if (!isNaN(baseVal) && !isNaN(curVal) && baseVal !== 0) {
-              if (m.direction === 'higher') {
-                ratio = Math.min(Math.abs(curVal - baseVal) / (baseVal || 1), 1);
-              } else if (m.direction === 'lower') {
-                ratio = Math.min(Math.abs(baseVal - curVal) / (baseVal || 1), 1);
-              }
-            }
-          }
-          return (
-            <div key={m.title} className="metric-card">
-                <h3>{m.title}</h3>
-                <p><strong>{t('dashboard.baseline')}</strong> {m.baseline}</p>
-                <p><strong>{t('dashboard.current')}</strong> {m.current}</p>
-              {arrow && (
-                <p style={{ color: colour, fontWeight: 'bold' }}>{diffLabel}</p>
-              )}
-              {ratio !== null && (
-                <div className="improvement-bar" style={{ marginTop: '0.3rem', height: '0.4rem', background: '#E5E7EB', borderRadius: '2px' }}>
-                  <div
-                    style={{
-                      width: `${ratio * 100}%`,
-                      height: '100%',
-                      background: colour,
-                      borderRadius: '2px',
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <table className="metrics-table">
+        <thead>
+          <tr>
+            <th>{t('dashboard.metric')}</th>
+            <th>{t('dashboard.baseline')}</th>
+            <th>{t('dashboard.current')}</th>
+            <th>{t('dashboard.change')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cards.map((m) => {
+            const change = computeChange(m);
+            const arrow = change.dir === 'up' ? '↑' : change.dir === 'down' ? '↓' : '';
+            const colour = change.dir === 'up' ? '#2E7D32' : change.dir === 'down' ? '#E57373' : 'inherit';
+            const diffLabel = change.diff != null ? `${arrow} ${change.diff}` : '';
+            return (
+              <tr key={m.title}>
+                <td>{m.title}</td>
+                <td>{m.baseline}</td>
+                <td>{m.current}</td>
+                <td style={{ color: colour }}>{diffLabel}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.dailyEvents')}</h3>
@@ -533,25 +548,38 @@ ChartJS.register(
         </div>
       )}
 
-      {typeof metrics.denial_rate === 'number' && (
-          <div style={{ marginTop: '1rem' }}>
-              <h3>{t('dashboard.cards.denialRate')}</h3>
-              <Bar data={denialRateData} options={rateOptions} data-testid="denial-rate-bar" />
-          </div>
-        )}
+      {metrics.timeseries && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>{t('dashboard.revenueOverTime')}</h3>
+          <Line
+            data={revenueLineData}
+            options={{ scales: { y: { beginAtZero: true } } }}
+            data-testid="revenue-line"
+          />
+        </div>
+      )}
 
-      {typeof metrics.deficiency_rate === 'number' && (
+      {typeof metrics.denial_rate === 'number' &&
+        typeof metrics.deficiency_rate === 'number' && (
           <div style={{ marginTop: '1rem' }}>
-              <h3>{t('dashboard.cards.deficiencyRate')}</h3>
-              <Bar data={deficiencyRateData} options={rateOptions} data-testid="deficiency-rate-bar" />
+            <h3>{t('dashboard.denialDefRates')}</h3>
+            <Bar
+              data={denialDefData}
+              options={rateOptions}
+              data-testid="denial-def-bar"
+            />
           </div>
         )}
 
       {metrics.coding_distribution &&
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
-              <h3>{t('dashboard.codingDistribution')}</h3>
-              <Pie data={codingData} data-testid="codes-pie" />
+            <h3>{t('dashboard.codeDistribution')}</h3>
+            <Bar
+              data={codeBarData}
+              options={codeBarOptions}
+              data-testid="codes-bar"
+            />
           </div>
         )}
 

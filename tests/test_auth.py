@@ -12,7 +12,7 @@ def setup_module(module):
     main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     main.db_conn.execute(
-        'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT)'
+        'CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)'
     )
     main.db_conn.execute(
         'CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)'
