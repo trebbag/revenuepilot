@@ -112,6 +112,15 @@
     "loading": "Loading…",
     "none": "No events recorded yet."
   },
+  "auditLog": {
+    "title": "Audit Log",
+    "timestamp": "Timestamp",
+    "username": "Username",
+    "action": "Action",
+    "details": "Details",
+    "loading": "Loading…",
+    "none": "No audit entries"
+  },
   "noteEditor": {
     "stopRecording": "Stop Recording",
     "recordAudio": "Record Audio",

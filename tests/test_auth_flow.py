@@ -72,3 +72,13 @@ def test_registration_login_refresh_and_roles():
     # Admin token can access admin endpoint
     resp = client.get("/metrics", headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 200
+
+    # Regular user cannot view audit log
+    resp = client.get("/audit", headers={"Authorization": f"Bearer {new_access}"})
+    assert resp.status_code == 403
+
+    # Admin can view audit log and see metrics entry
+    resp = client.get("/audit", headers={"Authorization": f"Bearer {admin_token}"})
+    assert resp.status_code == 200
+    logs = resp.json()
+    assert any(log["details"] == "/metrics" for log in logs)
