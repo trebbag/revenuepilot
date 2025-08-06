@@ -23,6 +23,8 @@ def test_metrics_empty_returns_zeros():
     data = resp.json()
     assert data['total_notes'] == 0
     assert data['coding_distribution'] == {}
+    assert data['compliance_counts'] == {}
+    assert data['top_compliance'] == []
 
 def test_metrics_aggregation():
     client = TestClient(main.app)
@@ -47,6 +49,16 @@ def test_metrics_aggregation():
             "deficiency": True,
             "timeToClose": 120.0,
         },
+        {
+            "eventType": "suggest",
+            "timestamp": 1500,
+            "compliance": ["Missing ROS", "Incomplete history"],
+        },
+        {
+            "eventType": "suggest",
+            "timestamp": 2500,
+            "compliance": ["Missing ROS"],
+        },
     ]
     token = main.create_token('logger', 'user')
     for ev in events:
@@ -64,6 +76,9 @@ def test_metrics_aggregation():
     assert data['denial_rate'] == pytest.approx(0.5)
     assert data['deficiency_rate'] == pytest.approx(0.5)
     assert data['avg_close_time'] == pytest.approx(90.0)
+    assert data['compliance_counts']['Missing ROS'] == 2
+    assert data['compliance_counts']['Incomplete history'] == 1
+    assert data['top_compliance'][0] == {'gap': 'Missing ROS', 'count': 2}
     # Filter by clinician
     resp = client.get(
         '/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {admin_token}'}

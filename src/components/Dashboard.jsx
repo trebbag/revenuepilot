@@ -455,6 +455,23 @@ ChartJS.register(
       },
     ],
   };
+
+  const gapEntries = metrics.top_compliance
+    ? metrics.top_compliance
+    : Object.entries(metrics.compliance_counts || {})
+        .map(([gap, count]) => ({ gap, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+  const gapData = {
+    labels: gapEntries.map((g) => g.gap),
+    datasets: [
+      {
+        label: t('dashboard.gapCountLabel'),
+        data: gapEntries.map((g) => g.count),
+        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+      },
+    ],
+  };
   return (
       <div className="dashboard">
         <h2>{t('dashboard.title')}</h2>
@@ -590,6 +607,17 @@ ChartJS.register(
               <Bar data={denialData} data-testid="denial-bar" />
           </div>
         )}
+
+      {gapEntries.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>{t('dashboard.documentationGaps')}</h3>
+          <Bar
+            data={gapData}
+            options={{ scales: { y: { beginAtZero: true } } }}
+            data-testid="gaps-bar"
+          />
+        </div>
+      )}
     </div>
   );
 }
