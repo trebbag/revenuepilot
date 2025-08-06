@@ -1,5 +1,4 @@
 import sqlite3
-import hashlib
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +20,7 @@ def client(monkeypatch):
     db.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
     )
-    pwd = hashlib.sha256(b"pw").hexdigest()
+    pwd = main.hash_password("pw")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("u", pwd, "user"),

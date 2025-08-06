@@ -54,6 +54,10 @@ from .scheduling import recommend_follow_up
 import json
 import sqlite3
 import hashlib
+from passlib.context import CryptContext
+
+# Password hashing context using bcrypt
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -404,8 +408,16 @@ class UserSettings(BaseModel):
 
 
 def hash_password(password: str) -> str:
-    """Return a SHA-256 hash of the provided password."""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """Hash the provided password using bcrypt with a per-password salt."""
+    return pwd_context.hash(password)
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a plain password against the stored hash."""
+    try:
+        return pwd_context.verify(password, hashed)
+    except Exception:
+        return False
 
 
 @app.post("/register")
@@ -480,7 +492,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         "SELECT password_hash, role FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         db_conn.execute(
             "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
             (time.time(), model.username, "failed_login", "invalid credentials"),
@@ -518,7 +530,7 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
         "SELECT password_hash FROM users WHERE username=?",
         (model.username,),
     ).fetchone()
-    if not row or hash_password(model.password) != row["password_hash"]:
+    if not row or not verify_password(model.password, row["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",

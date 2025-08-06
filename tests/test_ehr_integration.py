@@ -1,4 +1,3 @@
-import hashlib
 import sqlite3
 
 import pytest
@@ -32,7 +31,7 @@ def client(monkeypatch):
         "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
     )
     migrations.ensure_settings_table(db)
-    pwd = hashlib.sha256(b"pw").hexdigest()
+    pwd = main.hash_password("pw")
     db.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", pwd, "admin"),
