@@ -30,11 +30,24 @@ function SuggestionPanel({
     });
   }
   if (!settingsState || settingsState.enablePublicHealth) {
+    const region = settingsState?.region;
+    let items = suggestions?.publicHealth || [];
+    if (region) {
+      items = items.filter((item) => {
+        if (item && typeof item === 'object') {
+          const r = item.regions || item.region;
+          if (!r) return true;
+          if (Array.isArray(r)) return r.includes(region);
+          return r === region;
+        }
+        return true;
+      });
+    }
     cards.push({
       type: 'public-health',
       key: 'publicHealth',
       title: t('suggestion.publicHealth'),
-      items: suggestions?.publicHealth || [],
+      items,
     });
   }
   if (!settingsState || settingsState.enableDifferentials) {

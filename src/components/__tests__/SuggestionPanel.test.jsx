@@ -29,6 +29,25 @@ test('renders suggestions and handles click', () => {
   expect(getByText('Prevents influenza')).toBeTruthy();
 });
 
+test('filters public health suggestions by region', () => {
+  const { getByText, queryByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [
+          { recommendation: 'US rec', region: 'US' },
+          { recommendation: 'EU rec', region: 'EU' },
+        ],
+        differentials: [],
+      }}
+      settingsState={{ enablePublicHealth: true, region: 'US' }}
+    />
+  );
+  expect(getByText('US rec')).toBeTruthy();
+  expect(queryByText('EU rec')).toBeNull();
+});
+
 test('shows loading and toggles sections', () => {
   const { getByText, getAllByText } = render(
     <SuggestionPanel loading settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }} />

@@ -1,4 +1,3 @@
-import requests
 import pytest
 from backend import public_health
 
@@ -8,35 +7,26 @@ def _clear_cache():
     public_health.clear_cache()
 
 
-class DummyResp:
-    def __init__(self, data):
-        self._data = data
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return self._data
-
-
 def test_fetch_vaccination_recommendations(monkeypatch):
-    def fake_get(url, params=None, timeout=10):
-        assert url == public_health.VACCINATION_API_URL
-        assert params == {"age": 40, "sex": "male", "region": "US"}
-        return DummyResp({"vaccinations": ["Flu shot"]})
+    def fake_guidelines(age, sex, region):
+        assert age == 40
+        assert sex == "male"
+        assert region == "US"
+        return {"vaccinations": [{"recommendation": "Flu shot", "region": "US"}]}
 
-    monkeypatch.setattr(public_health.requests, "get", fake_get)
+    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
     result = public_health.fetch_vaccination_recommendations(40, "male", "US")
     assert result == ["Flu shot"]
 
 
 def test_fetch_screening_recommendations(monkeypatch):
-    def fake_get(url, params=None, timeout=10):
-        assert url == public_health.SCREENING_API_URL
-        assert params == {"age": 40, "sex": "male", "region": "US"}
-        return DummyResp({"screenings": ["BP check"]})
+    def fake_guidelines(age, sex, region):
+        assert age == 40
+        assert sex == "male"
+        assert region == "US"
+        return {"screenings": [{"recommendation": "BP check", "region": "US"}]}
 
-    monkeypatch.setattr(public_health.requests, "get", fake_get)
+    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
     result = public_health.fetch_screening_recommendations(40, "male", "US")
     assert result == ["BP check"]
 
@@ -57,10 +47,10 @@ def test_get_public_health_suggestions_combines(monkeypatch):
 
 
 def test_fetch_vaccination_recommendations_error(monkeypatch):
-    def fake_get(*args, **kwargs):
-        raise requests.RequestException("boom")
+    def fake_guidelines(*args, **kwargs):
+        raise Exception("boom")
 
-    monkeypatch.setattr(public_health.requests, "get", fake_get)
+    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
     result = public_health.fetch_vaccination_recommendations(40, "male", "US")
     assert result == []
 
@@ -68,19 +58,34 @@ def test_fetch_vaccination_recommendations_error(monkeypatch):
 def test_caching_avoids_repeated_calls(monkeypatch):
     calls = []
 
-    def fake_get(url, params=None, timeout=10):
-        calls.append(url)
-        if "vaccinations" in url:
-            return DummyResp({"vaccinations": ["Flu shot"]})
-        return DummyResp({"screenings": ["BP check"]})
+    def fake_guidelines(age, sex, region):
+        calls.append((age, sex, region))
+        return {
+            "vaccinations": ["Flu shot"],
+            "screenings": ["BP check"],
+        }
 
     public_health.clear_cache()
-    monkeypatch.setattr(public_health.requests, "get", fake_get)
+    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
 
     first = public_health.get_public_health_suggestions(40, "male", "US")
     second = public_health.get_public_health_suggestions(40, "male", "US")
     assert first == ["Flu shot", "BP check"]
     assert second == ["Flu shot", "BP check"]
-    # Only two API calls should have been made (one for each endpoint)
+    # get_guidelines should only be called twice (once per category)
     assert len(calls) == 2
+
+
+def test_region_filtering(monkeypatch):
+    def fake_guidelines(age, sex, region):
+        return {
+            "vaccinations": [
+                {"recommendation": "US only", "region": "US"},
+                {"recommendation": "CA only", "region": "CA"},
+            ]
+        }
+
+    monkeypatch.setattr(public_health, "get_guidelines", fake_guidelines)
+    result = public_health.fetch_vaccination_recommendations(40, "male", "US")
+    assert result == ["US only"]
 
