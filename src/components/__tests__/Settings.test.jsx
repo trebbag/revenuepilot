@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
-import { render, fireEvent, waitFor } from '@testing-library/react';
-import { vi, expect, test, beforeEach } from 'vitest';
+import { render, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { vi, expect, test, beforeEach, afterEach } from 'vitest';
 import i18n from '../../i18n.js';
 
 vi.mock('../../api.js', () => ({ setApiKey: vi.fn(), saveSettings: vi.fn() }));
@@ -10,6 +10,10 @@ import Settings from '../Settings.jsx';
 beforeEach(() => {
   vi.clearAllMocks();
   i18n.changeLanguage('en');
+});
+
+afterEach(() => {
+  cleanup();
 });
 
 test('saveSettings called when preferences change', async () => {
@@ -51,6 +55,35 @@ test('renders Spanish translations when lang is es', () => {
   );
   expect(getAllByText('Configuración').length).toBeGreaterThan(0);
   expect(getAllByText('Idioma').length).toBeGreaterThan(0);
+});
+
+test('changing language calls saveSettings with new lang', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getByLabelText } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  await fireEvent.change(getByLabelText('Language'), {
+    target: { value: 'es' },
+  });
+  await waitFor(() =>
+    expect(saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ lang: 'es' })
+    )
+  );
+  expect(updateSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ lang: 'es' })
+  );
+  expect(i18n.language).toBe('es');
 });
 
 test('setApiKey called when saving API key', async () => {
