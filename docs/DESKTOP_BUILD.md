@@ -24,6 +24,8 @@ The following variables are written to `.env`:
   and password.
 - `CSC_LINK`, `CSC_KEY_PASSWORD` – macOS Developer ID certificate and
   password.
+- `LINUX_CSC_LINK`, `LINUX_CSC_KEY_PASSWORD` – optional Linux code-signing
+  certificate and password.
 
 ## Obtaining code-signing certificates
 
@@ -36,6 +38,9 @@ macOS builds require membership in the Apple Developer Program. Create a
 *Developer ID Application* certificate in the Apple Developer portal, export it
 as a `.p12` file and configure `CSC_LINK` and `CSC_KEY_PASSWORD` with the file
 location and password.
+
+Linux builds can also be signed. Export a suitable code-signing certificate to a
+`.p12` file and set `LINUX_CSC_LINK` and `LINUX_CSC_KEY_PASSWORD`.
 
 ## 2. Build signed installers
 
