@@ -15,6 +15,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Optional
 
+import logging
+
 from .guidelines import get_guidelines
 
 
@@ -76,7 +78,7 @@ def fetch_vaccination_recommendations(
         data = get_guidelines(age, sex, region)
         return _to_strings(data.get("vaccinations"), region)
     except Exception as exc:  # pragma: no cover - best effort logging
-        print(f"Vaccination API error: {exc}")
+        logging.warning("Vaccination API error: %s", exc)
         return []
 
 
@@ -92,7 +94,7 @@ def fetch_screening_recommendations(
         data = get_guidelines(age, sex, region)
         return _to_strings(data.get("screenings"), region)
     except Exception as exc:  # pragma: no cover - best effort logging
-        print(f"Screening API error: {exc}")
+        logging.warning("Screening API error: %s", exc)
         return []
 
 

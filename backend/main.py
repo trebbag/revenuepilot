@@ -134,7 +134,10 @@ _DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
 # hash of the removed content instead of the raw value.
 _HASH_TOKENS = os.getenv("DEID_HASH_TOKENS", "true").lower() in {"1", "true", "yes"}
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 app = FastAPI(title="RevenuePilot API")
 
@@ -858,7 +861,7 @@ async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]
             })
         return result
     except Exception as exc:
-        print(f"Error fetching events: {exc}")
+        logging.error("Error fetching events: %s", exc)
         # Return empty list on error
         return []
 
@@ -915,7 +918,7 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
         )
         db_conn.commit()
     except Exception as exc:
-        print(f"Error inserting event into database: {exc}")
+        logging.error("Error inserting event into database: %s", exc)
     return {"status": "logged"}
 
 
@@ -949,7 +952,7 @@ async def submit_survey(survey: SurveyModel, user=Depends(require_role("user")))
         )
         db_conn.commit()
     except Exception as exc:
-        print(f"Error inserting survey into database: {exc}")
+        logging.error("Error inserting survey into database: %s", exc)
     return {"status": "recorded"}
 
 
@@ -1557,7 +1560,7 @@ async def summarize(req: NoteRequest, user=Depends(require_role("user"))) -> Dic
             # cleaned text.  Take the first 200 characters and append ellipsis
             # if the text is longer.  This ensures the endpoint still returns
             # something useful without crashing.
-            print(f"Error during summary LLM call: {exc}")
+            logging.error("Error during summary LLM call: %s", exc)
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
@@ -1683,7 +1686,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         return {"beautified": beautified}
     except Exception as exc:
         # Log the exception and fall back to a basic transformation.
-        print(f"Error during beautify LLM call: {exc}")
+        logging.error("Error during beautify LLM call: %s", exc)
         sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
         beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
         return {"beautified": beautified, "error": str(exc)}
@@ -1841,7 +1844,7 @@ async def suggest(req: NoteRequest, user=Depends(require_role("user"))) -> Sugge
         )
     except Exception as exc:
         # Log error and use rule-based fallback suggestions.
-        print(f"Error during suggest LLM call or parsing JSON: {exc}")
+        logging.error("Error during suggest LLM call or parsing JSON: %s", exc)
         lower = cleaned.lower()
         codes: List[CodeSuggestion] = []
         compliance: List[str] = []
