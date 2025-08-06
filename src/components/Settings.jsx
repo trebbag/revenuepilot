@@ -1,10 +1,17 @@
 // Settings page component for RevenuePilot.
 // Allows the user to toggle which suggestion categories are shown and switch colour themes.
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n.js';
-import { setApiKey, saveSettings } from '../api.js';
+import {
+  setApiKey,
+  saveSettings,
+  getTemplates,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+} from '../api.js';
 
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
@@ -15,8 +22,75 @@ function Settings({ settings, updateSettings }) {
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
   const [templates, setTemplates] = useState([]);
-  const handleDeleteTemplate = (id) => {
-    setTemplates((prev) => prev.filter((tpl) => tpl.id !== id));
+  const [tplName, setTplName] = useState('');
+  const [tplContent, setTplContent] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [tplError, setTplError] = useState(null);
+
+  useEffect(() => {
+    getTemplates()
+      .then((data) => setTemplates(data))
+      .catch((e) => {
+        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert('Access denied');
+          localStorage.removeItem('token');
+          window.location.href = '/';
+        } else {
+          setTplError(e.message);
+        }
+      });
+  }, []);
+
+  const handleDeleteTemplate = async (id) => {
+    try {
+      await deleteTemplate(id);
+      setTemplates((prev) => prev.filter((tpl) => tpl.id !== id));
+    } catch (e) {
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      } else {
+        setTplError(e.message);
+      }
+    }
+  };
+
+  const handleEditTemplate = (tpl) => {
+    setEditingId(tpl.id);
+    setTplName(tpl.name);
+    setTplContent(tpl.content);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!tplName.trim() || !tplContent.trim()) return;
+    try {
+      if (editingId) {
+        const updated = await updateTemplate(editingId, {
+          name: tplName.trim(),
+          content: tplContent.trim(),
+        });
+        setTemplates((prev) => prev.map((t) => (t.id === editingId ? updated : t)));
+      } else {
+        const created = await createTemplate({
+          name: tplName.trim(),
+          content: tplContent.trim(),
+        });
+        setTemplates((prev) => [...prev, created]);
+      }
+      setTplName('');
+      setTplContent('');
+      setEditingId(null);
+      setTplError(null);
+    } catch (e) {
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      } else {
+        setTplError(e.message);
+      }
+    }
   };
   const handleToggle = async (key) => {
     const updated = { ...settings, [key]: !settings[key] };
@@ -231,16 +305,54 @@ function Settings({ settings, updateSettings }) {
       </select>
 
       <h3>{t('settings.templates')}</h3>
+      {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
       <ul>
-
         {templates.map((tpl) => (
           <li key={tpl.id}>
             {tpl.name}{' '}
-            <button onClick={() => handleDeleteTemplate(tpl.id)}>{t('templatesModal.delete')}</button>
+            <button onClick={() => handleEditTemplate(tpl)} style={{ marginLeft: '0.25rem' }}>
+              {t('templatesModal.edit')}
+            </button>
+            <button onClick={() => handleDeleteTemplate(tpl.id)} style={{ marginLeft: '0.25rem' }}>
+              {t('templatesModal.delete')}
+            </button>
           </li>
         ))}
         {templates.length === 0 && <li>{t('settings.noTemplates')}</li>}
       </ul>
+      <div style={{ marginTop: '0.5rem' }}>
+        <input
+          type="text"
+          placeholder={t('templatesModal.name')}
+          value={tplName}
+          onChange={(e) => setTplName(e.target.value)}
+          style={{ width: '100%', marginBottom: '0.5rem' }}
+        />
+        <textarea
+          placeholder={t('templatesModal.content')}
+          value={tplContent}
+          onChange={(e) => setTplContent(e.target.value)}
+          rows={4}
+          style={{ width: '100%' }}
+        />
+        <div style={{ marginTop: '0.5rem' }}>
+          <button onClick={handleSaveTemplate} disabled={!tplName.trim() || !tplContent.trim()}>
+            {t('templatesModal.save')}
+          </button>
+          {editingId && (
+            <button
+              onClick={() => {
+                setEditingId(null);
+                setTplName('');
+                setTplContent('');
+              }}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              {t('templatesModal.close')}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
