@@ -64,6 +64,10 @@ app into an Electron shell for desktop deployment.
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
+### Offline model mode (experimental)
+
+Set the environment variable `USE_OFFLINE_MODEL=true` before starting the backend to bypass calls to external AI services. In this mode the `/beautify`, `/suggest` and `/summarize` endpoints return deterministic placeholder data so the app can run without network access or an API key.
+
 ### Advanced PHI de-identification
 
 The backend can optionally use machine-learning based scrubbers to remove names, dates, addresses, Social Security numbers and phone numbers from notes.
