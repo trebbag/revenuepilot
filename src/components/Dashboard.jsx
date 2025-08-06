@@ -49,9 +49,18 @@ ChartJS.register(
   const [metrics, setMetrics] = useState({});
   const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
   const [inputs, setInputs] = useState(filters);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
-    getMetrics(filters).then((data) => setMetrics(data));
+    getMetrics(filters)
+      .then((data) => setMetrics(data))
+      .catch((err) => {
+        if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
+          window.location.href = '/';
+        } else {
+          setError(err.message);
+        }
+      });
   }, [filters]);
 
   // Define display cards using the fetched metrics.  Missing values will
@@ -277,6 +286,7 @@ ChartJS.register(
   return (
       <div className="dashboard">
         <h2>{t('dashboard.title')}</h2>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
         <div className="filters" style={{ marginBottom: '1rem' }}>
           <label>
             {t('dashboard.start')}

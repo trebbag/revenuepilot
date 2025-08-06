@@ -206,8 +206,9 @@ def create_token(username: str, role: str, clinic: str | None = None) -> str:
 
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
+    required_role: str | None = None,
 ):
-    """Decode the provided JWT and return its payload."""
+    """Decode the provided JWT and optionally enforce a required role."""
     token = credentials.credentials
     try:
         data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -215,6 +216,11 @@ def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+        )
+    if required_role and data.get("role") not in (required_role, "admin"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient privileges",
         )
     return data
 
@@ -227,13 +233,8 @@ def require_role(role: str):
     still permitting administrators to perform regular user actions.
     """
 
-    def checker(user=Depends(get_current_user)):
-        if user.get("role") not in (role, "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient privileges",
-            )
-        return user
+    def checker(credentials: HTTPAuthorizationCredentials = Depends(security)):
+        return get_current_user(credentials, required_role=role)
 
     return checker
 
@@ -638,7 +639,7 @@ async def log_event(event: EventModel) -> Dict[str, str]:
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
+def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
     """Return custom templates for the current user and clinic."""
 
     clinic = user.get("clinic")
@@ -651,7 +652,7 @@ def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
 
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
     """Create a new custom template for the user."""
 
     clinic = user.get("clinic")
@@ -666,7 +667,7 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> T
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
-def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
     """Update an existing custom template owned by the current user."""
 
     cursor = db_conn.cursor()
@@ -681,7 +682,7 @@ def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_r
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
+def delete_template(template_id: int, user=Depends(require_role("admin"))) -> Dict[str, str]:
     """Delete a custom template owned by the current user."""
 
     cursor = db_conn.cursor()

@@ -85,6 +85,16 @@ def test_metrics_requires_authentication():
     assert response.status_code in {401, 403}
 
 
+def test_events_requires_authentication():
+    response = client.get("/events")
+    assert response.status_code in {401, 403}
+
+
+def test_templates_requires_authentication():
+    response = client.get("/templates")
+    assert response.status_code in {401, 403}
+
+
 def test_metrics_contains_timeseries_data():
     """The metrics endpoint should return time‑series data for charts.
 

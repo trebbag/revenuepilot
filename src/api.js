@@ -270,6 +270,12 @@ export async function getMetrics(filters = {}) {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, { headers });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to fetch metrics');
+  }
   return await resp.json();
 }
 
@@ -293,7 +299,12 @@ export async function getTemplates() {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const resp = await fetch(`${baseUrl}/templates`, { headers });
-  if (!resp.ok) return [];
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to fetch templates');
+  }
   return await resp.json();
 }
 
@@ -317,6 +328,12 @@ export async function createTemplate(tpl) {
     headers,
     body: JSON.stringify(tpl),
   });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to create template');
+  }
   return await resp.json();
 }
 
@@ -341,6 +358,12 @@ export async function updateTemplate(id, tpl) {
     headers,
     body: JSON.stringify(tpl),
   });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to update template');
+  }
   return await resp.json();
 }
 
@@ -357,10 +380,16 @@ export async function deleteTemplate(id) {
   if (!baseUrl) return;
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  await fetch(`${baseUrl}/templates/${id}`, {
+  const resp = await fetch(`${baseUrl}/templates/${id}`, {
     method: 'DELETE',
     headers,
   });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to delete template');
+  }
 }
 
 /**
@@ -463,11 +492,19 @@ export async function getEvents() {
     return [];
   }
   try {
-    const resp = await fetch(`${baseUrl}/events`);
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const resp = await fetch(`${baseUrl}/events`, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch events');
+    }
     const data = await resp.json();
     return Array.isArray(data) ? data : [];
   } catch (err) {
     console.error('Error fetching events:', err);
-    return [];
+    throw err;
   }
 }

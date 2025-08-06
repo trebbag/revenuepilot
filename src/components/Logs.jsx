@@ -20,14 +20,24 @@ function formatTimestamp(ts) {
     const { t } = useTranslation();
     const [events, setEvents] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
   useEffect(() => {
     // Fetch events when component mounts
     async function load() {
       setLoading(true);
-      const data = await getEvents();
-      setEvents(data);
-      setLoading(false);
+      try {
+        const data = await getEvents();
+        setEvents(data);
+      } catch (err) {
+        if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
+          window.location.href = '/';
+        } else {
+          setError(err.message);
+        }
+      } finally {
+        setLoading(false);
+      }
     }
     load();
   }, []);
@@ -36,6 +46,7 @@ function formatTimestamp(ts) {
       <div className="logs-page" style={{ padding: '1rem', overflowY: 'auto' }}>
         <h2>{t('logs.title')}</h2>
         <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('logs.intro')}</p>
+        {error && <p style={{ color: 'red' }}>{error}</p>}
         {loading ? (
           <p>{t('logs.loading')}</p>
         ) : events.length === 0 ? (
