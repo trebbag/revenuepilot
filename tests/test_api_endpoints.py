@@ -50,6 +50,7 @@ def test_endpoints_require_auth(client):
         in {401, 403}
     )
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
+    assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export_to_ehr', json={'note': 'hi'}).status_code in {401, 403}
 
 

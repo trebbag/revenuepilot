@@ -18,6 +18,7 @@ import Drafts from './components/Drafts.jsx';
 import Login from './components/Login.jsx';
 import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
+import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -46,6 +47,7 @@ function App() {
   const [loadingBeautify, setLoadingBeautify] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [loadingSummary, setLoadingSummary] = useState(false);
+  const [showSurvey, setShowSurvey] = useState(false);
   // Track the current draft text
   const [draftText, setDraftText] = useState('');
 
@@ -218,6 +220,7 @@ function App() {
             publicHealth: suggestions.publicHealth.length > 0,
           }).catch(() => {});
         }
+        setShowSurvey(true);
       })
       .catch((e) => {
         if (e.message === 'Unauthorized') {
@@ -602,6 +605,7 @@ function App() {
           onClose={() => setShowTemplatesModal(false)}
         />
       )}
+      <SatisfactionSurvey open={showSurvey} onClose={() => setShowSurvey(false)} />
     </div>
   );
 }

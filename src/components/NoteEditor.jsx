@@ -10,11 +10,7 @@
 
 import { useEffect, useState, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript, getSuggestions } from '../api.js';
-
-import { useEffect, useState, useRef } from 'react';
-import { fetchLastTranscript, getTemplates } from '../api.js';
-import { fetchLastTranscript, transcribeAudio } from '../api.js';
+import { fetchLastTranscript, getSuggestions, getTemplates, transcribeAudio } from '../api.js';
 
 
 let ReactQuill;
@@ -52,6 +48,9 @@ const quillModules = {
     ['code-block'],
   ],
 };
+
+const QuillToolbar = () => null;
+const toolbarId = 'toolbar';
 
 function useAudioRecorder(onTranscribed) {
   const [recording, setRecording] = useState(false);
@@ -120,19 +119,6 @@ function useAudioRecorder(onTranscribed) {
 }
 
 
-function NoteEditor({
-  id,
-  value,
-  onChange,
-  onRecord,
-  recording = false,
-  transcribing = false,
-  onTranscriptChange,
-  error = '',
-  mode = 'draft',
-}) {
-
-
 // Naive HTML stripping to extract plain text for the suggestions API.
 function stripHtml(html) {
   return html ? html.replace(/<[^>]+>/g, '') : '';
@@ -160,6 +146,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     suggestionContext = {},
     onSuggestions = () => {},
     onSuggestionsLoading = () => {},
+    mode = 'draft',
   },
   ref,
 ) {
@@ -179,6 +166,7 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
+  const templateChooser = null;
 
 
   // Keep the internal state in sync with the parent value.  When using
@@ -349,7 +337,6 @@ const NoteEditor = forwardRef(function NoteEditor(
   // Render the rich text editor if available; otherwise render a textarea.
   if (ReactQuill) {
     return (
-
       <div style={{ height: '100%', width: '100%' }}>
         {audioControls}
         {templateChooser}
@@ -387,11 +374,10 @@ const NoteEditor = forwardRef(function NoteEditor(
           <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
         )}
         {loadingTranscript && <p>Loading transcript...</p>}
-      </>
+      </div>
     );
   }
   return (
-
     <div style={{ width: '100%', height: '100%' }}>
       {audioControls}
       {templateChooser}
@@ -425,7 +411,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         <p style={{ color: 'red' }}>{recorderError || fetchError}</p>
       )}
       {loadingTranscript && <p>Loading transcript...</p>}
-    </>
+    </div>
   );
 });
 
