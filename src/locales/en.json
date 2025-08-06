@@ -37,6 +37,8 @@
     "denialDefRates": "Denial and Deficiency Rates",
     "denialRateLabel": "Denial Rate (%)",
     "deficiencyRateLabel": "Deficiency Rate (%)",
+    "denials": "Denials",
+    "deficiencies": "Deficiencies",
     "allClinicians": "All Clinicians",
     "range": "Range",
     "customRange": "Custom",

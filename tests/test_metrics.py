@@ -102,6 +102,7 @@ def test_metrics_timeseries_and_range():
         {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": json.dumps({})},
         {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": json.dumps({})},
         {"eventType": "note_started", "timestamp": ts2, "details": json.dumps({"patientID": "p2", "length": 150})},
+        {"eventType": "note_closed", "timestamp": ts1 + 360, "details": json.dumps({"denial": True, "deficiency": True})},
     ]
     for ev in events:
         main.db_conn.execute(
@@ -118,6 +119,8 @@ def test_metrics_timeseries_and_range():
     assert daily['2024-01-01']['notes'] == 1
     assert daily['2024-01-01']['beautify'] == 1
     assert daily['2024-01-01']['suggest'] == 1
+    assert daily['2024-01-01']['denials'] == 1
+    assert daily['2024-01-01']['deficiencies'] == 1
     assert daily['2024-01-08']['notes'] == 1
     # range filter
     resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})

@@ -920,7 +920,9 @@ async def get_metrics(
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
         FROM events {where_clause}
         GROUP BY date
         ORDER BY date
@@ -939,7 +941,9 @@ async def get_metrics(
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length')      AS REAL)) AS avg_note_length,
             AVG(revenue) AS revenue_per_visit,
-            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
         FROM events {where_clause}
         GROUP BY week
         ORDER BY week
