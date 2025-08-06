@@ -68,10 +68,43 @@ def _download_json(url: str) -> Dict:
             return {}
 
 
+def _resolve_region_url(base: str, region: str) -> str:
+    """Return a region-specific endpoint from ``base`` if encoded.
+
+    ``base`` may be a plain URL or a mapping of region codes to URLs.  The
+    mapping format accepts either JSON (e.g. ``{"US": "https://..."}``) or a
+    semicolon-delimited list of ``region:url`` pairs (e.g.
+    ``"US:https://...;EU:https://..."``).  If ``region`` is not found the
+    original ``base`` value is returned.
+    """
+
+    region_key = region.upper()
+    # Try JSON format first
+    try:
+        data = json.loads(base)
+        if isinstance(data, dict):
+            url = data.get(region_key)
+            if isinstance(url, str):
+                return url
+    except Exception:
+        pass
+
+    # Fallback to simple ``REGION:url`` pairs separated by semicolons
+    mapping = {}
+    for part in base.split(";"):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        reg, url = part.split(":", 1)
+        mapping[reg.strip().upper()] = url.strip()
+
+    return mapping.get(region_key, base)
+
+
 def _fetch_cdc(age: int, sex: str, region: str) -> List[Dict[str, str]]:
     """Fetch recommendations from the CDC."""
-
-    data = _download_json(CDC_URL)
+    url = _resolve_region_url(CDC_URL, region)
+    data = _download_json(url)
     items: List[Dict[str, str]] = []
     # The CDC schedule endpoint returns a nested JSON document.  The exact
     # structure is subject to change; we extract any ``text`` fields as
@@ -99,8 +132,8 @@ def _fetch_cdc(age: int, sex: str, region: str) -> List[Dict[str, str]]:
 
 def _fetch_who(age: int, sex: str, region: str) -> List[Dict[str, str]]:
     """Fetch recommendations from the WHO."""
-
-    data = _download_json(WHO_URL)
+    url = _resolve_region_url(WHO_URL, region)
+    data = _download_json(url)
     items: List[Dict[str, str]] = []
     recs = data.get("recommendations") or data.get("value") or []
     if isinstance(recs, list):
