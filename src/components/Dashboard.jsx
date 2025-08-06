@@ -462,6 +462,10 @@ function Dashboard() {
     },
   };
 
+  const hasDaily = (metrics.timeseries?.daily?.length || 0) > 0;
+  const hasWeekly = (metrics.timeseries?.weekly?.length || 0) > 0;
+  const noDataLabel = t('dashboard.noData', { defaultValue: 'No data' });
+
   const revenueLineData = {
     labels: dailyLabels,
     datasets: [
@@ -637,21 +641,29 @@ function Dashboard() {
       {metrics.timeseries && (
         <div className="timeseries" style={{ marginTop: '1rem' }}>
           <h3>{t('dashboard.dailyEvents')}</h3>
-          <Line
-            data={dailyData}
-            options={dailyOptions}
-            data-testid="daily-line"
-          />
+          {hasDaily ? (
+            <Line
+              data={dailyData}
+              options={dailyOptions}
+              data-testid="daily-line"
+            />
+          ) : (
+            <p data-testid="no-daily-data">{noDataLabel}</p>
+          )}
           <h3 style={{ marginTop: '1rem' }}>{t('dashboard.weeklyEvents')}</h3>
-          <Line
-            data={weeklyData}
-            options={weeklyOptions}
-            data-testid="weekly-line"
-          />
+          {hasWeekly ? (
+            <Line
+              data={weeklyData}
+              options={weeklyOptions}
+              data-testid="weekly-line"
+            />
+          ) : (
+            <p data-testid="no-weekly-data">{noDataLabel}</p>
+          )}
         </div>
       )}
 
-      {metrics.timeseries && (
+      {metrics.timeseries && hasDaily && (
         <div style={{ marginTop: '1rem' }}>
           <h3>{t('dashboard.revenueOverTime')}</h3>
           <Line

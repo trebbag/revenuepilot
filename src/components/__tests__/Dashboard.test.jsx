@@ -161,4 +161,5 @@ test('applies quick range filter', async () => {
   getByText('Apply').click();
   await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
   expect(getMetrics).toHaveBeenLastCalledWith({ start, end, clinician: '' });
+
 });

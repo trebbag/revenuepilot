@@ -51,6 +51,8 @@ function useAudioRecorder(onTranscribed) {
         setTranscribing(true);
         try {
           const data = await transcribeAudio(blob, true);
+          if (data.error) setError(data.error);
+          else setError('');
           if (onTranscribed) onTranscribed(data, blob);
         } catch (err) {
           console.error('Transcription failed', err);
@@ -142,6 +144,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       });
       if (onTranscriptChange) onTranscriptChange(data);
       setSegments(data.segments || []);
+      setFetchError(data.error || '');
     } catch (err) {
       setFetchError('Failed to load transcript');
     } finally {

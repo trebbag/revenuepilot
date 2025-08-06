@@ -184,6 +184,23 @@ def test_timeseries_always_present():
     assert isinstance(data['timeseries']['weekly'], list)
 
 
+def test_metrics_query_params_daily_weekly():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    main.db_conn.commit()
+    token = main.create_token('tester', 'admin')
+
+    resp = client.get('/metrics', params={'weekly': 'false'}, headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    assert 'weekly' not in data['timeseries']
+    assert 'daily' in data['timeseries']
+
+    resp = client.get('/metrics', params={'daily': 'false'}, headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    assert 'daily' not in data['timeseries']
+    assert 'weekly' in data['timeseries']
+
+
 def test_survey_endpoint_and_avg_rating():
     client = TestClient(main.app)
     main.db_conn.execute('DELETE FROM events')

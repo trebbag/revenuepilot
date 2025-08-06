@@ -29,6 +29,10 @@ function Login({ onLoggedIn }) {
       onLoggedIn(token, settings);
     } catch (err) {
       setError(err.message || 'Login failed');
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('refreshToken');
+      }
     } finally {
       setLoading(false);
     }
