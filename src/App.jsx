@@ -121,7 +121,7 @@ function App() {
   };
 
   const handleUnauthorized = () => {
-    alert('Session expired');
+    alert(t('sessionExpired'));
     if (typeof window !== 'undefined') {
       localStorage.removeItem('token');
       window.location.href = '/';

@@ -504,6 +504,49 @@ export async function deleteTemplate(id) {
   }
 }
 
+export async function getPromptTemplates() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return {};
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await fetch(`${baseUrl}/prompt-templates`, { headers });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to fetch prompt templates');
+  }
+  return await resp.json();
+}
+
+export async function savePromptTemplates(data) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) return data;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/prompt-templates`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to save prompt templates');
+  }
+  return await resp.json();
+}
+
 /**
  * Send the OpenAI API key to the backend for persistent storage.  This
  * allows the user to configure the key through the UI instead of

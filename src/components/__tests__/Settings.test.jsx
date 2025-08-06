@@ -10,6 +10,8 @@ vi.mock('../../api.js', () => ({
   createTemplate: vi.fn(),
   updateTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
+  getPromptTemplates: vi.fn().mockResolvedValue({}),
+  savePromptTemplates: vi.fn(),
 }));
 import { saveSettings, setApiKey } from '../../api.js';
 import Settings from '../Settings.jsx';
@@ -67,6 +69,30 @@ test('saveSettings called when specialty and payer change', async () => {
   fireEvent.change(selects[1], { target: { value: 'cardiology' } });
   fireEvent.change(selects[2], { target: { value: 'medicare' } });
   await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+});
+
+test('changing region triggers saveSettings', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    specialty: '',
+    payer: '',
+    region: '',
+  };
+  const updateSettings = vi.fn();
+  const { getByPlaceholderText } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  fireEvent.change(getByPlaceholderText('e.g., US'), { target: { value: 'US' } });
+  await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+  expect(updateSettings).toHaveBeenCalledWith(
+    expect.objectContaining({ region: 'US' })
+  );
 });
 
 test('renders Spanish translations when lang is es', () => {

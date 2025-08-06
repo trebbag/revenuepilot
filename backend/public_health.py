@@ -11,9 +11,28 @@ endpoints to be overridden during deployment or tests.
 from __future__ import annotations
 
 import os
+from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional
 
 import requests
+
+
+# ---------------------------------------------------------------------------
+# Environment configuration
+# ---------------------------------------------------------------------------
+# Load variables from a local `.env` file if present so deployments can override
+# the default API endpoints without exporting variables globally.  This keeps
+# configuration simple for clinicians running the app locally.
+_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+if _ENV_PATH.exists():  # pragma: no cover - simple environment loading
+    for line in _ENV_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        os.environ.setdefault(key.strip(), val.strip())
+
 
 # Base URLs for the external services.  These are intentionally configurable so
 # tests can monkeypatch them and real deployments can point to trusted sources.
@@ -44,6 +63,7 @@ def _extract_items(data: object, key: str) -> List[str]:
     return [str(x) for x in items]
 
 
+@lru_cache(maxsize=128)
 def fetch_vaccination_recommendations(
     age: Optional[int], sex: Optional[str], region: Optional[str]
 ) -> List[str]:
@@ -61,6 +81,7 @@ def fetch_vaccination_recommendations(
         return []
 
 
+@lru_cache(maxsize=128)
 def fetch_screening_recommendations(
     age: Optional[int], sex: Optional[str], region: Optional[str]
 ) -> List[str]:
@@ -89,9 +110,17 @@ def get_public_health_suggestions(
     return list(dict.fromkeys(vaccs + screens))
 
 
+def clear_cache() -> None:
+    """Clear cached API responses (useful for tests)."""
+
+    fetch_vaccination_recommendations.cache_clear()
+    fetch_screening_recommendations.cache_clear()
+
+
 __all__ = [
     "fetch_vaccination_recommendations",
     "fetch_screening_recommendations",
     "get_public_health_suggestions",
+    "clear_cache",
 ]
 

@@ -30,13 +30,15 @@ import jwt
 # installed and `OPENAI_API_KEY` is set in your environment before
 # deploying.
 from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
+from . import prompts as prompt_utils
 from .openai_client import call_openai
 from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
-from .migrations import ensure_settings_table
+from .migrations import ensure_settings_table, ensure_templates_table
 from .scheduling import recommend_follow_up
+
 
 
 import json
@@ -173,6 +175,9 @@ db_conn.commit()
 # Persisted user preferences for theme, enabled categories and custom rules.
 # Ensure the table exists and contains the latest schema (including ``lang``).
 ensure_settings_table(db_conn)
+
+# Table storing user and clinic specific note templates.
+ensure_templates_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -659,8 +664,38 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
     return {"status": "logged"}
 
 
+def _validate_prompt_templates(data: Dict[str, Any]) -> None:
+    """Ensure prompt template structure is a mapping of mappings."""
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Template must be a JSON object")
+    for key in ("default", "specialty", "payer"):
+        if key in data and not isinstance(data[key], dict):
+            raise HTTPException(status_code=400, detail=f"'{key}' section must be an object")
+
+
+@app.get("/prompt-templates", response_model=Dict[str, Any])
+def get_prompt_templates(user=Depends(require_role("admin"))) -> Dict[str, Any]:
+    """Return the current prompt templates file."""
+    path = os.path.join(os.path.dirname(__file__), "prompt_templates.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+@app.post("/prompt-templates", response_model=Dict[str, Any])
+def save_prompt_templates(data: Dict[str, Any], user=Depends(require_role("admin"))) -> Dict[str, Any]:
+    """Validate and persist prompt templates supplied by an admin user."""
+    _validate_prompt_templates(data)
+    path = os.path.join(os.path.dirname(__file__), "prompt_templates.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    prompt_utils._load_custom_templates.cache_clear()
+    return data
+
+
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
+def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
     """Return custom templates for the current user and clinic."""
 
     clinic = user.get("clinic")
@@ -673,7 +708,7 @@ def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
 
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
+def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
     """Create a new custom template for the user."""
 
     clinic = user.get("clinic")
@@ -688,7 +723,7 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> 
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
-def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
     """Update an existing custom template owned by the current user."""
 
     cursor = db_conn.cursor()
@@ -703,7 +738,7 @@ def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_r
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("admin"))) -> Dict[str, str]:
+def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
     """Delete a custom template owned by the current user."""
 
     cursor = db_conn.cursor()

@@ -237,3 +237,45 @@ def build_summary_prompt(
     messages.extend(_get_custom_examples("summary", lang, specialty, payer))
     messages.append({"role": "user", "content": text})
     return messages
+
+
+def build_template_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
+    """Build a template manager prompt in the requested language."""
+    default_instructions = {
+        "en": (
+            "You help clinicians manage reusable documentation templates."
+            " Provide concise guidance or content based on the request."
+        ),
+        "es": (
+            "Usted ayuda a los clínicos a gestionar plantillas reutilizables de"
+            " documentación. Proporcione orientación o contenido según lo solicitado."
+        ),
+    }
+    instructions = default_instructions.get(lang, default_instructions["en"])
+    if lang == "es":
+        instructions = f"{instructions} Responde en español."
+    return [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": text},
+    ]
+
+
+def build_export_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
+    """Build an EHR export prompt in the requested language."""
+    default_instructions = {
+        "en": (
+            "You prepare a structured export of the clinical note for insertion"
+            " into an EHR system. Summarise necessary data without PHI."
+        ),
+        "es": (
+            "Usted prepara una exportación estructurada de la nota clínica para"
+            " insertarla en un sistema EHR. Resuma los datos necesarios sin PHI."
+        ),
+    }
+    instructions = default_instructions.get(lang, default_instructions["en"])
+    if lang == "es":
+        instructions = f"{instructions} Responde en español."
+    return [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": text},
+    ]

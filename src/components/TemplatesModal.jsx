@@ -10,12 +10,24 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState(null);
 
+  let isAdmin = false;
+  if (typeof window !== 'undefined') {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        isAdmin = JSON.parse(atob(token.split('.')[1])).role === 'admin';
+      } catch {
+        isAdmin = false;
+      }
+    }
+  }
+
   useEffect(() => {
     getTemplates()
       .then((data) => setTemplates([...baseTemplates, ...data]))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-          alert('Access denied');
+          alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
           window.location.href = '/';
         } else {
@@ -39,7 +51,7 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       setEditingId(null);
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
@@ -60,7 +72,7 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
       setTemplates((prev) => prev.filter((t) => t.id !== id));
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
@@ -83,14 +95,16 @@ function TemplatesModal({ baseTemplates, onSelect, onClose }) {
                 >
                   {tpl.name}
                 </button>
-                {tpl.id && (
+                {(tpl.id || isAdmin) && (
                   <>
                     <button onClick={() => handleEdit(tpl)} style={{ marginLeft: '0.25rem' }}>
                       {t('templatesModal.edit')}
                     </button>
-                    <button onClick={() => handleDelete(tpl.id)} style={{ marginLeft: '0.25rem' }}>
-                      {t('templatesModal.delete')}
-                    </button>
+                    {tpl.id && (
+                      <button onClick={() => handleDelete(tpl.id)} style={{ marginLeft: '0.25rem' }}>
+                        {t('templatesModal.delete')}
+                      </button>
+                    )}
                   </>
                 )}
               </li>
