@@ -26,7 +26,7 @@ export async function login(username, password) {
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(err.message || 'Login failed');
+    throw new Error(err.detail || err.message || 'Login failed');
   }
   const data = await resp.json();
   const token = data.access_token;
@@ -39,6 +39,31 @@ export async function login(username, password) {
     console.error('Failed to fetch settings', e);
   }
   return { token, settings };
+}
+
+/**
+ * Reset a user's password. This helper is primarily used by the login UI
+ * when a user wishes to change their password without logging in first.
+ *
+ * @param {string} username
+ * @param {string} password Current password
+ * @param {string} newPassword New desired password
+ */
+export async function resetPassword(username, password, newPassword) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const resp = await fetch(`${baseUrl}/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, new_password: newPassword }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || err.message || 'Failed to reset password');
+  }
+  return await resp.json();
 }
 
 /**
@@ -520,6 +545,31 @@ export async function setApiKey(key) {
     const err = await resp.json();
     throw new Error(err.message || 'Failed to save key');
   }
+  return await resp.json();
+}
+
+/**
+ * Export a note to an EHR system. Requires an admin token.
+ * @param {string} note
+ * @param {string} [token]
+ */
+export async function exportToEhr(note, token) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const auth =
+    token || (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
+  if (!auth) throw new Error('Not authenticated');
+  const resp = await fetch(`${baseUrl}/export_to_ehr`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth}`,
+    },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) throw new Error('Export failed');
   return await resp.json();
 }
 

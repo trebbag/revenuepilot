@@ -66,7 +66,13 @@
     "username": "Nombre de usuario",
     "password": "Contraseña",
     "loggingIn": "Iniciando sesión…",
-    "login": "Entrar"
+    "login": "Entrar",
+    "resetPassword": "Restablecer contraseña",
+    "resetting": "Restableciendo…",
+    "backToLogin": "Volver",
+    "resetSuccess": "Contraseña restablecida, inicie sesión",
+    "resetFailed": "Error al restablecer contraseña",
+    "newPassword": "Nueva contraseña"
   },
   "logs": {
     "title": "Registro de eventos",

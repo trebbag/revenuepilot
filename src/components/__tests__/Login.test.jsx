@@ -18,12 +18,12 @@ afterEach(() => cleanup());
 test('successful login stores token and calls callback', async () => {
   login.mockResolvedValue({ token: 'token123', settings: { theme: 'modern' } });
   const onLoggedIn = vi.fn();
-  const { getByLabelText, getByRole } = render(
+  const { getByLabelText, getAllByRole } = render(
     <Login onLoggedIn={onLoggedIn} />
   );
   fireEvent.change(getByLabelText('Username'), { target: { value: 'u' } });
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
-  fireEvent.click(getByRole('button', { name: /login/i }));
+  fireEvent.click(getAllByRole('button', { name: /login/i })[0]);
   await waitFor(() =>
     expect(onLoggedIn).toHaveBeenCalledWith('token123', { theme: 'modern' })
   );
@@ -32,10 +32,10 @@ test('successful login stores token and calls callback', async () => {
 
 test('shows error on failed login', async () => {
   login.mockRejectedValue(new Error('bad'));
-  const { getByLabelText, getByRole, findByText } = render(<Login onLoggedIn={() => {}} />);
+  const { getByLabelText, getAllByRole, findByText } = render(<Login onLoggedIn={() => {}} />);
   fireEvent.change(getByLabelText('Username'), { target: { value: 'u' } });
   fireEvent.change(getByLabelText('Password'), { target: { value: 'p' } });
-  fireEvent.click(getByRole('button', { name: /login/i }));
+  fireEvent.click(getAllByRole('button', { name: /login/i })[0]);
   expect(await findByText('bad')).toBeTruthy();
 });
 
