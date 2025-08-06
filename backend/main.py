@@ -1006,15 +1006,30 @@ def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dic
 
 
 class ExportRequest(BaseModel):
-    """Payload for exporting a note to an external EHR system."""
+    """Payload for exporting a note and codes to an external EHR system."""
+
     note: str
+    codes: List[str] = Field(default_factory=list)
 
 
 @app.post("/export_to_ehr")
-async def export_to_ehr(req: ExportRequest, user=Depends(require_role("admin"))) -> Dict[str, str]:
-    """Placeholder endpoint demonstrating admin-only export functionality."""
-    # Real implementation would interface with an EHR API. For now, simply
-    # acknowledge the request.
+async def export_to_ehr(
+    req: ExportRequest, user=Depends(require_role("admin"))
+) -> Dict[str, str]:
+    """Post the supplied note and codes to a FHIR server.
+
+    The heavy lifting is delegated to :mod:`backend.ehr_integration`.  Any
+    ``requests`` exceptions are translated into ``502`` errors so clients
+    receive a clear failure message instead of an internal error.
+    """
+
+    try:
+        from . import ehr_integration
+
+        ehr_integration.post_note_and_codes(req.note, req.codes)
+    except Exception as exc:  # pragma: no cover - network failures
+        raise HTTPException(status_code=502, detail=str(exc))
+
     return {"status": "exported"}
 
 

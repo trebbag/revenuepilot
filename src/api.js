@@ -747,7 +747,20 @@ export async function setApiKey(key) {
  * @param {string} note
  * @param {string} [token]
  */
-export async function exportToEhr(note, token) {
+export async function exportToEhr(
+  note,
+  codes = [],
+  direct = false,
+  token
+) {
+  // ``direct`` acts as a frontend toggle. When false the function resolves
+  // immediately without contacting the backend so the caller can simply copy
+  // the note manually. This keeps the UI logic straightforward while allowing
+  // opt‑in EHR submission.
+  if (!direct) {
+    return { status: 'skipped' };
+  }
+
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -761,7 +774,7 @@ export async function exportToEhr(note, token) {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${auth}`,
     },
-    body: JSON.stringify({ note }),
+    body: JSON.stringify({ note, codes }),
   });
   if (!resp.ok) throw new Error('Export failed');
   return await resp.json();

@@ -5,7 +5,7 @@ import hashlib
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import main, prompts, migrations
+from backend import main, prompts, migrations, ehr_integration
 
 
 @pytest.fixture
@@ -168,7 +168,7 @@ def test_events_metrics_with_auth(client):
     assert resp.json()["current"]["total_notes"] >= 1
 
 
-def test_export_to_ehr_requires_admin(client):
+def test_export_to_ehr_requires_admin(client, monkeypatch):
     # user token should be forbidden
     token_user = client.post(
         "/login", json={"username": "user", "password": "pw"}
@@ -192,6 +192,15 @@ def test_export_to_ehr_requires_admin(client):
     token_admin = client.post(
         "/login", json={"username": "admin", "password": "pw"}
     ).json()["access_token"]
+
+    # Avoid real HTTP calls by stubbing the FHIR helper
+    def fake_post(note, codes):
+        assert note == "hi"
+        assert codes == []
+        return {"result": "ok"}
+
+    monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
+
     resp = client.post(
         "/export_to_ehr",
         json={"note": "hi"},
