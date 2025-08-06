@@ -520,7 +520,8 @@ def test_suggest_returns_follow_up(client, monkeypatch):
     token = main.create_token("u", "user")
     resp = client.post("/suggest", json={"text": "diabetes"}, headers=auth_header(token))
     data = resp.json()
-    assert data["followUp"] == "3 months"
+    assert data["followUp"]["interval"] == "3 months"
+    assert "BEGIN:VCALENDAR" in data["followUp"]["ics"]
     
 
 def test_suggest_with_demographics(client, monkeypatch):

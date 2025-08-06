@@ -35,8 +35,9 @@ function SuggestionPanel({
       fetchSuggestions(text, { specialty, payer });
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [text, fetchSuggestions, specialty, payer]);
-  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics}|string }
+  }, [text, fetchSuggestions]);
+  // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
+
   const cards = [];
   if (!settingsState || settingsState.enableCodes) {
     cards.push({

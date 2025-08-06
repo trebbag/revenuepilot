@@ -51,6 +51,7 @@ from .scheduling import recommend_follow_up, export_ics
 
 
 
+
 import json
 import sqlite3
 import hashlib
@@ -691,6 +692,13 @@ class DifferentialSuggestion(BaseModel):
     score: Optional[confloat(ge=0, le=1)] = None
 
 
+class FollowUp(BaseModel):
+    """Recommended follow-up interval and optional calendar event."""
+
+    interval: Optional[str]
+    ics: Optional[str] = None
+
+
 class SuggestionsResponse(BaseModel):
     """Schema for the suggestions returned to the frontend."""
 
@@ -698,7 +706,7 @@ class SuggestionsResponse(BaseModel):
     compliance: List[str]
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
-    followUp: Optional[str] = None
+    followUp: Optional[FollowUp] = None
 
 
 class ScheduleRequest(BaseModel):
@@ -706,11 +714,9 @@ class ScheduleRequest(BaseModel):
     text: str
     codes: Optional[List[str]] = None
 
-
-class ScheduleResponse(BaseModel):
+class ScheduleResponse(FollowUp):
     """Response model containing recommended interval and optional ICS."""
-    interval: Optional[str]
-    ics: Optional[str] = None
+    pass
 
 
 # Schema for logging events from the frontend.  Each event should include
@@ -2001,7 +2007,12 @@ async def suggest(
         # If all categories are empty, raise an error to fall back to rule-based suggestions.
         if not (codes_list or compliance or public_health or diffs):
             raise ValueError("No suggestions returned from LLM")
-        follow_up = recommend_follow_up(cleaned, [c.code for c in codes_list])
+        follow_up = recommend_follow_up(
+            [c.code for c in codes_list],
+            [d.diagnosis for d in diffs],
+            req.specialty,
+            req.payer,
+        )
         return SuggestionsResponse(
             codes=codes_list,
             compliance=compliance,
@@ -2156,7 +2167,12 @@ async def suggest(
                     public_health.append(
                         PublicHealthSuggestion(recommendation=rec, reason=None)
                     )
-        follow_up = recommend_follow_up(cleaned, [c.code for c in codes])
+        follow_up = recommend_follow_up(
+            [c.code for c in codes],
+            [d.diagnosis for d in diffs],
+            req.specialty,
+            req.payer,
+        )
         return SuggestionsResponse(
             codes=codes,
             compliance=compliance,
@@ -2177,6 +2193,5 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
         ScheduleResponse with the recommended interval and ICS string.
     """
     cleaned = deidentify(req.text or "")
-    interval = recommend_follow_up(cleaned, req.codes or [])
-    ics = export_ics(interval) if interval else None
-    return ScheduleResponse(interval=interval, ics=ics)
+    follow = recommend_follow_up(req.codes or [], [cleaned])
+    return ScheduleResponse(**follow)

@@ -4,22 +4,16 @@ import pytest
 from fastapi.testclient import TestClient
 from backend import main
 
-def test_recommend_follow_up_llm(monkeypatch):
-    def fake_call_openai(messages):
-        return "Patient should return in 3 months for follow-up."
-    monkeypatch.setattr(scheduling, "call_openai", fake_call_openai)
-    note = "Routine visit"
-    codes = ["Z00.00"]
-    assert scheduling.recommend_follow_up(note, codes) == "3 months"
 
-def test_recommend_follow_up_fallback(monkeypatch):
-    def boom(messages):
-        raise RuntimeError("boom")
-    monkeypatch.setattr(scheduling, "call_openai", boom)
-    note = "Patient with chronic diabetes under control"
-    codes = ["E11.9"]
-    assert scheduling.recommend_follow_up(note, codes) == "3 months"
+def test_chronic_code_interval():
+    res = scheduling.recommend_follow_up(["E11.9"], [])
+    assert res["interval"] == "3 months"
+    assert "BEGIN:VCALENDAR" in res["ics"]
 
+
+def test_acute_code_interval():
+    res = scheduling.recommend_follow_up(["S93.401A"], [])
+    assert res["interval"] == "2 weeks"
 
 def test_code_specific_intervals():
     note = "Upper respiratory infection"
@@ -30,6 +24,7 @@ def test_export_ics():
     ics = scheduling.export_ics("2 weeks")
     assert "BEGIN:VCALENDAR" in ics
     assert "DTSTART" in ics
+
 
 
 @pytest.fixture
@@ -57,11 +52,7 @@ def auth_header(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_schedule_endpoint(client, monkeypatch):
-    def fake_call_openai(messages):
-        return "Return in 2 weeks"
-
-    monkeypatch.setattr(scheduling, "call_openai", fake_call_openai)
+def test_schedule_endpoint(client):
     token = main.create_token("u", "user")
     resp = client.post(
         "/schedule",
@@ -70,5 +61,6 @@ def test_schedule_endpoint(client, monkeypatch):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["interval"] == "2 weeks"
+    assert data["interval"] == "3 months"
     assert "BEGIN:VCALENDAR" in data["ics"]
+
