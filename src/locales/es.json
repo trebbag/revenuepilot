@@ -35,6 +35,8 @@
     "denialDefRates": "Tasas de denegación y deficiencia",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
+    "denials": "Denegaciones",
+    "deficiencies": "Deficiencias",
     "allClinicians": "Todos los clínicos",
     "range": "Rango",
     "customRange": "Personalizado",

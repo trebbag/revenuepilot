@@ -27,6 +27,8 @@
     "weeklyEvents": "Weekly Events",
     "codingDistribution": "Coding Distribution",
     "denialRates": "Denial Rates",
+    "documentationGaps": "Top Documentation Gaps",
+    "gapCountLabel": "Occurrences",
     "denialRateLabel": "Denial Rate (%)",
     "deficiencyRateLabel": "Deficiency Rate (%)",
     "allClinicians": "All Clinicians",

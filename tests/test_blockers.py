@@ -80,13 +80,13 @@ def test_deidentify_handles_complex_phi():
         "gave SSN 123-45-6789 and lives at 789 Oak Avenue."
     )
     cleaned = deidentify(text)
-    assert "[NAME]" in cleaned, "Multi-word names should be redacted"
+    assert "[NAME:" in cleaned, "Multi-word names should be redacted"
     # Three different date styles should be redacted
-    assert cleaned.count("[DATE]") >= 3, "Dates should be redacted"
-    assert "[PHONE]" in cleaned, "Phone numbers should be redacted"
-    assert "[EMAIL]" in cleaned, "Emails should be redacted"
-    assert "[SSN]" in cleaned, "SSNs should be redacted"
-    assert "[ADDRESS]" in cleaned, "Addresses should be redacted"
+    assert cleaned.count("[DATE:") >= 3, "Dates should be redacted"
+    assert "[PHONE:" in cleaned, "Phone numbers should be redacted"
+    assert "[EMAIL:" in cleaned, "Emails should be redacted"
+    assert "[SSN:" in cleaned, "SSNs should be redacted"
+    assert "[ADDRESS:" in cleaned, "Addresses should be redacted"
 
 
 def test_metrics_requires_authentication():
