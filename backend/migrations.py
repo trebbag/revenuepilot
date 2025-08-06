@@ -41,3 +41,16 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     if "region" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN region TEXT")
     conn.commit()
+
+def ensure_templates_table(conn: sqlite3.Connection) -> None:
+    """Ensure the templates table exists for storing note templates."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS templates ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," 
+        "user TEXT,"
+        "clinic TEXT,"
+        "name TEXT,"
+        "content TEXT"
+        ")"
+    )
+    conn.commit()

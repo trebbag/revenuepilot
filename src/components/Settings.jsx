@@ -11,12 +11,16 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
+  getPromptTemplates,
+  savePromptTemplates,
 } from '../api.js';
+
 
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
 // Region/country codes are user-entered to keep the list flexible
+
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
@@ -27,17 +31,30 @@ function Settings({ settings, updateSettings }) {
   const [tplContent, setTplContent] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [tplError, setTplError] = useState(null);
+  const [promptText, setPromptText] = useState('');
+  const [promptError, setPromptError] = useState(null);
 
   useEffect(() => {
     getTemplates()
       .then((data) => setTemplates(data))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-          alert('Access denied');
+          alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
           window.location.href = '/';
         } else {
           setTplError(e.message);
+        }
+      });
+    getPromptTemplates()
+      .then((data) => setPromptText(JSON.stringify(data, null, 2)))
+      .catch((e) => {
+        if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+          alert('Access denied');
+          localStorage.removeItem('token');
+          window.location.href = '/';
+        } else {
+          setPromptError(e.message);
         }
       });
   }, []);
@@ -48,11 +65,46 @@ function Settings({ settings, updateSettings }) {
       setTemplates((prev) => prev.filter((tpl) => tpl.id !== id));
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
         setTplError(e.message);
+      }
+    }
+  };
+
+  const handlePromptFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      setPromptText(evt.target.result);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleSavePromptTemplates = async () => {
+    let data;
+    try {
+      data = JSON.parse(promptText);
+      if (typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('invalid');
+      }
+    } catch (err) {
+      setPromptError(t('settings.invalidPromptTemplates'));
+      return;
+    }
+    try {
+      await savePromptTemplates(data);
+      setPromptError(null);
+    } catch (e) {
+      if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
+        alert('Access denied');
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      } else {
+        setPromptError(e.message);
       }
     }
   };
@@ -85,7 +137,7 @@ function Settings({ settings, updateSettings }) {
       setTplError(null);
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
-        alert('Access denied');
+        alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
         window.location.href = '/';
       } else {
@@ -119,7 +171,7 @@ function Settings({ settings, updateSettings }) {
       // The backend returns {status: 'saved'} on success or an
       // object with a message on failure.  Display the appropriate
       // status message.
-      setApiKeyStatus(res.status === 'saved' ? 'Saved' : res.message);
+      setApiKeyStatus(res.status === 'saved' ? t('saved') : res.message);
     } catch (e) {
       // If the API call throws, surface the error message to the user.
       setApiKeyStatus(e.message);
@@ -315,6 +367,7 @@ function Settings({ settings, updateSettings }) {
         ))}
       </select>
 
+
       <h3>{t('settings.region')}</h3>
       <input
         type="text"
@@ -323,6 +376,7 @@ function Settings({ settings, updateSettings }) {
         placeholder="e.g., US"
         style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
       />
+
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}

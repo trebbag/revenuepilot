@@ -9,6 +9,11 @@
     "exported": "Exportado",
     "exportFailed": "Error al exportar"
   },
+  "export": "Exportar",
+  "sessionExpired": "Sesión expirada",
+  "saved": "Guardado",
+  "templateManager": "Gestor de plantillas",
+  "ehrExport": "Exportar a EHR",
   "dashboard": {
     "accessDenied": "Acceso denegado",
     "title": "Panel de análisis",
@@ -110,6 +115,10 @@
     "payer": "Pagador",
     "templates": "Plantillas",
     "noTemplates": "Sin plantillas",
+    "promptTemplates": "Plantillas de indicaciones",
+    "promptTemplatesHelp": "Edite el JSON o cargue un archivo para personalizar las indicaciones.",
+    "savePromptTemplates": "Guardar plantillas",
+    "invalidPromptTemplates": "Formato de plantilla inválido",
     "english": "Inglés",
     "spanish": "Español",
     "region": "Región"

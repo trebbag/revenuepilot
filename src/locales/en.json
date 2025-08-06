@@ -9,6 +9,11 @@
     "exported": "Exported",
     "exportFailed": "Export failed"
   },
+  "export": "Export",
+  "sessionExpired": "Session expired",
+  "saved": "Saved",
+  "templateManager": "Template Manager",
+  "ehrExport": "EHR Export",
   "dashboard": {
     "accessDenied": "Access denied",
     "title": "Analytics Dashboard",
@@ -110,6 +115,10 @@
     "payer": "Payer",
     "templates": "Templates",
     "noTemplates": "No templates",
+    "promptTemplates": "Prompt Templates",
+    "promptTemplatesHelp": "Edit JSON instructions or upload a file to customise prompts.",
+    "savePromptTemplates": "Save Templates",
+    "invalidPromptTemplates": "Invalid template format",
     "english": "English",
     "spanish": "Spanish",
     "region": "Region"

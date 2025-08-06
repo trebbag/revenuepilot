@@ -10,6 +10,8 @@ vi.mock('../../api.js', () => ({
   createTemplate: vi.fn(),
   updateTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
+  getPromptTemplates: vi.fn().mockResolvedValue({}),
+  savePromptTemplates: vi.fn(),
 }));
 import { saveSettings, setApiKey } from '../../api.js';
 import Settings from '../Settings.jsx';
