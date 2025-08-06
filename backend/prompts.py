@@ -117,11 +117,19 @@ def _get_custom_examples(
     messages.extend(collect(templates.get("default", {}).get(category, {})))
     if specialty:
         messages.extend(
-            collect(templates.get("specialty", {}).get(specialty, {}).get(category, {}))
+            collect(
+                templates.get("specialty", {})
+                .get(specialty.lower(), {})
+                .get(category, {})
+            )
         )
     if payer:
         messages.extend(
-            collect(templates.get("payer", {}).get(payer, {}).get(category, {}))
+            collect(
+                templates.get("payer", {})
+                .get(payer.lower(), {})
+                .get(category, {})
+            )
         )
     return messages
 
@@ -263,7 +271,12 @@ def build_summary_prompt(
     return messages
 
 
-def build_template_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
+def build_template_prompt(
+    text: str,
+    lang: str = "en",
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """Build a template manager prompt in the requested language."""
     default_instructions = {
         "en": (
@@ -276,15 +289,23 @@ def build_template_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    extra = _get_custom_instruction("template", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
     if lang == "es":
         instructions = f"{instructions} Responde en español."
-    return [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
+    messages.extend(_get_custom_examples("template", lang, specialty, payer))
+    messages.append({"role": "user", "content": text})
+    return messages
 
 
-def build_export_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
+def build_export_prompt(
+    text: str,
+    lang: str = "en",
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+) -> List[Dict[str, str]]:
     """Build an EHR export prompt in the requested language."""
     default_instructions = {
         "en": (
@@ -297,9 +318,12 @@ def build_export_prompt(text: str, lang: str = "en") -> List[Dict[str, str]]:
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    extra = _get_custom_instruction("export", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
     if lang == "es":
         instructions = f"{instructions} Responde en español."
-    return [
-        {"role": "system", "content": instructions},
-        {"role": "user", "content": text},
-    ]
+    messages: List[Dict[str, str]] = [{"role": "system", "content": instructions}]
+    messages.extend(_get_custom_examples("export", lang, specialty, payer))
+    messages.append({"role": "user", "content": text})
+    return messages
