@@ -44,6 +44,27 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
     }
   };
 
+  const exportRtf = async () => {
+    try {
+      const ipcRenderer = window.require
+        ? window.require('electron').ipcRenderer
+        : null;
+      if (!ipcRenderer) return;
+      await ipcRenderer.invoke('export-rtf', { beautified, summary });
+      setFeedback(t('clipboard.exported'));
+      if (patientID) {
+        logEvent('export-rtf', {
+          patientID,
+          beautifiedLength: beautified.length,
+          summaryLength: summary.length,
+        }).catch(() => {});
+      }
+      setTimeout(() => setFeedback(''), 2000);
+    } catch {
+      setFeedback(t('clipboard.exportFailed'));
+    }
+  };
+
   return (
     <>
         <button disabled={!beautified} onClick={() => copy(beautified, 'beautified')}>
@@ -54,6 +75,9 @@ function ClipboardExportButtons({ beautified, summary, patientID }) {
         </button>
         <button disabled={!beautified && !summary} onClick={exportNote}>
           {t('clipboard.export')}
+        </button>
+        <button disabled={!beautified && !summary} onClick={exportRtf}>
+          {t('clipboard.exportRtf')}
         </button>
       {feedback && <span className="copy-feedback">{feedback}</span>}
     </>

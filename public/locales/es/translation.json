@@ -3,6 +3,7 @@
     "copyBeautified": "Copiar embellecido",
     "copySummary": "Copiar resumen",
     "export": "Exportar",
+    "exportRtf": "Exportar RTF",
     "beautifiedCopied": "Nota embellecida copiada",
     "summaryCopied": "Resumen copiado",
     "copyFailed": "Error al copiar",
