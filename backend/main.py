@@ -96,6 +96,11 @@ except Exception:
     _PHILTER_AVAILABLE = False
     _philter = None  # type: ignore
 
+# Select the PHI scrubbing backend. ``presidio`` and ``philter`` are supported
+# when installed.  ``auto`` (default) prefers Presidio and falls back to
+# Philter, then simple regex replacements if neither is available.
+_DEID_ENGINE = os.getenv("DEID_ENGINE", "auto").lower()
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="RevenuePilot API")
@@ -437,50 +442,62 @@ def deidentify(text: str) -> str:
         The cleaned text with sensitive spans replaced by tokens such as
         ``[NAME]`` or ``[PHONE]``.
     """
+    engine = _DEID_ENGINE
+    backends: List[str] = []
+    if engine == "presidio":
+        backends.append("presidio")
+    elif engine == "philter":
+        backends.append("philter")
+    else:  # auto
+        backends.extend(["presidio", "philter"])
 
-    if _PRESIDIO_AVAILABLE:
-        try:
-            entities = [
-                "PERSON",
-                "PHONE_NUMBER",
-                "EMAIL_ADDRESS",
-                "US_SSN",
-                "DATE_TIME",
-                "ADDRESS",
-            ]
-            results = _analyzer.analyze(text=text, language="en", entities=entities)
-            token_map = {
-                "PERSON": "NAME",
-                "PHONE_NUMBER": "PHONE",
-                "EMAIL_ADDRESS": "EMAIL",
-                "US_SSN": "SSN",
-                "DATE_TIME": "DATE",
-                "ADDRESS": "ADDRESS",
-            }
-            operators = {
-                r.entity_type: OperatorConfig(
-                    "replace", {"new_value": f"[{token_map.get(r.entity_type, r.entity_type)}]"}
-                )
-                for r in results
-            }
-            text = _anonymizer.anonymize(
-                text=text, analyzer_results=results, operators=operators
-            ).text
-            return text
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.warning("Advanced scrubber failed: %s", exc)
-
-    if _PHILTER_AVAILABLE:
-        try:
-            # Philter replaces detected PHI with the literal "**PHI**".
-            if hasattr(_philter, "philter"):
-                text = _philter.philter(text)
-            elif hasattr(_philter, "filter"):
-                text = _philter.filter(text)
-            text = text.replace("**PHI**", "[PHI]")
-            return text
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.warning("Philter failed: %s", exc)
+    for backend_name in backends:
+        if backend_name == "presidio" and _PRESIDIO_AVAILABLE:
+            try:
+                entities = [
+                    "PERSON",
+                    "PHONE_NUMBER",
+                    "EMAIL_ADDRESS",
+                    "US_SSN",
+                    "DATE_TIME",
+                    "ADDRESS",
+                ]
+                results = _analyzer.analyze(text=text, language="en", entities=entities)
+                token_map = {
+                    "PERSON": "NAME",
+                    "PHONE_NUMBER": "PHONE",
+                    "EMAIL_ADDRESS": "EMAIL",
+                    "US_SSN": "SSN",
+                    "DATE_TIME": "DATE",
+                    "ADDRESS": "ADDRESS",
+                }
+                operators = {
+                    r.entity_type: OperatorConfig(
+                        "replace",
+                        {"new_value": f"[{token_map.get(r.entity_type, r.entity_type)}]"},
+                    )
+                    for r in results
+                }
+                text = _anonymizer.anonymize(
+                    text=text, analyzer_results=results, operators=operators
+                ).text
+                return text
+            except Exception as exc:  # pragma: no cover - best effort
+                logging.warning("Advanced scrubber failed: %s", exc)
+        elif backend_name == "philter" and _PHILTER_AVAILABLE:
+            try:
+                # Philter replaces detected PHI with the literal "**PHI**".
+                if hasattr(_philter, "philter"):
+                    text = _philter.philter(text)
+                elif hasattr(_philter, "filter"):
+                    text = _philter.filter(text)
+                text = text.replace("**PHI**", "[PHI]")
+                return text
+            except Exception as exc:  # pragma: no cover - best effort
+                logging.warning("Philter failed: %s", exc)
+        else:
+            # Requested backend not available; move to next.
+            continue
 
     if _SCRUBBER_AVAILABLE:
         try:
@@ -500,7 +517,8 @@ def deidentify(text: str) -> str:
     )
 
     phone_pattern = re.compile(
-        r"(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b",
+        r"(?:(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b"
+        r"|\+\d{1,3}[-\.\s]?\d{1,4}[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
         re.IGNORECASE,
     )
     date_pattern = re.compile(
@@ -513,13 +531,13 @@ def deidentify(text: str) -> str:
         re.IGNORECASE,
     )
     email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
-    ssn_pattern = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+    ssn_pattern = re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b")
     address_pattern = re.compile(
-        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
+        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)?\b",
         re.IGNORECASE,
     )
     name_pattern = re.compile(
-        r"\b[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.|[a-z]{2,3}))*\s+[A-Z][a-z]+\b"
+        r"\b(?:(?:Dr|Mr|Mrs|Ms|Prof)\.?\s+)?[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.|[a-z]{2,3}))*\s+[A-Z][a-z]+\b"
     )
 
     patterns = [
