@@ -98,3 +98,16 @@ def test_metrics_timeseries_and_range():
     resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})
     data = resp.json()
     assert data['total_notes'] == 1
+
+
+def test_timeseries_always_present():
+    client = TestClient(main.app)
+    main.db_conn.execute('DELETE FROM events')
+    main.db_conn.commit()
+    token = main.create_token('tester', 'admin')
+    resp = client.get('/metrics', headers={'Authorization': f'Bearer {token}'})
+    data = resp.json()
+    assert 'daily' in data['timeseries']
+    assert 'weekly' in data['timeseries']
+    assert isinstance(data['timeseries']['daily'], list)
+    assert isinstance(data['timeseries']['weekly'], list)

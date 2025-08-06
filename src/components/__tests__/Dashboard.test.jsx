@@ -28,6 +28,7 @@ vi.mock('../../api.js', () => ({
     denial_rate: 0.1,
     denial_rates: { '99213': 0.1 },
     deficiency_rate: 0.2,
+    clinicians: ['alice', 'bob'],
     timeseries: {
       daily: [
         {
@@ -80,6 +81,8 @@ test('renders charts and calls API', async () => {
   expect(document.querySelector('[data-testid="weekly-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="codes-pie"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="denial-rate-bar"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="deficiency-rate-bar"]')).toBeTruthy();
 });
 
 test('applies date range filters', async () => {
@@ -87,11 +90,13 @@ test('applies date range filters', async () => {
   await waitFor(() => document.querySelector('[data-testid="daily-line"]'));
   const startInput = getByLabelText('Start');
   const endInput = getByLabelText('End');
+  const clinicianSelect = getByLabelText('Clinician');
   fireEvent.change(startInput, { target: { value: '2024-01-01' } });
   fireEvent.change(endInput, { target: { value: '2024-01-07' } });
+  fireEvent.change(clinicianSelect, { target: { value: 'alice' } });
   getByText('Apply').click();
   await waitFor(() => expect(getMetrics).toHaveBeenCalledTimes(2));
-  expect(getMetrics).toHaveBeenLastCalledWith({ start: '2024-01-01', end: '2024-01-07', clinician: '' });
+  expect(getMetrics).toHaveBeenLastCalledWith({ start: '2024-01-01', end: '2024-01-07', clinician: 'alice' });
 });
 
 test('denies access when user not admin', () => {

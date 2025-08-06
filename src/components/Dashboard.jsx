@@ -176,6 +176,51 @@ ChartJS.register(
     };
   };
 
+  const exportCSV = () => {
+    const rows = [];
+    const topLevel = [
+      'total_notes',
+      'total_beautify',
+      'total_suggest',
+      'total_summary',
+      'total_chart_upload',
+      'total_audio',
+      'avg_note_length',
+      'avg_beautify_time',
+      'avg_close_time',
+      'revenue_per_visit',
+      'denial_rate',
+      'deficiency_rate',
+    ];
+    topLevel.forEach((k) => {
+      if (k in metrics) rows.push([k, metrics[k]]);
+    });
+    const daily = metrics.timeseries?.daily || [];
+    rows.push([]);
+    rows.push(['daily']);
+    if (daily.length) {
+      const headers = Object.keys(daily[0]);
+      rows.push(headers);
+      daily.forEach((d) => rows.push(headers.map((h) => d[h] ?? '')));
+    }
+    const weekly = metrics.timeseries?.weekly || [];
+    rows.push([]);
+    rows.push(['weekly']);
+    if (weekly.length) {
+      const headers = Object.keys(weekly[0]);
+      rows.push(headers);
+      weekly.forEach((w) => rows.push(headers.map((h) => w[h] ?? '')));
+    }
+    const csvContent = rows.map((r) => r.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'metrics.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const dailyLabels = metrics.timeseries?.daily?.map((d) => d.date) || [];
   const dailyData = {
     labels: dailyLabels,
@@ -356,6 +401,29 @@ ChartJS.register(
       },
     ],
   };
+  const rateOptions = { scales: { y: { beginAtZero: true, max: 100 } } };
+
+  const denialRateData = {
+    labels: [t('dashboard.denialRateLabel')],
+    datasets: [
+      {
+        label: t('dashboard.denialRateLabel'),
+        data: [metrics.denial_rate ? metrics.denial_rate * 100 : 0],
+        backgroundColor: 'rgba(255, 159, 64, 0.6)',
+      },
+    ],
+  };
+
+  const deficiencyRateData = {
+    labels: [t('dashboard.deficiencyRateLabel')],
+    datasets: [
+      {
+        label: t('dashboard.deficiencyRateLabel'),
+        data: [metrics.deficiency_rate ? metrics.deficiency_rate * 100 : 0],
+        backgroundColor: 'rgba(75, 192, 192, 0.6)',
+      },
+    ],
+  };
 
     const denialData = {
       labels: Object.keys(metrics.denial_rates || {}),
@@ -390,19 +458,28 @@ ChartJS.register(
           </label>
           <label style={{ marginLeft: '0.5rem' }}>
             {t('dashboard.clinician')}
-            <input
-              type="text"
+            <select
               value={inputs.clinician}
               onChange={(e) =>
                 setInputs({ ...inputs, clinician: e.target.value })
               }
-            />
+            >
+              <option value="">{t('dashboard.allClinicians')}</option>
+              {(metrics.clinicians || []).map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
           </label>
           <button
             style={{ marginLeft: '0.5rem' }}
             onClick={() => setFilters(inputs)}
           >
             {t('dashboard.apply')}
+          </button>
+          <button style={{ marginLeft: '0.5rem' }} onClick={exportCSV}>
+            {t('export')}
           </button>
         </div>
       <div className="metrics-grid">
@@ -455,6 +532,20 @@ ChartJS.register(
             <Line data={weeklyData} options={weeklyOptions} data-testid="weekly-line" />
         </div>
       )}
+
+      {typeof metrics.denial_rate === 'number' && (
+          <div style={{ marginTop: '1rem' }}>
+              <h3>{t('dashboard.cards.denialRate')}</h3>
+              <Bar data={denialRateData} options={rateOptions} data-testid="denial-rate-bar" />
+          </div>
+        )}
+
+      {typeof metrics.deficiency_rate === 'number' && (
+          <div style={{ marginTop: '1rem' }}>
+              <h3>{t('dashboard.cards.deficiencyRate')}</h3>
+              <Bar data={deficiencyRateData} options={rateOptions} data-testid="deficiency-rate-bar" />
+          </div>
+        )}
 
       {metrics.coding_distribution &&
         Object.keys(metrics.coding_distribution).length > 0 && (

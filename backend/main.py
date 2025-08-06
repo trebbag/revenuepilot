@@ -748,6 +748,16 @@ async def get_metrics(
 
     cursor = db_conn.cursor()
 
+    # Collect distinct clinicians for the frontend dropdown.
+    cursor.execute(
+        """
+        SELECT DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician
+        FROM events
+        WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') IS NOT NULL
+        """
+    )
+    clinicians = [row["clinician"] for row in cursor.fetchall() if row["clinician"]]
+
     # ------------------------------------------------------------------
     # Build a WHERE clause based on optional query parameters
     # ------------------------------------------------------------------
@@ -955,6 +965,7 @@ async def get_metrics(
         "denial_rate": overall_denial,
         "denial_rates": denial_rates,
         "deficiency_rate": deficiency_rate,
+        "clinicians": clinicians,
         "timeseries": {"daily": daily_list, "weekly": weekly_list},
     }
 @app.post("/summarize")
