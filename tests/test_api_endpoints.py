@@ -381,15 +381,24 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
     monkeypatch.setattr(main, "call_openai", fake_call_openai)
     monkeypatch.setattr(prompts, "get_guidelines", lambda *args, **kwargs: {})
 
-    def fake_ph(age, sex, region):
-        assert age == 50
-        assert sex == "male"
-        assert region == "US"
-        return ["Shingles vaccine"]
+    class DummyResp:
+        def __init__(self, data):
+            self._data = data
 
-    monkeypatch.setattr(
-        main.public_health_api, "get_public_health_suggestions", fake_ph
-    )
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._data
+
+    def fake_get(url, params=None, timeout=10):
+        assert params == {"age": 50, "sex": "male", "region": "US"}
+        if "vaccinations" in url:
+            return DummyResp({"vaccinations": ["Shingles vaccine"]})
+        return DummyResp({"screenings": ["Colon cancer screening"]})
+
+    monkeypatch.setattr(main.public_health_api.requests, "get", fake_get)
+    main.public_health_api.clear_cache()
 
     token_d = main.create_token("u", "user")
     resp = client.post(
@@ -400,3 +409,4 @@ def test_suggest_includes_public_health_from_api(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert "Shingles vaccine" in data["publicHealth"]
+    assert "Colon cancer screening" in data["publicHealth"]

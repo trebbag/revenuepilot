@@ -16,6 +16,7 @@ import {
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
+// Region/country codes are user-entered to keep the list flexible
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
@@ -155,6 +156,16 @@ function Settings({ settings, updateSettings }) {
 
   const handlePayerChange = async (event) => {
     const updated = { ...settings, payer: event.target.value };
+    updateSettings(updated);
+    try {
+      await saveSettings(updated);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleRegionChange = async (event) => {
+    const updated = { ...settings, region: event.target.value };
     updateSettings(updated);
     try {
       await saveSettings(updated);
@@ -303,6 +314,15 @@ function Settings({ settings, updateSettings }) {
           </option>
         ))}
       </select>
+
+      <h3>{t('settings.region')}</h3>
+      <input
+        type="text"
+        value={settings.region || ''}
+        onChange={handleRegionChange}
+        placeholder="e.g., US"
+        style={{ width: '100%', padding: '0.5rem', marginBottom: '0.5rem', border: '1px solid var(--disabled)', borderRadius: '4px' }}
+      />
 
       <h3>{t('settings.templates')}</h3>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
