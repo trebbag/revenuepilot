@@ -35,7 +35,7 @@ from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
-from .migrations import ensure_settings_table
+from .migrations import ensure_settings_table, ensure_templates_table
 
 
 import json
@@ -172,6 +172,9 @@ db_conn.commit()
 # Persisted user preferences for theme, enabled categories and custom rules.
 # Ensure the table exists and contains the latest schema (including ``lang``).
 ensure_settings_table(db_conn)
+
+# Table storing user and clinic specific note templates.
+ensure_templates_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -658,7 +661,7 @@ async def log_event(event: EventModel, user=Depends(require_role("user"))) -> Di
 
 
 @app.get("/templates", response_model=List[TemplateModel])
-def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
+def get_templates(user=Depends(require_role("user"))) -> List[TemplateModel]:
     """Return custom templates for the current user and clinic."""
 
     clinic = user.get("clinic")
@@ -671,7 +674,7 @@ def get_templates(user=Depends(require_role("admin"))) -> List[TemplateModel]:
 
 
 @app.post("/templates", response_model=TemplateModel)
-def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
+def create_template(tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
     """Create a new custom template for the user."""
 
     clinic = user.get("clinic")
@@ -686,7 +689,7 @@ def create_template(tpl: TemplateModel, user=Depends(require_role("admin"))) -> 
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
-def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("admin"))) -> TemplateModel:
+def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))) -> TemplateModel:
     """Update an existing custom template owned by the current user."""
 
     cursor = db_conn.cursor()
@@ -701,7 +704,7 @@ def update_template(template_id: int, tpl: TemplateModel, user=Depends(require_r
 
 
 @app.delete("/templates/{template_id}")
-def delete_template(template_id: int, user=Depends(require_role("admin"))) -> Dict[str, str]:
+def delete_template(template_id: int, user=Depends(require_role("user"))) -> Dict[str, str]:
     """Delete a custom template owned by the current user."""
 
     cursor = db_conn.cursor()
