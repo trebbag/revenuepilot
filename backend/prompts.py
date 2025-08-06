@@ -118,25 +118,35 @@ def build_beautify_prompt(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """Build a beautify prompt in the requested language."""
+    """Build a beautify prompt in the requested language.
+
+    Custom instructions from ``prompt_templates.json`` are appended when a
+    ``specialty`` or ``payer`` is supplied.
+    """
     default_instructions = {
         "en": (
-            "You are a highly skilled clinical documentation specialist. Your task is to take "
-            "an unformatted draft note and return a polished, professional version. Never "
-            "invent or infer new clinical information and remove any patient identifiers or "
-            "protected health information (PHI). Organise the provided content into separate "
-            "'Subjective', 'Objective', 'Assessment' and 'Plan' sections when appropriate. If "
-            "a section is missing in the source text, omit it rather than creating new content. "
-            "Correct grammar and spelling, improve clarity and readability, and return only "
-            "the cleaned note without extra commentary, headings or markup."
+            "You are a highly skilled clinical documentation specialist. Your task is to "
+            "take an unformatted draft note and return a polished, professional version. "
+            "Never invent or infer new clinical information and remove any patient "
+            "identifiers or protected health information (PHI). Arrange the content into "
+            "clear 'Subjective:', 'Objective:', 'Assessment:' and 'Plan:' sections, each "
+            "labelled exactly with those headings and preserving every clinical detail "
+            "from the original text. If a section is missing in the source, omit the "
+            "heading rather than creating new content. Correct grammar and spelling, "
+            "improve clarity and readability, and return only the cleaned note with the "
+            "SOAP headings and no additional commentary or markup."
         ),
         "es": (
-            "Usted es un especialista altamente capacitado en documentación clínica. Su tarea es tomar una nota clínica sin "
-            "formato y devolver una versión pulida y profesional. No invente ni suponga nueva información clínica y elimine "
-            "cualquier identificador del paciente o PHI. Organice el contenido proporcionado en secciones separadas 'Subjetivo', "
-            "'Objetivo', 'Evaluación' y 'Plan' cuando corresponda. Si alguna sección no está presente en el texto original, omítala en "
-            "lugar de crear contenido nuevo. Corrija la gramática y la ortografía, mejore la claridad y la legibilidad y devuelva "
-            "únicamente la nota mejorada sin comentarios adicionales, encabezados ni marcas. La nota devuelta debe estar en español."
+            "Usted es un especialista altamente capacitado en documentación clínica. Su "
+            "tarea es tomar una nota clínica sin formato y devolver una versión pulida y "
+            "profesional. No invente ni suponga nueva información clínica y elimine "
+            "cualquier identificador del paciente o PHI. Organice el contenido en secciones "
+            "claras 'Subjetivo:', 'Objetivo:', 'Evaluación:' y 'Plan:', utilizando esos "
+            "encabezados exactamente y preservando cada detalle clínico del texto original. "
+            "Si falta alguna sección en la fuente, omita el encabezado en lugar de crear "
+            "contenido nuevo. Corrija la gramática y la ortografía, mejore la claridad y la "
+            "legibilidad y devuelva únicamente la nota limpia con los encabezados SOAP y sin "
+            "comentarios adicionales ni marcas. La nota devuelta debe estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
