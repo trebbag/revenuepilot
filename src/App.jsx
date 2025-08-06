@@ -12,6 +12,7 @@ import {
   logEvent,
   summarizeNote,
   getSettings,
+  saveSettings,
   refreshAccessToken,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
@@ -138,6 +139,7 @@ function App() {
     rules: [],
     region: '',
     useLocalModels: false,
+    template: null,
   };
   // User settings controlling theme and which suggestion categories are enabled.
   const [settingsState, setSettingsState] = useState(defaultSettings);
@@ -145,6 +147,16 @@ function App() {
   // Function to update settings
   const updateSettings = (newSettings) => {
     setSettingsState(newSettings);
+  };
+
+  const handleDefaultTemplateChange = async (tplId) => {
+    const newSettings = { ...settingsState, template: tplId };
+    setSettingsState(newSettings);
+    try {
+      await saveSettings(newSettings);
+    } catch (e) {
+      console.error('Failed to save template selection', e);
+    }
   };
 
   const logout = () => {
@@ -650,6 +662,10 @@ function App() {
                       value={draftText}
                       onChange={handleDraftChange}
                       onTranscriptChange={handleTranscriptChange}
+                      specialty={settingsState.specialty}
+                      payer={settingsState.payer}
+                      defaultTemplateId={settingsState.template}
+                      onTemplateChange={handleDefaultTemplateChange}
                       error={transcriptionError}
                       templateContext={templateContext}
                       suggestionContext={suggestionContext}

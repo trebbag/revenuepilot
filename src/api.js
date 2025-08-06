@@ -173,6 +173,7 @@ export async function getSettings(token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    template: data.template || null,
     useLocalModels: data.useLocalModels || false,
   };
 }
@@ -207,6 +208,7 @@ export async function saveSettings(settings, token) {
     specialty: settings.specialty || null,
     payer: settings.payer || null,
     region: settings.region || '',
+    template: settings.template || null,
     useLocalModels: settings.useLocalModels || false,
   };
   const resp = await fetch(`${baseUrl}/settings`, {
@@ -232,6 +234,7 @@ export async function saveSettings(settings, token) {
     specialty: data.specialty || '',
     payer: data.payer || '',
     region: data.region || '',
+    template: data.template || null,
     useLocalModels: data.useLocalModels || false,
   };
 }
@@ -628,7 +631,7 @@ export async function getMetrics(filters = {}) {
  * Returns an empty array if the backend is unreachable.
  * @returns {Promise<Array<{id:number,name:string,content:string}>>}
  */
-export async function getTemplates(specialty) {
+export async function getTemplates(specialty, payer) {
   const baseUrl =
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
@@ -637,7 +640,10 @@ export async function getTemplates(specialty) {
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const query = specialty ? `?specialty=${encodeURIComponent(specialty)}` : '';
+  const params = new URLSearchParams();
+  if (specialty) params.append('specialty', specialty);
+  if (payer) params.append('payer', payer);
+  const query = params.toString() ? `?${params.toString()}` : '';
   const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');

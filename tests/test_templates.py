@@ -9,7 +9,7 @@ def setup_module(module):
     main.db_conn = sqlite3.connect(":memory:", check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     main.db_conn.execute(
-        "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, specialty TEXT, name TEXT, content TEXT)"
+        "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, specialty TEXT, payer TEXT, name TEXT, content TEXT)"
     )
     main.db_conn.commit()
 
@@ -31,6 +31,17 @@ def test_builtin_template_filter():
     )
     data = resp.json()
     assert data and all(t["specialty"] == "psychiatry" for t in data)
+
+
+def test_builtin_template_payer_filter():
+    client = TestClient(main.app)
+    token = main.create_token("alice", "user", clinic="clinic1")
+    resp = client.get(
+        "/templates?payer=medicare",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    data = resp.json()
+    assert data and all(t.get("payer") == "medicare" for t in data)
 
 
 def test_create_update_and_list_templates():
