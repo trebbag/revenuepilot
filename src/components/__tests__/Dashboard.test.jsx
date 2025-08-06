@@ -28,6 +28,7 @@ vi.mock('../../api.js', () => ({
     denial_rate: 0.1,
     denial_rates: { '99213': 0.1 },
     deficiency_rate: 0.2,
+    compliance_counts: { 'Missing ROS': 2, 'Incomplete history': 1 },
     clinicians: ['alice', 'bob'],
     timeseries: {
       daily: [
@@ -83,6 +84,7 @@ test('renders charts and calls API', async () => {
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-def-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="revenue-line"]')).toBeTruthy();
+  expect(document.querySelector('[data-testid="gaps-bar"]')).toBeTruthy();
 });
 
 test('applies date range filters', async () => {

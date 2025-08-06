@@ -387,6 +387,7 @@ export async function getMetrics(filters = {}) {
       avg_satisfaction: 0,
       public_health_rate: 0,
       compliance_counts: {},
+      top_compliance: [],
       clinicians: [],
       timeseries: { daily: [], weekly: [] },
     };

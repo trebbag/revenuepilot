@@ -1054,6 +1054,13 @@ async def get_metrics(
         beautify_time_sum / beautify_time_count if beautify_time_count else 0
     )
 
+    top_compliance = [
+        {"gap": k, "count": v}
+        for k, v in sorted(
+            compliance_counts.items(), key=lambda item: item[1], reverse=True
+        )[:5]
+    ]
+
     # attach beautify averages to the SQL-produced time series
     for entry in daily_list:
         bt = beautify_daily.get(entry["date"])
@@ -1094,6 +1101,7 @@ async def get_metrics(
         "denial_rates": denial_rates,
         "deficiency_rate": deficiency_rate,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "clinicians": clinicians,
