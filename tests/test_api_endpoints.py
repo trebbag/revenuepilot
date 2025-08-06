@@ -324,7 +324,7 @@ def test_suggest_and_fallback(client, monkeypatch):
                 "codes": [{"code": "A1"}],
                 "compliance": ["c"],
                 "publicHealth": [{"recommendation": "p", "reason": "r"}],
-                "differentials": [{"diagnosis": "d", "score": 10}],
+                "differentials": [{"diagnosis": "d", "score": 0.1}],
             }
         ),
     )

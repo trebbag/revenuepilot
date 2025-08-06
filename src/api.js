@@ -182,7 +182,8 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
  * Get coding and clinical suggestions based on the draft note.
  * The returned object has arrays for different suggestion types.
  * @param {string} text
- * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: string}>}
+ * @returns {Promise<{codes: {code:string,rationale?:string,upgrade_to?:string}[], compliance: string[], publicHealth: {recommendation:string, reason?:string}[], differentials: {diagnosis:string, score?:number}[], followUp?: string}>}  The differential score is a number between 0 and 1.
+
 */
 export async function getSuggestions(text, context = {}) {
   const baseUrl =
@@ -231,7 +232,12 @@ export async function getSuggestions(text, context = {}) {
   // In stub mode, we ignore additional context and return sample suggestions
   return {
     codes: [
-      { code: '99213', rationale: 'Established patient, low complexity', upgrade_to: '99214' },
+      {
+        code: '99213',
+        rationale: 'Established patient, low complexity',
+        upgrade_to: '99214',
+        upgradePath: '99213 → 99214 for extended visit time',
+      },
       { code: '99395', rationale: 'Annual preventive visit' },
     ],
     compliance: ['Include duration of symptoms', 'Add ROS for cardiovascular system'],
@@ -240,8 +246,8 @@ export async function getSuggestions(text, context = {}) {
       { recommendation: 'Screen for depression', reason: 'Common in adults' },
     ],
     differentials: [
-      { diagnosis: 'Influenza', score: 60 },
-      { diagnosis: 'Acute sinusitis', score: 40 },
+      { diagnosis: 'Influenza', score: 0.6 },
+      { diagnosis: 'Acute sinusitis', score: 0.4 },
     ],
     followUp: '3 months',
   };

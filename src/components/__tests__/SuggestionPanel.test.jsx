@@ -16,11 +16,12 @@ test('renders suggestions and handles click', () => {
         publicHealth: [{ recommendation: 'Flu shot', reason: 'Prevents influenza' }],
         differentials: [],
       }}
+
       settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true }}
       onInsert={onInsert}
     />
   );
-  const el = getAllByText((_, el) => el.textContent === 'A — reason').find(
+  const el = getAllByText((_, el) => el.textContent.startsWith('A — reason')).find(
     (node) => node.tagName === 'LI'
   );
   fireEvent.click(el);
@@ -48,4 +49,43 @@ test('renders follow-up with calendar link', () => {
   expect(getByText('3 months')).toBeTruthy();
   const href = getByText('Add to calendar').getAttribute('href');
   expect(href).toContain('text/calendar');
+});
+
+test('renders differential scores as percentages', () => {
+  const { getByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [],
+        differentials: [{ diagnosis: 'Flu', score: 0.42 }],
+      }}
+      settingsState={{ enableDifferentials: true }}
+    />
+  );
+  expect(getByText('Flu — 42%')).toBeTruthy();
+});
+
+test('handles missing or invalid differential scores gracefully', () => {
+  const { getByText, queryByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [],
+        differentials: [
+          { diagnosis: 'NoScore' },
+          { diagnosis: 'BadScore', score: 'oops' },
+          { diagnosis: 'TooHigh', score: 2 },
+        ],
+      }}
+      settingsState={{ enableDifferentials: true }}
+    />
+  );
+  expect(getByText('NoScore')).toBeTruthy();
+  expect(getByText('BadScore')).toBeTruthy();
+  expect(getByText('TooHigh')).toBeTruthy();
+  expect(queryByText(/NoScore\s+—/)).toBeNull();
+  expect(queryByText(/BadScore\s+—/)).toBeNull();
+  expect(queryByText(/TooHigh\s+—/)).toBeNull();
 });
