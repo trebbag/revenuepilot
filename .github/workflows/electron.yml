@@ -27,10 +27,13 @@ jobs:
           CSC_KEY_PASSWORD: password
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run electron:build -- -l
+      - name: Archive installers
+        run: |
+          tar -czf installers.tar.gz -C dist .
       - uses: actions/upload-artifact@v3
         with:
-          name: dist
-          path: dist
+          name: installers
+          path: installers.tar.gz
 
   smoke:
     runs-on: ubuntu-latest
@@ -47,8 +50,9 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v3
         with:
-          name: dist
+          name: installers
           path: dist
+      - run: tar -xzf dist/installers.tar.gz -C dist
       - name: Run update server
         run: |
           npm run update-server &
