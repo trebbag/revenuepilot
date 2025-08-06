@@ -404,6 +404,7 @@ export async function getMetrics(filters = {}) {
       compliance_counts: {},
       avg_satisfaction: 0,
       public_health_rate: 0,
+
       clinicians: [],
       timeseries: { daily: [], weekly: [] },
     };

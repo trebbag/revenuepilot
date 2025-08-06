@@ -270,6 +270,18 @@ ChartJS.register(
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
       {
+        label: t('dashboard.denials'),
+        data: metrics.timeseries?.daily?.map((d) => d.denials || 0) || [],
+        borderColor: 'rgba(255,0,0,1)',
+        backgroundColor: 'rgba(255,0,0,0.2)',
+      },
+      {
+        label: t('dashboard.deficiencies'),
+        data: metrics.timeseries?.daily?.map((d) => d.deficiencies || 0) || [],
+        borderColor: 'rgba(0,128,0,1)',
+        backgroundColor: 'rgba(0,128,0,0.2)',
+      },
+      {
         label: t('dashboard.cards.avgNoteLength'),
         data: metrics.timeseries?.daily?.map((d) => d.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
@@ -301,6 +313,7 @@ ChartJS.register(
   };
 
   const dailyOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: {
       y: { beginAtZero: true },
       y1: {
@@ -352,6 +365,18 @@ ChartJS.register(
         backgroundColor: 'rgba(0,0,0,0.2)',
       },
       {
+        label: t('dashboard.denials'),
+        data: metrics.timeseries?.weekly?.map((w) => w.denials || 0) || [],
+        borderColor: 'rgba(255,0,0,1)',
+        backgroundColor: 'rgba(255,0,0,0.2)',
+      },
+      {
+        label: t('dashboard.deficiencies'),
+        data: metrics.timeseries?.weekly?.map((w) => w.deficiencies || 0) || [],
+        borderColor: 'rgba(0,128,0,1)',
+        backgroundColor: 'rgba(0,128,0,0.2)',
+      },
+      {
         label: t('dashboard.cards.avgNoteLength'),
         data: metrics.timeseries?.weekly?.map((w) => w.avg_note_length || 0) || [],
         borderColor: 'rgba(99,255,132,1)',
@@ -383,6 +408,7 @@ ChartJS.register(
   };
 
   const weeklyOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: {
       y: { beginAtZero: true },
       y1: {
@@ -405,26 +431,27 @@ ChartJS.register(
       },
     ],
   };
+  const revenueLineOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true } },
+  };
 
   const emCodes = ['99212', '99213', '99214', '99215'];
   const totalCodes = emCodes.reduce(
     (sum, c) => sum + (metrics.coding_distribution?.[c] || 0),
     0
   );
-  const codeBarData = {
-    labels: ['E/M'],
-    datasets: emCodes.map((c, idx) => ({
-      label: c,
-      data: [
-        totalCodes
-          ? ((metrics.coding_distribution?.[c] || 0) / totalCodes) * 100
-          : 0,
-      ],
-      backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'][idx],
-    })),
+  const codePieData = {
+    labels: emCodes,
+    datasets: [
+      {
+        data: emCodes.map((c) => metrics.coding_distribution?.[c] || 0),
+        backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0'],
+      },
+    ],
   };
-  const codeBarOptions = {
-    scales: { x: { stacked: true, max: 100 }, y: { stacked: true, beginAtZero: true } },
+  const codePieOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
   };
   const denialDefData = {
     labels: [t('dashboard.cards.denialRate'), t('dashboard.cards.deficiencyRate')],
@@ -439,7 +466,10 @@ ChartJS.register(
       },
     ],
   };
-  const rateOptions = { scales: { y: { beginAtZero: true, max: 100 } } };
+  const rateOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true, max: 100 } },
+  };
 
   const denialData = {
     labels: Object.keys(metrics.denial_rates || {}),
@@ -450,6 +480,29 @@ ChartJS.register(
         backgroundColor: 'rgba(255, 159, 64, 0.6)',
       },
     ],
+  };
+
+
+  const gapEntries = metrics.top_compliance
+    ? metrics.top_compliance
+    : Object.entries(metrics.compliance_counts || {})
+        .map(([gap, count]) => ({ gap, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+  const gapData = {
+    labels: gapEntries.map((g) => g.gap),
+    datasets: [
+      {
+        label: t('dashboard.gapCountLabel'),
+        data: gapEntries.map((g) => g.count),
+        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+      },
+    ],
+
+  const denialOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true, max: 100 } },
+
   };
   return (
       <div className="dashboard">
@@ -554,7 +607,7 @@ ChartJS.register(
           <h3>{t('dashboard.revenueOverTime')}</h3>
           <Line
             data={revenueLineData}
-            options={{ scales: { y: { beginAtZero: true } } }}
+            options={revenueLineOptions}
             data-testid="revenue-line"
           />
         </div>
@@ -577,10 +630,10 @@ ChartJS.register(
         Object.keys(metrics.coding_distribution).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
             <h3>{t('dashboard.codeDistribution')}</h3>
-            <Bar
-              data={codeBarData}
-              options={codeBarOptions}
-              data-testid="codes-bar"
+            <Pie
+              data={codePieData}
+              options={codePieOptions}
+              data-testid="codes-pie"
             />
           </div>
         )}
@@ -589,9 +642,20 @@ ChartJS.register(
         Object.keys(metrics.denial_rates).length > 0 && (
           <div style={{ marginTop: '1rem' }}>
               <h3>{t('dashboard.denialRates')}</h3>
-              <Bar data={denialData} data-testid="denial-bar" />
+              <Bar data={denialData} options={denialOptions} data-testid="denial-bar" />
           </div>
         )}
+
+      {gapEntries.length > 0 && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>{t('dashboard.documentationGaps')}</h3>
+          <Bar
+            data={gapData}
+            options={{ scales: { y: { beginAtZero: true } } }}
+            data-testid="gaps-bar"
+          />
+        </div>
+      )}
     </div>
   );
 }

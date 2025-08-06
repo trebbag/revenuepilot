@@ -24,6 +24,8 @@ def test_metrics_empty_returns_zeros():
     assert data['current']['total_notes'] == 0
     assert data['baseline']['total_notes'] == 0
     assert data['coding_distribution'] == {}
+    assert data['compliance_counts'] == {}
+    assert data['top_compliance'] == []
 
 def test_metrics_aggregation():
     client = TestClient(main.app)
@@ -59,6 +61,16 @@ def test_metrics_aggregation():
             "deficiency": True,
             "timeToClose": 120.0,
         },
+        {
+            "eventType": "suggest",
+            "timestamp": 1500,
+            "compliance": ["Missing ROS", "Incomplete history"],
+        },
+        {
+            "eventType": "suggest",
+            "timestamp": 2500,
+            "compliance": ["Missing ROS"],
+        },
     ]
     token = main.create_token('logger', 'user')
     for ev in events:
@@ -78,6 +90,7 @@ def test_metrics_aggregation():
     assert data['current']['denial_rate'] == pytest.approx(0.5)
     assert data['current']['deficiency_rate'] == pytest.approx(0.5)
     assert data['current']['avg_close_time'] == pytest.approx(90.0)
+
     # Filter by clinician
     resp = client.get(
         '/metrics', params={'clinician': 'alice'}, headers={'Authorization': f'Bearer {admin_token}'}
@@ -101,6 +114,7 @@ def test_metrics_timeseries_and_range():
         {"eventType": "chart_upload", "timestamp": ts1 + 240, "details": json.dumps({})},
         {"eventType": "audio_recorded", "timestamp": ts1 + 300, "details": json.dumps({})},
         {"eventType": "note_started", "timestamp": ts2, "details": json.dumps({"patientID": "p2", "length": 150})},
+        {"eventType": "note_closed", "timestamp": ts1 + 360, "details": json.dumps({"denial": True, "deficiency": True})},
     ]
     for ev in events:
         main.db_conn.execute(
@@ -117,6 +131,8 @@ def test_metrics_timeseries_and_range():
     assert daily['2024-01-01']['notes'] == 1
     assert daily['2024-01-01']['beautify'] == 1
     assert daily['2024-01-01']['suggest'] == 1
+    assert daily['2024-01-01']['denials'] == 1
+    assert daily['2024-01-01']['deficiencies'] == 1
     assert daily['2024-01-08']['notes'] == 1
     # range filter
     resp = client.get('/metrics', params={'start': datetime.utcfromtimestamp(ts2).isoformat()}, headers={'Authorization': f'Bearer {token}'})
