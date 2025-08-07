@@ -698,7 +698,7 @@ function Settings({ settings, updateSettings }) {
 
       <h4>{t('settings.promptTemplates')}</h4>
       {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
-      <h5>Specialty additions</h5>
+      <h5>{t('settings.specialtyAdditions')}</h5>
       {Object.entries(promptTemplates.specialty_modifiers || {}).map(
         ([name, entry]) => (
           <div key={name} style={{ marginBottom: '0.5rem' }}>
@@ -717,23 +717,23 @@ function Settings({ settings, updateSettings }) {
       <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
         <input
           type="text"
-          placeholder="specialty"
+          placeholder={t('settings.specialtyPlaceholder')}
           value={newSpecialty}
           onChange={(e) => setNewSpecialty(e.target.value)}
           style={{ flex: 1, marginRight: '0.5rem' }}
         />
         <input
           type="text"
-          placeholder="instruction"
+          placeholder={t('settings.instructionPlaceholder')}
           value={newSpecialtyText}
           onChange={(e) => setNewSpecialtyText(e.target.value)}
           style={{ flex: 2 }}
         />
         <button onClick={handleAddSpecialtyModifier} style={{ marginLeft: '0.5rem' }}>
-          Add
+          {t('settings.add')}
         </button>
       </div>
-      <h4>Payer additions</h4>
+      <h4>{t('settings.payerAdditions')}</h4>
       {Object.entries(promptTemplates.payer_modifiers || {}).map(
         ([name, entry]) => (
           <div key={name} style={{ marginBottom: '0.5rem' }}>
@@ -752,23 +752,25 @@ function Settings({ settings, updateSettings }) {
       <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
         <input
           type="text"
-          placeholder="payer"
+          placeholder={t('settings.payerPlaceholder')}
           value={newPayer}
           onChange={(e) => setNewPayer(e.target.value)}
           style={{ flex: 1, marginRight: '0.5rem' }}
         />
         <input
           type="text"
-          placeholder="instruction"
+          placeholder={t('settings.instructionPlaceholder')}
           value={newPayerText}
           onChange={(e) => setNewPayerText(e.target.value)}
           style={{ flex: 2 }}
         />
         <button onClick={handleAddPayerModifier} style={{ marginLeft: '0.5rem' }}>
-          Add
+          {t('settings.add')}
         </button>
       </div>
-      <button onClick={handleSavePromptTemplates}>Save snippets</button>
+      <button onClick={handleSavePromptTemplates}>
+        {t('settings.savePromptTemplates')}
+      </button>
     </div>
   );
 }

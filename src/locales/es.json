@@ -38,6 +38,12 @@
     "documentationGaps": "Principales brechas de documentación",
     "gapCountLabel": "Ocurrencias",
     "denialDefRates": "Tasas de denegación y deficiencia",
+    "revenueProjection": "Proyección de ingresos",
+    "denialRateOverTime": "Tasa de denegación a lo largo del tiempo",
+    "revenueProjectionAria": "Proyección de ingresos últimos 30 días",
+    "denialRateAria": "Tasa de denegación últimos 30 días",
+    "exportPng": "Exportar PNG",
+    "exportCsv": "Exportar CSV",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
     "denials": "Denegaciones",
@@ -188,6 +194,12 @@
     "promptTemplatesHelp": "Edite el JSON o cargue un archivo para personalizar las indicaciones.",
     "savePromptTemplates": "Guardar plantillas",
     "invalidPromptTemplates": "Formato de plantilla inválido",
+    "specialtyAdditions": "Adiciones de especialidad",
+    "payerAdditions": "Adiciones de pagador",
+    "specialtyPlaceholder": "especialidad",
+    "payerPlaceholder": "pagador",
+    "instructionPlaceholder": "instrucción",
+    "add": "Agregar",
     "english": "Inglés",
     "spanish": "Español",
     "french": "Francés",
@@ -196,10 +208,13 @@
     "regionPlaceholder": "p. ej., US",
     "specialties": {
       "cardiology": "Cardiología",
-      "dermatology": "Dermatología"
+      "dermatology": "Dermatología",
+      "paediatrics": "Pediatría",
+      "geriatrics": "Geriatría"
     },
     "payers": {
       "medicare": "Medicare",
+      "medicaid": "Medicaid",
       "aetna": "Aetna"
     },
     "useLocalModels": "Activar modelos locales",
@@ -241,7 +256,12 @@
     "save": "Guardar",
     "close": "Cerrar",
     "delete": "Eliminar",
-    "edit": "Editar"
+    "edit": "Editar",
+    "general": "General"
+  },
+  "transcript": {
+    "add": "Añadir",
+    "ignore": "Ignorar"
   },
   "adminUsers": {
     "title": "Usuarios",

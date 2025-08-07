@@ -176,7 +176,7 @@ function TemplatesModal({
         )}
         {Object.entries(
           templates.reduce((acc, tpl) => {
-            const spec = tpl.specialty || 'General';
+            const spec = tpl.specialty || t('templatesModal.general');
             (acc[spec] = acc[spec] || []).push(tpl);
             return acc;
           }, {}),
