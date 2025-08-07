@@ -1,6 +1,10 @@
 import backend.audio_processing as ap
 import pytest
 
+from fastapi.testclient import TestClient
+import sqlite3
+from backend import main
+
 
 def test_simple_transcribe_uses_openai(monkeypatch):
     class DummyResp:
@@ -9,14 +13,14 @@ def test_simple_transcribe_uses_openai(monkeypatch):
     captured = {}
 
     class DummyCreate:
-        def create(self, model, file, language=None):  # noqa: ARG002
+        def create(self, model, file, language=None, timeout=None):  # noqa: ARG002
             captured["language"] = language
             return DummyResp()
 
     class DummyClient:
         audio = type("obj", (), {"transcriptions": DummyCreate()})()
 
-    monkeypatch.setattr(ap, "OpenAI", lambda api_key=None: DummyClient())
+    monkeypatch.setattr(ap, "OpenAI", lambda api_key=None, timeout=None: DummyClient())
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
     result = ap.simple_transcribe(b"data", language="es")
     assert result == "hello world"
@@ -118,7 +122,7 @@ def test_diarize_maps_extra_speakers(monkeypatch):
 
 def test_diarize_fallback_when_unavailable(monkeypatch):
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", False)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "full text")
+    monkeypatch.setattr(ap, "_transcribe_bytes", lambda b, language=None: ("full text", ""))
     result = ap.diarize_and_transcribe(b"bytes", language="es")
     assert result == {
         "provider": "full text",
@@ -139,7 +143,7 @@ def test_diarize_reports_error_on_failure(monkeypatch):
     monkeypatch.setattr(ap, "Pipeline", FailPipeline)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
     monkeypatch.setattr(ap, "_DIARISATION_PIPELINE", None)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "fallback")
+    monkeypatch.setattr(ap, "_transcribe_bytes", lambda b, language=None: ("fallback", ""))
     result = ap.diarize_and_transcribe(b"bytes", language="en")
     assert result["provider"] == "fallback"
     assert result["segments"] == [
@@ -150,7 +154,7 @@ def test_diarize_reports_error_on_failure(monkeypatch):
 
 def test_transcribe_placeholder_on_failure(monkeypatch):
     class DummyCreate:
-        def create(self, model, file):  # noqa: ARG002
+        def create(self, model, file, language=None, timeout=None):  # noqa: ARG002
             raise RuntimeError("boom")
 
     class DummyClient:
@@ -182,3 +186,79 @@ def test_select_model_by_language(monkeypatch):
     monkeypatch.delenv("WHISPER_MODEL", raising=False)
     assert ap._select_model("en") == "medium.en"
     assert ap._select_model("es") == "medium"
+
+
+@pytest.fixture
+def client(monkeypatch):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    db.execute(
+        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
+    )
+    pwd = main.hash_password("pw")
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("user", pwd, "user"),
+    )
+    db.commit()
+    monkeypatch.setattr(main, "db_conn", db)
+    yield TestClient(main.app)
+    db.close()
+
+
+def auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_transcribe_endpoint_diarised(client, monkeypatch):
+    monkeypatch.setenv("OFFLINE_TRANSCRIBE", "true")
+
+    transcripts = ["p", "q"]
+
+    def fake_simple(_, language=None):  # noqa: ARG002
+        return transcripts.pop(0)
+
+    class DummyDiarization:
+        def itertracks(self, yield_label=True):  # noqa: ARG002
+            yield ("turn1", None, "SPEAKER_00")
+            yield ("turn2", None, "SPEAKER_01")
+
+    class DummyPipeline:
+        @classmethod
+        def from_pretrained(cls, name):  # noqa: ARG002
+            return cls()
+
+        def __call__(self, path):  # noqa: ARG002
+            return DummyDiarization()
+
+    class DummyAudio:
+        def crop(self, path, turn):  # noqa: ARG002
+            return b"wave", 16000
+
+    class DummyTorchaudio:
+        @staticmethod
+        def save(buf, waveform, sr, format):  # noqa: ARG002
+            buf.write(b"audio")
+
+    monkeypatch.setattr(ap, "Pipeline", DummyPipeline)
+    monkeypatch.setattr(ap, "Audio", DummyAudio)
+    monkeypatch.setattr(ap, "torchaudio", DummyTorchaudio)
+    monkeypatch.setattr(ap, "simple_transcribe", fake_simple)
+    monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
+    monkeypatch.setattr(ap, "_DIARISATION_PIPELINE", None)
+
+    token = main.create_token("user", "user")
+    resp = client.post(
+        "/transcribe?diarise=true",
+        files={"file": ("a.wav", b"bytes")},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "provider": "p",
+        "patient": "q",
+        "segments": [
+            {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "p"},
+            {"speaker": "patient", "start": 0.0, "end": 0.0, "text": "q"},
+        ],
+    }

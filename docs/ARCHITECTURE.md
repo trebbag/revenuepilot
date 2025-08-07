@@ -13,14 +13,15 @@ This document provides a high‑level overview of the components that make up th
 - **Logs** (`Logs.jsx`): Calls `/events` to stream recent events for debugging.  Shows event type, timestamp and any details.
 - **Settings** (`Settings.jsx`): Lets users select a theme, enable/disable suggestion categories, enter custom clinical rules and store the OpenAI API key.  Saving the key posts to `/apikey` which writes it to `backend/openai_key.txt`.
 - **Drafts** (`Drafts.jsx`): Saves drafts to `localStorage` using the patient ID as a key.  Users can switch patients and recall previous drafts.
+- **Transcript view** (`TranscriptView.jsx`): Displays diarised audio segments with timestamps and buttons to insert or ignore individual pieces before merging them into the note.
 - **Sidebar** (`Sidebar.jsx`): Provides navigation between note taking, drafts, dashboard, logs, settings and help views.  It collapses on small screens.
 
 ### Backend (`backend/`)
 
-- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
+- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), transcribe audio (`/transcribe?diarise=true|false`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
 - **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load extra instructions from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
 - **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
-- **Audio processing** (`audio_processing.py`): Provides stubbed functions for diarisation and transcription.  They return empty strings and need to be implemented with real speech‑to‑text libraries (e.g. Whisper, pyannote).  This module demonstrates the expected API and highlights a current gap in functionality.
+- **Audio processing** (`audio_processing.py`): Implements speech‑to‑text using OpenAI Whisper with a local fallback.  When the optional `pyannote.audio` dependency is available (configured via `PYANNOTE_TOKEN`) the module performs speaker diarisation and returns provider/patient segments.  Errors are surfaced via an `error` field so callers can handle failures gracefully.
 
 ### Storage
 

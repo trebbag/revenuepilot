@@ -343,7 +343,7 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
 
     monkeypatch.setattr(ap, "Pipeline", FailPipeline)
     monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", True)
-    monkeypatch.setattr(ap, "simple_transcribe", lambda b, language=None: "fallback")
+    monkeypatch.setattr(ap, "_transcribe_bytes", lambda b, language=None: ("fallback", ""))
     token = main.create_token("u", "user")
     resp = client.post(
         "/transcribe?diarise=true",

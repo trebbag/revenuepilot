@@ -7,6 +7,7 @@ import Dashboard from './components/Dashboard.jsx';
 import Logs from './components/Logs.jsx';
 import Help from './components/Help.jsx';
 import Settings from './components/Settings.jsx';
+import TranscriptView from './components/TranscriptView.jsx';
 import {
   beautifyNote,
   logEvent,
@@ -84,6 +85,7 @@ function App() {
   const [audioTranscript, setAudioTranscript] = useState({
     provider: '',
     patient: '',
+    segments: [],
   });
 
   const [recording, setRecording] = useState(false);
@@ -470,17 +472,29 @@ function App() {
     setAudioTranscript({
       provider: data.provider || '',
       patient: data.patient || '',
+      segments: data.segments || [],
     });
-    const combined = `${data.provider || ''}${
-      data.provider && data.patient ? '\n' : ''
-    }${data.patient || ''}`.trim();
-    if (combined) {
-      setDraftText((prev) => {
-        const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
-        return `${prev}${prefix}${combined}`;
-      });
-      setActiveTab('draft');
-    }
+    setActiveTab('draft');
+  };
+
+  const handleAddSegment = (idx) => {
+    const seg = audioTranscript.segments[idx];
+    if (!seg) return;
+    setDraftText((prev) => {
+      const prefix = prev && !prev.endsWith('\n') ? '\n' : '';
+      return `${prev}${prefix}${seg.text}`;
+    });
+    setAudioTranscript((prev) => ({
+      ...prev,
+      segments: prev.segments.filter((_, i) => i !== idx),
+    }));
+  };
+
+  const handleIgnoreSegment = (idx) => {
+    setAudioTranscript((prev) => ({
+      ...prev,
+      segments: prev.segments.filter((_, i) => i !== idx),
+    }));
   };
 
   // Keep track of previous draft text to detect when a new note is started
@@ -718,6 +732,13 @@ function App() {
                   )}
 
                 </div>
+                {audioTranscript.segments.length > 0 && (
+                  <TranscriptView
+                    transcript={audioTranscript}
+                    onAdd={handleAddSegment}
+                    onIgnore={handleIgnoreSegment}
+                  />
+                )}
               </div>
               {(() => {
                 return (
