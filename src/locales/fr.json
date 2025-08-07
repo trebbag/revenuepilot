@@ -225,7 +225,10 @@
     "useLocalModelsHelp": "Utiliser les modèles téléchargés hors ligne au lieu des remplaçants.",
     "beautifyModel": "Chemin du modèle d'embellissement",
     "suggestModel": "Chemin du modèle de suggestions",
-    "summarizeModel": "Chemin du modèle de résumé"
+    "summarizeModel": "Chemin du modèle de résumé",
+    "downloadModels": "Télécharger les modèles locaux",
+    "downloadModelsProgress": "Progression du téléchargement",
+    "downloadModelsError": "Échec du téléchargement"
   },
   "sidebar": {
     "notes": "Notes",
