@@ -1,5 +1,8 @@
 # RevenuePilot App Skeleton
 
+![Python Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/revenuepilot/revenuepilot/main/coverage/python-coverage.json)
+![JS Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/revenuepilot/revenuepilot/main/coverage/js-coverage.json)
+
 This directory contains a **minimal scaffold** for the RevenuePilot desktop application.
 It is designed to reflect the approved wireframes (note editor with tabbed draft/beautified views
 and a suggestion panel) and uses a clean, high‑contrast colour palette.  The scaffold is not

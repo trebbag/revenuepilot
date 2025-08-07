@@ -28,7 +28,6 @@ backend/venv/
 backend/requirements.lock
 # Logs and coverage
 *.log
-coverage/
 
 # Electron icons
 assets/*.icns

@@ -2,27 +2,20 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  backend:
+  tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - run: pip install -r backend/requirements.txt pytest pytest-cov pytest-asyncio httpx ruff
-      - run: python -m spacy download en_core_web_sm
-      - run: ruff check backend
-      - run: pytest
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:
           node-version: '18'
+      - run: pip install -r backend/requirements_dev.txt
+      - run: python -m spacy download en_core_web_sm
       - run: npm ci
-      - run: npm run lint
-      - run: npm test
+      - run: ./ci.sh
   electron:
     runs-on: ubuntu-latest
     steps:
