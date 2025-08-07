@@ -2,7 +2,7 @@
 
 This roadmap reflects the outstanding bugs, missing features and future enhancements discussed in the planning chats.  Each item is grouped by priority (P0–P2).  P0 items are blockers that should be tackled before new feature work; P1 items are important but not immediately blocking; P2 items are nice‑to‑haves or longer‑term goals.
 
-**Status:** Speech‑to‑Text & Diarisation – 100% complete. Advanced PHI Scrubbing – 100% complete.
+**Status:** Speech‑to‑Text & Diarisation – 100% complete. Advanced PHI Scrubbing – 100% complete. User settings persistence – 100% complete.
 
 ## P0 – Blockers
 
@@ -12,7 +12,6 @@ This roadmap reflects the outstanding bugs, missing features and future enhancem
 ## P1 – Important Enhancements
 
 - **EHR Integration:** Plan and implement FHIR POST of the final note and codes into supported EHRs.  Provide an optional backend integration layer for clinics that prefer direct insertion over copy‑paste.
-- **User Settings & Preferences:** Persist user settings (theme, enabled suggestion categories, custom rules) in a database so that they travel with the user rather than being stored solely in the browser.
 - **Internationalisation:** Add support for multiple locales and languages in the UI and prompts, starting with Spanish.
 - **Refined Prompts:** Continuously improve prompt templates based on pilot feedback.  Allow dynamic prompt injection for different specialties and payers.
 
