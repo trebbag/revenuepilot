@@ -255,3 +255,35 @@ test('changing theme triggers saveSettings', async () => {
     expect.objectContaining({ theme: 'dark' })
   );
 });
+
+test('adding and deleting custom rules saves settings', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    summaryLang: 'en',
+    region: '',
+    agencies: ['CDC', 'WHO'],
+  };
+  const updateSettings = vi.fn();
+  const { getByLabelText, getByRole, getByText, rerender } = render(
+    <Settings settings={settings} updateSettings={updateSettings} />
+  );
+  fireEvent.change(getByLabelText('Add rule'), {
+    target: { value: 'rule1' },
+  });
+  fireEvent.click(getByRole('button', { name: 'Add rule' }));
+  await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+  rerender(
+    <Settings
+      settings={{ ...settings, rules: ['rule1'] }}
+      updateSettings={updateSettings}
+    />,
+  );
+  fireEvent.click(getByText('Delete'));
+  await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+});
