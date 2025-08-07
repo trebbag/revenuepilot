@@ -45,7 +45,11 @@ from .key_manager import get_api_key, save_api_key, APP_NAME
 from platformdirs import user_data_dir
 from .audio_processing import simple_transcribe, diarize_and_transcribe
 from . import public_health as public_health_api
-from .migrations import ensure_settings_table, ensure_templates_table
+from .migrations import (
+    ensure_settings_table,
+    ensure_templates_table,
+    ensure_events_table,
+)
 from .templates import TemplateModel, load_builtin_templates
 from .scheduling import recommend_follow_up, export_ics
 
@@ -206,6 +210,16 @@ app.add_middleware(
 # to a database.
 events: List[Dict[str, Any]] = []
 
+# Mapping of CPT codes to projected reimbursement amounts.  This mirrors the
+# ``calcRevenue`` helper on the frontend so that revenue projections can be
+# computed server‑side as well.  Any unknown code contributes zero dollars.
+CPT_REVENUE: Dict[str, float] = {
+    "99212": 50.0,
+    "99213": 75.0,
+    "99214": 110.0,
+    "99215": 160.0,
+}
+
 # Cache of recent audio transcripts per user.  Each user retains the last
 # ``TRANSCRIPT_HISTORY_LIMIT`` transcripts so clinicians can revisit previous
 # conversations.  The cache is stored in-memory and reset on server restart.
@@ -231,34 +245,8 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
         pass
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-# Expanded events table storing structured analytics fields.  Older
-# installations may lack these columns; ``ALTER TABLE`` statements add them
-# defensively so the application can upgrade the schema in place.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS events ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "eventType TEXT NOT NULL,"
-    "timestamp REAL NOT NULL,"
-    "details TEXT,"
-    "revenue REAL,"
-    "codes TEXT,"
-    "compliance_flags TEXT,"
-    "public_health INTEGER,"
-    "satisfaction INTEGER"
-    ")"
-)
-for col, typ in [
-    ("revenue", "REAL"),
-    ("codes", "TEXT"),
-    ("compliance_flags", "TEXT"),
-    ("public_health", "INTEGER"),
-    ("satisfaction", "INTEGER"),
-]:
-    try:
-        db_conn.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
-    except sqlite3.OperationalError:
-        pass
-db_conn.commit()
+# Ensure the events table exists with the latest schema.
+ensure_events_table(db_conn)
 
 
 # Table for user accounts used in role-based authentication.
@@ -1063,6 +1051,17 @@ async def log_event(
         value = getattr(event, key)
         if value is not None:
             data["details"][key] = value
+    codes = data["details"].get("codes") or []
+    if codes and "revenue" not in data["details"]:
+        data["details"]["revenue"] = sum(
+            CPT_REVENUE.get(str(c), 0.0) for c in codes
+        )
+    if "timeToClose" in data["details"]:
+        try:
+            data["details"]["timeToClose"] = float(data["details"]["timeToClose"])
+        except (TypeError, ValueError):
+            pass
+
     events.append(data)
     # Persist the event to the SQLite database.  Serialize the details
     # dictionary as JSON for storage.  Use a simple INSERT statement
@@ -1071,12 +1070,13 @@ async def log_event(
     # writes or using an async database driver.
     try:
         db_conn.execute(
-            "INSERT INTO events (eventType, timestamp, details, revenue, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (eventType, timestamp, details, revenue, time_to_close, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["eventType"],
                 data["timestamp"],
                 json.dumps(data["details"], ensure_ascii=False),
                 data["details"].get("revenue"),
+                data["details"].get("timeToClose"),
                 (
                     json.dumps(data["details"].get("codes"))
                     if data["details"].get("codes") is not None
@@ -1427,8 +1427,9 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
-                AVG(revenue)     AS revenue_per_visit,
-                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                SUM(revenue) AS revenue_projection,
+                AVG(revenue) AS revenue_per_visit,
+                AVG(time_to_close) AS avg_time_to_close,
                 AVG(satisfaction) AS avg_satisfaction,
                 AVG(public_health) AS public_health_rate
             FROM events {where_clause}
@@ -1444,8 +1445,9 @@ async def get_metrics(
             "total_chart_upload": totals.get("total_chart_upload", 0) or 0,
             "total_audio": totals.get("total_audio", 0) or 0,
             "avg_note_length": totals.get("avg_note_length") or 0,
+            "revenue_projection": totals.get("revenue_projection") or 0,
             "revenue_per_visit": totals.get("revenue_per_visit") or 0,
-            "avg_close_time": totals.get("avg_close_time") or 0,
+            "avg_time_to_close": totals.get("avg_time_to_close") or 0,
         }
 
         cursor.execute(
@@ -1609,10 +1611,12 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
-                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                AVG(time_to_close) AS avg_time_to_close,
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
+                SUM(json_array_length(CASE WHEN json_valid(compliance_flags) THEN compliance_flags ELSE '[]' END)) AS compliance_flags
             FROM events {where_current}
             GROUP BY date
             ORDER BY date
@@ -1632,10 +1636,12 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
+                SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
-                AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.timeToClose') AS REAL)) AS avg_close_time,
+                AVG(time_to_close) AS avg_time_to_close,
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
-                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+                SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
+                SUM(json_array_length(CASE WHEN json_valid(compliance_flags) THEN compliance_flags ELSE '[]' END)) AS compliance_flags
             FROM events {where_current}
             GROUP BY week
             ORDER BY week
@@ -1677,10 +1683,12 @@ async def get_metrics(
             "audio",
             "avg_note_length",
             "avg_beautify_time",
-            "avg_close_time",
+            "avg_time_to_close",
             "revenue_per_visit",
+            "revenue_projection",
             "denials",
             "deficiencies",
+            "compliance_flags",
         ]
         sums: Dict[str, float] = {f: 0.0 for f in fields}
         queues: Dict[str, deque] = {f: deque() for f in fields}
@@ -1743,8 +1751,9 @@ async def get_metrics(
         "total_audio",
         "avg_note_length",
         "avg_beautify_time",
-        "avg_close_time",
+        "avg_time_to_close",
         "revenue_per_visit",
+        "revenue_projection",
         "denial_rate",
         "deficiency_rate",
     ]

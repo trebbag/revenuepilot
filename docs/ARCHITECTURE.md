@@ -47,6 +47,23 @@ This document provides a high‑level overview of the components that make up th
 4. When the user clicks **Summarize**, the frontend sends the note, chart and audio transcript to `/summarize`.  The backend de‑identifies and calls the summary prompt; on failure it truncates the note as a fallback.
 5. Each significant action (starting a note, beautifying, suggesting, summarising, uploading a chart, recording audio) is logged via `/event`.  The backend inserts the event into the SQLite table and appends it to an in‑memory list.  The `/metrics` endpoint queries this table to compute counts and averages; `/events` returns the most recent events.
 
+## Metrics Schema
+
+The `/metrics` endpoint aggregates analytics about clinician activity.  Core
+fields include:
+
+- `revenue_projection` – sum of projected reimbursement based on CPT codes.
+- `revenue_per_visit` – average revenue per encounter.
+- `avg_time_to_close` – mean time in seconds between starting and closing a
+  note.
+- `denial_rate` – percentage of closed notes flagged as denied.
+- `compliance_counts` – tally of documentation flags returned by the AI.
+
+Metrics are grouped by day and week under a `timeseries` key so the dashboard
+can chart trends.  Each record contains totals for the day plus rolling
+averages.  The environment variable `METRICS_LOOKBACK_DAYS` (default 30) limits
+how many days of events are retained for aggregation.
+
 ## Deployment Notes
 
 The current repository is designed for local development.  The `start.sh` script (or `start.ps1` on Windows) runs `uvicorn` for the backend on port 8000 and `npm run dev` for the React frontend on port 5173, setting `VITE_API_URL` accordingly.  For distribution, the project provides an Electron builder setup that bundles the frontend with the FastAPI backend, performs code signing and enables auto‑updates.  Production deployments can alternatively package the backend with Gunicorn/Uvicorn.  Future work will migrate the embedded SQLite database to a full database such as Postgres.

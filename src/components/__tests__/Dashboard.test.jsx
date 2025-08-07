@@ -1,15 +1,19 @@
 /* @vitest-environment jsdom */
+import React from 'react';
 import { render, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import { vi, beforeEach, test, expect, afterEach } from 'vitest';
 
-vi.mock('react-chartjs-2', () => ({
-  Line: ({ data, ...props }) => (
-    <canvas data-chart={JSON.stringify(data)} {...props} />
-  ),
-  Bar: ({ data, ...props }) => (
-    <canvas data-chart={JSON.stringify(data)} {...props} />
-  ),
-}));
+vi.mock('react-chartjs-2', () => {
+  const React = require('react');
+  return {
+    Line: React.forwardRef(({ data, ...props }, ref) => (
+      <canvas data-chart={JSON.stringify(data)} ref={ref} {...props} />
+    )),
+    Bar: React.forwardRef(({ data, ...props }, ref) => (
+      <canvas data-chart={JSON.stringify(data)} ref={ref} {...props} />
+    )),
+  };
+});
 
 vi.mock('jspdf', () => ({
   default: vi.fn(() => ({ text: vi.fn(), save: vi.fn() })),
@@ -26,8 +30,9 @@ vi.mock('../../api.js', () => ({
       total_audio: 0,
       avg_note_length: 0,
       avg_beautify_time: 0,
-      avg_close_time: 0,
+      avg_time_to_close: 0,
       revenue_per_visit: 0,
+      revenue_projection: 0,
       denial_rate: 0,
       deficiency_rate: 0,
     },
@@ -40,8 +45,9 @@ vi.mock('../../api.js', () => ({
       total_audio: 1,
       avg_note_length: 10,
       avg_beautify_time: 5,
-      avg_close_time: 90,
+      avg_time_to_close: 90,
       revenue_per_visit: 100,
+       revenue_projection: 100,
       denial_rate: 0.1,
       deficiency_rate: 0.2,
     },
@@ -62,6 +68,9 @@ vi.mock('../../api.js', () => ({
           summary: 0,
           chart_upload: 0,
           audio: 0,
+          revenue_projection: 100,
+          avg_time_to_close: 90,
+          denial_rate: 0.1,
         },
       ],
       weekly: [
@@ -73,6 +82,9 @@ vi.mock('../../api.js', () => ({
           summary: 0,
           chart_upload: 0,
           audio: 0,
+          revenue_projection: 100,
+          avg_time_to_close: 90,
+          denial_rate: 0.1,
         },
       ],
     },
@@ -112,6 +124,10 @@ test('renders charts and calls API', async () => {
   expect(document.querySelector('[data-testid="denial-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="denial-def-bar"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="revenue-line"]')).toBeTruthy();
+  expect(
+    document.querySelector('[data-testid="revenue-projection-bar"]'),
+  ).toBeTruthy();
+  expect(document.querySelector('[data-testid="denial-rate-line"]')).toBeTruthy();
   expect(document.querySelector('[data-testid="gaps-bar"]')).toBeTruthy();
 });
 

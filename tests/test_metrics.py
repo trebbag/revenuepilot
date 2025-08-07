@@ -11,7 +11,7 @@ def setup_module(module):
     main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     main.db_conn.execute(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
+        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, time_to_close REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
     )
     main.db_conn.execute(
         "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
@@ -33,6 +33,8 @@ def test_metrics_empty_returns_zeros():
     assert data['coding_distribution'] == {}
     assert data['compliance_counts'] == {}
     assert data['top_compliance'] == []
+    assert data['current']['revenue_projection'] == 0
+    assert data['current']['avg_time_to_close'] == 0
 
 def test_metrics_aggregation():
     client = TestClient(main.app)
@@ -96,7 +98,8 @@ def test_metrics_aggregation():
     assert data['coding_distribution']['99214'] == 1
     assert data['current']['denial_rate'] == pytest.approx(0.5)
     assert data['current']['deficiency_rate'] == pytest.approx(0.5)
-    assert data['current']['avg_close_time'] == pytest.approx(90.0)
+    assert data['current']['avg_time_to_close'] == pytest.approx(90.0)
+    assert data['current']['revenue_projection'] == pytest.approx(300.0)
 
     # Filter by clinician
     resp = client.get(
@@ -106,6 +109,7 @@ def test_metrics_aggregation():
     assert data['current']['revenue_per_visit'] == pytest.approx(100.0)
     assert data['coding_distribution'] == {'99213': 1}
     assert data['current']['denial_rate'] == 0
+    assert data['current']['revenue_projection'] == pytest.approx(100.0)
 
 
 def test_metrics_combined_filters():
@@ -130,6 +134,7 @@ def test_metrics_combined_filters():
     data = resp.json()
     assert data['coding_distribution'] == {'99214': 1}
     assert data['current']['revenue_per_visit'] == pytest.approx(200.0)
+    assert data['current']['revenue_projection'] == pytest.approx(200.0)
 
 
 def test_metrics_filters_denial_rate():
@@ -182,10 +187,12 @@ def test_metrics_filters_denial_rate():
     assert data['coding_distribution'] == {'99214': 1}
     assert data['current']['revenue_per_visit'] == pytest.approx(200.0)
     assert data['current']['denial_rate'] == 0
-    assert data['current']['avg_close_time'] == pytest.approx(150.0)
+    assert data['current']['avg_time_to_close'] == pytest.approx(150.0)
+    assert data['current']['revenue_projection'] == pytest.approx(200.0)
     daily = data['timeseries']['daily']
     assert len(daily) == 1
     assert daily[0]['revenue_per_visit'] == pytest.approx(200.0)
+    assert daily[0]['revenue_projection'] == pytest.approx(200.0)
     assert daily[0]['denial_rate'] == 0
 
 
