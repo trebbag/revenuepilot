@@ -8,6 +8,8 @@ sending it to an AI model via ``call_openai``. If the model call fails,
 each endpoint returns a sensible fallback.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import re

@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 pydantic
+numpy<2
 openai
 keyring
 platformdirs
