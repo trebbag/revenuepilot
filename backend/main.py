@@ -2012,9 +2012,13 @@ async def suggest(
             model_path=req.suggestModel,
         )
         public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
-        extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region, req.agencies
-        )
+        try:
+            extra_ph = public_health_api.get_public_health_suggestions(
+                req.age, req.sex, req.region, req.agencies
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logging.warning("Public health fetch failed: %s", exc)
+            extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
@@ -2123,9 +2127,13 @@ async def suggest(
             else:
                 diffs.append(DifferentialSuggestion(diagnosis=str(item), score=None))
         # Augment public health suggestions with external guidelines
-        extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region, req.agencies
-        )
+        try:
+            extra_ph = public_health_api.get_public_health_suggestions(
+                req.age, req.sex, req.region, req.agencies
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logging.warning("Public health fetch failed: %s", exc)
+            extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
@@ -2290,9 +2298,13 @@ async def suggest(
             )
         if not diffs:
             diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
-        extra_ph = public_health_api.get_public_health_suggestions(
-            req.age, req.sex, req.region, req.agencies
-        )
+        try:
+            extra_ph = public_health_api.get_public_health_suggestions(
+                req.age, req.sex, req.region, req.agencies
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logging.warning("Public health fetch failed: %s", exc)
+            extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:

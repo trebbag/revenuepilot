@@ -9,6 +9,24 @@ def _clear_cache():
     public_health.clear_cache()
 
 
+def test_fetch_cdc_parsing(monkeypatch):
+    sample = {"recommendations": [{"text": "Flu shot", "grade": "A"}]}
+    monkeypatch.setattr(public_health, "_download_json", lambda url: sample)
+    res = public_health._fetch_cdc(30, "female", "US")
+    assert res == [
+        {"recommendation": "Flu shot", "source": "CDC", "evidenceLevel": "A"}
+    ]
+
+
+def test_fetch_who_parsing(monkeypatch):
+    sample = {"value": [{"title": "BP check", "evidenceLevel": "B"}]}
+    monkeypatch.setattr(public_health, "_download_json", lambda url: sample)
+    res = public_health._fetch_who(50, "male", "US")
+    assert res == [
+        {"recommendation": "BP check", "source": "WHO", "evidenceLevel": "B"}
+    ]
+
+
 def test_get_public_health_suggestions_includes_source(monkeypatch):
     def fake_cdc(age, sex, region):
         return [
@@ -107,4 +125,12 @@ def test_region_specific_endpoints(monkeypatch):
     public_health.get_public_health_suggestions(40, "male", "EU", ["cdc"])
     public_health.get_public_health_suggestions(40, "male", "US", ["cdc"])
     assert urls == ["https://us.example/cdc", "https://eu.example/cdc"]
+
+
+def test_resolve_region_url():
+    mapping = json.dumps({"US": "https://us", "EU": "https://eu"})
+    assert public_health._resolve_region_url(mapping, "us") == "https://us"
+    pairs = "US:https://us;EU:https://eu"
+    assert public_health._resolve_region_url(pairs, "EU") == "https://eu"
+    assert public_health._resolve_region_url(pairs, "AS") == pairs
 
