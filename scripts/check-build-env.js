@@ -15,6 +15,8 @@ const required = [
 const missing = required.filter((name) => !process.env[name]);
 
 if (missing.length) {
-  console.error(`Missing required environment variables: ${missing.join(', ')}`);
-  process.exit(1);
+  console.warn(
+    `Missing environment variables: ${missing.join(', ')}.\n` +
+      'Continuing unsigned build; set these variables to enable code signing and updates.'
+  );
 }
