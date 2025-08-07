@@ -36,6 +36,9 @@ function Settings({ settings, updateSettings }) {
   const [newSpecialtyText, setNewSpecialtyText] = useState('');
   const [newPayer, setNewPayer] = useState('');
   const [newPayerText, setNewPayerText] = useState('');
+  const [newRule, setNewRule] = useState('');
+  const [editingRule, setEditingRule] = useState(null);
+  const [ruleError, setRuleError] = useState('');
 
   useEffect(() => {
     getTemplates()
@@ -281,13 +284,60 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
+  const handleAddOrUpdateRule = async () => {
+    const text = newRule.trim();
+    if (!text) {
+      setRuleError(t('settings.ruleRequired'));
+      return;
+    }
+    if (text.length > 200) {
+      setRuleError(t('settings.ruleTooLong'));
+      return;
+    }
+    const rules = [...(settings.rules || [])];
+    if (editingRule !== null) {
+      rules[editingRule] = text;
+    } else {
+      rules.push(text);
+    }
+    const updated = { ...settings, rules };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+      setNewRule('');
+      setEditingRule(null);
+      setRuleError('');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleEditRule = (idx) => {
+    setEditingRule(idx);
+    setNewRule((settings.rules || [])[idx] || '');
+    setRuleError('');
+  };
+
+  const handleDeleteRule = async (idx) => {
+    const rules = (settings.rules || []).filter((_, i) => i !== idx);
+    const updated = { ...settings, rules };
+    try {
+      const saved = await saveSettings(updated);
+      updateSettings(saved);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div
       className="settings-page"
       style={{ padding: '1rem', overflowY: 'auto' }}
     >
       <h2>{t('settings.title')}</h2>
-      <h3>{t('settings.apiKey')}</h3>
+
+      <h3>{t('settings.general')}</h3>
+      <h4>{t('settings.apiKey')}</h4>
       <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
         {t('settings.apiKeyHelp')}
       </p>
@@ -295,7 +345,10 @@ function Settings({ settings, updateSettings }) {
         style={{ display: 'flex', alignItems: 'center', marginBottom: '1rem' }}
       >
         <input
+          id="api-key"
           type="password"
+          aria-label={t('settings.apiKey')}
+          title={t('settings.apiKeyHelp')}
           value={apiKeyInput}
           onChange={(e) => setApiKeyInput(e.target.value)}
           placeholder={t('settings.apiKeyPlaceholder')}
@@ -314,7 +367,10 @@ function Settings({ settings, updateSettings }) {
         <p style={{ color: 'var(--secondary)' }}>{apiKeyStatus}</p>
       )}
 
-      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+      <label
+        style={{ display: 'block', marginBottom: '0.5rem' }}
+        title={t('settings.useLocalModelsHelp')}
+      >
         <input
           type="checkbox"
           checked={settings.useLocalModels}
@@ -439,35 +495,6 @@ function Settings({ settings, updateSettings }) {
         {t('settings.showDifferentials')}
       </label>
 
-      <h3>{t('settings.customRules')}</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
-        {t('settings.customRulesHelp')}
-      </p>
-      <textarea
-        value={(settings.rules || []).join('\n')}
-        onChange={async (e) => {
-          const lines = e.target.value
-            .split(/\n+/)
-            .map((line) => line.trim())
-            .filter(Boolean);
-          const updated = { ...settings, rules: lines };
-          try {
-            const saved = await saveSettings(updated);
-            updateSettings(saved);
-          } catch (err) {
-            console.error(err);
-          }
-        }}
-        rows={5}
-        style={{
-          width: '100%',
-          marginTop: '0.5rem',
-          padding: '0.5rem',
-          borderRadius: '4px',
-          border: '1px solid var(--disabled)',
-        }}
-        placeholder={t('settings.customRulesPlaceholder')}
-      />
       <h3>{t('settings.language')}</h3>
       <select
         value={settings.lang}
@@ -538,6 +565,7 @@ function Settings({ settings, updateSettings }) {
         onChange={handleRegionChange}
         placeholder={t('settings.regionPlaceholder')}
         aria-label={t('settings.region')}
+        title={t('settings.regionPlaceholder')}
         style={{
           width: '100%',
           padding: '0.5rem',
@@ -617,9 +645,60 @@ function Settings({ settings, updateSettings }) {
           )}
         </div>
       </div>
-      <h3 style={{ marginTop: '1rem' }}>Prompt snippets</h3>
+      <h3 style={{ marginTop: '1rem' }}>{t('settings.prompts')}</h3>
+
+      <h4>{t('settings.customRules')}</h4>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
+        {t('settings.customRulesHelp')}
+      </p>
+      <label htmlFor="new-rule" title={t('settings.customRulesHelp')}>
+        {t('settings.addRule')}
+      </label>
+      <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
+        <input
+          id="new-rule"
+          type="text"
+          value={newRule}
+          onChange={(e) => setNewRule(e.target.value)}
+          maxLength={200}
+          placeholder={t('settings.customRulesPlaceholder')}
+          style={{ flex: 1, marginRight: '0.5rem' }}
+        />
+        <button onClick={handleAddOrUpdateRule}>
+          {editingRule !== null
+            ? t('settings.saveRule')
+            : t('settings.addRule')}
+        </button>
+      </div>
+      {ruleError && <p style={{ color: 'red' }}>{ruleError}</p>}
+      <ul>
+        {(settings.rules || []).map((r, idx) => (
+          <li
+            key={idx}
+            style={{ display: 'flex', alignItems: 'center', marginBottom: '0.25rem' }}
+          >
+            <span style={{ flex: 1 }}>{r}</span>
+            <button
+              aria-label={t('settings.edit')}
+              onClick={() => handleEditRule(idx)}
+              style={{ marginLeft: '0.25rem' }}
+            >
+              {t('settings.edit')}
+            </button>
+            <button
+              aria-label={t('settings.delete')}
+              onClick={() => handleDeleteRule(idx)}
+              style={{ marginLeft: '0.25rem' }}
+            >
+              {t('settings.delete')}
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <h4>{t('settings.promptTemplates')}</h4>
       {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
-      <h4>Specialty additions</h4>
+      <h5>Specialty additions</h5>
       {Object.entries(promptTemplates.specialty_modifiers || {}).map(
         ([name, entry]) => (
           <div key={name} style={{ marginBottom: '0.5rem' }}>

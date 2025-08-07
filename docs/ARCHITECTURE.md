@@ -35,6 +35,25 @@ This document provides a high‑level overview of the components that make up th
 - **API key file** (`backend/openai_key.txt`): When the user saves their OpenAI key in the settings UI, it is written to this file.  On startup, the backend loads it into the process environment.
 - **Client‑side storage**: Drafts, chart uploads and audio data are stored in the browser’s `localStorage` to avoid transmitting PHI.
 
+### User Settings
+
+User preferences such as theme, enabled suggestion categories and custom rules are
+stored in a dedicated `settings` table. Each row links to a `users.id` and
+contains JSON columns for categories and agencies alongside simple text fields:
+
+- `theme` – current UI theme.
+- `categories` – JSON object of enabled suggestion types.
+- `rules` – JSON array of custom clinical rules.
+- `lang` / `summary_lang` – interface and summary languages.
+- `specialty`, `payer`, `region` – optional context strings.
+- `template` – default template identifier.
+- `use_local_models` – boolean flag for offline inference.
+- `agencies` – JSON array of guideline agencies.
+- `beautify_model`, `suggest_model`, `summarize_model` – optional model paths.
+
+Settings are fetched on login via `/settings` and saved back whenever they change,
+allowing a user's preferences to follow them across devices.
+
 ### Third‑Party Services
 
 - **OpenAI**: Used for beautification, coding/compliance suggestions and patient‑friendly summaries.  Requests are made through the wrapper in `openai_client.py` using chat models (GPT‑4o by default).  Only de‑identified text is sent.
