@@ -15,7 +15,9 @@ from __future__ import annotations
 import io
 import os
 import tempfile
-from typing import Any, Dict
+import threading
+import logging
+from typing import Any, Dict, Tuple
 
 from openai import OpenAI
 
@@ -37,6 +39,7 @@ except Exception:  # pragma: no cover - dependency may be missing
 
 _LOCAL_MODELS: Dict[str, Any] = {}
 _DIARISATION_PIPELINE: Any | None = None
+_TIMEOUT = 15  # seconds
 
 
 def _select_model(language: str | None) -> str:
@@ -55,6 +58,27 @@ def _select_model(language: str | None) -> str:
     return "medium"
 
 
+def _run_with_timeout(func, timeout: int = _TIMEOUT):
+    """Execute ``func`` in a thread respecting ``timeout`` seconds."""
+
+    result: Dict[str, Any] = {}
+
+    def target():
+        try:
+            result["value"] = func()
+        except Exception as exc:  # pragma: no cover - passed to caller
+            result["error"] = exc
+
+    thread = threading.Thread(target=target)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError("operation timed out")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
 def _load_local_model(language: str | None) -> Any:  # pragma: no cover - heavy optional dependency
     """Lazily load and cache Whisper models for offline use."""
 
@@ -63,8 +87,12 @@ def _load_local_model(language: str | None) -> Any:  # pragma: no cover - heavy 
     if model is None:
         import whisper  # type: ignore
 
-        model = whisper.load_model(model_name)
-        _LOCAL_MODELS[model_name] = model
+        try:
+            model = _run_with_timeout(lambda: whisper.load_model(model_name))
+            _LOCAL_MODELS[model_name] = model
+        except Exception:
+            logging.exception("Failed to load Whisper model %s", model_name)
+            raise
     return model
 
 
@@ -94,17 +122,20 @@ def _get_diarization_pipeline() -> Any:  # pragma: no cover - heavy optional dep
     return _DIARISATION_PIPELINE
 
 
-def _transcribe_bytes(data: bytes, language: str | None = None) -> str:
+def _transcribe_bytes(data: bytes, language: str | None = None) -> Tuple[str, str]:
     """Helper that attempts to transcribe ``data`` using Whisper.
 
-    If transcription fails for any reason (missing key, invalid audio,
-    network error) a deterministic placeholder string is returned so the
-    caller always receives some text.
+    Returns a ``(text, error)`` tuple.  ``error`` is an empty string when
+    transcription succeeds.  If transcription fails for any reason
+    (missing key, invalid audio, network error) a deterministic
+    placeholder string is returned so the caller always receives some
+    text.
     """
 
     if not data:
-        return ""
+        return "", ""
 
+    error_msg = ""
     offline = os.getenv("OFFLINE_TRANSCRIBE", "").lower() == "true"
     if offline:
         try:
@@ -115,36 +146,36 @@ def _transcribe_bytes(data: bytes, language: str | None = None) -> str:
                 result = model.transcribe(tmp.name, language=language)
             text = result.get("text", "")
             if text:
-                return text.strip()
-        except Exception:
-            pass
+                return text.strip(), ""
+        except Exception as exc:  # pragma: no cover - rare error path
+            logging.exception("Local transcription failed")
+            error_msg = str(exc)
 
     api_key = get_api_key()
     if api_key and not offline:
         try:
-            client = OpenAI(api_key=api_key)
+            client = OpenAI(api_key=api_key, timeout=_TIMEOUT)
             # Allow callers to override the remote Whisper model via env var
             model_name = os.getenv("WHISPER_API_MODEL", "whisper-1")
             with io.BytesIO(data) as buf:
                 resp = client.audio.transcriptions.create(
-                    model=model_name, file=buf, language=language
+                    model=model_name, file=buf, language=language, timeout=_TIMEOUT
                 )
             text = getattr(resp, "text", "") if resp else ""
             if text:
-                return text.strip()
-        except Exception:
-            # Any failure is handled by fallbacks below so callers still
-            # receive a deterministic placeholder rather than an empty string.
-            pass
+                return text.strip(), ""
+        except Exception as exc:  # pragma: no cover - network failure
+            logging.exception("OpenAI transcription failed")
+            error_msg = str(exc)
 
     try:  # Last-resort attempt: interpret bytes as UTF-8 text
         decoded = data.decode("utf-8").strip()
         if decoded:
-            return decoded
+            return decoded, error_msg
     except Exception:
         pass
 
-    return f"[transcribed {len(data)} bytes]"
+    return f"[transcribed {len(data)} bytes]", error_msg or "transcription failed"
 
 
 def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> Dict[str, object]:
@@ -226,7 +257,7 @@ def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> D
         error_msg = "diarisation unavailable"
 
     # Fallback: single-speaker transcription
-    text = simple_transcribe(audio_bytes, language=language)
+    text, trans_err = _transcribe_bytes(audio_bytes, language=language)
     if not text:
         # Ensure a deterministic placeholder is returned when transcription
         # ultimately fails so callers always receive some text.
@@ -236,8 +267,9 @@ def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> D
         "patient": "",
         "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
     }
-    if error_msg:
-        result["error"] = error_msg
+    combined_err = ", ".join(filter(None, [error_msg, trans_err]))
+    if combined_err:
+        result["error"] = combined_err
     return result
 
 
@@ -251,8 +283,11 @@ def simple_transcribe(audio_bytes: bytes, language: str | None = None) -> str:
     if not audio_bytes:
         return ""
     try:
-        text = _transcribe_bytes(audio_bytes, language=language)
-    except Exception:
+        text, error = _transcribe_bytes(audio_bytes, language=language)
+        if error:
+            logging.debug("simple_transcribe error: %s", error)
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.exception("Transcription wrapper failed")
         text = ""
     if text.strip():
         return text.strip()

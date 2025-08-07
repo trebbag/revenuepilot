@@ -649,8 +649,8 @@ async def save_user_settings(
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
 
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies, template) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies, beautify_model, suggest_model, summarize_model) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 
         (
             row["id"],
