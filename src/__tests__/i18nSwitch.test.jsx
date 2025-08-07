@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
-import { render, fireEvent, waitFor } from '@testing-library/react';
+import { render, fireEvent, waitFor, act } from '@testing-library/react';
 import { test, expect, vi, beforeEach } from 'vitest';
-import '../i18n.js';
+import i18n from '../i18n.js';
 import App from '../App.jsx';
 
 vi.mock('../api.js', () => ({
@@ -50,15 +50,16 @@ beforeEach(() => {
   vi.stubGlobal('alert', vi.fn());
   localStorage.clear();
   vi.clearAllMocks();
+  i18n.changeLanguage('en');
 });
 
 test('switches to Spanish and shows translated UI', async () => {
   localStorage.setItem('token', 'a.eyJyb2xlIjoiYWRtaW4ifQ==.c');
-  const { getByText, getByLabelText } = render(<App />);
+  const { getByText, getAllByText, getByLabelText } = render(<App />);
 
   await waitFor(() => getByText('Beautify'));
 
-  fireEvent.click(getByText('Settings'));
+  fireEvent.click(getAllByText('Settings')[0]);
   fireEvent.change(getByLabelText('Language'), { target: { value: 'es' } });
 
   fireEvent.click(getByText('Notas'));
@@ -67,4 +68,5 @@ test('switches to Spanish and shows translated UI', async () => {
   fireEvent.click(getByText('Analíticas'));
   await waitFor(() => getByText('Panel de análisis'));
 });
+
 

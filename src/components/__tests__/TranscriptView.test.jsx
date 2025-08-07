@@ -1,6 +1,7 @@
 /* @vitest-environment jsdom */
 import { render, fireEvent } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
+import i18n from '../../i18n.js';
 import TranscriptView from '../TranscriptView.jsx';
 
 describe('TranscriptView', () => {
@@ -13,6 +14,7 @@ describe('TranscriptView', () => {
     };
     const onAdd = vi.fn();
     const onIgnore = vi.fn();
+    i18n.changeLanguage('en');
     const { getByText, getAllByText } = render(
       <TranscriptView transcript={transcript} onAdd={onAdd} onIgnore={onIgnore} />
     );
@@ -20,9 +22,9 @@ describe('TranscriptView', () => {
     expect(getByText('patient')).toBeTruthy();
     expect(getByText('[00:00-00:01]:', { exact: false })).toBeTruthy();
     expect(getByText('[00:01-00:02]:', { exact: false })).toBeTruthy();
-    fireEvent.click(getAllByText('Add')[0]);
+    fireEvent.click(getAllByText(i18n.t('transcript.add'))[0]);
     expect(onAdd).toHaveBeenCalledWith(0);
-    fireEvent.click(getAllByText('Ignore')[1]);
+    fireEvent.click(getAllByText(i18n.t('transcript.ignore'))[1]);
     expect(onIgnore).toHaveBeenCalledWith(1);
   });
 });
