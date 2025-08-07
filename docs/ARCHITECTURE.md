@@ -22,6 +22,11 @@ This document provides a high‑level overview of the components that make up th
 - **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load extra instructions from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
 - **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
 - **Audio processing** (`audio_processing.py`): Implements speech‑to‑text using OpenAI Whisper with a local fallback.  When the optional `pyannote.audio` dependency is available (configured via `PYANNOTE_TOKEN`) the module performs speaker diarisation and returns provider/patient segments.  Errors are surfaced via an `error` field so callers can handle failures gracefully.
+- **PHI scrubbing** (`deidentify` in `main.py`): Removes protected health information
+  before text is sent to AI services.  `DEID_ENGINE` selects between `presidio`
+  (accurate but heavy), `philter` (clinical focus), `scrubadub` (lightweight) or
+  regex patterns.  Placeholders embed a short hash by default; set
+  `DEID_HASH_TOKENS=false` to keep the original text in placeholders.
 
 ### Storage
 

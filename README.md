@@ -129,9 +129,13 @@ to choose a different model size (e.g. `tiny`, `small`).
 
 Set `DEID_ENGINE` in `.env` to choose the PHI scrubber:
 
-* `presidio` – good accuracy and entity typing, but requires large spaCy models.
-* `philter` – designed for clinical notes, heavier and returns generic PHI tags.
-* `scrubadub` – light-weight library that detects many identifiers but is less domain aware.
+* `presidio` – accurate and entity aware but heavier. Name and date detection use
+  high confidence thresholds (tunable via `PRESIDIO_PERSON_THRESHOLD` and
+  `PRESIDIO_DATE_THRESHOLD`).
+* `philter` – designed for clinical notes; can include or exclude phone numbers
+  with `PHILTER_INCLUDE_PHONES=true|false`.
+* `scrubadub` – light‑weight library that detects many identifiers but is less
+  domain aware.
 * `regex` – built-in patterns with no external dependencies but the least comprehensive.
 
 Removed spans become placeholders like `[NAME:abcd1234]`. By default the value
