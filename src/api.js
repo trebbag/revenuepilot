@@ -890,8 +890,10 @@ export async function setApiKey(key) {
 export async function exportToEhr(
   note,
   codes = [],
-  patientId = '',
-  encounterId = '',
+  patientID = '',
+  encounterID = '',
+  procedures = [],
+  medications = [],
   direct = false,
   token,
 ) {
@@ -910,24 +912,31 @@ export async function exportToEhr(
   const auth =
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
-  if (!auth) throw new Error('Not authenticated');
-  const resp = await fetch(`${baseUrl}/export_to_ehr`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${auth}`,
-    },
-    body: JSON.stringify({ note, codes, patientId, encounterId }),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    const msg = data.detail || data.message || 'Export failed';
-    throw new Error(msg);
+  if (!auth) return { status: 'error', detail: 'Not authenticated' };
+  try {
+    const resp = await fetch(`${baseUrl}/export`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${auth}`,
+      },
+      body: JSON.stringify({
+        note,
+        codes,
+        patientID,
+        encounterID,
+        procedures,
+        medications,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      return { status: 'error', detail: data.detail || data.message || 'Export failed' };
+    }
+    return data;
+  } catch (err) {
+    return { status: 'error', detail: err.message };
   }
-  if (data.status && data.status !== 'exported' && data.detail) {
-    throw new Error(data.detail);
-  }
-  return data;
 }
 
 /**

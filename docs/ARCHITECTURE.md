@@ -7,7 +7,7 @@ This document provides a high‑level overview of the components that make up th
 ### Frontend (`src/`)
 
 - **App shell** (`App.jsx`): Houses the main layout, view router and tab system.  It mounts the rich‑text editor, the suggestion panel, the dashboard, logs, settings and drafts views.  The app maintains React state for the current draft, beautified note, summary, patient ID and user settings.
-- **Rich‑text editor** (`NoteEditor.jsx`): Wraps `react‑quill` to provide a WYSIWYG editor for clinicians.  It exposes callbacks for changes and integrates with templates.  When the user presses _Beautify_ or _Summarize_, it sends the plain text to the backend via the API helpers.
+- **Rich‑text editor** (`NoteEditor.jsx`): Wraps `react‑quill` to provide a WYSIWYG editor for clinicians.  It exposes callbacks for changes, integrates with templates and now includes an **Export to EHR** action that posts the beautified note and selected codes to the `/export` endpoint.
 - **Suggestion panel** (`SuggestionPanel.jsx`): Displays coding suggestions, compliance prompts, public‑health reminders and differential diagnoses.  It listens for updates from the API and supports toggling individual categories via settings.
 - **Dashboard** (`Dashboard.jsx`): Queries the `/metrics` endpoint and renders aggregate counts, averages and time‑series charts for key metrics using Chart.js.
 - **Logs** (`Logs.jsx`): Calls `/events` to stream recent events for debugging.  Shows event type, timestamp and any details.
@@ -18,7 +18,7 @@ This document provides a high‑level overview of the components that make up th
 
 ### Backend (`backend/`)
 
-- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), transcribe audio (`/transcribe?diarise=true|false`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
+- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), transcribe audio (`/transcribe?diarise=true|false`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`), export notes to a FHIR server (`/export`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
 - **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load extra instructions from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
 - **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
 - **Audio processing** (`audio_processing.py`): Implements speech‑to‑text using OpenAI Whisper with a local fallback.  When the optional `pyannote.audio` dependency is available (configured via `PYANNOTE_TOKEN`) the module performs speaker diarisation and returns provider/patient segments.  Errors are surfaced via an `error` field so callers can handle failures gracefully.
@@ -27,6 +27,7 @@ This document provides a high‑level overview of the components that make up th
   (accurate but heavy), `philter` (clinical focus), `scrubadub` (lightweight) or
   regex patterns.  Placeholders embed a short hash by default; set
   `DEID_HASH_TOKENS=false` to keep the original text in placeholders.
+- **EHR integration** (`ehr_integration.py`): Builds FHIR transaction bundles and posts them to the server configured by `FHIR_SERVER_URL`. OAuth2 credentials (`EHR_TOKEN_URL`, `EHR_CLIENT_ID`, `EHR_CLIENT_SECRET`) are cached with expiry and fall back to basic auth (`EHR_BASIC_USER`/`EHR_BASIC_PASSWORD`) or a static bearer token (`EHR_BEARER_TOKEN`).
 
 ### Storage
 
@@ -37,6 +38,7 @@ This document provides a high‑level overview of the components that make up th
 ### Third‑Party Services
 
 - **OpenAI**: Used for beautification, coding/compliance suggestions and patient‑friendly summaries.  Requests are made through the wrapper in `openai_client.py` using chat models (GPT‑4o by default).  Only de‑identified text is sent.
+- **FHIR server**: Optional target for the `/export` endpoint. Configure connection details with `FHIR_SERVER_URL`, `EHR_TOKEN_URL`, `EHR_CLIENT_ID`, `EHR_CLIENT_SECRET`, `EHR_BASIC_USER`, `EHR_BASIC_PASSWORD` or `EHR_BEARER_TOKEN`.
 - **Potential future services**: The plan mentions using a speech‑to‑text API (e.g. Whisper) for audio transcription and possibly Redis/Postgres in place of SQLite for analytics.  These are not implemented yet but are considered in the roadmap.
 
 ## Data Flow

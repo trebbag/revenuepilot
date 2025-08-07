@@ -18,4 +18,5 @@ pyannote.audio
 torchaudio
 passlib[bcrypt]
 llama-cpp-python
+requests-mock
 

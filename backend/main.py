@@ -17,6 +17,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -190,6 +191,7 @@ logging.basicConfig(
 )
 
 app = FastAPI(title="RevenuePilot API")
+logger = logging.getLogger(__name__)
 
 # Enable CORS so that the React frontend can communicate with this API.
 # Allowed origins are configurable via the ``ALLOWED_ORIGINS`` environment
@@ -1314,38 +1316,37 @@ class ExportRequest(BaseModel):
 
     note: str
     codes: List[str] = Field(default_factory=list)
-    patientId: Optional[str] = None
-    encounterId: Optional[str] = None
     procedures: List[str] = Field(default_factory=list)
     medications: List[str] = Field(default_factory=list)
+    patientID: Optional[str] = None
+    encounterID: Optional[str] = None
 
 
-@app.post("/export_to_ehr")
+@app.post("/export")
 async def export_to_ehr(
-    req: ExportRequest, user=Depends(require_role("admin"))
-) -> Dict[str, str]:
-    """Post the supplied note and codes to a FHIR server.
-
-    The heavy lifting is delegated to :mod:`backend.ehr_integration`.  Any
-    ``requests`` exceptions are translated into ``502`` errors so clients
-    receive a clear failure message instead of an internal error.
-    """
+    req: ExportRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Post the supplied note and codes to a FHIR server."""
 
     try:
         from . import ehr_integration
-
         result = ehr_integration.post_note_and_codes(
             req.note,
             req.codes,
-            req.patientId,
-            req.encounterId,
+            req.patientID,
+            req.encounterID,
             req.procedures,
             req.medications,
         )
-    except Exception as exc:  # pragma: no cover - network failures
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    return result
+        if result.get("status") != "exported":
+            logger.error("EHR export failed: %s", result)
+        return result
+    except requests.exceptions.RequestException as exc:  # pragma: no cover - network failures
+        logger.exception("Network error during EHR export")
+        return {"status": "error", "detail": str(exc)}
+    except Exception as exc:  # pragma: no cover - unexpected failures
+        logger.exception("Unexpected error during EHR export")
+        return {"status": "error", "detail": str(exc)}
 
 
 # Endpoint: aggregate metrics from the logged events.  Returns counts of

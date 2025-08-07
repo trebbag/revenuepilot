@@ -110,7 +110,6 @@ const NoteEditor = forwardRef(function NoteEditor(
   ref,
 ) {
   const { t } = useTranslation();
-  const isAdmin = role === 'admin';
   const [localValue, setLocalValue] = useState(value || '');
   const [history, setHistory] = useState(value ? [value] : []);
   const [historyIndex, setHistoryIndex] = useState(value ? 0 : -1);
@@ -123,6 +122,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [fetchError, setFetchError] = useState('');
   const [ehrFeedback, setEhrFeedback] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -437,24 +437,24 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   const handleExportEhr = async () => {
-    try {
-      const res = await exportToEhr(
-        value,
-        codes,
-        patientId,
-        encounterId,
-        true,
-      );
-      if (res.status === 'exported') {
-        setEhrFeedback(t('clipboard.exported'));
-      } else if (res.status === 'auth_error') {
-        setEhrFeedback(t('ehrAuthFailed'));
-      } else {
-        setEhrFeedback(t('clipboard.exportFailed'));
-      }
-    } catch (e) {
+    setExporting(true);
+    const res = await exportToEhr(
+      value,
+      codes,
+      patientId,
+      encounterId,
+      [],
+      [],
+      true,
+    );
+    if (res.status === 'exported') {
+      setEhrFeedback(t('clipboard.exported'));
+    } else if (res.status === 'auth_error') {
+      setEhrFeedback(t('ehrAuthFailed'));
+    } else {
       setEhrFeedback(t('clipboard.exportFailed'));
     }
+    setExporting(false);
     setTimeout(() => setEhrFeedback(''), 2000);
   };
 
@@ -477,19 +477,16 @@ const NoteEditor = forwardRef(function NoteEditor(
           >
             {t('noteEditor.redo')}
           </button>
-            {isAdmin && (
-              <>
-                <button
-                  type="button"
-                  onClick={handleExportEhr}
-                  style={{ marginLeft: '0.5rem' }}
-                >
-                  {t('ehrExport')}
-                </button>
-                {ehrFeedback && (
-                  <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
-                )}
-              </>
+            <button
+              type="button"
+              onClick={handleExportEhr}
+              disabled={exporting}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              {exporting ? '…' : t('ehrExport')}
+            </button>
+            {ehrFeedback && (
+              <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
             )}
           </div>
         <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
