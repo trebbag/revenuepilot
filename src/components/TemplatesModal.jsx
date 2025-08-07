@@ -151,9 +151,7 @@ function TemplatesModal({
       <div className="modal card">
         <h3>{t('templatesModal.title')}</h3>
         {error && <p style={{ color: 'red' }}>{error}</p>}
-        <div
-          style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}
-        >
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
           <div style={{ flex: 1 }}>
             <label style={{ display: 'block' }}>
               {t('settings.specialty')}
@@ -194,8 +192,9 @@ function TemplatesModal({
         />
         {Object.entries(
           templates
-            .filter((tpl) =>
-              !selectedSpecialty || tpl.specialty === selectedSpecialty,
+            .filter(
+              (tpl) =>
+                !selectedSpecialty || tpl.specialty === selectedSpecialty,
             )
             .filter((tpl) => !selectedPayer || tpl.payer === selectedPayer)
             .filter((tpl) => {

@@ -14,10 +14,12 @@ export default function TranscriptView({ transcript, onAdd, onIgnore }) {
     <div className="transcript-view card">
       {segments.map((seg, idx) => (
         <div key={idx} className="segment">
-          <strong>{seg.speaker}</strong> [{formatTime(seg.start)}-{formatTime(seg.end)}]:{' '}
-          <span>{seg.text}</span>
+          <strong>{seg.speaker}</strong> [{formatTime(seg.start)}-
+          {formatTime(seg.end)}]: <span>{seg.text}</span>
           <button onClick={() => onAdd(idx)}>{t('transcript.add')}</button>
-          <button onClick={() => onIgnore(idx)}>{t('transcript.ignore')}</button>
+          <button onClick={() => onIgnore(idx)}>
+            {t('transcript.ignore')}
+          </button>
         </div>
       ))}
     </div>
