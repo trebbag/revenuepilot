@@ -1,0 +1,10 @@
+{
+  "cardiology": {
+    "E11": {
+      "default": "1 month",
+      "payer_overrides": {
+        "medicare": "6 weeks"
+      }
+    }
+  }
+}

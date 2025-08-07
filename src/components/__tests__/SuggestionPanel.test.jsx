@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
-import { render, fireEvent, cleanup } from '@testing-library/react';
+import { render, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
 import '../../i18n.js';
 import SuggestionPanel from '../SuggestionPanel.jsx';
+import * as api from '../../api.js';
 
 afterEach(() => cleanup());
 
@@ -86,7 +87,13 @@ test('shows loading and toggles sections', () => {
   expect(header.parentElement?.parentElement.querySelector('ul')).toBeNull();
 });
 
-test('renders follow-up with calendar link', () => {
+test('exports follow-up to calendar on click', async () => {
+  const icsText =
+    'BEGIN:VCALENDAR\nDTSTART:20240101T000000Z\nDTEND:20240101T000000Z\nEND:VEVENT\nEND:VCALENDAR';
+  vi.spyOn(api, 'exportFollowUp').mockResolvedValue(icsText);
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(() => {});
   const { getByText } = render(
     <SuggestionPanel
       suggestions={{
@@ -94,14 +101,21 @@ test('renders follow-up with calendar link', () => {
         compliance: [],
         publicHealth: [],
         differentials: [],
-        followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' },
+        followUp: { interval: '3 months', reason: 'rule' },
       }}
       settingsState={{ enableCodes: true, enableCompliance: true, enablePublicHealth: true, enableDifferentials: true, enableFollowUp: true }}
+      calendarSummary="John Doe"
     />
   );
-  expect(getByText('3 months')).toBeTruthy();
-  const href = getByText('Add to calendar').getAttribute('href');
-  expect(href).toContain('text/calendar');
+  fireEvent.click(getByText('Add to calendar'));
+  await waitFor(() =>
+    expect(api.exportFollowUp).toHaveBeenCalledWith('3 months', 'John Doe')
+  );
+  await waitFor(() => expect(clickSpy).toHaveBeenCalled());
+  const anchor = clickSpy.mock.instances[0];
+  const decoded = decodeURIComponent(anchor.href.split(',')[1]);
+  expect(decoded).toContain('DTSTART');
+  expect(decoded).toContain('DTEND');
 });
 
 test('hides follow-up when disabled', () => {

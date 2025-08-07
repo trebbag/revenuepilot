@@ -55,7 +55,7 @@ from .migrations import (
     ensure_events_table,
 )
 from .templates import TemplateModel, load_builtin_templates
-from .scheduling import recommend_follow_up, export_ics
+from .scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up
 
 
 
@@ -767,6 +767,7 @@ class FollowUp(BaseModel):
 
     interval: Optional[str]
     ics: Optional[str] = None
+    reason: Optional[str] = None
 
 
 class SuggestionsResponse(BaseModel):
@@ -783,6 +784,8 @@ class ScheduleRequest(BaseModel):
     """Request payload for the /schedule endpoint."""
     text: str
     codes: Optional[List[str]] = None
+    specialty: Optional[str] = None
+    payer: Optional[str] = None
 
 class ScheduleResponse(FollowUp):
     """Response model containing recommended interval and optional ICS."""
@@ -2359,9 +2362,29 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
         ScheduleResponse with the recommended interval and ICS string.
     """
     cleaned = deidentify(req.text or "")
-    follow = recommend_follow_up(req.codes or [], [cleaned])
+    follow = recommend_follow_up(
+        req.codes or [],
+        [cleaned],
+        req.specialty,
+        req.payer,
+    )
     return ScheduleResponse(**follow)
 
+
+
+class ExportIcsRequest(BaseModel):
+    """Payload for exporting a follow-up interval to an ICS string."""
+
+    interval: str
+    summary: Optional[str] = DEFAULT_EVENT_SUMMARY
+
+
+@app.post("/export_ics")
+async def export_ics_endpoint(req: ExportIcsRequest, user=Depends(require_role("user"))):
+    ics = export_ics(req.interval, req.summary)
+    if not ics:
+        raise HTTPException(status_code=400, detail="invalid interval")
+    return {"ics": ics}
 
 @app.get("/download-models")
 async def download_models_endpoint() -> StreamingResponse:

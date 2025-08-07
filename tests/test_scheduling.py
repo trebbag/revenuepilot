@@ -19,9 +19,10 @@ def test_acute_code_interval():
 
 
 def test_export_ics():
-    ics = scheduling.export_ics("2 weeks")
+    ics = scheduling.export_ics("2 weeks", summary="Visit")
     assert "BEGIN:VCALENDAR" in ics
-    assert "DTSTART" in ics
+    assert "DTSTART" in ics and "DTEND" in ics
+    assert "SUMMARY:Visit" in ics
 
 
 def test_custom_interval_override():
@@ -34,4 +35,15 @@ def test_clinician_override_interval():
     text = "Patient should follow up in 10 days for evaluation."
     res = scheduling.recommend_follow_up([], [text])
     assert res["interval"] == "10 days"
+
+
+def test_specialty_payer_overrides():
+    res = scheduling.recommend_follow_up(["E11.9"], [], specialty="cardiology")
+    assert res["interval"] == "1 month"
+    assert "specialty" in res["reason"]
+    res2 = scheduling.recommend_follow_up(
+        ["E11.9"], [], specialty="cardiology", payer="medicare"
+    )
+    assert res2["interval"] == "6 weeks"
+    assert "payer" in res2["reason"]
 

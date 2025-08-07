@@ -7,6 +7,7 @@
 // pause results in a request.
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { exportFollowUp } from '../api.js';
 
 function SuggestionPanel({
   suggestions,
@@ -19,6 +20,7 @@ function SuggestionPanel({
   // latency and unnecessary network load.
   text,
   fetchSuggestions,
+  calendarSummary,
 }) {
   const { t } = useTranslation();
   const [showPublicHealth, setShowPublicHealth] = useState(true);
@@ -215,23 +217,31 @@ function SuggestionPanel({
       if (type === 'follow-up') {
         const interval =
           typeof item === 'object' && item !== null ? item.interval : item;
-        const icsText =
-          typeof item === 'object' && item !== null ? item.ics : null;
-        const icsHref = icsText
-          ? `data:text/calendar;charset=utf8,${encodeURIComponent(icsText)}`
-          : null;
+        const reason =
+          typeof item === 'object' && item !== null ? item.reason : null;
+        const onExport = async () => {
+          try {
+            const ics = await exportFollowUp(interval, calendarSummary || undefined);
+            const href = `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
+            const a = document.createElement('a');
+            a.href = href;
+            a.download = 'follow-up.ics';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          } catch (err) {
+            console.error('ics export error', err);
+          }
+        };
         return (
           <li key={idx}>
             {interval}
-            {icsHref && (
-              <a
-                href={icsHref}
-                download="follow-up.ics"
-                style={{ marginLeft: '0.5em' }}
-              >
-                {t('suggestion.addToCalendar')}
-              </a>
+            {reason && (
+              <div style={{ fontStyle: 'italic', color: '#555' }}>{reason}</div>
             )}
+            <button onClick={onExport} style={{ marginLeft: '0.5em' }}>
+              {t('suggestion.addToCalendar')}
+            </button>
           </li>
         );
       }

@@ -2,7 +2,7 @@
 
 This roadmap reflects the outstanding bugs, missing features and future enhancements discussed in the planning chats.  Each item is grouped by priority (P0–P2).  P0 items are blockers that should be tackled before new feature work; P1 items are important but not immediately blocking; P2 items are nice‑to‑haves or longer‑term goals.
 
-**Status:** Speech‑to‑Text & Diarisation – 100% complete. Advanced PHI Scrubbing – 100% complete. User settings persistence – 100% complete. Refined Prompts – 100% complete.
+**Status:** Speech‑to‑Text & Diarisation – 100% complete. Advanced PHI Scrubbing – 100% complete. User settings persistence – 100% complete. Refined Prompts – 100% complete. Follow‑up scheduling with calendar export – initial heuristics complete.
 
 ## P0 – Blockers
 
@@ -20,7 +20,7 @@ This roadmap reflects the outstanding bugs, missing features and future enhancem
 - **Specialty Templates and Workflows:** Add note templates for paediatrics, geriatrics, psychiatry and other specialties.  Allow clinics to define their own templates via `prompt_templates.json` or separate template files organised by specialty or payer.
 - **Smart Suggestions for Public Health:** Public health guidance is pulled from CDC and WHO APIs via `backend/public_health.py`.  The `/suggest` endpoint accepts optional `age`, `sex`, `region` and `agencies` fields and returns a `publicHealth` array with recommendations, source agency and evidence level.  Results are cached in memory using the `GUIDELINE_CACHE_TTL` environment variable and are keyed by region and selected agencies.  Region‑specific endpoints can be provided by setting `CDC_GUIDELINES_URL` or `WHO_GUIDELINES_URL` to either JSON mappings or `REGION:url` pairs.  Users can choose which agencies to consult and specify their region in Settings.
 - **Offline Mode:** Investigate offline LLM inference for beautification and suggestions to avoid network dependence.
-- **AI‑Driven Scheduling:** Suggest follow‑up appointment intervals and automatically populate a calendar based on recommended care plans.
+- **AI‑Driven Scheduling:** Initial heuristics implemented with specialty/payer overrides (`CODE_INTERVALS_FILE`) and calendar export via `/export_ics`. Future work will incorporate predictive models.
 
 ## Metrics Schema
 

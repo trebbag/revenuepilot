@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Optional, Sequence
+import json
+import os
 
 
 # Default intervals for broad condition categories.  These are defined as
@@ -26,6 +28,25 @@ CODE_INTERVALS = {
     "J06": DEFAULT_ACUTE_INTERVAL,
     "S93": DEFAULT_ACUTE_INTERVAL,
 }
+
+# Specialty and payer specific mappings.  These can be loaded from a JSON
+# configuration file pointed to by the ``CODE_INTERVALS_FILE`` environment
+# variable.  The structure is ``{"specialty": {"CODE": {"default": interval,
+# "payer_overrides": {"payer": interval}}}}``.  A small built-in mapping is
+# provided as a fallback to demonstrate functionality.
+_DEFAULT_SPECIALTY_MAP = {
+    "cardiology": {"E11": {"default": "1 month", "payer_overrides": {"medicare": "6 weeks"}}}
+}
+
+_CONFIG_PATH = os.environ.get("CODE_INTERVALS_FILE")
+try:
+    if _CONFIG_PATH:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as fh:
+            CODE_INTERVALS_BY_SPECIALTY = json.load(fh)
+    else:
+        CODE_INTERVALS_BY_SPECIALTY = _DEFAULT_SPECIALTY_MAP
+except Exception:
+    CODE_INTERVALS_BY_SPECIALTY = _DEFAULT_SPECIALTY_MAP
 
 # Prefixes of ICD-10 codes considered indicative of chronic or acute
 # conditions.  These are used as a lightweight heuristic for determining the
@@ -59,16 +80,19 @@ def recommend_follow_up(
     payer: Optional[str] = None,
     code_intervals: Optional[Mapping[str, str]] = None,
 ) -> dict:
-    """Return a follow-up interval and ICS string.
+    """Return a follow-up interval, rationale and ICS string.
 
-    The current implementation uses simple keyword and code-prefix heuristics
-    to derive a recommended interval.  ``specialty`` and ``payer`` are accepted
-    for future expansion but currently unused.
+    The function applies several layers of heuristics.  Custom mappings can be
+    supplied via ``CODE_INTERVALS_FILE`` or directly via ``code_intervals``.  A
+    rationale string describing which rule fired is returned so that the UI can
+    display why a recommendation was made.
     """
 
     diag_text = " ".join(diagnoses or [])
     diag_text_lower = diag_text.lower()
     codes = [c.upper() for c in codes if c]
+
+    reason: Optional[str] = None
 
     # Allow caller to provide custom code-to-interval mappings.  These override
     # the defaults defined in ``CODE_INTERVALS``.
@@ -80,16 +104,45 @@ def recommend_follow_up(
     override = CLINICIAN_OVERRIDE_RE.search(diag_text)
     if override:
         interval = override.group(1)
+        reason = "clinician override"
     else:
-        # First check explicit mappings.
         interval = None
+
+        # Specialty/payer specific overrides from configuration file.
+        spec_key = (specialty or "").lower()
+        payer_key = (payer or "").lower()
+        spec_map = CODE_INTERVALS_BY_SPECIALTY.get(spec_key, {})
         for code in codes:
-            for prefix, value in mapping.items():
-                if code.startswith(prefix):
-                    interval = value
+            for prefix, entry in spec_map.items():
+                if not code.startswith(prefix):
+                    continue
+                if isinstance(entry, dict):
+                    # Payer-specific override takes precedence.
+                    if payer_key and entry.get("payer_overrides", {}).get(payer_key):
+                        interval = entry["payer_overrides"][payer_key]
+                        reason = f"specialty {spec_key} payer {payer_key} override"
+                        break
+                    if entry.get("default"):
+                        interval = entry["default"]
+                        reason = f"specialty {spec_key} override"
+                        break
+                else:
+                    interval = entry
+                    reason = f"specialty {spec_key} override"
                     break
             if interval:
                 break
+
+        # Explicit code mappings if no specialty rule matched.
+        if not interval:
+            for code in codes:
+                for prefix, value in mapping.items():
+                    if code.startswith(prefix):
+                        interval = value
+                        reason = f"code mapping {prefix}"
+                        break
+                if interval:
+                    break
 
         # Fall back to heuristic prefixes/keywords.
         if not interval:
@@ -97,14 +150,17 @@ def recommend_follow_up(
                 kw in diag_text_lower for kw in CHRONIC_KEYWORDS
             ):
                 interval = DEFAULT_CHRONIC_INTERVAL
+                reason = "chronic heuristic"
             elif _has_prefix(codes, ACUTE_CODE_PREFIXES) or any(
                 kw in diag_text_lower for kw in ACUTE_KEYWORDS
             ):
                 interval = DEFAULT_ACUTE_INTERVAL
+                reason = "acute heuristic"
             else:
                 interval = DEFAULT_GENERIC_INTERVAL
+                reason = "generic heuristic"
 
-    return {"interval": interval, "ics": export_ics(interval)}
+    return {"interval": interval, "ics": export_ics(interval), "reason": reason}
 
 
 # Summary used for exported calendar events.
