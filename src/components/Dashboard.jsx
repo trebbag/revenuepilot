@@ -805,16 +805,12 @@ function Dashboard() {
 
       {metrics.timeseries && hasDaily && (
         <div style={{ marginTop: '1rem' }}>
-          <h3>
-            {t('dashboard.revenueProjection', {
-              defaultValue: 'Revenue Projection',
-            })}
-          </h3>
+          <h3>{t('dashboard.revenueProjection')}</h3>
           <Bar
             ref={revenueBarRef}
             data={revenueProjectionData}
             options={revenueProjectionOptions}
-            aria-label="Revenue projection last 30 days"
+            aria-label={t('dashboard.revenueProjectionAria')}
             role="img"
             data-testid="revenue-projection-bar"
           />
@@ -824,7 +820,7 @@ function Dashboard() {
                 exportChartPNG(revenueBarRef, 'revenue_projection.png')
               }
             >
-              Export PNG
+              {t('dashboard.exportPng')}
             </button>
             <button
               style={{ marginLeft: '0.5rem' }}
@@ -832,7 +828,7 @@ function Dashboard() {
                 exportChartCSV(revenueProjectionData, 'revenue_projection.csv')
               }
             >
-              Export CSV
+              {t('dashboard.exportCsv')}
             </button>
           </div>
         </div>
@@ -840,16 +836,12 @@ function Dashboard() {
 
       {metrics.timeseries && hasDaily && (
         <div style={{ marginTop: '1rem' }}>
-          <h3>
-            {t('dashboard.denialRateOverTime', {
-              defaultValue: 'Denial Rate Over Time',
-            })}
-          </h3>
+          <h3>{t('dashboard.denialRateOverTime')}</h3>
           <Line
             ref={denialRateRef}
             data={denialRateLineData}
             options={denialRateOptions}
-            aria-label="Denial rate last 30 days"
+            aria-label={t('dashboard.denialRateAria')}
             role="img"
             data-testid="denial-rate-line"
           />
@@ -857,7 +849,7 @@ function Dashboard() {
             <button
               onClick={() => exportChartPNG(denialRateRef, 'denial_rate.png')}
             >
-              Export PNG
+              {t('dashboard.exportPng')}
             </button>
             <button
               style={{ marginLeft: '0.5rem' }}
@@ -865,7 +857,7 @@ function Dashboard() {
                 exportChartCSV(denialRateLineData, 'denial_rate.csv')
               }
             >
-              Export CSV
+              {t('dashboard.exportCsv')}
             </button>
           </div>
         </div>

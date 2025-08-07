@@ -51,6 +51,12 @@
     "rate": "Rate",
     "revenueOverTime": "Revenue per Visit Over Time",
     "codeDistribution": "E/M Code Distribution",
+    "revenueProjection": "Revenue Projection",
+    "denialRateOverTime": "Denial Rate Over Time",
+    "revenueProjectionAria": "Revenue projection last 30 days",
+    "denialRateAria": "Denial rate last 30 days",
+    "exportPng": "Export PNG",
+    "exportCsv": "Export CSV",
     "cards": {
       "totalNotes": "Total Notes Created",
       "beautifiedNotes": "Beautified Notes",
@@ -188,6 +194,12 @@
     "promptTemplatesHelp": "Edit JSON instructions or upload a file to customise prompts.",
     "savePromptTemplates": "Save Templates",
     "invalidPromptTemplates": "Invalid template format",
+    "specialtyAdditions": "Specialty additions",
+    "payerAdditions": "Payer additions",
+    "specialtyPlaceholder": "specialty",
+    "payerPlaceholder": "payer",
+    "instructionPlaceholder": "instruction",
+    "add": "Add",
     "english": "English",
     "spanish": "Spanish",
     "french": "French",
@@ -196,10 +208,13 @@
     "regionPlaceholder": "e.g., US",
     "specialties": {
       "cardiology": "Cardiology",
-      "dermatology": "Dermatology"
+      "dermatology": "Dermatology",
+      "paediatrics": "Paediatrics",
+      "geriatrics": "Geriatrics"
     },
     "payers": {
       "medicare": "Medicare",
+      "medicaid": "Medicaid",
       "aetna": "Aetna"
     },
     "useLocalModels": "Enable local models",
@@ -241,7 +256,12 @@
     "save": "Save",
     "close": "Close",
     "delete": "Delete",
-    "edit": "Edit"
+    "edit": "Edit",
+    "general": "General"
+  },
+  "transcript": {
+    "add": "Add",
+    "ignore": "Ignore"
   },
   "adminUsers": {
     "title": "Users",

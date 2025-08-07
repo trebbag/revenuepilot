@@ -31,3 +31,11 @@ and counts of compliance flags.  Results are aggregated by day and week and
 returned under a `timeseries` key for charting.  Set the environment variable
 `METRICS_LOOKBACK_DAYS` (default 30) to limit how many days of events are kept
 for calculations.
+
+## Localisation Guidelines
+
+- Store translations under `src/locales/` with one JSON file per language. The English file (`en.json`) acts as the reference; other locales must mirror its keys.
+- Register new languages in `src/i18n.js` and update tests to include the new locale file.
+- Use `t('namespace.key')` from `react-i18next` for all user-facing strings. Group keys logically (e.g., `settings.saveButton`, `dashboard.revenueChart`).
+- For pluralisation, use i18next's plural forms (`key_one`, `key_other`) and call `t('key', { count })`.
+- Run `npm test` to ensure the locale key coverage test passes after adding or modifying translation files.

@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 import en from '../locales/en.json';
 import es from '../locales/es.json';
+import fr from '../locales/fr.json';
 
 function flatten(obj, prefix = '') {
   return Object.keys(obj).reduce((acc, key) => {
@@ -15,9 +16,11 @@ function flatten(obj, prefix = '') {
   }, {});
 }
 
-test('Spanish locale matches English keys', () => {
+test('All locales match English keys', () => {
   const enKeys = Object.keys(flatten(en)).sort();
   const esKeys = Object.keys(flatten(es)).sort();
+  const frKeys = Object.keys(flatten(fr)).sort();
   expect(esKeys).toEqual(enKeys);
+  expect(frKeys).toEqual(enKeys);
 });
 

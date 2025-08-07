@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 function formatTime(sec) {
   const d = new Date(sec * 1000);
@@ -6,6 +7,7 @@ function formatTime(sec) {
 }
 
 export default function TranscriptView({ transcript, onAdd, onIgnore }) {
+  const { t } = useTranslation();
   const segments = transcript?.segments || [];
   if (!segments.length) return null;
   return (
@@ -14,8 +16,8 @@ export default function TranscriptView({ transcript, onAdd, onIgnore }) {
         <div key={idx} className="segment">
           <strong>{seg.speaker}</strong> [{formatTime(seg.start)}-{formatTime(seg.end)}]:{' '}
           <span>{seg.text}</span>
-          <button onClick={() => onAdd(idx)}>Add</button>
-          <button onClick={() => onIgnore(idx)}>Ignore</button>
+          <button onClick={() => onAdd(idx)}>{t('transcript.add')}</button>
+          <button onClick={() => onIgnore(idx)}>{t('transcript.ignore')}</button>
         </div>
       ))}
     </div>
