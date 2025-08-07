@@ -91,4 +91,41 @@ The current repository is designed for local development.  The `start.sh` script
 
 ## Customising Prompt Templates
 
-Prompt instructions can be tailored per specialty or payer.  Create a `backend/prompt_templates.json` or `backend/prompt_templates.yaml` file with entries under `specialty` or `payer` that map to custom `beautify`, `suggest`, or `summary` instructions.  Each instruction can provide translations via `en` and `es` keys.  When a request supplies matching `specialty` or `payer` values, the custom text is appended to the default prompts.
+Prompt instructions can be overridden at runtime. Place a `prompt_templates.json`
+or `prompt_templates.yaml` file in the `backend/` directory. The file may
+contain `default`, `specialty` and `payer` sections, each providing
+`beautify`, `suggest` and `summary` entries with language codes (`en`, `es`,
+etc.) and optional `examples`:
+
+```json
+{
+  "default": {
+    "beautify": { "en": "Base instruction" },
+    "suggest": { "en": "Base suggest instruction" },
+    "summary": { "en": "Base summary instruction" }
+  },
+  "specialty": {
+    "cardiology": {
+      "beautify": { "en": "Cardiology wording" },
+      "suggest": { "en": "Cardiology codes" },
+      "summary": { "en": "Cardiology summary" }
+    }
+  },
+  "payer": {
+    "medicare": {
+      "beautify": { "en": "Medicare docs" },
+      "suggest": { "en": "Follow Medicare coding rules" },
+      "summary": { "en": "Medicare summary" }
+    }
+  }
+}
+```
+
+The backend reads this file via `_load_custom_templates()` and merges any
+matching instructions with the built‑in defaults. The helper `_resolve_lang`
+selects the appropriate language string for each entry, falling back to
+English when a translation is missing.
+
+Administrators can edit or upload these overrides through **Settings → Prompt
+Overrides** in the UI; saving persists the file back to the backend
+directory.

@@ -13,7 +13,7 @@ vi.mock('../../api.js', () => ({
   getPromptTemplates: vi.fn().mockResolvedValue({}),
   savePromptTemplates: vi.fn(),
 }));
-import { saveSettings, setApiKey } from '../../api.js';
+import { saveSettings, setApiKey, savePromptTemplates } from '../../api.js';
 import Settings from '../Settings.jsx';
 
 beforeEach(() => {
@@ -23,6 +23,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 test('saveSettings called when preferences change', async () => {
@@ -286,4 +287,39 @@ test('adding and deleting custom rules saves settings', async () => {
   );
   fireEvent.click(getByText('Delete'));
   await waitFor(() => expect(saveSettings).toHaveBeenCalledTimes(2));
+});
+
+test('admin can save prompt overrides', async () => {
+  const settings = {
+    theme: 'modern',
+    enableCodes: true,
+    enableCompliance: true,
+    enablePublicHealth: true,
+    enableDifferentials: true,
+    rules: [],
+    lang: 'en',
+    summaryLang: 'en',
+    specialty: '',
+    payer: '',
+    region: '',
+    agencies: ['CDC', 'WHO'],
+  };
+  localStorage.setItem(
+    'token',
+    'h.' + btoa(JSON.stringify({ role: 'admin' })) + '.s',
+  );
+  const { getByLabelText, getByRole } = render(
+    <Settings settings={settings} updateSettings={() => {}} />,
+  );
+  const textarea = getByLabelText('Prompt Overrides JSON');
+  const valid = JSON.stringify({
+    default: {
+      beautify: { en: '' },
+      suggest: { en: '' },
+      summary: { en: '' },
+    },
+  });
+  fireEvent.change(textarea, { target: { value: valid } });
+  await fireEvent.click(getByRole('button', { name: 'Save Templates' }));
+  await waitFor(() => expect(savePromptTemplates).toHaveBeenCalled());
 });

@@ -14,6 +14,7 @@ import {
   getPromptTemplates,
   savePromptTemplates,
 } from '../api.js';
+import yaml from 'js-yaml';
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
@@ -23,6 +24,17 @@ const API_KEY_REGEX = /^sk-(?:proj-)?[A-Za-z0-9]{16,}$/;
 
 function Settings({ settings, updateSettings }) {
   const { t } = useTranslation();
+  let isAdmin = false;
+  if (typeof window !== 'undefined') {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        isAdmin = JSON.parse(atob(token.split('.')[1])).role === 'admin';
+      } catch {
+        isAdmin = false;
+      }
+    }
+  }
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [apiKeyStatus, setApiKeyStatus] = useState('');
   const [templates, setTemplates] = useState([]);
@@ -30,12 +42,8 @@ function Settings({ settings, updateSettings }) {
   const [tplContent, setTplContent] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [tplError, setTplError] = useState(null);
-  const [promptTemplates, setPromptTemplates] = useState({});
+  const [promptOverrides, setPromptOverrides] = useState('');
   const [promptError, setPromptError] = useState(null);
-  const [newSpecialty, setNewSpecialty] = useState('');
-  const [newSpecialtyText, setNewSpecialtyText] = useState('');
-  const [newPayer, setNewPayer] = useState('');
-  const [newPayerText, setNewPayerText] = useState('');
   const [newRule, setNewRule] = useState('');
   const [editingRule, setEditingRule] = useState(null);
   const [ruleError, setRuleError] = useState('');
@@ -53,7 +61,7 @@ function Settings({ settings, updateSettings }) {
         }
       });
     getPromptTemplates()
-      .then((data) => setPromptTemplates(data))
+      .then((data) => setPromptOverrides(JSON.stringify(data, null, 2)))
       .catch((e) => {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
@@ -211,7 +219,7 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
-  const handlePayerChange = async (event) => {
+const handlePayerChange = async (event) => {
     const value = event.target.value || '';
     const updated = { ...settings, payer: value };
     try {
@@ -221,36 +229,51 @@ function Settings({ settings, updateSettings }) {
       console.error(e);
     }
   };
-
-  const handleModifierChange = (type, key, value) => {
-    const section = `${type}_modifiers`;
-    setPromptTemplates((prev) => ({
-      ...prev,
-      [section]: {
-        ...(prev[section] || {}),
-        [key]: { ...(prev[section]?.[key] || {}), en: value },
-      },
-    }));
+  const validatePromptTemplates = (obj) => {
+    const hasCats = (entry) =>
+      entry && ['beautify', 'suggest', 'summary'].every((k) => k in entry);
+    if (!hasCats(obj.default)) return false;
+    for (const group of ['specialty', 'payer']) {
+      if (obj[group]) {
+        for (const key of Object.keys(obj[group])) {
+          if (!hasCats(obj[group][key])) return false;
+        }
+      }
+    }
+    return true;
   };
 
-  const handleAddSpecialtyModifier = () => {
-    if (!newSpecialty.trim() || !newSpecialtyText.trim()) return;
-    handleModifierChange('specialty', newSpecialty.trim().toLowerCase(), newSpecialtyText.trim());
-    setNewSpecialty('');
-    setNewSpecialtyText('');
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        let data;
+        if (file.name.endsWith('.json')) data = JSON.parse(reader.result);
+        else data = yaml.load(reader.result);
+        if (!validatePromptTemplates(data)) {
+          setPromptError(t('settings.invalidPromptTemplates'));
+          return;
+        }
+        setPromptOverrides(JSON.stringify(data, null, 2));
+        setPromptError(null);
+      } catch {
+        setPromptError(t('settings.invalidPromptTemplates'));
+      }
+    };
+    reader.readAsText(file);
   };
 
-  const handleAddPayerModifier = () => {
-    if (!newPayer.trim() || !newPayerText.trim()) return;
-    handleModifierChange('payer', newPayer.trim().toLowerCase(), newPayerText.trim());
-    setNewPayer('');
-    setNewPayerText('');
-  };
-
-  const handleSavePromptTemplates = async () => {
+  const handleSavePromptOverrides = async () => {
     try {
-      const saved = await savePromptTemplates(promptTemplates);
-      setPromptTemplates(saved);
+      const data = JSON.parse(promptOverrides || '{}');
+      if (!validatePromptTemplates(data)) {
+        setPromptError(t('settings.invalidPromptTemplates'));
+        return;
+      }
+      const saved = await savePromptTemplates(data);
+      setPromptOverrides(JSON.stringify(saved, null, 2));
       setPromptError(null);
     } catch (e) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
@@ -696,81 +719,35 @@ function Settings({ settings, updateSettings }) {
         ))}
       </ul>
 
-      <h4>{t('settings.promptTemplates')}</h4>
-      {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
-      <h5>{t('settings.specialtyAdditions')}</h5>
-      {Object.entries(promptTemplates.specialty_modifiers || {}).map(
-        ([name, entry]) => (
-          <div key={name} style={{ marginBottom: '0.5rem' }}>
-            <strong>{name}</strong>
-            <textarea
-              value={entry.en || ''}
-              onChange={(e) =>
-                handleModifierChange('specialty', name, e.target.value)
-              }
-              rows={3}
-              style={{ width: '100%' }}
-            />
-          </div>
-        )
+      {isAdmin && (
+        <>
+          <h4>{t('settings.promptOverrides') || 'Prompt Overrides'}</h4>
+          {promptError && <p style={{ color: 'red' }}>{promptError}</p>}
+          <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
+            {t('settings.promptTemplatesHelp')}
+          </p>
+          <input
+            type="file"
+            accept=".json,.yaml,.yml"
+            onChange={handleFileUpload}
+            style={{ marginBottom: '0.5rem' }}
+          />
+          <textarea
+            aria-label="Prompt Overrides JSON"
+            value={promptOverrides}
+            onChange={(e) => setPromptOverrides(e.target.value)}
+            rows={10}
+            style={{ width: '100%' }}
+          />
+          <button
+            onClick={handleSavePromptOverrides}
+            style={{ marginTop: '0.5rem' }}
+          >
+            {t('settings.savePromptTemplates')}
+          </button>
+        </>
       )}
-      <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
-        <input
-          type="text"
-          placeholder={t('settings.specialtyPlaceholder')}
-          value={newSpecialty}
-          onChange={(e) => setNewSpecialty(e.target.value)}
-          style={{ flex: 1, marginRight: '0.5rem' }}
-        />
-        <input
-          type="text"
-          placeholder={t('settings.instructionPlaceholder')}
-          value={newSpecialtyText}
-          onChange={(e) => setNewSpecialtyText(e.target.value)}
-          style={{ flex: 2 }}
-        />
-        <button onClick={handleAddSpecialtyModifier} style={{ marginLeft: '0.5rem' }}>
-          {t('settings.add')}
-        </button>
-      </div>
-      <h4>{t('settings.payerAdditions')}</h4>
-      {Object.entries(promptTemplates.payer_modifiers || {}).map(
-        ([name, entry]) => (
-          <div key={name} style={{ marginBottom: '0.5rem' }}>
-            <strong>{name}</strong>
-            <textarea
-              value={entry.en || ''}
-              onChange={(e) =>
-                handleModifierChange('payer', name, e.target.value)
-              }
-              rows={3}
-              style={{ width: '100%' }}
-            />
-          </div>
-        )
-      )}
-      <div style={{ display: 'flex', marginBottom: '0.5rem' }}>
-        <input
-          type="text"
-          placeholder={t('settings.payerPlaceholder')}
-          value={newPayer}
-          onChange={(e) => setNewPayer(e.target.value)}
-          style={{ flex: 1, marginRight: '0.5rem' }}
-        />
-        <input
-          type="text"
-          placeholder={t('settings.instructionPlaceholder')}
-          value={newPayerText}
-          onChange={(e) => setNewPayerText(e.target.value)}
-          style={{ flex: 2 }}
-        />
-        <button onClick={handleAddPayerModifier} style={{ marginLeft: '0.5rem' }}>
-          {t('settings.add')}
-        </button>
-      </div>
-      <button onClick={handleSavePromptTemplates}>
-        {t('settings.savePromptTemplates')}
-      </button>
+
     </div>
   );
 }
