@@ -6,7 +6,13 @@ import {
   useImperativeHandle,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { fetchLastTranscript, getTemplates, transcribeAudio, exportToEhr } from '../api.js';
+import {
+  fetchLastTranscript,
+  getTemplates,
+  transcribeAudio,
+  exportToEhr,
+  logEvent,
+} from '../api.js';
 
 let ReactQuill;
 try {
@@ -228,6 +234,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const handleTemplateClick = (tpl) => {
     insertText(tpl.content);
     if (onTemplateChange) onTemplateChange(tpl.id);
+    logEvent('template_use', { templateId: tpl.id }).catch(() => {});
   };
 
   const {

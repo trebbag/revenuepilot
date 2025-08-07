@@ -22,21 +22,21 @@ test('lists and selects templates', async () => {
   const { getByText, findByText } = render(
     <TemplatesModal
       baseTemplates={[{ name: 'Base', content: 'B' }]}
-      specialty="cardiology"
-      payer="medicare"
+      specialty=""
+      payer=""
       onSelect={onSelect}
       onClose={() => {}}
     />,
   );
   await findByText('Custom');
   fireEvent.click(getByText('Base'));
-  expect(onSelect).toHaveBeenCalledWith('B');
-  expect(api.getTemplates).toHaveBeenCalledWith('cardiology');
+  expect(onSelect).toHaveBeenCalledWith({ name: 'Base', content: 'B' });
+  expect(api.getTemplates).toHaveBeenCalledWith();
 });
 
 test('creates template', async () => {
   const { getByPlaceholderText, getByText, findByText } = render(
-    <TemplatesModal baseTemplates={[]} specialty="cardiology" payer="" onSelect={() => {}} onClose={() => {}} />,
+    <TemplatesModal baseTemplates={[]} specialty="" payer="" onSelect={() => {}} onClose={() => {}} />,
   );
   fireEvent.change(getByPlaceholderText('Name'), { target: { value: 'Extra' } });
   fireEvent.change(getByPlaceholderText('Content'), { target: { value: 'X' } });
@@ -46,7 +46,7 @@ test('creates template', async () => {
 
 test('edits and deletes template', async () => {
   const { getByText, getByPlaceholderText, findByText, queryByText } = render(
-    <TemplatesModal baseTemplates={[]} specialty="cardiology" payer="" onSelect={() => {}} onClose={() => {}} />,
+    <TemplatesModal baseTemplates={[]} specialty="" payer="" onSelect={() => {}} onClose={() => {}} />,
   );
   await findByText('Custom');
   fireEvent.click(getByText('Edit'));

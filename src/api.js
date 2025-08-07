@@ -645,6 +645,7 @@ export async function getMetrics(filters = {}) {
 
       clinicians: [],
       timeseries: { daily: [], weekly: [] },
+      template_usage: { current: {}, baseline: {} },
     };
   }
   const params = new URLSearchParams();

@@ -57,6 +57,8 @@
     "denialRateAria": "Taux de refus sur 30 jours",
     "exportPng": "Exporter PNG",
     "exportCsv": "Exporter CSV",
+    "templateUsage": "Utilisation des modèles",
+    "templateUsageItem": "Modèle {{id}} : {{count}} utilisations",
     "cards": {
       "totalNotes": "Total Notes Created",
       "beautifiedNotes": "Beautified Notes",
@@ -189,8 +191,10 @@
     "cdc": "CDC",
     "who": "WHO",
     "templates": "Templates",
+    "templatesHelp": "Gérez les modèles de notes. Les administrateurs peuvent ajouter ou supprimer des modèles intégrés et les attribuer par spécialité ou payeur.",
     "noTemplates": "No templates",
     "promptTemplates": "Modèles d'invite",
+    "promptOverrides": "Remplacements d'invite",
     "promptTemplatesHelp": "Modifier les instructions JSON ou téléverser un fichier pour personnaliser les invites.",
     "savePromptTemplates": "Enregistrer les modèles",
     "invalidPromptTemplates": "Format de modèle invalide",
@@ -257,7 +261,8 @@
     "close": "Close",
     "delete": "Delete",
     "edit": "Edit",
-    "general": "Général"
+    "general": "Général",
+    "search": "Search"
   },
   "transcript": {
     "add": "Ajouter",
