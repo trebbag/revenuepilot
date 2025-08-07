@@ -909,6 +909,21 @@ function Dashboard() {
           />
         </div>
       )}
+      {metrics.template_usage &&
+        Object.keys(metrics.template_usage.current || {}).length > 0 && (
+          <div style={{ marginTop: '1rem' }}>
+            <h3>{t('dashboard.templateUsage')}</h3>
+            <ul data-testid="template-usage-list">
+              {Object.entries(metrics.template_usage.current).map(
+                ([id, count]) => (
+                  <li key={id}>
+                    {t('dashboard.templateUsageItem', { id, count })}
+                  </li>
+                ),
+              )}
+            </ul>
+          </div>
+        )}
     </div>
   );
 }

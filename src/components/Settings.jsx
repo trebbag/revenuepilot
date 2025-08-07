@@ -611,6 +611,7 @@ const handlePayerChange = async (event) => {
       ))}
 
       <h3>{t('settings.templates')}</h3>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.templatesHelp')}</p>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
       <ul>
         {templates.map((tpl) => (

@@ -1467,6 +1467,7 @@ async def get_metrics(
         beautify_daily: Dict[str, List[float]] = {} if collect_timeseries else {}
         beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
         last_start_for_patient: Dict[str, float] = {}
+        template_counts: Dict[str, int] = {}
 
         for r in rows:
             evt = r["eventType"]
@@ -1527,6 +1528,11 @@ async def get_metrics(
                 if deficiency:
                     deficiency_totals[1] += 1
 
+            if evt == "template_use":
+                tpl_id = details.get("templateId") or details.get("template_id")
+                if tpl_id is not None:
+                    template_counts[str(tpl_id)] = template_counts.get(str(tpl_id), 0) + 1
+
             patient_id = (
                 details.get("patientID")
                 or details.get("patientId")
@@ -1582,6 +1588,7 @@ async def get_metrics(
                 "compliance_counts": compliance_counts,
                 "public_health_rate": public_health_rate,
                 "avg_satisfaction": avg_satisfaction,
+                "template_counts": template_counts,
             }
         )
         if collect_timeseries:
@@ -1599,6 +1606,8 @@ async def get_metrics(
     compliance_counts = current_metrics.pop("compliance_counts")
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
+    template_counts = current_metrics.pop("template_counts")
+    baseline_template_counts = baseline_metrics.pop("template_counts")
 
     daily_list: List[Dict[str, Any]] = []
     if daily:
@@ -1773,6 +1782,10 @@ async def get_metrics(
         "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
+        "template_usage": {
+            "current": template_counts,
+            "baseline": baseline_template_counts,
+        },
         "clinicians": clinicians,
         "timeseries": timeseries,
     }

@@ -44,6 +44,8 @@
     "denialRateAria": "Tasa de denegación últimos 30 días",
     "exportPng": "Exportar PNG",
     "exportCsv": "Exportar CSV",
+    "templateUsage": "Uso de plantillas",
+    "templateUsageItem": "Plantilla {{id}}: {{count}} usos",
     "denialRateLabel": "Tasa de denegación (%)",
     "deficiencyRateLabel": "Tasa de deficiencia (%)",
     "denials": "Denegaciones",
@@ -189,6 +191,7 @@
     "cdc": "CDC",
     "who": "OMS",
     "templates": "Plantillas",
+    "templatesHelp": "Administre las plantillas de notas. Los administradores pueden agregar o eliminar plantillas integradas y asignarlas a especialidades o pagadores.",
     "noTemplates": "Sin plantillas",
     "promptTemplates": "Plantillas de indicaciones",
     "promptOverrides": "Anulaciones de indicaciones",
@@ -258,7 +261,8 @@
     "close": "Cerrar",
     "delete": "Eliminar",
     "edit": "Editar",
-    "general": "General"
+    "general": "General",
+    "search": "Buscar"
   },
   "transcript": {
     "add": "Añadir",
