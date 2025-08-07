@@ -11,6 +11,18 @@ app into an Electron shell for desktop deployment.
 
 ## Running locally
 
+### Quick start
+
+To install all dependencies and produce a packaged desktop build in one step, run:
+
+```bash
+./setup.sh        # macOS/Linux
+# or
+.\setup.ps1       # Windows PowerShell
+```
+
+This script invokes the installer and then runs `npm run electron:build`. Built artifacts will be placed in the `dist/` directory. If you prefer to execute the steps manually, follow the instructions below.
+
 1. Install [Node.js](https://nodejs.org/) (version 14 or later).
 2. Navigate to this folder and install dependencies:
 
