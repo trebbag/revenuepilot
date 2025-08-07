@@ -13,13 +13,16 @@ import os
 import re
 import shutil
 import time
+import asyncio
+import sys
+from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 import requests
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, confloat, validator, StrictBool
 
@@ -2345,3 +2348,25 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
     cleaned = deidentify(req.text or "")
     follow = recommend_follow_up(req.codes or [], [cleaned])
     return ScheduleResponse(**follow)
+
+
+@app.get("/download-models")
+async def download_models_endpoint() -> StreamingResponse:
+    """Stream progress while downloading local Hugging Face models."""
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "download_models.py"
+
+    async def event_stream():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert process.stdout is not None
+        async for line in process.stdout:
+            yield f"data: {line.decode().rstrip()}\n\n"
+        await process.wait()
+        yield "data: done\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

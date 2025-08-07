@@ -222,7 +222,10 @@
     "useLocalModelsHelp": "Usar modelos descargados sin conexión en lugar de marcadores de posición.",
     "beautifyModel": "Ruta del modelo de embellecimiento",
     "suggestModel": "Ruta del modelo de sugerencias",
-    "summarizeModel": "Ruta del modelo de resumen"
+    "summarizeModel": "Ruta del modelo de resumen",
+    "downloadModels": "Descargar modelos locales",
+    "downloadModelsProgress": "Progreso de la descarga",
+    "downloadModelsError": "Descarga fallida"
   },
   "sidebar": {
     "notes": "Notas",

@@ -222,7 +222,10 @@
     "useLocalModelsHelp": "Use downloaded models when offline instead of placeholders.",
     "beautifyModel": "Beautify model path",
     "suggestModel": "Suggest model path",
-    "summarizeModel": "Summarize model path"
+    "summarizeModel": "Summarize model path",
+    "downloadModels": "Download local models",
+    "downloadModelsProgress": "Download progress",
+    "downloadModelsError": "Download failed"
   },
   "sidebar": {
     "notes": "Notes",

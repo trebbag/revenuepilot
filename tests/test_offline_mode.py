@@ -15,6 +15,7 @@ def auth_header(token):
 def offline_client(monkeypatch):
     """Return a TestClient with offline model mode enabled."""
     monkeypatch.setenv("USE_OFFLINE_MODEL", "true")
+    monkeypatch.setenv("USE_LOCAL_MODELS", "true")
     from backend import main as main_module
     importlib.reload(main_module)
 
@@ -37,6 +38,7 @@ def offline_client(monkeypatch):
     client = TestClient(main_module.app)
     yield client, main_module
     monkeypatch.delenv("USE_OFFLINE_MODEL", raising=False)
+    monkeypatch.delenv("USE_LOCAL_MODELS", raising=False)
     importlib.reload(main_module)
 
 
@@ -79,4 +81,42 @@ def test_offline_summarize(offline_client):
     assert d1["summary"]
     assert d1["recommendations"] == []
     assert d1["warnings"] == []
+
+
+def test_local_models_used_when_available(offline_client, monkeypatch):
+    client, main_module = offline_client
+    token = main_module.create_token("u", "user")
+
+    sample = {
+        "codes": [{"code": "123"}],
+        "compliance": ["ok"],
+        "publicHealth": [
+            {
+                "recommendation": "do",
+                "reason": "because",
+                "source": "CDC",
+                "evidenceLevel": "A",
+            }
+        ],
+        "differentials": [{"diagnosis": "dx", "score": 0.1}],
+    }
+
+    from backend import offline_model as om
+
+    monkeypatch.setattr(om, "beautify", lambda *a, **k: "beautified")
+    monkeypatch.setattr(
+        om,
+        "summarize",
+        lambda *a, **k: {"summary": "short", "recommendations": [], "warnings": []},
+    )
+    monkeypatch.setattr(om, "suggest", lambda *a, **k: sample)
+
+    r1 = client.post("/beautify", json={"text": "x"}, headers=auth_header(token))
+    assert r1.json()["beautified"] == "beautified"
+
+    r2 = client.post("/summarize", json={"text": "x"}, headers=auth_header(token))
+    assert r2.json()["summary"] == "short"
+
+    r3 = client.post("/suggest", json={"text": "x"}, headers=auth_header(token))
+    assert r3.json() == sample
 
