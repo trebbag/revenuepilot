@@ -64,15 +64,14 @@ test('displays error when transcript load fails', async () => {
 });
 
 test('EHR export button triggers API call', async () => {
-    const { getByText } = render(
-      <NoteEditor
-        id="be"
-        value="Final"
-        onChange={() => {}}
-        mode="beautified"
-        role="admin"
-      />,
-    );
-  fireEvent.click(getByText('EHR Export'));
+  const { getByText } = render(
+    <NoteEditor
+      id="be"
+      value="Final"
+      onChange={() => {}}
+      mode="beautified"
+    />,
+  );
+  fireEvent.click(getByText('Export to EHR'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });

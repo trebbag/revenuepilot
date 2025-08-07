@@ -15,7 +15,7 @@
   "sessionExpired": "Session expired",
   "saved": "Saved",
   "templateManager": "Template Manager",
-  "ehrExport": "EHR Export",
+  "ehrExport": "Export to EHR",
   "ehrAuthFailed": "EHR authentication failed",
   "survey": {
     "title": "Quick Survey",

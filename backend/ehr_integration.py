@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, List, Optional, Sequence
 
 import requests
+import logging
 
 FHIR_SERVER_URL = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
 TOKEN_URL = os.getenv("EHR_TOKEN_URL")
@@ -48,19 +49,25 @@ def get_ehr_token() -> Optional[str]:
     ):
         return _token_cache["token"]
 
-    resp = requests.post(
-        TOKEN_URL,
-        data={"grant_type": "client_credentials"},
-        auth=(CLIENT_ID, CLIENT_SECRET),
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    token = data.get("access_token")
-    expires = data.get("expires_in", 3600)
-    _token_cache["token"] = token
-    _token_cache["expires_at"] = now + int(expires)
-    return token
+    try:
+        resp = requests.post(
+            TOKEN_URL,
+            data={"grant_type": "client_credentials"},
+            auth=(CLIENT_ID, CLIENT_SECRET),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("access_token")
+        expires = int(data.get("expires_in", 3600))
+        _token_cache["token"] = token
+        _token_cache["expires_at"] = now + expires
+        return token
+    except Exception:  # pragma: no cover - network issues
+        logging.getLogger(__name__).exception("Token retrieval failed")
+        _token_cache["token"] = None
+        _token_cache["expires_at"] = 0
+        return None
 
 
 def _auth_headers() -> Dict[str, str]:
@@ -71,9 +78,12 @@ def _auth_headers() -> Dict[str, str]:
     available.
     """
 
-    token = STATIC_BEARER_TOKEN or get_ehr_token()
+    token = get_ehr_token()
     if token:
         return {"Authorization": f"Bearer {token}"}
+
+    if STATIC_BEARER_TOKEN:
+        return {"Authorization": f"Bearer {STATIC_BEARER_TOKEN}"}
 
     if BASIC_AUTH_USER and BASIC_AUTH_PASSWORD:
         basic = base64.b64encode(

@@ -11,7 +11,8 @@ This roadmap reflects the outstanding bugs, missing features and future enhancem
 
 ## P1 – Important Enhancements
 
-- **EHR Integration:** Plan and implement FHIR POST of the final note and codes into supported EHRs.  Provide an optional backend integration layer for clinics that prefer direct insertion over copy‑paste.
+- **EHR Integration:** Initial FHIR export workflow is in place. The `/export` API and matching UI button post the final note and selected billing codes to a configured FHIR server. Future work can expand resource coverage and vendor‑specific workflows.
+- **User Settings & Preferences:** Persist user settings (theme, enabled suggestion categories, custom rules) in a database so that they travel with the user rather than being stored solely in the browser.
 - **Internationalisation:** Add support for multiple locales and languages in the UI and prompts, starting with Spanish.
 - **Refined Prompts:** Continuously improve prompt templates based on pilot feedback.  Allow dynamic prompt injection for different specialties and payers.
 
