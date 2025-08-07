@@ -92,3 +92,43 @@ def ensure_templates_table(conn: sqlite3.Connection) -> None:
     if "payer" not in columns:
         conn.execute("ALTER TABLE templates ADD COLUMN payer TEXT")
     conn.commit()
+
+
+def ensure_events_table(conn: sqlite3.Connection) -> None:
+    """Ensure the analytics events table exists with numeric columns.
+
+    The application has evolved to store ``revenue`` and ``time_to_close`` as
+    real numbers rather than JSON strings embedded in ``details``.  This helper
+    creates the ``events`` table when missing and adds these columns for
+    existing installations."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS events ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "eventType TEXT NOT NULL,"
+        "timestamp REAL NOT NULL,"
+        "details TEXT,"
+        "revenue REAL,"
+        "time_to_close REAL,"
+        "codes TEXT,"
+        "compliance_flags TEXT,"
+        "public_health INTEGER,"
+        "satisfaction INTEGER"
+        ")"
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    if "revenue" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN revenue REAL")
+    if "time_to_close" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN time_to_close REAL")
+    if "codes" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN codes TEXT")
+    if "compliance_flags" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN compliance_flags TEXT")
+    if "public_health" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN public_health INTEGER")
+    if "satisfaction" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
+
+    conn.commit()

@@ -1,5 +1,5 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getMetrics } from '../api.js';
 import { Line, Bar } from 'react-chartjs-2';
@@ -53,6 +53,8 @@ function Dashboard() {
   const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
   const [inputs, setInputs] = useState({ ...filters, range: '' });
   const [error, setError] = useState(null);
+  const revenueBarRef = useRef(null);
+  const denialRateRef = useRef(null);
 
   const applyFilters = () => {
     let { start, end, clinician, range } = inputs;
@@ -169,15 +171,29 @@ function Dashboard() {
       direction: 'higher',
     },
     {
-      key: 'avg_close_time',
+      key: 'revenue_projection',
+      title: t('dashboard.cards.revenueProjection', {
+        defaultValue: 'Revenue Projection',
+      }),
+      baseline: metrics.baseline?.revenue_projection
+        ? metrics.baseline.revenue_projection.toFixed(2)
+        : 0,
+      current: metrics.current?.revenue_projection
+        ? metrics.current.revenue_projection.toFixed(2)
+        : 0,
+      improvement: metrics.improvement?.revenue_projection,
+      direction: 'higher',
+    },
+    {
+      key: 'avg_time_to_close',
       title: t('dashboard.cards.avgCloseTime'),
-      baseline: metrics.baseline?.avg_close_time
-        ? metrics.baseline.avg_close_time.toFixed(1)
+      baseline: metrics.baseline?.avg_time_to_close
+        ? metrics.baseline.avg_time_to_close.toFixed(1)
         : 0,
-      current: metrics.current?.avg_close_time
-        ? metrics.current.avg_close_time.toFixed(1)
+      current: metrics.current?.avg_time_to_close
+        ? metrics.current.avg_time_to_close.toFixed(1)
         : 0,
-      improvement: metrics.improvement?.avg_close_time,
+      improvement: metrics.improvement?.avg_time_to_close,
       direction: 'lower',
     },
     {
@@ -225,7 +241,8 @@ function Dashboard() {
       'total_audio',
       'avg_note_length',
       'avg_beautify_time',
-      'avg_close_time',
+      'avg_time_to_close',
+      'revenue_projection',
       'revenue_per_visit',
       'denial_rate',
       'avg_satisfaction',
@@ -269,6 +286,30 @@ function Dashboard() {
       y += 10;
     });
     doc.save('metrics.pdf');
+  };
+
+  const exportChartPNG = (ref, filename) => {
+    if (!ref.current) return;
+    const url = ref.current.toBase64Image();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+  };
+
+  const exportChartCSV = (data, filename) => {
+    const rows = [['date', ...data.labels]];
+    data.datasets.forEach((ds) => {
+      rows.push([ds.label, ...ds.data]);
+    });
+    const csvContent = rows.map((r) => r.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const dailyLabels = metrics.timeseries?.daily?.map((d) => d.date) || [];
@@ -350,7 +391,7 @@ function Dashboard() {
       {
         label: t('dashboard.cards.avgCloseTime'),
         data:
-          metrics.timeseries?.daily?.map((d) => d.avg_close_time || 0) || [],
+          metrics.timeseries?.daily?.map((d) => d.avg_time_to_close || 0) || [],
         borderColor: 'rgba(100,100,255,1)',
         backgroundColor: 'rgba(100,100,255,0.2)',
         yAxisID: 'y1',
@@ -367,8 +408,9 @@ function Dashboard() {
       {
         label: t('dashboard.cards.deficiencyRate'),
         data:
-          metrics.timeseries?.daily?.map((d) => (d.deficiency_rate || 0) * 100) ||
-          [],
+          metrics.timeseries?.daily?.map(
+            (d) => (d.deficiency_rate || 0) * 100,
+          ) || [],
         borderColor: 'rgba(0,128,128,1)',
         backgroundColor: 'rgba(0,128,128,0.2)',
         yAxisID: 'y1',
@@ -469,7 +511,8 @@ function Dashboard() {
       {
         label: t('dashboard.cards.avgCloseTime'),
         data:
-          metrics.timeseries?.weekly?.map((w) => w.avg_close_time || 0) || [],
+          metrics.timeseries?.weekly?.map((w) => w.avg_time_to_close || 0) ||
+          [],
         borderColor: 'rgba(100,100,255,1)',
         backgroundColor: 'rgba(100,100,255,0.2)',
         yAxisID: 'y1',
@@ -486,8 +529,9 @@ function Dashboard() {
       {
         label: t('dashboard.cards.deficiencyRate'),
         data:
-          metrics.timeseries?.weekly?.map((w) => (w.deficiency_rate || 0) * 100) ||
-          [],
+          metrics.timeseries?.weekly?.map(
+            (w) => (w.deficiency_rate || 0) * 100,
+          ) || [],
         borderColor: 'rgba(0,128,128,1)',
         backgroundColor: 'rgba(0,128,128,0.2)',
         yAxisID: 'y1',
@@ -526,6 +570,41 @@ function Dashboard() {
   const revenueLineOptions = {
     plugins: { tooltip: { enabled: true }, legend: { display: true } },
     scales: { y: { beginAtZero: true } },
+  };
+
+  const last30 = (metrics.timeseries?.daily || []).slice(-30);
+  const revenueProjectionData = {
+    labels: last30.map((d) => d.date),
+    datasets: [
+      {
+        label: t('dashboard.cards.revenueProjection', {
+          defaultValue: 'Revenue Projection',
+        }),
+        data: last30.map((d) => d.revenue_projection || 0),
+        backgroundColor: 'rgba(0,123,255,0.5)',
+        borderColor: 'rgba(0,123,255,1)',
+      },
+    ],
+  };
+  const revenueProjectionOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true } },
+  };
+
+  const denialRateLineData = {
+    labels: last30.map((d) => d.date),
+    datasets: [
+      {
+        label: t('dashboard.cards.denialRate'),
+        data: last30.map((d) => (d.denial_rate || 0) * 100),
+        borderColor: 'rgba(255,99,71,1)',
+        backgroundColor: 'rgba(255,99,71,0.2)',
+      },
+    ],
+  };
+  const denialRateOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: { y: { beginAtZero: true, max: 100 } },
   };
 
   const emCodes = ['99212', '99213', '99214', '99215'];
@@ -721,6 +800,74 @@ function Dashboard() {
             options={revenueLineOptions}
             data-testid="revenue-line"
           />
+        </div>
+      )}
+
+      {metrics.timeseries && hasDaily && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>
+            {t('dashboard.revenueProjection', {
+              defaultValue: 'Revenue Projection',
+            })}
+          </h3>
+          <Bar
+            ref={revenueBarRef}
+            data={revenueProjectionData}
+            options={revenueProjectionOptions}
+            aria-label="Revenue projection last 30 days"
+            role="img"
+            data-testid="revenue-projection-bar"
+          />
+          <div>
+            <button
+              onClick={() =>
+                exportChartPNG(revenueBarRef, 'revenue_projection.png')
+              }
+            >
+              Export PNG
+            </button>
+            <button
+              style={{ marginLeft: '0.5rem' }}
+              onClick={() =>
+                exportChartCSV(revenueProjectionData, 'revenue_projection.csv')
+              }
+            >
+              Export CSV
+            </button>
+          </div>
+        </div>
+      )}
+
+      {metrics.timeseries && hasDaily && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>
+            {t('dashboard.denialRateOverTime', {
+              defaultValue: 'Denial Rate Over Time',
+            })}
+          </h3>
+          <Line
+            ref={denialRateRef}
+            data={denialRateLineData}
+            options={denialRateOptions}
+            aria-label="Denial rate last 30 days"
+            role="img"
+            data-testid="denial-rate-line"
+          />
+          <div>
+            <button
+              onClick={() => exportChartPNG(denialRateRef, 'denial_rate.png')}
+            >
+              Export PNG
+            </button>
+            <button
+              style={{ marginLeft: '0.5rem' }}
+              onClick={() =>
+                exportChartCSV(denialRateLineData, 'denial_rate.csv')
+              }
+            >
+              Export CSV
+            </button>
+          </div>
         </div>
       )}
 

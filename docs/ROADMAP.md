@@ -22,3 +22,12 @@ This roadmap reflects the outstanding bugs, missing features and future enhancem
 - **Smart Suggestions for Public Health:** Integrate external guidelines to recommend region‑specific vaccinations, screenings and chronic disease management programmes.
 - **Offline Mode:** Investigate offline LLM inference for beautification and suggestions to avoid network dependence.
 - **AI‑Driven Scheduling:** Suggest follow‑up appointment intervals and automatically populate a calendar based on recommended care plans.
+
+## Metrics Schema
+
+The analytics dashboard draws from a SQLite events table.  Key metrics include
+`revenue_projection`, `revenue_per_visit`, `avg_time_to_close`, `denial_rate`
+and counts of compliance flags.  Results are aggregated by day and week and
+returned under a `timeseries` key for charting.  Set the environment variable
+`METRICS_LOOKBACK_DAYS` (default 30) to limit how many days of events are kept
+for calculations.
