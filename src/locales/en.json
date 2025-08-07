@@ -185,6 +185,7 @@
     "templates": "Templates",
     "noTemplates": "No templates",
     "promptTemplates": "Prompt Templates",
+    "promptOverrides": "Prompt Overrides",
     "promptTemplatesHelp": "Edit JSON instructions or upload a file to customise prompts.",
     "savePromptTemplates": "Save Templates",
     "invalidPromptTemplates": "Invalid template format",

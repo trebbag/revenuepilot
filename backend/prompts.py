@@ -56,38 +56,29 @@ SPECIALTY_ALIASES = {"pediatrics": "paediatrics"}
 def _get_custom_instruction(
     category: str, lang: str, specialty: Optional[str], payer: Optional[str]
 ) -> str:
-    """Return additional instructions based on specialty and payer.
+    """Return specialty and payer specific instructions.
 
-    The function reads ``prompt_templates.json`` or ``.yaml`` once and then
-    composes any matching instructions in the following order:
-
-    1. ``default`` instructions for the category
-    2. ``specialty`` overrides matching the provided ``specialty``
-    3. ``payer`` overrides matching the provided ``payer``
-
-    Each piece is appended to the base prompt so the default instructions are
-    always preserved.
+    Default instructions are merged separately, so this helper returns only
+    additions for matching ``specialty`` or ``payer`` values. Legacy
+    ``*_modifiers`` sections remain supported for backwards compatibility.
     """
 
     templates = _load_custom_templates()
-    # ``prompt_templates.json`` may define "specialty_modifiers"/"payer_modifiers"
-    # (legacy naming) or "specialty_additions"/"payer_additions".  Support both
-    # so existing deployments continue to function.
     specialty_mods = templates.get("specialty_modifiers") or templates.get(
-        "specialty_additions", {}
+        "specialty_additions", {},
     )
     payer_mods = templates.get("payer_modifiers") or templates.get(
-        "payer_additions", {}
+        "payer_additions", {},
     )
 
     def extract(section: Dict[str, Any]) -> Optional[str]:
         entry = section.get(category, {})
         if isinstance(entry, dict) and "examples" in entry:
             entry = {k: v for k, v in entry.items() if k != "examples"}
+            
         return _resolve_lang(entry, lang)
 
-    parts = []
-    parts.append(extract(templates.get("default", {})))
+    parts: List[str] = []
     if specialty:
         specialty_key = SPECIALTY_ALIASES.get(specialty.lower(), specialty.lower())
         parts.append(_resolve_lang(specialty_mods.get(specialty_key, {}), lang))
@@ -152,7 +143,7 @@ def build_beautify_prompt(
         "en": (
             "You are a highly skilled clinical documentation specialist. Your task is to "
             "take an unformatted draft note and return a polished, professional version. "
-            "Never invent or infer new clinical information and remove any patient "
+            "Never invent, hallucinate or infer new clinical information and remove any patient "
             "identifiers or protected health information (PHI). Arrange the content into "
             "clear 'Subjective:', 'Objective:', 'Assessment:' and 'Plan:' sections, each "
             "labelled exactly with those headings and preserving every clinical detail "
@@ -164,7 +155,7 @@ def build_beautify_prompt(
         "es": (
             "Usted es un especialista altamente capacitado en documentación clínica. Su "
             "tarea es tomar una nota clínica sin formato y devolver una versión pulida y "
-            "profesional. No invente ni suponga nueva información clínica y elimine "
+            "profesional. No invente, alucine ni suponga nueva información clínica y elimine "
             "cualquier identificador del paciente o PHI. Organice el contenido en secciones "
             "claras 'Subjetivo:', 'Objetivo:', 'Evaluación:' y 'Plan:', utilizando esos "
             "encabezados exactamente y preservando cada detalle clínico del texto original. "
@@ -196,6 +187,10 @@ def build_beautify_prompt(
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    tmpl = _load_custom_templates()
+    override = _resolve_lang(tmpl.get("default", {}).get("beautify", {}), lang)
+    if override:
+        instructions = f"{instructions} {override}"
     extra = _get_custom_instruction("beautify", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
@@ -229,9 +224,9 @@ def build_suggest_prompt(
             "- codes: an array of objects with fields code (string), rationale (string), upgrade_to (string, optional) and upgrade_path (string, optional). Include only the most relevant CPT and ICD‑10 codes supported by the note. When the documentation would justify a higher‑level code, set upgrade_to to that code and describe the reason in upgrade_path, e.g. '99213 → 99214 due to time or medical decision complexity'. Limit to a maximum of five entries.\n"
             "- compliance: an array of succinct strings highlighting missing documentation elements, audit risks or compliance tips (e.g., incomplete history, missing ROS, insufficient exam). Focus on areas that could cause downcoding or denials.\n"
             "- public_health: an array of objects with fields recommendation (string) and reason (string) giving a brief explanation of why the measure is suggested. Suggest generic recommendations without assuming personal details.\n"
-            "- differentials: an array of objects with fields diagnosis (string) and score (number). Estimate the likelihood of each differential based on the note and provide the score as a percentage from 0 to 100. Limit to a maximum of five entries.\n"
+            "- differentials: an array of objects with fields diagnosis (string) and score (number). Include differential diagnoses only when the note indicates diagnostic uncertainty; otherwise return an empty array. Scores should be percentages from 0 to 100 and limited to five entries.\n"
 
-            "Return only valid JSON without any surrounding Markdown. Do not fabricate information beyond the note. If no suggestions apply to a category, return an empty array for that key."
+            "Return only valid JSON without any surrounding Markdown. Do not fabricate or hallucinate information beyond the note. If no suggestions apply to a category, return an empty array for that key."
         ),
         "es": (
             "Usted es un experto codificador médico, responsable de cumplimiento y asistente de apoyo a la decisión clínica. "
@@ -239,11 +234,15 @@ def build_suggest_prompt(
             "- codes: una matriz de objetos con los campos code (cadena), rationale (cadena), upgrade_to (cadena, opcional) y upgrade_path (cadena, opcional). Incluya solo los códigos CPT e ICD‑10 más relevantes basados en la información proporcionada. Cuando la documentación justifique un código de mayor nivel, establezca upgrade_to con ese código y describa la razón en upgrade_path, por ejemplo '99213 → 99214 por tiempo o complejidad de la decisión médica'. Límite a un máximo de cinco entradas.\n"
             "- compliance: una matriz de cadenas breves que resalten elementos faltantes de documentación, riesgos de auditoría o consejos de cumplimiento (por ejemplo, historial incompleto, ROS faltante, examen insuficiente). Concéntrese en áreas que podrían causar reducción de códigos o denegaciones.\n"
             "- public_health: una matriz de objetos con los campos recommendation (cadena) y reason (cadena) que brinden una breve explicación de por qué se sugiere la medida. Sugiera recomendaciones genéricas sin asumir detalles personales.\n"
-            "- differentials: una matriz de objetos con los campos diagnosis (cadena) y score (número). Estime la probabilidad de cada diagnóstico diferencial según la nota y exprese score como un porcentaje de 0 a 100. Limítese a un máximo de cinco entradas.\n"
-            "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave. Todas las cadenas devueltas deben estar en español."
+            "- differentials: una matriz de objetos con los campos diagnosis (cadena) y score (número). Incluya diagnósticos diferenciales solo cuando la nota indique incertidumbre diagnóstica; de lo contrario devuelva un arreglo vacío. Los puntajes deben ser porcentajes de 0 a 100 y limitarse a cinco entradas.\n"
+            "Devuelva solo JSON válido sin ningún Markdown adicional. No fabrique ni alucine información más allá de la nota. Si no hay sugerencias para una categoría, devuelva un array vacío para esa clave. Todas las cadenas devueltas deben estar en español."
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    tmpl = _load_custom_templates()
+    override = _resolve_lang(tmpl.get("default", {}).get("suggest", {}), lang)
+    if override:
+        instructions = f"{instructions} {override}"
     extra = _get_custom_instruction("suggest", lang, specialty, payer)
     if extra:
         instructions = f"{instructions} {extra}"
@@ -278,10 +277,10 @@ def build_summary_prompt(
     """Build a summary prompt in the requested language."""
     default_instructions = {
         "en": (
-            "You are an expert clinical communicator. Rewrite the following clinical note into a JSON object with keys 'summary', 'recommendations' and 'warnings'. 'summary' should be a brief paragraph in plain language that a patient can easily understand. 'recommendations' should be a bullet list of next steps for the patient. 'warnings' should be a bullet list of any urgent issues. Avoid billing codes and technical jargon. Do not invent information that is not present in the note. Do not include any patient identifiers or PHI."
+            "You are an expert clinical communicator. Rewrite the following clinical note into a JSON object with keys 'summary', 'recommendations' and 'warnings'. 'summary' should be a brief paragraph in plain language that a patient can easily understand. 'recommendations' should be a bullet list of next steps for the patient. 'warnings' should be a bullet list of any urgent issues. Avoid billing codes and technical jargon. Do not invent or hallucinate information that is not present in the note. Do not include any patient identifiers or PHI."
         ),
         "es": (
-            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un objeto JSON con claves 'summary', 'recommendations' y 'warnings'. 'summary' debe ser un breve párrafo en lenguaje sencillo que un paciente pueda entender. 'recommendations' debe ser una lista con viñetas de próximos pasos para el paciente. 'warnings' debe ser una lista con viñetas de cualquier problema urgente. Evite códigos de facturación y jerga técnica. No invente información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
+            "Usted es un experto comunicador clínico. Reescriba la siguiente nota clínica en un objeto JSON con claves 'summary', 'recommendations' y 'warnings'. 'summary' debe ser un breve párrafo en lenguaje sencillo que un paciente pueda entender. 'recommendations' debe ser una lista con viñetas de próximos pasos para el paciente. 'warnings' debe ser una lista con viñetas de cualquier problema urgente. Evite códigos de facturación y jerga técnica. No invente ni alucine información que no esté presente en la nota. No incluya identificadores del paciente ni PHI. El resumen debe estar en español."
         ),
         "fr": (
             "Vous êtes un expert en communication clinique. Réécrivez la note clinique suivante "
@@ -292,6 +291,10 @@ def build_summary_prompt(
         ),
     }
     instructions = default_instructions.get(lang, default_instructions["en"])
+    tmpl = _load_custom_templates()
+    override = _resolve_lang(tmpl.get("default", {}).get("summary", {}), lang)
+    if override:
+        instructions = f"{instructions} {override}"
     if patient_age is not None:
         instructions = f"{instructions} Use words a {patient_age}-year-old would understand."
     extra = _get_custom_instruction("summary", lang, specialty, payer)

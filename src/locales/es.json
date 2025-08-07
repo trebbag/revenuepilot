@@ -185,6 +185,7 @@
     "templates": "Plantillas",
     "noTemplates": "Sin plantillas",
     "promptTemplates": "Plantillas de indicaciones",
+    "promptOverrides": "Anulaciones de indicaciones",
     "promptTemplatesHelp": "Edite el JSON o cargue un archivo para personalizar las indicaciones.",
     "savePromptTemplates": "Guardar plantillas",
     "invalidPromptTemplates": "Formato de plantilla inválido",

@@ -55,6 +55,12 @@ def test_summary_prompt_language():
     assert "auf Deutsch" in de[0]["content"]
 
 
+def test_default_override_applied():
+    msgs = prompts.build_beautify_prompt("note", lang="en")
+    content = msgs[0]["content"]
+    assert "Base instruction applied to all notes." in content
+
+
 def test_specialty_and_payer_overrides():
     beauty = prompts.build_beautify_prompt(
         "note", lang="en", specialty="cardiology", payer="medicare"
