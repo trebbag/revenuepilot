@@ -97,7 +97,11 @@ function Login({ onLoggedIn }) {
       style={{ maxWidth: '20rem', margin: '2rem auto' }}
     >
       <h2>{t('login.title')}</h2>
-      <form onSubmit={registerMode ? handleRegister : resetMode ? handleReset : handleSubmit}>
+      <form
+        onSubmit={
+          registerMode ? handleRegister : resetMode ? handleReset : handleSubmit
+        }
+      >
         <div style={{ marginBottom: '0.5rem' }}>
           <label>
             {t('login.username')}
@@ -162,15 +166,15 @@ function Login({ onLoggedIn }) {
                 resetMode
                   ? 'login.resetting'
                   : registerMode
-                  ? 'login.registering'
-                  : 'login.loggingIn'
+                    ? 'login.registering'
+                    : 'login.loggingIn',
               )
             : t(
                 resetMode
                   ? 'login.resetPassword'
                   : registerMode
-                  ? 'login.register'
-                  : 'login.login'
+                    ? 'login.register'
+                    : 'login.login',
               )}
         </button>
         {!resetMode && !registerMode && (

@@ -237,7 +237,7 @@ function Settings({ settings, updateSettings }) {
     }
   };
 
-const handlePayerChange = async (event) => {
+  const handlePayerChange = async (event) => {
     const value = event.target.value || '';
     const updated = { ...settings, payer: value };
     try {
@@ -644,7 +644,9 @@ const handlePayerChange = async (event) => {
       ))}
 
       <h3>{t('settings.templates')}</h3>
-      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.templatesHelp')}</p>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>
+        {t('settings.templatesHelp')}
+      </p>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
       <ul>
         {templates.map((tpl) => (
@@ -732,7 +734,11 @@ const handlePayerChange = async (event) => {
         {(settings.rules || []).map((r, idx) => (
           <li
             key={idx}
-            style={{ display: 'flex', alignItems: 'center', marginBottom: '0.25rem' }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              marginBottom: '0.25rem',
+            }}
           >
             <span style={{ flex: 1 }}>{r}</span>
             <button
@@ -781,7 +787,6 @@ const handlePayerChange = async (event) => {
           </button>
         </>
       )}
-
     </div>
   );
 }

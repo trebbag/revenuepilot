@@ -111,7 +111,6 @@ const NoteEditor = forwardRef(function NoteEditor(
     patientId = '',
     encounterId = '',
     role = '',
-
   },
   ref,
 ) {
@@ -168,7 +167,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         if (active) setTemplates([]);
       });
     return () => {
-        active = false;
+      active = false;
     };
   }, [specialty, payer, defaultTemplateId]);
 
@@ -484,18 +483,18 @@ const NoteEditor = forwardRef(function NoteEditor(
           >
             {t('noteEditor.redo')}
           </button>
-            <button
-              type="button"
-              onClick={handleExportEhr}
-              disabled={exporting}
-              style={{ marginLeft: '0.5rem' }}
-            >
-              {exporting ? '…' : t('ehrExport')}
-            </button>
-            {ehrFeedback && (
-              <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
-            )}
-          </div>
+          <button
+            type="button"
+            onClick={handleExportEhr}
+            disabled={exporting}
+            style={{ marginLeft: '0.5rem' }}
+          >
+            {exporting ? '…' : t('ehrExport')}
+          </button>
+          {ehrFeedback && (
+            <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
+          )}
+        </div>
         <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
           {history[historyIndex] || ''}
         </div>

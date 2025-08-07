@@ -221,7 +221,10 @@ function SuggestionPanel({
           typeof item === 'object' && item !== null ? item.reason : null;
         const onExport = async () => {
           try {
-            const ics = await exportFollowUp(interval, calendarSummary || undefined);
+            const ics = await exportFollowUp(
+              interval,
+              calendarSummary || undefined,
+            );
             const href = `data:text/calendar;charset=utf8,${encodeURIComponent(ics)}`;
             const a = document.createElement('a');
             a.href = href;
