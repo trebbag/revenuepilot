@@ -438,6 +438,33 @@ export async function scheduleFollowUp(text, codes = []) {
 }
 
 /**
+ * Generate an ICS file for a follow-up interval.
+ * @param {string} interval Textual interval such as "2 weeks"
+ * @param {string} summary Event summary (patient name or reason)
+ * @returns {Promise<string>} ICS text
+ */
+export async function exportFollowUp(interval, summary = '') {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/export_ics`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ interval, summary }),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  const data = await resp.json();
+  return data.ics;
+}
+
+/**
  * Upload an audio ``Blob`` to the backend for transcription.
  * Returns the text transcript or a placeholder if the backend is not
  * configured or the request fails.

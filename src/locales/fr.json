@@ -190,6 +190,7 @@
     "who": "WHO",
     "templates": "Templates",
     "noTemplates": "No templates",
+    "promptOverrides": "Prompt Overrides",
     "promptTemplates": "Modèles d'invite",
     "promptTemplatesHelp": "Modifier les instructions JSON ou téléverser un fichier pour personnaliser les invites.",
     "savePromptTemplates": "Enregistrer les modèles",
