@@ -212,8 +212,8 @@ file is read by the build scripts and should define:
 * `CSC_LINK` and `CSC_KEY_PASSWORD` – path and password to the macOS
   Developer ID certificate.
 
-
-The build check fails if any of the above variables are missing.
+If any of these variables are omitted the build will proceed without code
+signing or update configuration, emitting a warning instead of failing.
 
 ### Code signing certificates
 
