@@ -47,6 +47,7 @@ function Settings({ settings, updateSettings }) {
   const [newRule, setNewRule] = useState('');
   const [editingRule, setEditingRule] = useState(null);
   const [ruleError, setRuleError] = useState('');
+  const [downloadStatus, setDownloadStatus] = useState('');
 
   useEffect(() => {
     getTemplates()
@@ -181,6 +182,23 @@ function Settings({ settings, updateSettings }) {
       // Clear the status after a short delay
       setTimeout(() => setApiKeyStatus(''), 4000);
     }
+  };
+
+  const handleDownloadModels = () => {
+    if (typeof window === 'undefined') return;
+    setDownloadStatus('');
+    const evt = new EventSource('/download-models');
+    evt.onmessage = (e) => {
+      if (e.data === 'done') {
+        evt.close();
+      } else {
+        setDownloadStatus((prev) => prev + e.data + '\n');
+      }
+    };
+    evt.onerror = () => {
+      setDownloadStatus(t('settings.downloadModelsError'));
+      evt.close();
+    };
   };
 
   const handleLangChange = async (event) => {
@@ -405,6 +423,21 @@ const handlePayerChange = async (event) => {
         {t('settings.useLocalModelsHelp')}
       </p>
 
+      <button onClick={handleDownloadModels} style={{ marginBottom: '0.5rem' }}>
+        {t('settings.downloadModels')}
+      </button>
+      {downloadStatus && (
+        <pre
+          style={{
+            background: '#F3F4F6',
+            padding: '0.5rem',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {downloadStatus}
+        </pre>
+      )}
+
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>
         {t('settings.beautifyModel')}
         <input
@@ -611,6 +644,7 @@ const handlePayerChange = async (event) => {
       ))}
 
       <h3>{t('settings.templates')}</h3>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280' }}>{t('settings.templatesHelp')}</p>
       {tplError && <p style={{ color: 'red' }}>{tplError}</p>}
       <ul>
         {templates.map((tpl) => (

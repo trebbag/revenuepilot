@@ -57,6 +57,8 @@
     "denialRateAria": "Denial rate last 30 days",
     "exportPng": "Export PNG",
     "exportCsv": "Export CSV",
+    "templateUsage": "Template Usage",
+    "templateUsageItem": "Template {{id}}: {{count}} uses",
     "cards": {
       "totalNotes": "Total Notes Created",
       "beautifiedNotes": "Beautified Notes",
@@ -189,6 +191,7 @@
     "cdc": "CDC",
     "who": "WHO",
     "templates": "Templates",
+    "templatesHelp": "Manage note templates. Administrators can add or remove built-in templates and assign them to specialties or payers.",
     "noTemplates": "No templates",
     "promptTemplates": "Prompt Templates",
     "promptOverrides": "Prompt Overrides",
@@ -222,7 +225,10 @@
     "useLocalModelsHelp": "Use downloaded models when offline instead of placeholders.",
     "beautifyModel": "Beautify model path",
     "suggestModel": "Suggest model path",
-    "summarizeModel": "Summarize model path"
+    "summarizeModel": "Summarize model path",
+    "downloadModels": "Download local models",
+    "downloadModelsProgress": "Download progress",
+    "downloadModelsError": "Download failed"
   },
   "sidebar": {
     "notes": "Notes",
@@ -258,7 +264,8 @@
     "close": "Close",
     "delete": "Delete",
     "edit": "Edit",
-    "general": "General"
+    "general": "General",
+    "search": "Search"
   },
   "transcript": {
     "add": "Add",

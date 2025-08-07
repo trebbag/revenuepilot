@@ -77,11 +77,19 @@ placeholder data so the app can run without network access or an API key.
 
 To evaluate lightweight local models instead of the fixed placeholders, set
 `USE_LOCAL_MODELS=true` and provide model names for any of the endpoints you
-wish to test. The weights must be downloaded ahead of time; see
-[`docs/LOCAL_MODELS.md`](docs/LOCAL_MODELS.md) for sample commands. Once the
-models are cached locally you can enable them at runtime from the app's
-**Settings → Enable local models** toggle or via the environment variables
-below:
+wish to test. The weights must be downloaded ahead of time; the helper
+`scripts/download_models.py` script fetches tiny demo models and the default
+Whisper checkpoint:
+
+```bash
+pip install transformers whisper
+python scripts/download_models.py
+```
+
+You can also trigger the same process from **Settings → Download local models**
+which streams progress from the backend. Once the models are cached locally you
+can enable them at runtime from the app's **Settings → Enable local models**
+toggle or via the environment variables below:
 
 ```bash
 export USE_OFFLINE_MODEL=true
@@ -91,10 +99,11 @@ export LOCAL_SUMMARIZE_MODEL=sshleifer/tiny-bart-large-cnn
 export LOCAL_SUGGEST_MODEL=hf-internal-testing/tiny-random-gpt2
 ```
 
-Models are loaded with the `transformers` pipeline and must therefore be
-available locally or downloadable from the Hugging Face Hub. If a model fails
-to load or does not return the expected structure, the deterministic offline
-placeholders are used as a fallback so the API always responds.
+If a model fails to load or does not return the expected structure, the
+deterministic offline placeholders are used as a fallback so the API always
+responds. See [`docs/LOCAL_MODELS.md`](docs/LOCAL_MODELS.md) for more details,
+including a `scripts/validate_models.py` helper that smoke-tests the local
+models.
 
 ### Local Whisper transcription
 

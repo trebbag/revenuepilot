@@ -13,13 +13,16 @@ import os
 import re
 import shutil
 import time
+import asyncio
+import sys
+from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 import requests
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, confloat, validator, StrictBool
 
@@ -1470,6 +1473,7 @@ async def get_metrics(
         beautify_daily: Dict[str, List[float]] = {} if collect_timeseries else {}
         beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
         last_start_for_patient: Dict[str, float] = {}
+        template_counts: Dict[str, int] = {}
 
         for r in rows:
             evt = r["eventType"]
@@ -1530,6 +1534,11 @@ async def get_metrics(
                 if deficiency:
                     deficiency_totals[1] += 1
 
+            if evt == "template_use":
+                tpl_id = details.get("templateId") or details.get("template_id")
+                if tpl_id is not None:
+                    template_counts[str(tpl_id)] = template_counts.get(str(tpl_id), 0) + 1
+
             patient_id = (
                 details.get("patientID")
                 or details.get("patientId")
@@ -1585,6 +1594,7 @@ async def get_metrics(
                 "compliance_counts": compliance_counts,
                 "public_health_rate": public_health_rate,
                 "avg_satisfaction": avg_satisfaction,
+                "template_counts": template_counts,
             }
         )
         if collect_timeseries:
@@ -1602,6 +1612,8 @@ async def get_metrics(
     compliance_counts = current_metrics.pop("compliance_counts")
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
+    template_counts = current_metrics.pop("template_counts")
+    baseline_template_counts = baseline_metrics.pop("template_counts")
 
     daily_list: List[Dict[str, Any]] = []
     if daily:
@@ -1776,6 +1788,10 @@ async def get_metrics(
         "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
+        "template_usage": {
+            "current": template_counts,
+            "baseline": baseline_template_counts,
+        },
         "clinicians": clinicians,
         "timeseries": timeseries,
     }
@@ -2355,6 +2371,7 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
     return ScheduleResponse(**follow)
 
 
+
 class ExportIcsRequest(BaseModel):
     """Payload for exporting a follow-up interval to an ICS string."""
 
@@ -2368,3 +2385,24 @@ async def export_ics_endpoint(req: ExportIcsRequest, user=Depends(require_role("
     if not ics:
         raise HTTPException(status_code=400, detail="invalid interval")
     return {"ics": ics}
+
+@app.get("/download-models")
+async def download_models_endpoint() -> StreamingResponse:
+    """Stream progress while downloading local Hugging Face models."""
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "download_models.py"
+
+    async def event_stream():
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            str(script),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert process.stdout is not None
+        async for line in process.stdout:
+            yield f"data: {line.decode().rstrip()}\n\n"
+        await process.wait()
+        yield "data: done\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

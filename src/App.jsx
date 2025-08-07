@@ -780,8 +780,9 @@ function App() {
           baseTemplates={baseTemplates}
           specialty={settingsState.specialty}
           payer={settingsState.payer}
-          onSelect={(content) => {
-            insertTemplate(content);
+          onSelect={(tpl) => {
+            insertTemplate(tpl.content);
+            logEvent('template_use', { templateId: tpl.id }).catch(() => {});
             setShowTemplatesModal(false);
           }}
           onClose={() => setShowTemplatesModal(false)}

@@ -57,6 +57,7 @@ vi.mock('../../api.js', () => ({
     compliance_counts: { Missing: 1 },
     avg_satisfaction: 0,
     public_health_rate: 0,
+    template_usage: { current: { 1: 2 }, baseline: {} },
     clinicians: ['alice', 'bob'],
     timeseries: {
       daily: [
