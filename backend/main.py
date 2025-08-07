@@ -120,19 +120,57 @@ try:
     )
     _analyzer.registry.add_recognizer(_mrn_recognizer)
 
+    _us_date_pattern = Pattern("us_date", r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", 0.5)
+    _us_date_recognizer = PatternRecognizer(
+        supported_entity="DATE_TIME", patterns=[_us_date_pattern]
+    )
+    _analyzer.registry.add_recognizer(_us_date_recognizer)
+
+    _phone_pattern = Pattern(
+        "phone",
+        r"(?:(?:\+\d{1,3}[-\s]?)?(?:\(\d{3}\)\s*|\d{3}[-\s]?))\d{3}[-\s]?\d{4}",
+        0.5,
+    )
+    _phone_recognizer = PatternRecognizer(
+        supported_entity="PHONE_NUMBER", patterns=[_phone_pattern]
+    )
+    _analyzer.registry.add_recognizer(_phone_recognizer)
+
+    # Confidence thresholds to reduce false positives for names and dates.
+    # These can be overridden via ``PRESIDIO_PERSON_THRESHOLD`` and
+    # ``PRESIDIO_DATE_THRESHOLD`` environment variables.
+    _PRESIDIO_THRESHOLDS = {
+        "PERSON": float(os.getenv("PRESIDIO_PERSON_THRESHOLD", "0.85")),
+        # Allow numerical date patterns while keeping higher thresholds for
+        # ambiguous natural language dates.
+        "DATE_TIME": float(os.getenv("PRESIDIO_DATE_THRESHOLD", "0.5")),
+    }
+
     _PRESIDIO_AVAILABLE = True
 except Exception:  # pragma: no cover - optional dependency
     _PRESIDIO_AVAILABLE = False
     _analyzer = None  # type: ignore
+    _PRESIDIO_THRESHOLDS = {}
 
 try:  # pragma: no cover - optional dependency
     from philter.philter import Philter as _Philter
 
-    _philter = _Philter()
+    _PHILTER_INCLUDE_PHONES = (
+        os.getenv("PHILTER_INCLUDE_PHONES", "true").lower() in {"1", "true", "yes"}
+    )
+    _philter_kwargs = {}
+    if not _PHILTER_INCLUDE_PHONES:
+        # Best effort: some versions of Philter support ``include_phones``.
+        _philter_kwargs["include_phones"] = False
+    try:
+        _philter = _Philter(**_philter_kwargs)
+    except TypeError:  # unknown parameter; fall back to defaults
+        _philter = _Philter()
     _PHILTER_AVAILABLE = True
 except Exception:
     _PHILTER_AVAILABLE = False
     _philter = None  # type: ignore
+    _PHILTER_INCLUDE_PHONES = True
 
 # Select the PHI scrubbing backend. Options: ``presidio``, ``philter``,
 # ``scrubadub`` or ``regex``. The default is the lightweight regex scrubber.
@@ -835,10 +873,13 @@ def deidentify(text: str) -> str:
                 "MEDICAL_RECORD",
             ]
             results = _analyzer.analyze(text=text, language="en", entities=entities)
-            # Remove nested results (e.g., URL inside EMAIL_ADDRESS) to avoid
-            # replacing overlapping spans twice.
+            # Remove nested results (e.g., URL inside EMAIL_ADDRESS) and
+            # low-confidence detections to avoid replacing overlapping spans or
+            # introducing false positives.
             filtered: List[Any] = []
             for r in sorted(results, key=lambda r: (r.start, -r.end)):
+                if r.score < _PRESIDIO_THRESHOLDS.get(r.entity_type, 0.5):
+                    continue
                 if any(f.start <= r.start and r.end <= f.end for f in filtered):
                     continue
                 filtered.append(r)
@@ -897,7 +938,7 @@ def deidentify(text: str) -> str:
 
     phone_pattern = re.compile(
         r"(?:(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b"
-        r"|\+\d{1,3}[-\.\s]?\d{1,4}[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
+        r"|\+\d{1,3}[-\.\s]?(?:\(\d{1,4}\)|\d{1,4})[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
         re.IGNORECASE,
     )
     dob_pattern = re.compile(
@@ -931,7 +972,7 @@ def deidentify(text: str) -> str:
         re.IGNORECASE,
     )
     name_pattern = re.compile(
-        r"\b(?:(?:Dr|Mr|Mrs|Ms|Prof)\.?\s+)?[A-Z][a-z]+(?:\s+(?:[A-Z][a-z]+|[A-Z]\.|[a-z]{2,3}))*\s+[A-Z][a-z]+\b"
+        r"\b(?:(?:Dr|Mr|Mrs|Ms|Prof)\.?\s+)?[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)+\b"
     )
 
     patterns = [

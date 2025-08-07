@@ -12,6 +12,8 @@ presidio-analyzer
 presidio-anonymizer
 pyyaml
 philter
+spacy
+en-core-web-sm
 pyannote.audio
 torchaudio
 passlib[bcrypt]

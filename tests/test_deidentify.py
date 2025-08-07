@@ -1,6 +1,11 @@
 import pytest
 import backend.main as bm
 
+if bm._SCRUBBER_AVAILABLE:  # pragma: no cover - optional import for tests
+    import scrubadub  # type: ignore
+else:  # pragma: no cover - library missing
+    scrubadub = None  # type: ignore
+
 
 @pytest.mark.parametrize(
     "text,token,raw",
@@ -11,11 +16,13 @@ import backend.main as bm
         ("Call 555-123-4567 for help", "[PHONE:", "555-123-4567"),
         ("Call (555) 987 6543 for help", "[PHONE:", "(555) 987 6543"),
         ("Call +44 20 7946 0958 for help", "[PHONE:", "+44 20 7946 0958"),
+        ("Call +1 (415) 555-2671 for help", "[PHONE:", "+1 (415) 555-2671"),
         ("DOB 01/23/2020", "[DOB:", "01/23/2020"),
         ("DOB 2020-01-23", "[DATE:", "2020-01-23"),
         ("DOB March 3, 2020", "[DATE:", "March 3, 2020"),
         ("DOB March 3rd, 2020", "[DATE:", "March 3rd, 2020"),
         ("DOB 3 March 2020", "[DATE:", "3 March 2020"),
+        ("Patient seen 05/03/2020", "[DATE:", "05/03/2020"),
         ("Lives at 123 Main St.", "[ADDRESS:", "123 Main St"),
         ("Lives at 789 Broadway", "[ADDRESS:", "789 Broadway"),
         ("SSN 123-45-6789", "[SSN:", "123-45-6789"),
@@ -24,6 +31,8 @@ import backend.main as bm
         ("Visit https://example.com for info", "[URL:", "https://example.com"),
         ("Ping 192.168.0.1 for access", "[IP:", "192.168.0.1"),
         ("MRN 1234567", "[MRN:", "1234567"),
+        ("Patient O'Neil presented.", "[NAME:", "O'Neil"),
+        ("Patient Anne-Marie O'Connor presented.", "[NAME:", "Anne-Marie O'Connor"),
 
     ],
 )
@@ -125,6 +134,26 @@ def test_philter_fallback_to_regex(monkeypatch):
     monkeypatch.setattr(bm, "_DEID_ENGINE", "philter")
     monkeypatch.setattr(bm, "_PHILTER_AVAILABLE", True)
     monkeypatch.setattr(bm, "_philter", Boom())
+
+    text = "John Doe 555-123-4567"
+    cleaned = bm.deidentify(text)
+    assert "[NAME:" in cleaned
+    assert "[PHONE:" in cleaned
+
+
+def test_scrubadub_fallback_to_regex(monkeypatch):
+    """scrubadub errors should fall back to regex patterns."""
+
+    if not bm._SCRUBBER_AVAILABLE:
+        pytest.skip("scrubadub not available")
+
+    class Boom:
+        def iter_filth(self, *args, **kwargs):  # pragma: no cover - intentional failure
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(bm, "_DEID_ENGINE", "scrubadub")
+    monkeypatch.setattr(bm, "_SCRUBBER_AVAILABLE", True)
+    monkeypatch.setattr(scrubadub, "Scrubber", lambda: Boom())
 
     text = "John Doe 555-123-4567"
     cleaned = bm.deidentify(text)
