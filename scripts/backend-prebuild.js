@@ -30,8 +30,15 @@ async function main() {
   const backendDir = path.join(__dirname, '..', 'backend');
   const venvDir = path.join(backendDir, 'venv');
 
+  // Remove any existing virtual environment before creating a new one. Using
+  // `fs.rmSync` is more robust than relying on Python's `--clear` flag which
+  // can fail if certain packages (e.g. torch) contain read-only files or
+  // nested directories that `venv` struggles to delete. This prevents errors
+  // like "[Errno 66] Directory not empty" during prebuild.
+  fs.rmSync(venvDir, { recursive: true, force: true });
+
   const python = resolvePython();
-  await run(python, ['-m', 'venv', '--copies', '--clear', venvDir]);
+  await run(python, ['-m', 'venv', '--copies', venvDir]);
 
   const pipPath = path.join(
     venvDir,
