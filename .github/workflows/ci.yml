@@ -2,6 +2,8 @@ name: CI
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
 jobs:
   build-test:
     runs-on: ubuntu-latest
@@ -14,12 +16,23 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Node: install/lint/test
+      - name: Node: install/lint/test with coverage
         if: hashFiles('package.json') != ''
         run: |
           npm ci
           npm run lint --if-present
-          npm test --if-present -- --ci
+          npm run test:coverage --if-present -- --ci
+      - name: Store JS coverage summary
+        if: hashFiles('package.json') != ''
+        run: |
+          mkdir -p coverage
+          # Vitest writes summary to coverage/coverage-summary.json by default
+          if [ -f coverage/coverage-summary.json ]; then \
+            LINES=$(jq '.total.lines.pct' coverage/coverage-summary.json); \
+            echo "JS lines coverage: $LINES"; \
+            jq -n --argjson pct "$LINES" '{schemaVersion:1,label:"JS Coverage",message:($pct|tostring)+"%",color:( ($pct>=80)?"green":($pct>=60?"yellow":"red"))}' > coverage/js-coverage.json; \
+            if [ "$(echo "$LINES < 80" | bc)" -eq 1 ]; then echo "JS coverage below 80% ($LINES)" && exit 1; fi; \
+          fi
 
       # Python (runs only if requirements.txt exists)
       - name: Setup Python
@@ -27,9 +40,43 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Python: install/lint/test
+      - name: Python: install deps
         if: hashFiles('requirements.txt') != ''
         run: |
-          pip install -r requirements.txt
-          if command -v pytest; then pytest -q; fi
-          if command -v flake8; then flake8 .; fi
+          pip install -r backend/requirements_dev.txt
+      - name: Python: lint & test with coverage
+        if: hashFiles('requirements.txt') != ''
+        run: |
+          pytest --maxfail=1 --disable-warnings -q --cov=backend --cov-report=term --cov-report=json:coverage/python-coverage-raw.json
+          if command -v flake8; then flake8 backend; fi
+      - name: Build Python coverage badge + enforce threshold
+        if: hashFiles('requirements.txt') != ''
+        run: |
+          mkdir -p coverage
+          TOTAL=$(python - <<'PY'
+import json
+with open('coverage/python-coverage-raw.json') as f:
+    data=json.load(f)
+# coverage json schema: data['totals']['percent_covered'] maybe; fallback compute lines
+if 'totals' in data and 'percent_covered' in data['totals']:
+    pct=data['totals']['percent_covered']
+else:
+    covered=data['meta']['covered_lines']; total=data['meta']['num_statements']; pct= (covered/total*100) if total else 0
+print(pct)
+PY
+)
+          echo "Python coverage: $TOTAL"
+          python - <<'PY'
+import json,sys,os
+pct=float(os.environ['TOTAL'])
+color = 'green' if pct>=80 else 'yellow' if pct>=60 else 'red'
+with open('coverage/python-coverage.json','w') as f:
+    json.dump({'schemaVersion':1,'label':'Python Coverage','message':f"{pct:.1f}%",'color':color},f)
+exit(0 if pct>=80 else 1)
+PY
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage

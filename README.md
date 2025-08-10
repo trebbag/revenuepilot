@@ -350,3 +350,21 @@ documentation assistant.
 This scaffold should give you a solid starting point for building the
 RevenuePilot app with minimal setup.  Feel free to modify the palette
 (`variables.css`) to match your chosen aesthetic.
+
+## Continuous Integration & Coverage
+
+Pull requests and pushes to `main` trigger the CI workflow (`.github/workflows/ci.yml`). The pipeline:
+
+* Installs frontend dependencies, lints with ESLint/Prettier, and runs Vitest with coverage (`npm run test:coverage`).
+* Installs backend dev dependencies (`backend/requirements_dev.txt`), runs pytest with coverage, and lints Python code.
+* Enforces a minimum 80% lines coverage for both Python and JS. The job fails if either drops below threshold.
+* Publishes JSON badge descriptors to `coverage/js-coverage.json` and `coverage/python-coverage.json` and uploads the `coverage/` folder as a build artifact for inspection.
+
+These JSON files drive the dynamic shields.io badges at the top of this README. To update badges locally you can run:
+
+```bash
+npm run test:coverage
+pytest --cov=backend --cov-report=json:coverage/python-coverage-raw.json
+```
+
+Then convert the Python JSON to badge format (replicating the CI step) if desired.
