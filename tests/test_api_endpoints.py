@@ -240,11 +240,11 @@ def test_summarize_and_fallback(client, monkeypatch, caplog):
     resp = client.post(
         "/summarize", json={"text": "hello"}, headers=auth_header(token)
     )
-    assert resp.json() == {
-        "summary": "great summary",
-        "recommendations": ["do"],
-        "warnings": [],
-    }
+    data = resp.json()
+    assert data["summary"] == "great summary"
+    assert data["recommendations"] == ["do"]
+    assert data["warnings"] == []
+    assert data["patient_friendly"] == data["summary"]
 
     def boom(_):
         raise RuntimeError("no key")
@@ -260,6 +260,7 @@ def test_summarize_and_fallback(client, monkeypatch, caplog):
     assert len(data["summary"]) <= 203  # truncated fallback
     assert data["recommendations"] == []
     assert data["warnings"] == []
+    assert data["patient_friendly"] == data["summary"]
     assert "Error during summary LLM call" in caplog.text
 
 
@@ -281,6 +282,7 @@ def test_summarize_spanish_language(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["summary"] == "resumen"
+    assert resp.json()["patient_friendly"] == "resumen"
 
 
 def test_transcribe_endpoint(client, monkeypatch):

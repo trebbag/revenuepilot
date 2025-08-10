@@ -4,23 +4,26 @@ import { vi, expect, test, afterEach } from 'vitest';
 import { useState } from 'react';
 
 vi.mock('../../api.js', () => ({
-  fetchLastTranscript: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
-
+  fetchLastTranscript: vi.fn().mockResolvedValue({ provider: 'Hi there', patient: '' }),
   getSuggestions: vi
     .fn()
     .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
-
   getTemplates: vi.fn().mockResolvedValue([{ id: 1, name: 'Tpl', content: 'Hello' }]),
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   exportToEhr: vi.fn().mockResolvedValue({ status: 'exported' }),
-
-
+  logEvent: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { fetchLastTranscript } from '../../api.js';
+// mock typed client wrappers
+vi.mock('../../api/client.ts', () => ({
+  beautifyNote: vi.fn().mockResolvedValue('Beautified Text'),
+  getSuggestions: vi.fn().mockResolvedValue({ codes: [{ code: '99213', rationale: 'Low complexity' }], compliance: ['Add ROS'], publicHealth: [], differentials: [] }),
+}));
+
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
-import { exportToEhr } from '../../api.js';
+import { exportToEhr, fetchLastTranscript } from '../../api.js';
+import { beautifyNote, getSuggestions } from '../../api/client.ts';
 
 afterEach(() => {
   cleanup();
@@ -71,18 +74,16 @@ test('selecting template inserts content', async () => {
 
 test('inserts template and merges audio transcript', async () => {
   fetchLastTranscript.mockResolvedValue({ provider: 'Hi there', patient: '' });
-
   function Wrapper() {
     const [val, setVal] = useState('');
     return <NoteEditor id="m" value={val} onChange={setVal} />;
   }
-
-  const { findByText, container, findAllByText } = render(<Wrapper />);
-  const btn = await findByText('Tpl');
-  fireEvent.click(btn);
-  const [insertProvider] = await findAllByText('Insert');
-  fireEvent.click(insertProvider);
-
+  const { findByText, container } = render(<Wrapper />);
+  const tplBtn = await findByText('Tpl');
+  fireEvent.click(tplBtn);
+  // provider insert button
+  const providerInsert = await findByText('Insert');
+  fireEvent.click(providerInsert);
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => {
     expect(editor.innerHTML).toContain('Hello');
@@ -148,4 +149,44 @@ test('EHR export button triggers API call', async () => {
   );
   fireEvent.click(getByText('Export to EHR'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
+});
+
+test('tab switching triggers beautify fetch', async () => {
+  function Wrapper() {
+    const [val, setVal] = useState('draft text');
+    return <NoteEditor id="tabs" value={val} onChange={setVal} />;
+  }
+  const { getByText, findByText } = render(<Wrapper />);
+  fireEvent.click(getByText('Beautified'));
+  await findByText('Beautified Text');
+  expect(beautifyNote).toHaveBeenCalledWith('<p>draft text</p>', { specialty: undefined, payer: undefined });
+});
+
+// Utility to mock Quill selection APIs that break in jsdom
+function patchQuillSelection() {
+  const el = document.querySelector('.ql-editor');
+  if (!el) return;
+  // Provide a minimal Range-like object for getSelection path
+  if (!window.getSelection) {
+    window.getSelection = () => ({
+      getRangeAt: () => ({ getBoundingClientRect: () => ({ top:0,left:0,width:0,height:0 }) }),
+    });
+  }
+}
+
+test('suggestion panel renders codes and inserts into draft', async () => {
+  const changeSpy = vi.fn();
+  function Wrapper() {
+    const [val, setVal] = useState('draft');
+    const handle = (v) => { changeSpy(v); setVal(v); };
+    return <NoteEditor id="sugg" value={val} onChange={handle} />;
+  }
+  const { findByText, container } = render(<Wrapper />);
+  await waitFor(() => expect(getSuggestions).toHaveBeenCalled());
+  const code = await findByText(/99213/);
+  patchQuillSelection();
+  fireEvent.click(code.closest('li') || code);
+  const editor = container.querySelector('.ql-editor');
+  await waitFor(() => expect(editor.innerHTML).toMatch(/99213/));
+  expect(changeSpy).toHaveBeenCalled();
 });
