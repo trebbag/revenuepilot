@@ -6,6 +6,9 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+import backend.main as main
+from backend.main import _init_core_tables
+
 
 def auth_header(token):
     return {"Authorization": f"Bearer {token}"}
@@ -19,21 +22,17 @@ def offline_client(monkeypatch):
     from backend import main as main_module
     importlib.reload(main_module)
 
-    db = sqlite3.connect(":memory:", check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
-    )
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-    )
+    main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+    main.db_conn.row_factory = sqlite3.Row
+    _init_core_tables(main.db_conn)
+
     pwd = main_module.hash_password("pw")
-    db.execute(
+    main.db_conn.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("u", pwd, "user"),
     )
-    db.commit()
-    monkeypatch.setattr(main_module, "db_conn", db)
+    main.db_conn.commit()
+    monkeypatch.setattr(main_module, "db_conn", main.db_conn)
     monkeypatch.setattr(main_module, "events", [])
     client = TestClient(main_module.app)
     yield client, main_module

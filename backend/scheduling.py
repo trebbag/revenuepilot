@@ -213,3 +213,99 @@ def export_ics(interval: str, summary: str = DEFAULT_EVENT_SUMMARY) -> Optional[
         "END:VCALENDAR",
     ]
     return "\n".join(lines)
+
+# ---------------- Appointment storage & helpers -----------------
+# In-memory appointment registry. Persistent storage is out of scope for the
+# lightweight scheduling demo and test coverage. The main API imports the
+# following helper functions; previously they were missing causing ImportError
+# during test collection.
+from threading import Lock
+
+_APPOINTMENTS: list[dict] = []
+_APPT_LOCK = Lock()
+_NEXT_ID = 1
+
+
+def create_appointment(patient: str, reason: str, start: datetime, end: Optional[datetime] = None) -> dict:
+    """Create an appointment record and return it.
+
+    A minimal in-memory implementation. ``end`` defaults to 30 minutes after
+    ``start`` to keep logic deterministic for tests. Datetimes are stored as ISO
+    strings for JSON serialisation.
+    """
+    global _NEXT_ID
+    if end is None:
+        end = start + timedelta(minutes=30)
+    if end < start:
+        # Normalise invalid ranges by swapping; keeps function total.
+        start, end = end, start
+    rec = {
+        "id": _NEXT_ID,
+        "patient": patient,
+        "reason": reason,
+        "start": start.replace(microsecond=0).isoformat(),
+        "end": end.replace(microsecond=0).isoformat(),
+    }
+    with _APPT_LOCK:
+        _APPOINTMENTS.append(rec)
+        _NEXT_ID += 1
+    return rec
+
+
+def list_appointments() -> list[dict]:
+    """Return all appointments sorted by start time."""
+    with _APPT_LOCK:
+        return sorted(_APPOINTMENTS, key=lambda r: r["start"])  # shallow copies fine
+
+
+def get_appointment(appt_id: int) -> Optional[dict]:
+    with _APPT_LOCK:
+        for rec in _APPOINTMENTS:
+            if rec["id"] == appt_id:
+                return rec
+    return None
+
+
+def export_appointment_ics(appt: Mapping[str, Any]) -> Optional[str]:  # type: ignore[name-defined]
+    """Produce an ICS string for a stored appointment.
+
+    Falls back to ``export_ics`` using a generic interval if parsing fails.
+    """
+    try:
+        start = datetime.fromisoformat(appt["start"])
+        end = datetime.fromisoformat(appt["end"])
+    except Exception:
+        # Use generic follow-up export for robustness.
+        return export_ics(DEFAULT_GENERIC_INTERVAL)
+
+    def _fmt(dt: datetime) -> str:
+        # Treat naive datetimes as UTC for simplicity.
+        return dt.strftime("%Y%m%dT%H%M%SZ")
+
+    summary = f"{DEFAULT_EVENT_SUMMARY}: {appt.get('reason','')}".strip()
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "BEGIN:VEVENT",
+        f"SUMMARY:{summary}",
+        f"DTSTART:{_fmt(start)}",
+        f"DTEND:{_fmt(end)}",
+        f"DESCRIPTION:Patient {appt.get('patient','')}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+    return "\n".join(lines)
+
+# Re-export public API surface for explicit imports elsewhere.
+__all__ = [
+    "recommend_follow_up",
+    "export_ics",
+    "create_appointment",
+    "list_appointments",
+    "get_appointment",
+    "export_appointment_ics",
+    "DEFAULT_EVENT_SUMMARY",
+    "DEFAULT_CHRONIC_INTERVAL",
+    "DEFAULT_ACUTE_INTERVAL",
+    "DEFAULT_GENERIC_INTERVAL",
+]

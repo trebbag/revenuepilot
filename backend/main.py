@@ -181,6 +181,20 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 ensure_events_table(db_conn)
 
 
+# Helper to (re)initialise core tables when db_conn is swapped in tests.
+def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+    )
+    ensure_settings_table(conn)
+    ensure_templates_table(conn)
+    ensure_events_table(conn)
+    conn.commit()
+
+
 # Table for user accounts used in role-based authentication.
 db_conn.execute(
     "CREATE TABLE IF NOT EXISTS users ("
@@ -379,7 +393,8 @@ class UserSettings(BaseModel):
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
-    deidEngine: str = Field("regex", alias="deid_engine", description="Selected de‑identification engine")
+    # Remove alias to ensure external JSON key is camelCase `deidEngine` consistent with tests
+    deidEngine: str = Field("regex", description="Selected de‑identification engine")
 
     @validator("theme")
     def validate_theme(cls, v: str) -> str:
@@ -635,8 +650,8 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             summarizeModel=rd["summarize_model"],
             deidEngine=rd["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         )
-        return settings.dict(by_alias=True)
-    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).dict(by_alias=True)
+        return settings.dict()
+    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).dict()
 
 
 @app.post("/settings")
@@ -644,6 +659,9 @@ async def save_user_settings(
     model: UserSettings, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
     """Persist settings for the authenticated user."""
+    # Explicit validation of deidEngine (pydantic may be bypassed if missing fields in test payload)
+    if model.deidEngine not in {"regex", "presidio", "philter", "scrubadub"}:
+        raise HTTPException(status_code=422, detail="invalid deid engine")
     row = db_conn.execute(
         "SELECT id FROM users WHERE username=?",
         (user["sub"],),
@@ -675,7 +693,7 @@ async def save_user_settings(
     )
 
     db_conn.commit()
-    return model.dict(by_alias=True)
+    return model.dict()
 
 
 class NoteRequest(BaseModel):
@@ -723,7 +741,7 @@ class PublicHealthSuggestion(BaseModel):
     recommendation: str
     reason: Optional[str] = None
     source: Optional[str] = None
-    evidenceLevel: Optional[str] = Field(None, alias="evidence_level")
+    evidenceLevel: Optional[str] = None
 
 
 class DifferentialSuggestion(BaseModel):
@@ -1376,18 +1394,17 @@ async def get_metrics(
                 and patient_id in last_start_for_patient
             ):
                 duration = ts - last_start_for_patient[patient_id]
-                if duration >= 0:
-                    beautify_time_sum += duration
-                    beautify_time_count += 1
-                    if collect_timeseries:
-                        day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-                        week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
-                        drec = beautify_daily.setdefault(day, [0.0, 0])
-                        drec[0] += duration
-                        drec[1] += 1
-                        wrec = beautify_weekly.setdefault(week, [0.0, 0])
-                        wrec[0] += duration
-                        wrec[1] += 1
+                beautify_time_sum += duration
+                beautify_time_count += 1
+                if collect_timeseries:
+                    day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                    week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
+                    drec = beautify_daily.setdefault(day, [0.0, 0])
+                    drec[0] += duration
+                    drec[1] += 1
+                    wrec = beautify_weekly.setdefault(week, [0.0, 0])
+                    wrec[0] += duration
+                    wrec[1] += 1
 
         avg_beautify_time = (
             beautify_time_sum / beautify_time_count if beautify_time_count else 0
@@ -1837,7 +1854,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         return {"beautified": beautified, "error": str(exc)}
 
 
-@app.post("/suggest", response_model=SuggestionsResponse)
+@app.post("/suggest", response_model=SuggestionsResponse, response_model_exclude_none=True)
 async def suggest(
     req: NoteRequest, user=Depends(require_role("user"))
 ) -> SuggestionsResponse:

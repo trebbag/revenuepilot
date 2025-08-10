@@ -11,6 +11,7 @@ import json
 import pytest
 import subprocess
 import time
+import sqlite3
 from urllib.request import urlopen
 from collections import defaultdict, deque
 
@@ -22,9 +23,16 @@ from fastapi.testclient import TestClient
 # the repository root or install the package in editable mode.
 from backend import audio_processing
 from backend.main import app, deidentify, create_token
+import backend.main as main
+from backend.main import _init_core_tables
 
 
 client = TestClient(app)
+
+# Initialise in-memory database for testing.
+main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+main.db_conn.row_factory = sqlite3.Row
+_init_core_tables(main.db_conn)
 
 
 def test_audio_transcription_returns_text(monkeypatch):
