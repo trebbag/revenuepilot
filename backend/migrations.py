@@ -23,6 +23,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "template INTEGER,"
         "use_local_models INTEGER NOT NULL DEFAULT 0,"
         "agencies TEXT NOT NULL DEFAULT '[]',"
+        "use_offline_mode INTEGER NOT NULL DEFAULT 0,"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -68,6 +69,12 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE settings ADD COLUMN suggest_model TEXT")
     if "summarize_model" not in columns:
         conn.execute("ALTER TABLE settings ADD COLUMN summarize_model TEXT")
+    if "deid_engine" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN deid_engine TEXT")
+    if "use_offline_mode" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN use_offline_mode INTEGER NOT NULL DEFAULT 0"
+        )
 
 
     conn.commit()
