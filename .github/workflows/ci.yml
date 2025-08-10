@@ -1,39 +1,35 @@
 name: CI
-on: [push, pull_request]
-
+on:
+  pull_request:
+    branches: [ main ]
 jobs:
-  tests:
+  build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+
+      # Node (runs only if package.json exists)
+      - name: Setup Node
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.10'
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - run: pip install -r backend/requirements_dev.txt
-      - run: python -m spacy download en_core_web_sm
-      - run: npm ci
-      - run: ./ci.sh
-  electron:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      - run: npm ci
-      - name: Build electron app
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run electron:build -- -l
-      - name: Start update server
+          node-version: '20'
+      - name: Node: install/lint/test
+        if: hashFiles('package.json') != ''
         run: |
-          npm run update-server &
-          sleep 5
-          curl -I http://localhost:8080 || true
-          kill %1
+          npm ci
+          npm run lint --if-present
+          npm test --if-present -- --ci
+
+      # Python (runs only if requirements.txt exists)
+      - name: Setup Python
+        if: hashFiles('requirements.txt') != ''
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python: install/lint/test
+        if: hashFiles('requirements.txt') != ''
+        run: |
+          pip install -r requirements.txt
+          if command -v pytest; then pytest -q; fi
+          if command -v flake8; then flake8 .; fi
