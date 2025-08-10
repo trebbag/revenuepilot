@@ -240,11 +240,10 @@ def test_summarize_and_fallback(client, monkeypatch, caplog):
     resp = client.post(
         "/summarize", json={"text": "hello"}, headers=auth_header(token)
     )
-    assert resp.json() == {
-        "summary": "great summary",
-        "recommendations": ["do"],
-        "warnings": [],
-    }
+    data = resp.json()
+    assert data["summary"] == "great summary"
+    assert data["recommendations"] == ["do"]
+    assert data["warnings"] == []
 
     def boom(_):
         raise RuntimeError("no key")

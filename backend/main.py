@@ -561,7 +561,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=?",
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=\?",
         (user_id,),
     ).fetchone()
     if settings_row:
@@ -577,7 +577,6 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             "template": settings_row["template"],
             "useLocalModels": bool(settings_row["use_local_models"]),
             "agencies": json.loads(settings_row["agencies"]) if settings_row["agencies"] else ["CDC", "WHO"],
-            "template": settings_row["template"],
             "beautifyModel": settings_row["beautify_model"],
             "suggestModel": settings_row["suggest_model"],
             "summarizeModel": settings_row["summarize_model"],
@@ -642,9 +641,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template "
-
-        "FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=\?",
         (user["sub"],),
     ).fetchone()
 
@@ -1813,7 +1810,7 @@ async def summarize(
     Args:
         req: NoteRequest with the clinical note and optional context.
     Returns:
-        A dictionary containing "summary", "recommendations" and "warnings".
+        A dictionary containing "summary", "recommendations", "warnings".
     """
     combined = req.text or ""
     if req.chart:
@@ -1841,10 +1838,6 @@ async def summarize(
             response_content = call_openai(messages)
             data = json.loads(response_content)
         except Exception as exc:
-            # If the LLM call fails, fall back to a simple truncation of the
-            # cleaned text.  Take the first 200 characters and append ellipsis
-            # if the text is longer.  This ensures the endpoint still returns
-            # something useful without crashing.
             logging.error("Error during summary LLM call: %s", exc)
             summary = cleaned[:200]
             if len(cleaned) > 200:

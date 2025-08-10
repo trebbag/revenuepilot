@@ -13,6 +13,8 @@ import {
   exportToEhr,
   logEvent,
 } from '../api.js';
+import SuggestionPanel from './SuggestionPanel.jsx';
+import { beautifyNote, getSuggestions } from '../api/client.ts';
 
 let ReactQuill;
 try {
@@ -128,6 +130,14 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [fetchError, setFetchError] = useState('');
   const [ehrFeedback, setEhrFeedback] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [activeTab, setActiveTab] = useState('draft'); // 'draft' | 'beautified'
+  const [beautified, setBeautified] = useState('');
+  const [beautifyLoading, setBeautifyLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true); // responsive suggestion panel
+  const [isNarrow, setIsNarrow] = useState(false);
+  const debounceRef = useRef();
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -202,16 +212,18 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const insertText = (text) => {
     if (ReactQuill && quillRef.current) {
-      const quill = quillRef.current.getEditor();
-      const range = quill.getSelection(true);
-      const index = range ? range.index : quill.getLength();
-      quill.insertText(index, text);
-      try {
-        quill.setSelection(index + text.length);
-      } catch (e) {
-        // Ignore selection errors in test environments
+      const inst = quillRef.current.getEditor ? quillRef.current.getEditor() : null;
+      if (!inst) {
+        // Fallback for test environments where Quill not fully initialised
+        const newVal = (value || '') + text;
+        onChange(newVal);
+        return;
       }
-      onChange(quill.root.innerHTML);
+      const range = inst.getSelection(true);
+      const index = range ? range.index : inst.getLength();
+      inst.insertText(index, text);
+      try { inst.setSelection(index + text.length); } catch (e) { /* ignore selection errors in tests */ }
+      onChange(inst.root.innerHTML);
     } else if (textAreaRef.current) {
       const el = textAreaRef.current;
       const start = el.selectionStart;
@@ -378,7 +390,6 @@ const NoteEditor = forwardRef(function NoteEditor(
         <ul style={{ paddingLeft: '1.25rem' }}>
           {segments.map((s, i) => (
             <li
-              // eslint-disable-next-line react/no-array-index-key
               key={i}
               style={{
                 backgroundColor:
@@ -424,6 +435,35 @@ const NoteEditor = forwardRef(function NoteEditor(
     </div>
   );
 
+  useEffect(() => {
+    if (activeTab === 'beautified') {
+      let cancelled = false;
+      setBeautifyLoading(true);
+      beautifyNote(value || '', { specialty, payer })
+        .then((b) => {
+          if (!cancelled) setBeautified(b || '');
+        })
+        .catch(() => {})
+        .finally(() => !cancelled && setBeautifyLoading(false));
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [activeTab, value, specialty, payer]);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setSuggestLoading(true);
+      getSuggestions(value || '', { specialty, payer })
+        .then((res) => setSuggestions(res))
+        .catch(() => setSuggestions(null))
+        .finally(() => setSuggestLoading(false));
+    }, 400);
+    return () => clearTimeout(debounceRef.current);
+  }, [value, specialty, payer]);
+
   const handleUndo = () => {
     setHistoryIndex((idx) => {
       if (idx <= 0) return idx;
@@ -465,9 +505,27 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   if (mode === 'beautified') {
+    // existing beautified history view kept for backward compatibility
     return (
       <div style={{ width: '100%', height: '100%' }}>
         <div style={{ marginBottom: '0.5rem' }}>
+          <div style={{ marginBottom: '0.5rem' }}>
+            <button
+              type="button"
+              onClick={() => setActiveTab('draft')}
+              disabled={activeTab === 'draft'}
+            >
+              Draft
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('beautified')}
+              disabled={activeTab === 'beautified'}
+              style={{ marginLeft: '0.5rem' }}
+            >
+              Beautified
+            </button>
+          </div>
           <button
             type="button"
             onClick={handleUndo}
@@ -495,26 +553,74 @@ const NoteEditor = forwardRef(function NoteEditor(
             <span style={{ marginLeft: '0.5rem' }}>{ehrFeedback}</span>
           )}
         </div>
-        <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
-          {history[historyIndex] || ''}
-        </div>
+        {activeTab === 'beautified' ? (
+          <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
+            {beautifyLoading ? '…' : beautified || ''}
+          </div>
+        ) : (
+          <div className="beautified-view" style={{ whiteSpace: 'pre-wrap' }}>
+            {history[historyIndex] || ''}
+          </div>
+        )}
       </div>
     );
   }
 
+  const handleQuillChange = (content /* , delta, source, editor */) => {
+    // Keep parent state in sync when user types
+    onChange(content);
+  };
+
   if (ReactQuill) {
     return (
-      <div style={{ display: 'flex', height: '100%', width: '100%' }}>
-        <div style={{ flex: 1 }}>
+      <div style={{ display: 'flex', height: '100%', width: '100%', position: 'relative' }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ marginBottom: '0.5rem', display: 'flex', alignItems: 'center' }}>
+            <div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('draft')}
+                disabled={activeTab === 'draft'}
+              >
+                Draft
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('beautified')}
+                disabled={activeTab === 'beautified'}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                Beautified
+              </button>
+            </div>
+            {isNarrow && (
+              <button
+                type="button"
+                onClick={() => setPanelOpen((o) => !o)}
+                style={{ marginLeft: 'auto' }}
+                aria-expanded={panelOpen}
+                aria-controls="suggestion-panel"
+              >
+                {panelOpen ? t('app.hideSuggestions') || 'Hide Suggestions' : t('app.showSuggestions') || 'Show Suggestions'}
+              </button>
+            )}
+          </div>
           {audioControls}
-          <ReactQuill
-            ref={quillRef}
-            id={id}
-            theme="snow"
-            value={value}
-            formats={quillFormats}
-            style={{ height: '100%', width: '100%' }}
-          />
+          {activeTab === 'draft' ? (
+            <ReactQuill
+              ref={quillRef}
+              id={id}
+              theme="snow"
+              value={value}
+              onChange={handleQuillChange}
+              formats={quillFormats}
+              style={{ flex: 1, width: '100%' }}
+            />
+          ) : (
+            <div style={{ flex: 1, overflow: 'auto', padding: '0.5rem', border: '1px solid #ccc' }}>
+              {beautifyLoading ? 'Beautifying…' : beautified}
+            </div>
+          )}
           {audioUrl && (
             <audio
               ref={audioRef}
@@ -529,7 +635,49 @@ const NoteEditor = forwardRef(function NoteEditor(
           )}
           {loadingTranscript && <p>{t('noteEditor.loadingTranscript')}</p>}
         </div>
-        {sidebar}
+        {/* Suggestion / template side area */}
+        {(!isNarrow || panelOpen) && (
+          <div
+            id="suggestion-panel"
+            style={{
+              width: isNarrow ? '100%' : '250px',
+              marginLeft: isNarrow ? 0 : '0.5rem',
+              position: isNarrow ? 'absolute' : 'relative',
+              right: isNarrow ? 0 : 'auto',
+              top: isNarrow ? '3rem' : 'auto',
+              bottom: isNarrow ? 0 : 'auto',
+              background: isNarrow ? '#fff' : 'transparent',
+              border: isNarrow ? '1px solid #ccc' : 'none',
+              zIndex: 20,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+              {sidebar}
+              {isNarrow && (
+                <button
+                  type="button"
+                  onClick={() => setPanelOpen(false)}
+                  style={{ marginLeft: 'auto' }}
+                  aria-label={t('app.hideSuggestions') || 'Hide Suggestions'}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div style={{ flex: 1, overflow: 'auto', marginTop: '0.5rem' }}>
+              <SuggestionPanel
+                suggestions={suggestions || { codes: [], compliance: [], publicHealth: [], differentials: [] }}
+                loading={suggestLoading}
+                settingsState={null}
+                text={value}
+                fetchSuggestions={(text) => getSuggestions(text, { specialty, payer }).then(setSuggestions)}
+                onInsert={(text) => insertText(text + '\n')}
+              />
+            </div>
+          </div>
+        )}
       </div>
     );
   }
