@@ -1,0 +1,34 @@
+name: Agent Task
+description: Assign a contained, testable change to Copilot coding agent
+title: "[Agent] <concise task>"
+labels: ["agent"]
+body:
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: One or two sentences describing the goal.
+      placeholder: e.g., Add pagination to /api/items with tests.
+    validations: { required: true }
+  - type: textarea
+    id: context
+    attributes:
+      label: Context & Scope
+      description: Link files/modules. List files the agent MAY change and files it MUST avoid.
+      placeholder: |
+        Touch: src/controllers/items.ts, src/services/items.ts
+        Avoid: src/auth/**, src/payments/**
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Checklist the PR must satisfy.
+      placeholder: |
+        - New endpoint supports ?page & ?pageSize
+        - 95%+ branch coverage on new code
+        - No API changes for existing routes
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes / Constraints
+      description: Performance, security, error states, edge cases.
