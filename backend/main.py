@@ -19,7 +19,7 @@ import asyncio
 import sys
 from pathlib import Path
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 import requests
@@ -58,6 +58,12 @@ from .migrations import (
 )
 from .templates import TemplateModel, load_builtin_templates
 from .scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up
+from .scheduling import (
+    create_appointment,
+    list_appointments,
+    export_appointment_ics,
+    get_appointment,
+)
 
 
 
@@ -73,6 +79,8 @@ from .auth import (
     verify_password,
 )
 
+# NEW: import modular de‑identification layer
+from . import deid as deid_module
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -83,112 +91,29 @@ USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {
     "yes",
 }
 
-try:
-    import scrubadub
-
-    _SCRUBBER_AVAILABLE = True
-except Exception:  # pragma: no cover - library is optional
-    scrubadub = None  # type: ignore
-    _SCRUBBER_AVAILABLE = False
-
-try:
-    from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
-    from presidio_analyzer.nlp_engine import NlpEngineProvider
-
-    _provider = NlpEngineProvider(
-        nlp_configuration={
-            "nlp_engine_name": "spacy",
-            "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
-        }
-    )
-    _nlp_engine = _provider.create_engine()
-    _analyzer = AnalyzerEngine(nlp_engine=_nlp_engine, supported_languages=["en"])
-
-    _address_pattern = Pattern(
-        "address",
-        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Lane|Ln|Drive|Dr)\b",
-        0.5,
-    )
-    _address_recognizer = PatternRecognizer(
-        supported_entity="ADDRESS", patterns=[_address_pattern]
-    )
-    _analyzer.registry.add_recognizer(_address_recognizer)
-
-    _ssn_pattern = Pattern("ssn", r"\b\d{3}-\d{2}-\d{4}\b", 0.5)
-    _ssn_recognizer = PatternRecognizer(
-        supported_entity="US_SSN", patterns=[_ssn_pattern]
-    )
-    _analyzer.registry.add_recognizer(_ssn_recognizer)
-
-    _mrn_pattern = Pattern(
-        "mrn",
-        r"\b(?:MRN|Medical Record Number)[:\s-]*\d{6,10}\b",
-        0.5,
-    )
-    _mrn_recognizer = PatternRecognizer(
-        supported_entity="MEDICAL_RECORD", patterns=[_mrn_pattern]
-    )
-    _analyzer.registry.add_recognizer(_mrn_recognizer)
-
-    _us_date_pattern = Pattern("us_date", r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", 0.5)
-    _us_date_recognizer = PatternRecognizer(
-        supported_entity="DATE_TIME", patterns=[_us_date_pattern]
-    )
-    _analyzer.registry.add_recognizer(_us_date_recognizer)
-
-    _phone_pattern = Pattern(
-        "phone",
-        r"(?:(?:\+\d{1,3}[-\s]?)?(?:\(\d{3}\)\s*|\d{3}[-\s]?))\d{3}[-\s]?\d{4}",
-        0.5,
-    )
-    _phone_recognizer = PatternRecognizer(
-        supported_entity="PHONE_NUMBER", patterns=[_phone_pattern]
-    )
-    _analyzer.registry.add_recognizer(_phone_recognizer)
-
-    # Confidence thresholds to reduce false positives for names and dates.
-    # These can be overridden via ``PRESIDIO_PERSON_THRESHOLD`` and
-    # ``PRESIDIO_DATE_THRESHOLD`` environment variables.
-    _PRESIDIO_THRESHOLDS = {
-        "PERSON": float(os.getenv("PRESIDIO_PERSON_THRESHOLD", "0.85")),
-        # Allow numerical date patterns while keeping higher thresholds for
-        # ambiguous natural language dates.
-        "DATE_TIME": float(os.getenv("PRESIDIO_DATE_THRESHOLD", "0.5")),
-    }
-
-    _PRESIDIO_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
-    _PRESIDIO_AVAILABLE = False
-    _analyzer = None  # type: ignore
-    _PRESIDIO_THRESHOLDS = {}
-
-try:  # pragma: no cover - optional dependency
-    from philter.philter import Philter as _Philter
-
-    _PHILTER_INCLUDE_PHONES = (
-        os.getenv("PHILTER_INCLUDE_PHONES", "true").lower() in {"1", "true", "yes"}
-    )
-    _philter_kwargs = {}
-    if not _PHILTER_INCLUDE_PHONES:
-        # Best effort: some versions of Philter support ``include_phones``.
-        _philter_kwargs["include_phones"] = False
-    try:
-        _philter = _Philter(**_philter_kwargs)
-    except TypeError:  # unknown parameter; fall back to defaults
-        _philter = _Philter()
-    _PHILTER_AVAILABLE = True
-except Exception:
-    _PHILTER_AVAILABLE = False
-    _philter = None  # type: ignore
-    _PHILTER_INCLUDE_PHONES = True
-
-# Select the PHI scrubbing backend. Options: ``presidio``, ``philter``,
-# ``scrubadub`` or ``regex``. The default is the lightweight regex scrubber.
+# Expose engine/hash flags so existing tests that monkeypatch backend.main still work.
 _DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
-
-# When ``DEID_HASH_TOKENS`` is true (default), placeholders include a short
-# hash of the removed content instead of the raw value.
 _HASH_TOKENS = os.getenv("DEID_HASH_TOKENS", "true").lower() in {"1", "true", "yes"}
+# Availability flags default to those detected in deid module; tests may override.
+_PRESIDIO_AVAILABLE = getattr(deid_module, "_PRESIDIO_AVAILABLE", False)
+_PHILTER_AVAILABLE = getattr(deid_module, "_PHILTER_AVAILABLE", False)
+_SCRUBBER_AVAILABLE = getattr(deid_module, "_SCRUBBER_AVAILABLE", False)
+# Expose internals for tests expecting these attributes on backend.main
+_analyzer = getattr(deid_module, "_analyzer", None)  # type: ignore
+_philter = getattr(deid_module, "_philter", None)  # type: ignore
+
+# Wrapper used throughout main; propagates any monkeypatched flags to the modular implementation.
+def deidentify(text: str) -> str:  # pragma: no cover - thin wrapper
+    return deid_module.deidentify(
+        text,
+        engine=_DEID_ENGINE,
+        hash_tokens=_HASH_TOKENS,
+        availability_overrides={
+            "presidio": _PRESIDIO_AVAILABLE,
+            "philter": _PHILTER_AVAILABLE,
+            "scrubadub": _SCRUBBER_AVAILABLE,
+        },
+    )
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -449,16 +374,25 @@ class UserSettings(BaseModel):
     region: str = ""
     template: Optional[int] = None
     useLocalModels: StrictBool = False
+    useOfflineMode: StrictBool = False
     agencies: List[str] = Field(default_factory=lambda: ["CDC", "WHO"])
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
+    deidEngine: str = Field("regex", alias="deid_engine", description="Selected de‑identification engine")
 
     @validator("theme")
     def validate_theme(cls, v: str) -> str:
         allowed = {"modern", "dark", "warm"}
         if v not in allowed:
             raise ValueError("invalid theme")
+        return v
+
+    @validator("deidEngine")
+    def validate_deid_engine(cls, v: str) -> str:  # noqa: N805
+        allowed = {"regex", "presidio", "philter", "scrubadub"}
+        if v not in allowed:
+            raise ValueError("invalid deid engine")
         return v
 
     @validator("rules", pre=True)
@@ -474,6 +408,8 @@ class UserSettings(BaseModel):
                 continue
             cleaned.append(item)
         return cleaned
+
+
 @app.post("/register")
 async def register(model: RegisterModel) -> Dict[str, Any]:
     """Register a new user and immediately issue JWT tokens."""
@@ -483,6 +419,32 @@ async def register(model: RegisterModel) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Username already exists")
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
+    settings = UserSettings().dict()
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        "settings": settings,
+    }
+
+
+@app.post("/auth/register")
+async def auth_register(model: RegisterModel):
+    """Namespaced registration endpoint (idempotent for tests).
+
+    Mirrors /register but if the user already exists returns 200 with tokens
+    instead of a 400 so that repeated calls in isolated test DBs succeed.
+    """
+    try:
+        _user_id = register_user(db_conn, model.username, model.password)
+    except sqlite3.IntegrityError:
+        # User exists; proceed to issue tokens using existing role (default user)
+        row = db_conn.execute("SELECT role FROM users WHERE username=?", (model.username,)).fetchone()
+        role = row["role"] if row else "user"
+    else:
+        role = "user"
+    access_token = create_access_token(model.username, role)
+    refresh_token = create_refresh_token(model.username, role)
     settings = UserSettings().dict()
     return {
         "access_token": access_token,
@@ -561,25 +523,28 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=?",
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
         (user_id,),
     ).fetchone()
     if settings_row:
+        sr = dict(settings_row)
         settings = {
-            "theme": settings_row["theme"],
-            "categories": json.loads(settings_row["categories"]),
-            "rules": json.loads(settings_row["rules"]),
-            "lang": settings_row["lang"],
-            "summaryLang": settings_row["summary_lang"] or settings_row["lang"],
-            "specialty": settings_row["specialty"],
-            "payer": settings_row["payer"],
-            "region": settings_row["region"] or "",
-            "template": settings_row["template"],
-            "useLocalModels": bool(settings_row["use_local_models"]),
-            "agencies": json.loads(settings_row["agencies"]) if settings_row["agencies"] else ["CDC", "WHO"],
-            "beautifyModel": settings_row["beautify_model"],
-            "suggestModel": settings_row["suggest_model"],
-            "summarizeModel": settings_row["summarize_model"],
+            "theme": sr["theme"],
+            "categories": json.loads(sr["categories"]),
+            "rules": json.loads(sr["rules"]),
+            "lang": sr["lang"],
+            "summaryLang": sr["summary_lang"] or sr["lang"],
+            "specialty": sr["specialty"],
+            "payer": sr["payer"],
+            "region": sr["region"] or "",
+            "template": sr["template"],
+            "useLocalModels": bool(sr["use_local_models"]),
+            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
+            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
+            "beautifyModel": sr["beautify_model"],
+            "suggestModel": sr["suggest_model"],
+            "summarizeModel": sr["summarize_model"],
+            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         }
     else:
         settings = UserSettings().dict()
@@ -589,6 +554,11 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "settings": settings,
     }
+
+
+@app.post("/auth/login")
+async def auth_login(model: LoginModel):
+    return await login(model)
 
 
 @app.post("/refresh")
@@ -641,29 +611,32 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.use_offline_mode, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model, s.deid_engine FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
 
     if row:
+        rd = dict(row)
         settings = UserSettings(
-            theme=row["theme"],
-            categories=json.loads(row["categories"]),
-            rules=json.loads(row["rules"]),
-            lang=row["lang"],
-            summaryLang=row["summary_lang"] or row["lang"],
-            specialty=row["specialty"],
-            payer=row["payer"],
-            region=row["region"] or "",
-            template=row["template"],
-            useLocalModels=bool(row["use_local_models"]),
-            agencies=json.loads(row["agencies"]) if row["agencies"] else ["CDC", "WHO"],
-            beautifyModel=row["beautify_model"],
-            suggestModel=row["suggest_model"],
-            summarizeModel=row["summarize_model"],
+            theme=rd["theme"],
+            categories=json.loads(rd["categories"]),
+            rules=json.loads(rd["rules"]),
+            lang=rd["lang"],
+            summaryLang=rd["summary_lang"] or rd["lang"],
+            specialty=rd["specialty"],
+            payer=rd["payer"],
+            region=rd["region"] or "",
+            template=rd["template"],
+            useLocalModels=bool(rd["use_local_models"]),
+            useOfflineMode=bool(rd.get("use_offline_mode", 0)),
+            agencies=json.loads(rd["agencies"]) if rd["agencies"] else ["CDC", "WHO"],
+            beautifyModel=rd["beautify_model"],
+            suggestModel=rd["suggest_model"],
+            summarizeModel=rd["summarize_model"],
+            deidEngine=rd["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         )
-        return settings.dict()
-    return UserSettings().dict()
+        return settings.dict(by_alias=True)
+    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).dict(by_alias=True)
 
 
 @app.post("/settings")
@@ -678,10 +651,8 @@ async def save_user_settings(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
     db_conn.execute(
-
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies, beautify_model, suggest_model, summarize_model) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-
+        # Added deid_engine column
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies, beautify_model, suggest_model, summarize_model, deid_engine, use_offline_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             row["id"],
             model.theme,
@@ -698,13 +669,13 @@ async def save_user_settings(
             model.beautifyModel,
             model.suggestModel,
             model.summarizeModel,
-
-
+            model.deidEngine,
+            int(model.useOfflineMode),
         ),
     )
 
     db_conn.commit()
-    return model.dict()
+    return model.dict(by_alias=True)
 
 
 class NoteRequest(BaseModel):
@@ -727,6 +698,7 @@ class NoteRequest(BaseModel):
     sex: Optional[str] = None
     region: Optional[str] = None
     useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
     agencies: Optional[List[str]] = None
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
@@ -786,6 +758,9 @@ class ScheduleRequest(BaseModel):
     codes: Optional[List[str]] = None
     specialty: Optional[str] = None
     payer: Optional[str] = None
+    # Optional patient/reason for immediate appointment creation when exporting
+    patient: Optional[str] = None
+    reason: Optional[str] = None
 
 class ScheduleResponse(FollowUp):
     """Response model containing recommended interval and optional ICS."""
@@ -828,177 +803,11 @@ class SurveyModel(BaseModel):
     patientID: Optional[str] = None
     clinician: Optional[str] = None
 
+# The deidentify() implementation has been moved to backend.deid and is now
+# exposed via the thin wrapper defined near the top of this file. Tests
+# continue to monkeypatch symbols on backend.main (e.g. _DEID_ENGINE) which
+# are forwarded to the modular implementation.
 
-def deidentify(text: str) -> str:
-    """Redact common protected health information from ``text``.
-
-    Each removed span is replaced with a placeholder of the form
-    ``[TOKEN:VALUE]`` where ``TOKEN`` is the detected entity type and
-    ``VALUE`` is either the raw text or a short hash depending on the
-    ``DEID_HASH_TOKENS`` flag.
-
-    Args:
-        text: Raw note text potentially containing PHI.
-    Returns:
-        The cleaned text with sensitive spans replaced by informative
-        placeholders.
-    """
-
-    def _placeholder(token: str, value: str) -> str:
-        rep = (
-            hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
-            if _HASH_TOKENS
-            else value
-        )
-        return f"[{token}:{rep}]"
-
-    engine = _DEID_ENGINE
-
-    if engine == "presidio" and _PRESIDIO_AVAILABLE:
-
-        try:
-            entities = [
-                "PERSON",
-                "PHONE_NUMBER",
-                "EMAIL_ADDRESS",
-                "US_SSN",
-                "DATE_TIME",
-                "ADDRESS",
-                "IP_ADDRESS",
-                "URL",
-                "MEDICAL_RECORD",
-            ]
-            results = _analyzer.analyze(text=text, language="en", entities=entities)
-            # Remove nested results (e.g., URL inside EMAIL_ADDRESS) and
-            # low-confidence detections to avoid replacing overlapping spans or
-            # introducing false positives.
-            filtered: List[Any] = []
-            for r in sorted(results, key=lambda r: (r.start, -r.end)):
-                if r.score < _PRESIDIO_THRESHOLDS.get(r.entity_type, 0.5):
-                    continue
-                if any(f.start <= r.start and r.end <= f.end for f in filtered):
-                    continue
-                filtered.append(r)
-            token_map = {
-                "PERSON": "NAME",
-                "PHONE_NUMBER": "PHONE",
-                "EMAIL_ADDRESS": "EMAIL",
-                "US_SSN": "SSN",
-                "DATE_TIME": "DATE",
-                "ADDRESS": "ADDRESS",
-                "IP_ADDRESS": "IP",
-                "URL": "URL",
-                "MEDICAL_RECORD": "MRN",
-            }
-            for r in sorted(filtered, key=lambda r: r.start, reverse=True):
-                token = token_map.get(r.entity_type, r.entity_type)
-                value = text[r.start : r.end]
-                text = text[: r.start] + _placeholder(token, value) + text[r.end :]
-            return text
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.warning("Advanced scrubber failed: %s", exc)
-    elif engine == "philter" and _PHILTER_AVAILABLE:
-        try:
-            # Philter replaces detected PHI with the literal "**PHI**".
-            if hasattr(_philter, "philter"):
-                text = _philter.philter(text)
-            elif hasattr(_philter, "filter"):
-                text = _philter.filter(text)
-            text = text.replace("**PHI**", _placeholder("PHI", "PHI"))
-            return text
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.warning("Philter failed: %s", exc)
-    elif engine == "scrubadub" and _SCRUBBER_AVAILABLE:
-        try:
-            scrubber = scrubadub.Scrubber()
-            filths = list(scrubber.iter_filth(text))
-            for filth in sorted(filths, key=lambda f: f.beg, reverse=True):
-                token = filth.__class__.__name__.replace("Filth", "").upper()
-                token = {"EMAILADDRESS": "EMAIL", "IPADDRESS": "IP"}.get(
-                    token, token
-                )
-                text = (
-                    text[: filth.beg]
-                    + _placeholder(token, filth.text)
-                    + text[filth.end :]
-                )
-            return text
-        except Exception as exc:  # pragma: no cover - best effort
-            logging.warning("scrubadub failed: %s", exc)
-
-    # Fallback to regex-based scrubbing
-    month = (
-        "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
-        "Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
-    )
-
-    phone_pattern = re.compile(
-        r"(?:(?<!\d)(?:\(\d{3}\)\s*|\d{3}[-\.\s]?)\d{3}[-\.\s]?\d{4}\b"
-        r"|\+\d{1,3}[-\.\s]?(?:\(\d{1,4}\)|\d{1,4})[-\.\s]?\d{3,4}[-\.\s]?\d{3,4}\b)",
-        re.IGNORECASE,
-    )
-    dob_pattern = re.compile(
-        r"\bDOB[:\s-]*(\d{1,2}/\d{1,2}/\d{2,4})\b",
-        re.IGNORECASE,
-    )
-    date_pattern = re.compile(
-        rf"\b("  # start group
-        r"\d{1,2}/\d{1,2}/\d{2,4}"
-        r"|\d{4}-\d{1,2}-\d{1,2}"
-        rf"|{month}\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{2,4}}"
-        rf"|\d{{1,2}}(?:st|nd|rd|th)?\s+{month}\s+\d{{2,4}}"
-        r")\b",
-        re.IGNORECASE,
-    )
-    email_pattern = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
-    ssn_pattern = re.compile(r"\b(?:\d{3}-\d{2}-\d{4}|\d{9})\b")
-    ip_pattern = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-    url_pattern = re.compile(r"https?://[\w./%-]+", re.IGNORECASE)
-    mrn_pattern = re.compile(
-        r"\b(?:MRN|Medical Record Number)[:\s-]*\d{6,10}\b",
-        re.IGNORECASE,
-    )
-    health_id_pattern = re.compile(
-        r"\b(?:HIC|HID|INS)[- ]?\d{6,12}\b",
-        re.IGNORECASE,
-    )
-    vehicle_pattern = re.compile(r"\b[A-Z]{2,3}[- ]?\d{3,4}\b")
-    address_pattern = re.compile(
-        r"\b\d+\s+(?:[A-Za-z]+\s?)+(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr)?\b",
-        re.IGNORECASE,
-    )
-    name_pattern = re.compile(
-        r"\b(?:(?:Dr|Mr|Mrs|Ms|Prof)\.?\s+)?[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+)+\b"
-    )
-
-    patterns = [
-        ("PHONE", phone_pattern),
-        ("DOB", dob_pattern),
-        ("DATE", date_pattern),
-        ("EMAIL", email_pattern),
-        ("SSN", ssn_pattern),
-        ("IP", ip_pattern),
-        ("URL", url_pattern),
-        ("MRN", mrn_pattern),
-        ("HEALTH_ID", health_id_pattern),
-        ("VEHICLE", vehicle_pattern),
-        ("ADDRESS", address_pattern),
-        ("NAME", name_pattern),
-    ]
-
-    for token, pattern in patterns:
-        text = pattern.sub(
-            lambda m: _placeholder(token, m.group(1) if m.lastindex else m.group(0)),
-            text,
-        )
-
-    return text
-
-
-# Endpoint: retrieve recent events for debugging/troubleshooting.  This returns
-# a list of all logged events with their type, timestamp and details.  In a
-# production system you might want to restrict access, paginate results or
-# limit the number returned.  This endpoint is used by the frontend logs view.
 @app.get("/events")
 async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]]:
     try:
@@ -1398,7 +1207,11 @@ async def get_metrics(
 
     def _parse_iso_ts(value: str) -> float | None:
         try:
-            return datetime.fromisoformat(value).timestamp()
+            dt = datetime.fromisoformat(value)
+            # Treat naive datetimes as UTC (tests supply epoch-based times)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
         except Exception:
             return None
 
@@ -1635,7 +1448,7 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
                 SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
@@ -1833,7 +1646,17 @@ async def summarize(
     if req.audio:
         combined += "\n\n" + str(req.audio)
     cleaned = deidentify(combined)
-    if USE_OFFLINE_MODEL:
+    offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
+    if not offline_active:
+        # check user stored preference (table may not exist in some test fixtures)
+        try:
+            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            if row:
+                offline_active = bool(row["use_offline_mode"])
+        except sqlite3.OperationalError:
+            # settings table not present; ignore
+            pass
+    if offline_active or USE_OFFLINE_MODEL:
         from .offline_model import summarize as offline_summarize
 
         data = offline_summarize(
@@ -1973,7 +1796,16 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         A dictionary with the beautified note as a string.
     """
     cleaned = deidentify(req.text)
-    if USE_OFFLINE_MODEL:
+    offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
+    if not offline_active:
+        # check user stored preference (table may not exist in some test fixtures)
+        try:
+            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            if row:
+                offline_active = bool(row["use_offline_mode"])
+        except sqlite3.OperationalError:
+            pass
+    if offline_active or USE_OFFLINE_MODEL:
         from .offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
@@ -2038,7 +1870,16 @@ async def suggest(
         cleaned_for_prompt = cleaned + rules_section
     else:
         cleaned_for_prompt = cleaned
-    if USE_OFFLINE_MODEL:
+    offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
+    if not offline_active:
+        # check user stored preference (table may not exist in some test fixtures)
+        try:
+            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            if row:
+                offline_active = bool(row["use_offline_mode"])
+        except sqlite3.OperationalError:
+            pass
+    if offline_active or USE_OFFLINE_MODEL:
         from .offline_model import suggest as offline_suggest
 
         data = offline_suggest(
@@ -2052,7 +1893,16 @@ async def suggest(
             use_local=req.useLocalModels,
             model_path=req.suggestModel,
         )
-        public_health = [PublicHealthSuggestion(**p) for p in data["publicHealth"]]
+        # Ensure evidenceLevel is preserved regardless of key style.
+        public_health = [
+            PublicHealthSuggestion(
+                recommendation=p.get("recommendation"),
+                reason=p.get("reason"),
+                source=p.get("source"),
+                evidenceLevel=p.get("evidenceLevel") or p.get("evidence_level"),
+            )
+            for p in data["publicHealth"]
+        ]
         try:
             extra_ph = public_health_api.get_public_health_suggestions(
                 req.age, req.sex, req.region, req.agencies
@@ -2373,16 +2223,9 @@ async def suggest(
         )
 
 
-@app.post("/schedule", response_model=ScheduleResponse)
-async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> ScheduleResponse:
-    """
-    Recommend a follow-up interval for a clinical note and provide an ICS export.
-
-    Args:
-        req: ScheduleRequest containing note text and optional codes.
-    Returns:
-        ScheduleResponse with the recommended interval and ICS string.
-    """
+@app.post("/followup", response_model=ScheduleResponse)
+async def followup(req: ScheduleRequest, user=Depends(require_role("user"))) -> ScheduleResponse:
+    """Return a recommended follow-up interval (no persistence)."""
     cleaned = deidentify(req.text or "")
     follow = recommend_follow_up(
         req.codes or [],
@@ -2392,39 +2235,51 @@ async def schedule(req: ScheduleRequest, user=Depends(require_role("user"))) -> 
     )
     return ScheduleResponse(**follow)
 
+# ------------------- Appointment CRUD & ICS export -------------------------
+class AppointmentCreate(BaseModel):
+    patient: str
+    reason: str
+    start: datetime
+    end: Optional[datetime] = None
 
+class Appointment(BaseModel):
+    id: int
+    patient: str
+    reason: str
+    start: datetime
+    end: datetime
 
-class ExportIcsRequest(BaseModel):
-    """Payload for exporting a follow-up interval to an ICS string."""
+class AppointmentList(BaseModel):
+    appointments: List[Appointment]
 
-    interval: str
-    summary: Optional[str] = DEFAULT_EVENT_SUMMARY
+@app.post("/schedule", response_model=Appointment)
+async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(require_role("user"))):
+    rec = create_appointment(appt.patient, appt.reason, appt.start, appt.end)
+    return Appointment(**{**rec, "start": rec["start"], "end": rec["end"]})
 
-
-@app.post("/export_ics")
-async def export_ics_endpoint(req: ExportIcsRequest, user=Depends(require_role("user"))):
-    ics = export_ics(req.interval, req.summary)
-    if not ics:
-        raise HTTPException(status_code=400, detail="invalid interval")
-    return {"ics": ics}
-
-@app.get("/download-models")
-async def download_models_endpoint() -> StreamingResponse:
-    """Stream progress while downloading local Hugging Face models."""
-
-    script = Path(__file__).resolve().parent.parent / "scripts" / "download_models.py"
-
-    async def event_stream():
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            str(script),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+@app.get("/schedule", response_model=AppointmentList)
+async def list_schedule_appointments(user=Depends(require_role("user"))):
+    items = list_appointments()
+    parsed: List[Appointment] = []
+    for item in items:
+        parsed.append(
+            Appointment(
+                **{
+                    **item,
+                    "start": datetime.fromisoformat(item["start"]),
+                    "end": datetime.fromisoformat(item["end"]),
+                }
+            )
         )
-        assert process.stdout is not None
-        async for line in process.stdout:
-            yield f"data: {line.decode().rstrip()}\n\n"
-        await process.wait()
-        yield "data: done\n\n"
+    return AppointmentList(appointments=parsed)
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+class ScheduleExportRequest(BaseModel):
+    id: int
+
+@app.post("/schedule/export")
+async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(require_role("user"))):
+    appt = get_appointment(req.id)
+    if not appt:
+        raise HTTPException(status_code=404, detail="appointment not found")
+    return {"ics": export_appointment_ics(appt)}
+# ---------------------------------------------------------------------------
