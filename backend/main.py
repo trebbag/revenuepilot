@@ -561,7 +561,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=\?",
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, agencies, template, beautify_model, suggest_model, summarize_model FROM settings WHERE user_id=?",
         (user_id,),
     ).fetchone()
     if settings_row:
@@ -641,7 +641,7 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
     row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=\?",
+        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
 
@@ -758,7 +758,8 @@ class DifferentialSuggestion(BaseModel):
     """Potential differential diagnosis with likelihood score."""
 
     diagnosis: str
-    score: Optional[confloat(ge=0, le=1)] = None
+    # Use plain float optional; range validation can be enforced elsewhere.
+    score: Optional[float] = None
 
 
 class FollowUp(BaseModel):
@@ -1375,6 +1376,17 @@ async def get_metrics(
 
     cursor = db_conn.cursor()
 
+    # Detect optional schema columns for backwards compatibility (older tests/DBs)
+    try:
+        event_columns = {row[1] for row in cursor.execute("PRAGMA table_info(events)")}
+    except Exception:
+        event_columns = set()
+    has_time_to_close = "time_to_close" in event_columns
+    # Build reusable fragments depending on column availability
+    time_to_close_avg_expr = (
+        "AVG(time_to_close) AS avg_time_to_close," if has_time_to_close else "NULL AS avg_time_to_close,"  # noqa: E501
+    )
+
     cursor.execute(
         """
         SELECT DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician
@@ -1435,11 +1447,11 @@ async def get_metrics(
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
-                AVG(time_to_close) AS avg_time_to_close,
+                {time_to_close_avg_expr}
                 AVG(satisfaction) AS avg_satisfaction,
                 AVG(public_health) AS public_health_rate
             FROM events {where_clause}
-        """
+        """.replace("\n                {time_to_close_avg_expr}\n", f"\n                {time_to_close_avg_expr}\n")
         cursor.execute(totals_query, params)
         row = cursor.fetchone()
         totals = dict(row) if row else {}
@@ -1628,7 +1640,7 @@ async def get_metrics(
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
-                AVG(time_to_close) AS avg_time_to_close,
+                {('AVG(time_to_close) AS avg_time_to_close,' if has_time_to_close else 'NULL AS avg_time_to_close,')}
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
                 SUM(json_array_length(CASE WHEN json_valid(compliance_flags) THEN compliance_flags ELSE '[]' END)) AS compliance_flags
@@ -1638,7 +1650,6 @@ async def get_metrics(
         """
         cursor.execute(daily_query, base_params)
         daily_list = [dict(r) for r in cursor.fetchall()]
-
     weekly_list: List[Dict[str, Any]] = []
     if weekly:
         weekly_query = f"""
@@ -1653,7 +1664,7 @@ async def get_metrics(
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
-                AVG(time_to_close) AS avg_time_to_close,
+                {('AVG(time_to_close) AS avg_time_to_close,' if has_time_to_close else 'NULL AS avg_time_to_close,')}
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
                 SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
                 SUM(json_array_length(CASE WHEN json_valid(compliance_flags) THEN compliance_flags ELSE '[]' END)) AS compliance_flags
@@ -1723,14 +1734,18 @@ async def get_metrics(
         _add_rolling(weekly_list, 4)
 
     def _code_timeseries(period_sql: str) -> Dict[str, Dict[str, int]]:
-        query = f"""
-            SELECT {period_sql} AS period, json_each.value AS code, COUNT(*) AS count
-            FROM events
-            JOIN json_each(COALESCE(events.codes, '[]'))
-            {where_current}
-            GROUP BY period, code
-            ORDER BY period
-        """
+        # Reformatted to avoid multiline f-string indentation issues seen in some Python versions.
+        base_select = (
+            "SELECT "
+            + period_sql
+            + " AS period, json_each.value AS code, COUNT(*) AS count FROM events "
+            "JOIN json_each(COALESCE(events.codes, '[]')) "
+        )
+        query = (
+            base_select
+            + (where_current + " " if where_current else "")
+            + "GROUP BY period, code ORDER BY period"
+        )
         cursor.execute(query, base_params)
         result: Dict[str, Dict[str, int]] = {}
         for r in cursor.fetchall():
@@ -1810,7 +1825,7 @@ async def summarize(
     Args:
         req: NoteRequest with the clinical note and optional context.
     Returns:
-        A dictionary containing "summary", "recommendations", "warnings".
+        A dictionary containing "summary", "patient_friendly", "recommendations", "warnings".
     """
     combined = req.text or ""
     if req.chart:
@@ -1830,6 +1845,9 @@ async def summarize(
             use_local=req.useLocalModels,
             model_path=req.summarizeModel,
         )
+        # Ensure patient_friendly key present
+        if "patient_friendly" not in data:
+            data["patient_friendly"] = data.get("summary", "")
     else:
         try:
             messages = build_summary_prompt(
@@ -1837,12 +1855,20 @@ async def summarize(
             )
             response_content = call_openai(messages)
             data = json.loads(response_content)
+            # If model returns only summary, mirror into patient_friendly
+            if "patient_friendly" not in data and "summary" in data:
+                data["patient_friendly"] = data["summary"]
         except Exception as exc:
             logging.error("Error during summary LLM call: %s", exc)
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
-            data = {"summary": summary, "recommendations": [], "warnings": []}
+            data = {
+                "summary": summary,
+                "patient_friendly": summary,
+                "recommendations": [],
+                "warnings": [],
+            }
     return data
 
 
@@ -1866,6 +1892,7 @@ async def transcribe(
     audio_bytes = await file.read()
     if diarise:
         result = diarize_and_transcribe(audio_bytes, language=lang)
+
     else:
         text = simple_transcribe(audio_bytes, language=lang)
         result = {

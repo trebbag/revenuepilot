@@ -45,6 +45,7 @@ def test_summarize_basic_success(client, monkeypatch):
     data = resp.json()
     assert data["summary"].startswith("Patient with")
     assert data["recommendations"] == ["Rest"]
+    assert data["patient_friendly"] == data["summary"]
 
 
 def test_summarize_fallback_on_error(client, monkeypatch):
@@ -57,6 +58,7 @@ def test_summarize_fallback_on_error(client, monkeypatch):
     data = resp.json()
     # Fallback truncates to 200 chars + ellipsis
     assert len(data["summary"]) <= 203
+    assert data["patient_friendly"] == data["summary"]
 
 
 def test_summarize_offline(monkeypatch, client):
@@ -65,6 +67,7 @@ def test_summarize_offline(monkeypatch, client):
     resp = client.post("/summarize", json={"text": "offline test"}, headers=auth_header(token))
     data = resp.json()
     assert "summary" in data
+    assert data["patient_friendly"] == data["summary"]
 
 
 def test_beautify_offline(monkeypatch, client):

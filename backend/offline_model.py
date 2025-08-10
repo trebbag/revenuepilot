@@ -124,6 +124,8 @@ def summarize(
         "summary": f"Summary (offline): {snippet}",
         "recommendations": [],
         "warnings": [],
+        # Backward compatibility field; mirrors summary
+        "patient_friendly": f"Summary (offline): {snippet}",
     }
 
 
