@@ -1448,7 +1448,7 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
                 SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
