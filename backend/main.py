@@ -33,6 +33,16 @@ from pydantic import (
     StrictBool,
     field_validator,
 )
+import json, sqlite3
+try:  # prefer appdirs
+    from appdirs import user_data_dir  # type: ignore
+except Exception:  # fallback to platformdirs if available
+    try:  # pragma: no cover - environment dependent
+        from platformdirs import user_data_dir  # type: ignore
+    except Exception:
+        def user_data_dir(appname: str, appauthor: str | None = None):  # type: ignore
+            # Last-resort fallback to home directory subfolder
+            return os.path.join(os.path.expanduser('~'), f'.{appname}')
 
 
 import jwt
@@ -88,6 +98,7 @@ USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {
     "true",
     "yes",
 }
+ENABLE_TRACE_MEM = os.getenv("ENABLE_TRACE_MEM", "false").lower() in {"1", "true", "yes"}
 
 # Expose engine/hash flags so existing tests that monkeypatch backend.main still work.
 _DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
@@ -118,8 +129,34 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 
-app = FastAPI(title="RevenuePilot API")
+# Logger before app so lifespan can reference it
 logger = logging.getLogger(__name__)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
+# Graceful shutdown via FastAPI lifespan (uvicorn will call this on SIGINT/SIGTERM)
+from contextlib import asynccontextmanager
+
+_SHUTTING_DOWN = False  # exported for potential test assertions
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in integration
+    logger.info("Lifespan startup begin")
+    # Lightweight startup tasks could go here (e.g. warm caches)
+    start_ts = time.time()
+    try:
+        yield
+    finally:
+        global _SHUTTING_DOWN
+        _SHUTTING_DOWN = True
+        try:
+            db_conn.commit()  # ensure any buffered writes are flushed
+        except Exception:  # pragma: no cover - defensive
+            pass
+        shutdown_duration = time.time() - start_ts
+        logger.info("Lifespan shutdown complete (uptime=%.2fs)", shutdown_duration)
+
+# Instantiate app with lifespan for graceful shutdown
+app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
 
 # Record process start time for uptime calculations
 START_TIME = time.time()
@@ -143,7 +180,68 @@ async def health():
         "status": "ok",
         "uptime": round(time.time() - START_TIME, 2),
         "db": db_ok,
+        "shutting_down": _SHUTTING_DOWN,
     }
+
+# ---------------------------------------------------------------------------
+# Advanced memory / runtime diagnostics
+# ---------------------------------------------------------------------------
+
+def _memory_stats() -> Dict[str, Any]:  # pragma: no cover - platform variability
+    stats: Dict[str, Any] = {}
+    # RSS via resource if available
+    try:
+        import resource  # type: ignore
+        ru = resource.getrusage(resource.RUSAGE_SELF)
+        # ru_maxrss: kilobytes on Linux, bytes on macOS (documented inconsistency)
+        stats["max_rss_kb"] = ru.ru_maxrss if ru.ru_maxrss else None
+    except Exception:
+        stats["max_rss_kb"] = None
+    # /proc/self/statm (Linux only)
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")  # bytes
+        with open("/proc/self/statm", "r", encoding="utf-8") as f:
+            parts = f.read().strip().split()
+            if len(parts) >= 2:
+                rss_pages = int(parts[1])
+                stats["rss_bytes"] = rss_pages * page_size
+    except Exception:
+        stats.setdefault("rss_bytes", None)
+    # Python object & task stats
+    try:
+        import tracemalloc
+        if ENABLE_TRACE_MEM:
+            if not tracemalloc.is_tracing():
+                tracemalloc.start(5)
+            current, peak = tracemalloc.get_traced_memory()
+            stats["py_heap_current"] = current
+            stats["py_heap_peak"] = peak
+        else:
+            stats["py_heap_current"] = stats["py_heap_peak"] = None
+    except Exception:
+        stats["py_heap_current"] = stats["py_heap_peak"] = None
+    try:
+        stats["async_tasks"] = len(asyncio.all_tasks())
+    except Exception:
+        stats["async_tasks"] = None
+    # File descriptor count (best effort)
+    try:
+        if os.name == "posix":
+            stats["open_fds"] = len(os.listdir("/proc/self/fd"))
+        else:
+            stats["open_fds"] = None
+    except Exception:
+        stats["open_fds"] = None
+    return stats
+
+@app.get("/system/memory", tags=["system"])
+async def memory_diagnostics(credentials: HTTPAuthorizationCredentials = Depends(lambda: None)):
+    # security may not yet be defined; replaced after declaration
+    if ENVIRONMENT not in {"development", "dev"}:
+        # Will raise if token invalid once security/get_current_user available
+        if 'get_current_user' in globals() and 'security' in globals():
+            get_current_user(credentials, required_role="admin")
+    return _memory_stats()
 
 
 # Enable CORS so that the React frontend can communicate with this API.
@@ -211,6 +309,48 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
 
+# Create helpful indexes for metrics queries (idempotent)
+try:  # pragma: no cover - sqlite create index if not exists
+    db_conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+    db_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_type ON events(eventType)"
+    )
+except Exception:
+    pass
+
+# Analytics DB size cap / rotation
+ANALYTICS_DB_MAX_MB = float(os.getenv("ANALYTICS_DB_MAX_MB", "50"))  # default ~50MB
+ANALYTICS_DB_PRUNE_FRACTION = float(os.getenv("ANALYTICS_DB_PRUNE_FRACTION", "0.2"))  # prune 20% oldest
+
+def _prune_analytics_if_needed():  # pragma: no cover - size dependent
+    try:
+        db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
+        if db_size <= ANALYTICS_DB_MAX_MB:
+            return
+        cursor = db_conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events")
+        total = cursor.fetchone()[0] or 0
+        if total == 0:
+            return
+        to_delete = int(total * ANALYTICS_DB_PRUNE_FRACTION)
+        if to_delete <= 0:
+            return
+        cursor.execute(
+            "DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY timestamp ASC LIMIT ?)",
+            (to_delete,),
+        )
+        db_conn.commit()
+        logger.info(
+            "Pruned %s old analytics events (size %.2fMB > %.2fMB)",
+            to_delete,
+            db_size,
+            ANALYTICS_DB_MAX_MB,
+        )
+    except Exception:
+        pass
+
+_prune_analytics_if_needed()
+
 
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
@@ -226,14 +366,9 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     conn.commit()
 
 
-# Table for user accounts used in role-based authentication.
+# Proper users table creation (replacing previously malformed snippet)
 db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS users ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "username TEXT UNIQUE NOT NULL,"
-    "password_hash TEXT NOT NULL,"
-    "role TEXT NOT NULL"
-    ")"
+    "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
 )
 db_conn.commit()
 
@@ -281,7 +416,6 @@ if _DEID_ENGINE == "regex":
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
 # ---------------------------------------------------------------------------
-ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 JWT_SECRET = os.getenv("JWT_SECRET")
 if not JWT_SECRET:
     if ENVIRONMENT not in {"development", "dev"}:
@@ -1223,7 +1357,7 @@ async def export_to_ehr(
     status of ``bundle`` with the bundle when no server is configured.
     """
     try:
-        from . import ehr_integration
+        from backend import ehr_integration  # absolute import for packaged mode
         result = ehr_integration.post_note_and_codes(
             req.note,
             req.codes,
@@ -1374,6 +1508,9 @@ async def get_metrics(
         satisfaction_sum = satisfaction_count = 0
         beautify_time_sum = beautify_time_count = 0.0
         beautify_daily: Dict[str, List[float]] = {} if collect_timeseries else {}
+        beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
+        last_start_for_patient: Dict[str, float] = {}
+        template_counts: Dict[str, int] = {}
         beautify_weekly: Dict[str, List[float]] = {} if collect_timeseries else {}
         last_start_for_patient: Dict[str, float] = {}
         template_counts: Dict[str, int] = {}
@@ -1682,7 +1819,6 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
-        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -1727,7 +1863,7 @@ async def summarize(
             # settings table not present; ignore
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import summarize as offline_summarize
+        from backend.offline_model import summarize as offline_summarize
 
         data = offline_summarize(
             cleaned,
@@ -1876,7 +2012,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         except sqlite3.OperationalError:
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import beautify as offline_beautify
+        from backend.offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
             cleaned,
@@ -1951,7 +2087,7 @@ async def suggest(
         except sqlite3.OperationalError:
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import suggest as offline_suggest
+        from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest(
             cleaned_for_prompt,
@@ -1984,7 +2120,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
@@ -2099,7 +2235,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
@@ -2126,14 +2262,13 @@ async def suggest(
     except Exception as exc:
         # Log error and use rule-based fallback suggestions.
         logging.error("Error during suggest LLM call or parsing JSON: %s", exc)
-        lower = cleaned.lower()
-        codes: List[CodeSuggestion] = []
+        codes: List[CodeSuggestion] = []  # fixed invalid generic syntax
         compliance: List[str] = []
         public_health: List[PublicHealthSuggestion] = []
         diffs: List[DifferentialSuggestion] = []
         # Respiratory symptoms
         if any(
-            keyword in lower for keyword in ["cough", "fever", "cold", "sore throat"]
+            keyword in cleaned.lower() for keyword in ["cough", "fever", "cold", "sore throat"]
         ):
             codes.append(
                 CodeSuggestion(
@@ -2160,7 +2295,7 @@ async def suggest(
                 ]
             )
         # Diabetes management
-        if "diabetes" in lower:
+        if "diabetes" in cleaned.lower():
             codes.append(
                 CodeSuggestion(
                     code="E11.9",
@@ -2176,7 +2311,7 @@ async def suggest(
             )
             diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
         # Hypertension
-        if "hypertension" in lower or "high blood pressure" in lower:
+        if "hypertension" in cleaned.lower() or "high blood pressure" in cleaned.lower():
             codes.append(
                 CodeSuggestion(code="I10", rationale="Essential (primary) hypertension")
             )
@@ -2191,7 +2326,7 @@ async def suggest(
             )
             diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
         # Preventive visit
-        if "annual" in lower or "wellness" in lower:
+        if "annual" in cleaned.lower() or "wellness" in cleaned.lower():
             codes.append(
                 CodeSuggestion(
                     code="99395", rationale="Periodic comprehensive preventive visit"
@@ -2205,7 +2340,7 @@ async def suggest(
             )
             diffs.append(DifferentialSuggestion(diagnosis="–"))
         # Mental health
-        if any(word in lower for word in ["depression", "anxiety", "sad", "depressed"]):
+        if any(word in cleaned.lower() for word in ["depression", "anxiety", "sad", "depressed"]):
             codes.append(
                 CodeSuggestion(
                     code="F32.9", rationale="Major depressive disorder, unspecified"
@@ -2223,7 +2358,7 @@ async def suggest(
             diffs.append(DifferentialSuggestion(diagnosis="Adjustment disorder"))
         # Musculoskeletal pain
         if any(
-            word in lower
+            word in cleaned.lower()
             for word in [
                 "back pain",
                 "low back",
@@ -2270,7 +2405,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
