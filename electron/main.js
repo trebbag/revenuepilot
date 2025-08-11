@@ -1,5 +1,5 @@
 /* eslint-env node */
-/* global __dirname, process, console, setTimeout */
+/* global __dirname, process, console, setTimeout, clearTimeout */
 // eslint-disable-next-line no-undef
 require('dotenv').config();
 
@@ -28,31 +28,45 @@ let backendProcess;
 let mainWindow;
 let chosenPort = 8000; // may be reassigned if 8000 is busy
 const DEFAULT_PORT = 8000;
+let backendPortFile = process.env.BACKEND_PORT_FILE || null; // optional file for integration tests
 
 // Ring buffer of recent backend startup log lines for diagnostics surfaced in Login UI
-const backendLogBuffer = [];
-// Reduced to lower memory footprint; was 400
+// Replaced dynamic array + splice (O(n) churn) with fixed-size circular buffer to avoid
+// incremental memory growth and GC pressure under very chatty backends.
 const MAX_LOG_LINES = 200;
 const MAX_LOG_LINE_LENGTH = 2000; // hard clamp per line
+const backendLogBuffer = new Array(MAX_LOG_LINES);
+let backendLogWriteIndex = 0; // next position to write
+let backendLogSize = 0; // number of valid entries (<= MAX_LOG_LINES)
 let backendLogFile; // path to on-disk log file
 function appendBackendLog(line) {
-  const cleaned = line.toString().replace(/\r/g, '').trimEnd().slice(0, MAX_LOG_LINE_LENGTH);
-  if (!cleaned) return;
-  backendLogBuffer.push(cleaned);
-  if (backendLogBuffer.length > MAX_LOG_LINES) backendLogBuffer.splice(0, backendLogBuffer.length - MAX_LOG_LINES);
-  if (backendLogBuffer.length % 50 === 0) {
-    // periodic compaction (no-op with array slice but placeholder for future)
-    // backendLogBuffer = backendLogBuffer.slice(-MAX_LOG_LINES); // cannot reassign const, kept for reference
+  try {
+    if (!line) return;
+    const cleaned = line.toString().replace(/\r/g, '').trimEnd().slice(0, MAX_LOG_LINE_LENGTH);
+    if (!cleaned) return;
+    backendLogBuffer[backendLogWriteIndex] = cleaned;
+    backendLogWriteIndex = (backendLogWriteIndex + 1) % MAX_LOG_LINES;
+    if (backendLogSize < MAX_LOG_LINES) backendLogSize += 1;
+    if (backendLogFile) {
+      try { fs.appendFileSync(backendLogFile, cleaned + '\n'); } catch { /* ignore disk errors */ }
+    }
+  } catch { /* defensive */ }
+}
+function getBackendLogTail(n) {
+  const count = Math.min(n, backendLogSize);
+  const out = new Array(count);
+  for (let i = 0; i < count; i++) {
+    // oldest index among the kept entries
+    const idx = (backendLogWriteIndex - count + i + MAX_LOG_LINES) % MAX_LOG_LINES;
+    out[i] = backendLogBuffer[idx];
   }
-  if (backendLogFile) {
-    try { fs.appendFileSync(backendLogFile, cleaned + '\n'); } catch { /* ignore */ }
-  }
+  return out;
 }
 function sendDiagnostics(message, extra = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('backend-diagnostics', {
       message,
-      logTail: backendLogBuffer.slice(-60), // last 60 lines for UI brevity
+      logTail: getBackendLogTail(60), // last 60 lines
       logFile: backendLogFile || null,
       ...extra,
     });
@@ -143,30 +157,6 @@ function ensureBackendVenv(backendDir) {
   return pythonBin;
 }
 
-function waitForServer(baseUrl, timeout = 10000) {
-  // poll /health for readiness (explicit readiness vs TCP accept only)
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const check = () => {
-      http
-        .get(`${baseUrl}/health`, res => {
-          if (res.statusCode && res.statusCode >= 200 && res.statusCode < 500) {
-            res.resume();
-            return resolve(true);
-          }
-          res.resume();
-          if (Date.now() - start > timeout) return reject(new Error(`Status ${res.statusCode}`));
-          setTimeout(check, 350);
-        })
-        .on('error', err => {
-          if (Date.now() - start > timeout) return reject(err);
-          setTimeout(check, 350);
-        });
-    };
-    check();
-  });
-}
-
 function detectSystemPython() {
   const candidates = process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'];
   for (const c of candidates) {
@@ -178,7 +168,13 @@ function detectSystemPython() {
   return null;
 }
 
+let backendReadyAttempted = false; // prevent duplicate backend spawns
+let healthPollTimer = null; // track waitForServer polling timer for cleanup
+
 async function startBackend() {
+  if (backendReadyAttempted) { appendBackendLog('startBackend called again – ignoring duplicate invocation'); return; }
+  backendReadyAttempted = true;
+
   const backendDir = app.isPackaged
     ? path.join(process.resourcesPath, 'backend')
     : path.join(__dirname, '..', 'backend');
@@ -187,6 +183,7 @@ async function startBackend() {
   try { fs.writeFileSync(backendLogFile, '--- Backend startup log ---\n'); } catch { /* ignore */ }
 
   chosenPort = await choosePort(DEFAULT_PORT);
+  if (backendPortFile) { try { fs.writeFileSync(backendPortFile, String(chosenPort)); } catch { /* ignore */ } }
   if (chosenPort !== DEFAULT_PORT) {
     appendBackendLog(`Port ${DEFAULT_PORT} busy – using fallback port ${chosenPort}`);
     sendDiagnostics(`Backend port chosen: ${chosenPort}`);
@@ -222,7 +219,7 @@ async function startBackend() {
   env.PYTHONPATH = env.PYTHONPATH ? `${backendParentDir}:${env.PYTHONPATH}` : backendParentDir;
 
   try {
-    backendProcess = spawn(pythonExecutable, args, { cwd: backendParentDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    backendProcess = spawn(pythonExecutable, args, { cwd: backendParentDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
   } catch (e) {
     appendBackendLog(`Failed spawning backend process: ${e.message}`);
     sendDiagnostics(`Failed to spawn backend process: ${e.message}`, { fatal: true, code: e.code || null });
@@ -238,19 +235,39 @@ async function startBackend() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
   });
 
-  waitForServer(`http://127.0.0.1:${chosenPort}`, 20000)
-    .then(() => {
-      appendBackendLog('Backend reported healthy on /health');
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('backend-ready');
-        sendDiagnostics('Backend ready', { port: chosenPort });
+  // Replace inline waitForServer call with cancellable logic
+  const deadline = Date.now() + 20000;
+  const poll = () => {
+    http.get(`http://127.0.0.1:${chosenPort}/health`, res => {
+      if (res.statusCode && res.statusCode >= 200 && res.statusCode < 500) {
+        res.resume();
+        appendBackendLog('Backend reported healthy on /health');
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('backend-ready');
+          sendDiagnostics('Backend ready', { port: chosenPort });
+        }
+        if (healthPollTimer) clearTimeout(healthPollTimer);
+        return;
       }
-    })
-    .catch(err => {
-      appendBackendLog(`Backend did not become ready in time: ${err.message}`);
-      sendDiagnostics('Backend failed to become ready within timeout.', { timeout: true, port: chosenPort });
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+      res.resume();
+      if (Date.now() > deadline) {
+        appendBackendLog(`Backend did not become ready in time: Status ${res.statusCode}`);
+        sendDiagnostics('Backend failed to become ready within timeout.', { timeout: true, port: chosenPort });
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+        return;
+      }
+      healthPollTimer = setTimeout(poll, 400);
+    }).on('error', err => {
+      if (Date.now() > deadline) {
+        appendBackendLog(`Backend did not become ready in time: ${err.message}`);
+        sendDiagnostics('Backend failed to become ready within timeout.', { timeout: true, port: chosenPort });
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+        return;
+      }
+      healthPollTimer = setTimeout(poll, 400);
     });
+  };
+  poll();
 }
 
 function resolveIndexHtml() {
@@ -307,7 +324,10 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('before-quit', () => { if (backendProcess) try { backendProcess.kill(); } catch { /* ignore */ } });
+app.on('before-quit', () => {
+  if (healthPollTimer) { try { clearTimeout(healthPollTimer); } catch { /* ignore */ } }
+  if (backendProcess) try { backendProcess.kill(); } catch { /* ignore */ }
+});
 app.on('window-all-closed', () => {
   if (backendProcess) backendProcess.kill();
   if (process.platform !== 'darwin') app.quit();

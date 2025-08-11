@@ -5,6 +5,7 @@ numpy<2
 openai
 keyring
 platformdirs
+appdirs
 pyjwt
 python-dotenv
 scrubadub
