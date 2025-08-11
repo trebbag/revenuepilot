@@ -1,5 +1,5 @@
 /* eslint-env browser */
-/* global window localStorage fetch setTimeout FormData console URLSearchParams */
+/* global window localStorage fetch setTimeout FormData console URLSearchParams AbortController clearTimeout */
 // Placeholder API functions.  In a real deployment these would
 // make HTTP requests to a backend service that calls OpenAI or
 // other AI models.  For now they simulate asynchronous
@@ -22,18 +22,32 @@ function resolveBaseUrl() {
   return 'http://127.0.0.1:8000';
 }
 
-export function getBackendBaseUrl() {
-  return resolveBaseUrl();
-}
+let __lastBackendError = null; // store last connectivity error details
+export function getLastBackendError(){ return __lastBackendError; }
 
-export async function pingBackend() {
+export async function pingBackend(opts = {}) {
+  const { attempts = 3, timeoutMs = 8000, intervalMs = 750 } = opts || {};
   const baseUrl = resolveBaseUrl();
-  try {
-    const res = await rawFetch(`${baseUrl}/health`, { method: 'GET' });
-    return res.ok || res.status === 404; // treat 404 as backend up
-  } catch {
-    return false;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const controller = new AbortController();
+      const to = setTimeout(() => controller.abort(), timeoutMs);
+      const started = performance.now ? performance.now() : Date.now();
+      const res = await rawFetch(`${baseUrl}/health`, { method: 'GET', signal: controller.signal });
+      clearTimeout(to);
+      if (res.ok) {
+        __lastBackendError = null;
+        return true;
+      }
+      __lastBackendError = `Health status ${res.status}`;
+    } catch (e) {
+      __lastBackendError = (e && e.message) ? e.message : 'fetch_failed';
+    }
+    if (i < attempts) {
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
   }
+  return false;
 }
 
 /**
@@ -75,17 +89,26 @@ export async function login(username, password, lang = 'en') {
 export async function register(username, password, lang = 'en') {
   const baseUrl = resolveBaseUrl();
   let resp;
-  try {
-    resp = await rawFetch(`${baseUrl}/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, lang }),
-    });
-  } catch {
-    throw new Error('Cannot reach backend service. Please wait a few seconds for it to start and try again.');
+  // Prefer /auth/register (idempotent) fall back to /register
+  const endpoints = [`${baseUrl}/auth/register`, `${baseUrl}/register`];
+  let lastErr;
+  for (const url of endpoints){
+    try {
+      resp = await rawFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, lang }),
+      });
+    } catch (e) {
+      lastErr = e;
+      continue;
+    }
+    if (resp && resp.ok) break;
+    lastErr = await resp.json().catch(()=>({detail:`HTTP ${resp.status}`}));
+    if (resp.status < 500) break; // don't try second endpoint for client errors
   }
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
+  if (!resp || !resp.ok) {
+    const err = (lastErr && lastErr.detail) ? lastErr : await resp.json().catch(() => ({}));
     throw new Error(err.detail || err.message || 'Registration failed');
   }
   const data = await resp.json();
@@ -121,10 +144,7 @@ export async function refreshAccessToken(refreshToken) {
  * @param {string} newPassword New desired password
  */
 export async function resetPassword(username, password, newPassword) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const resp = await rawFetch(`${baseUrl}/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -195,10 +215,7 @@ globalThis.fetch = authFetch;
  * @returns {Promise<object>}
  */
 export async function getSettings(token) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const auth =
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
@@ -240,10 +257,7 @@ export async function getSettings(token) {
  * @returns {Promise<object>}
  */
 export async function saveSettings(settings, token) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const auth =
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
@@ -1097,3 +1111,5 @@ export async function getEvents() {
     throw new Error('Failed to fetch events');
   }
 }
+
+export function getBackendBaseUrl() { return resolveBaseUrl(); }

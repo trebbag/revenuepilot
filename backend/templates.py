@@ -1,7 +1,7 @@
 from typing import Optional, List
 from pydantic import BaseModel
 
-from . import prompts as prompt_utils
+from backend import prompts as prompt_utils
 
 
 class TemplateModel(BaseModel):

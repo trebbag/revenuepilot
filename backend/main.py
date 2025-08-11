@@ -44,49 +44,41 @@ try:  # Load environment variables from a .env file if present
 except Exception:  # pragma: no cover - optional dependency
     pass
 
-# Import prompt builders and OpenAI helper for LLM integration.
-# These imports are commented out above to avoid import errors when the
-# dependencies are missing.  They are now enabled to allow the API to
-# generate results using a real language model.  Ensure `openai` is
-# installed and `OPENAI_API_KEY` is set in your environment before
-# deploying.
-from .prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt
-from . import prompts as prompt_utils
-from .openai_client import call_openai
-from .key_manager import get_api_key, save_api_key, APP_NAME
-from platformdirs import user_data_dir
-from .audio_processing import simple_transcribe, diarize_and_transcribe
-from . import public_health as public_health_api
-from .migrations import (
+# Ensure the parent directory (package root) is on sys.path when running from a
+# bundled Electron context where the backend directory is copied verbatim and
+# uvicorn is launched with "main:app". This allows absolute ``backend.*`` imports.
+backend_dir = os.path.dirname(__file__)
+parent_dir = os.path.dirname(backend_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# Use absolute imports consistently for robustness across execution modes.
+from backend import prompts as prompt_utils  # type: ignore
+from backend.prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt  # type: ignore
+from backend.openai_client import call_openai  # type: ignore
+from backend.key_manager import get_api_key, save_api_key, APP_NAME  # type: ignore
+from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
+from backend import public_health as public_health_api  # type: ignore
+from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
 )
-from .templates import TemplateModel, load_builtin_templates
-from .scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up
-from .scheduling import (
+from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
+from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
+from backend.scheduling import (  # type: ignore
     create_appointment,
     list_appointments,
     export_appointment_ics,
     get_appointment,
 )
-
-
-
-
-import json
-import sqlite3
-import hashlib
-
-from .auth import (
+from backend.auth import (  # type: ignore
     authenticate_user,
     hash_password,
     register_user,
     verify_password,
 )
-
-# NEW: import modular de‑identification layer
-from . import deid as deid_module
+from backend import deid as deid_module  # type: ignore
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -156,12 +148,20 @@ async def health():
 
 # Enable CORS so that the React frontend can communicate with this API.
 # Allowed origins are configurable via the ``ALLOWED_ORIGINS`` environment
-# variable (comma separated). Defaults to localhost for development.
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+# variable (comma separated). Defaults now include common Electron desktop
+# contexts (file://) and localhost variants so the packaged app (which loads
+# index.html via file://) can reach the backend without triggering CORS
+# failures which manifested as "Backend not reachable" in the unified login.
+allowed_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000,file://",
+)
 origins = [o.strip() for o in allowed_origins.split(",") if o.strip()]
+# If a wildcard is explicitly provided, simplify configuration to allow all.
+allow_all = any(o in {"*", "wildcard"} for o in origins)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"] if allow_all else origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1523,11 +1523,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1565,14 +1565,6 @@ async def get_metrics(
         """
         cursor.execute(weekly_query, base_params)
         weekly_list = [dict(r) for r in cursor.fetchall()]
-
-    top_compliance = [
-        {"gap": k, "count": v}
-        for k, v in sorted(
-            compliance_counts.items(), key=lambda item: item[1], reverse=True
-        )[:5]
-    ]
-
     # attach beautify averages to the SQL-produced time series
     if daily:
         for entry in daily_list:
@@ -1895,6 +1887,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
             model_path=req.beautifyModel,
         )
         return {"beautified": beautified}
+
     # Attempt to call the LLM to beautify the note. If the call
     # fails for any reason (e.g., missing API key, network error), fall
     # back to returning the trimmed note with only the first letter of
@@ -1991,7 +1984,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
@@ -2106,7 +2099,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
@@ -2277,7 +2270,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))

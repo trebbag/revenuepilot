@@ -121,7 +121,18 @@
     "register": "Register",
     "registering": "Registering…",
     "registerFailed": "Registration failed",
-    "backendUnavailable": "Backend indisponible"
+    "backendUnavailable": "Backend indisponible",
+    "passwordWeak": "Faible",
+    "passwordFair": "Moyen",
+    "passwordGood": "Bon",
+    "passwordStrong": "Fort",
+    "passwordVeryStrong": "Très fort",
+    "passwordsDoNotMatch": "Les mots de passe ne correspondent pas",
+    "confirmPassword": "Confirmer le mot de passe",
+    "currentPassword": "Mot de passe actuel",
+    "pleaseWait": "Veuillez patienter…",
+    "checking": "Vérification…",
+    "retry": "Réessayer"
   },
   "logs": {
     "title": "Event Log",

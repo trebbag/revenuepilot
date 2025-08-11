@@ -2,6 +2,11 @@ import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import { login, resetPassword, register, pingBackend } from '../api.js';
 
+// Detect Electron renderer context (simplistic)
+const isElectron = typeof window !== 'undefined' && !!window.require && !!window.process && window.process.type === 'renderer';
+let ipcRenderer = null;
+try { if (isElectron) { ipcRenderer = window.require('electron').ipcRenderer; } } catch { /* ignore */ }
+
 /**
  * Unified authentication form with login, registration and password reset flows.
  * Adds basic password strength feedback, confirm password field for registration,
@@ -20,6 +25,7 @@ function Login({ onLoggedIn }) {
   const [backendUp, setBackendUp] = useState(true);
   const [checking, setChecking] = useState(true);
   const [lang, setLang] = useState('en');
+  const [diag, setDiag] = useState(null); // store backend diagnostics (log tail etc.)
 
   const checkBackend = useCallback(async () => {
     setChecking(true);
@@ -30,6 +36,22 @@ function Login({ onLoggedIn }) {
 
   useEffect(() => {
     checkBackend();
+  }, [checkBackend]);
+
+  // Listen for backend-ready / failed signals from main process to auto-retry
+  useEffect(() => {
+    if (!ipcRenderer) return; // not in electron
+    const handleReady = () => { checkBackend(); };
+    const handleFailed = () => { setBackendUp(false); };
+    const handleDiagnostics = (_event, payload) => { setDiag(payload); };
+    ipcRenderer.on('backend-ready', handleReady);
+    ipcRenderer.on('backend-failed', handleFailed);
+    ipcRenderer.on('backend-diagnostics', handleDiagnostics);
+    return () => {
+      ipcRenderer.removeListener('backend-ready', handleReady);
+      ipcRenderer.removeListener('backend-failed', handleFailed);
+      ipcRenderer.removeListener('backend-diagnostics', handleDiagnostics);
+    };
   }, [checkBackend]);
 
   const passwordScore = useCallback((pwd) => {
@@ -106,6 +128,20 @@ function Login({ onLoggedIn }) {
       {!backendUp && !checking && (
         <div style={{ background: '#ffe9e9', padding: '0.75rem', borderRadius: 4, marginBottom: '1rem', color: '#900' }}>
           <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
+          <div style={{ fontSize: 12, marginTop: 6 }}>
+            {/* Attempt to pull diagnostic detail if available */}
+            {(() => { try { const { getLastBackendError } = require('../api.js'); const d = getLastBackendError && getLastBackendError(); return d ? ` (${d})` : null; } catch { return null; } })()}
+            {diag && diag.message ? ` – ${diag.message}` : null}
+          </div>
+          {diag && diag.logTail && diag.logTail.length > 0 && (
+            <details style={{ marginTop: 6 }}>
+              <summary style={{ cursor: 'pointer' }}>Startup log (tail)</summary>
+              <pre style={{ maxHeight: 160, overflow: 'auto', background: '#fff', padding: 8, fontSize: 11, lineHeight: 1.2 }}>
+                {diag.logTail.join('\n')}
+              </pre>
+              {diag.logFile && <div style={{ fontSize: 11, marginTop: 4 }}>Full log: {diag.logFile}</div>}
+            </details>
+          )}
           <div style={{ marginTop: 4 }}>
             <button type="button" onClick={checkBackend} disabled={checking}>
               {checking ? t('login.checking') || 'Checking...' : t('login.retry') || 'Retry'}

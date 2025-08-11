@@ -14,6 +14,8 @@ vi.mock('../../api.js', () => ({
   resetPassword: vi.fn(async () => ({})),
 }));
 
+vi.mock('electron', () => ({ ipcRenderer: { on: vi.fn(), removeListener: vi.fn(), send: vi.fn() } }), { virtual: true });
+
 import Login from '../Login.jsx';
 
 beforeEach(() => {

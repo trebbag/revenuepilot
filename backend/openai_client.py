@@ -20,7 +20,7 @@ import hashlib
 # ``openai`` is imported lazily only when needed to avoid requiring the
 # dependency in offline/local deterministic modes.
 
-from .key_manager import get_api_key
+from backend.key_manager import get_api_key
 
 # Cached llama.cpp model instance
 _LLAMA = None
