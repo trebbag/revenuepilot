@@ -5,6 +5,8 @@ require('dotenv').config();
 
 // eslint-disable-next-line no-undef
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+// Limit V8 heap to reduce runaway memory during heavy operations (adjustable via env)
+try { app.commandLine.appendSwitch('js-flags', `--max-old-space-size=${process.env.ELECTRON_MAX_OLD_SPACE || 2048}`); } catch { /* ignore */ }
 // eslint-disable-next-line no-undef
 const { autoUpdater } = require('electron-updater');
 // eslint-disable-next-line no-undef
@@ -29,13 +31,19 @@ const DEFAULT_PORT = 8000;
 
 // Ring buffer of recent backend startup log lines for diagnostics surfaced in Login UI
 const backendLogBuffer = [];
-const MAX_LOG_LINES = 400; // keep generous tail
+// Reduced to lower memory footprint; was 400
+const MAX_LOG_LINES = 200;
+const MAX_LOG_LINE_LENGTH = 2000; // hard clamp per line
 let backendLogFile; // path to on-disk log file
 function appendBackendLog(line) {
-  const cleaned = line.toString().replace(/\r/g, '').trimEnd();
+  const cleaned = line.toString().replace(/\r/g, '').trimEnd().slice(0, MAX_LOG_LINE_LENGTH);
   if (!cleaned) return;
   backendLogBuffer.push(cleaned);
-  while (backendLogBuffer.length > MAX_LOG_LINES) backendLogBuffer.shift();
+  if (backendLogBuffer.length > MAX_LOG_LINES) backendLogBuffer.splice(0, backendLogBuffer.length - MAX_LOG_LINES);
+  if (backendLogBuffer.length % 50 === 0) {
+    // periodic compaction (no-op with array slice but placeholder for future)
+    // backendLogBuffer = backendLogBuffer.slice(-MAX_LOG_LINES); // cannot reassign const, kept for reference
+  }
   if (backendLogFile) {
     try { fs.appendFileSync(backendLogFile, cleaned + '\n'); } catch { /* ignore */ }
   }
@@ -299,6 +307,7 @@ app.whenReady().then(() => {
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
+app.on('before-quit', () => { if (backendProcess) try { backendProcess.kill(); } catch { /* ignore */ } });
 app.on('window-all-closed', () => {
   if (backendProcess) backendProcess.kill();
   if (process.platform !== 'darwin') app.quit();

@@ -33,6 +33,8 @@ from pydantic import (
     StrictBool,
     field_validator,
 )
+import json, sqlite3
+from appdirs import user_data_dir
 
 
 import jwt
@@ -227,8 +229,6 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
 
 
 # Table for user accounts used in role-based authentication.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS users ("
     "id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "username TEXT UNIQUE NOT NULL,"
     "password_hash TEXT NOT NULL,"
@@ -1682,7 +1682,6 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
-        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -1727,7 +1726,7 @@ async def summarize(
             # settings table not present; ignore
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import summarize as offline_summarize
+        from backend.offline_model import summarize as offline_summarize
 
         data = offline_summarize(
             cleaned,
@@ -1876,7 +1875,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         except sqlite3.OperationalError:
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import beautify as offline_beautify
+        from backend.offline_model import beautify as offline_beautify
 
         beautified = offline_beautify(
             cleaned,
@@ -1951,7 +1950,7 @@ async def suggest(
         except sqlite3.OperationalError:
             pass
     if offline_active or USE_OFFLINE_MODEL:
-        from .offline_model import suggest as offline_suggest
+        from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest(
             cleaned_for_prompt,
@@ -1984,7 +1983,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
@@ -2099,7 +2098,7 @@ async def suggest(
         if extra_ph:
             existing = {p.recommendation for p in public_health}
             for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) : rec
+                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
                 if rec_name and rec_name not in existing:
                     if isinstance(rec, dict):
                         public_health.append(PublicHealthSuggestion(**rec))
