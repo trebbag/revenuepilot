@@ -202,11 +202,19 @@ async function startBackend() {
     }
   }
 
-  const args = ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', String(chosenPort)];
+  const args = ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(chosenPort)];
   appendBackendLog(`Spawning backend: ${pythonExecutable} ${args.join(' ')}`);
 
+  // Use parent of backendDir as cwd so that 'backend' is importable as a package (required for backend.main:app)
+  const backendParentDir = app.isPackaged
+    ? process.resourcesPath
+    : path.join(__dirname, '..');
+  const env = { ...process.env };
+  // Ensure PYTHONPATH contains parent so backend package resolves even if cwd changes elsewhere later
+  env.PYTHONPATH = env.PYTHONPATH ? `${backendParentDir}:${env.PYTHONPATH}` : backendParentDir;
+
   try {
-    backendProcess = spawn(pythonExecutable, args, { cwd: backendDir, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    backendProcess = spawn(pythonExecutable, args, { cwd: backendParentDir, env, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     appendBackendLog(`Failed spawning backend process: ${e.message}`);
     sendDiagnostics(`Failed to spawn backend process: ${e.message}`, { fatal: true, code: e.code || null });
