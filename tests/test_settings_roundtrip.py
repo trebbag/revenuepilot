@@ -43,7 +43,8 @@ def test_settings_roundtrip(client):
     assert data.get('template') is None
     assert data['region'] == ''
     assert data['useLocalModels'] is False
-
+    assert data.get('useOfflineMode') is False
+    assert data.get('deidEngine') == 'regex'
 
     new_settings = {
         'theme': 'dark',
@@ -80,7 +81,8 @@ def test_settings_roundtrip(client):
     assert data['agencies'] == ['CDC']
     assert data['template'] == -1
     assert data['useLocalModels'] is True
-
+    assert data.get('useOfflineMode') is False
+    assert data.get('deidEngine') == 'regex'
 
 
 def test_invalid_settings_rejected(client):

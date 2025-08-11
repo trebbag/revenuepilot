@@ -4,15 +4,14 @@ from fastapi.testclient import TestClient
 import jwt
 import backend.main as main
 from backend import auth
+from backend.main import _init_core_tables
 
 
 def setup_module(module):
     main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
-    main.db_conn.execute('CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)')
-    main.db_conn.execute('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)')
-    main.db_conn.execute('CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)')
-    main.db_conn.commit()
+    # Use shared helper to ensure all required tables (including settings) exist
+    _init_core_tables(main.db_conn)
     auth.register_user(main.db_conn, 'admin', 'secret', 'admin')
 
 

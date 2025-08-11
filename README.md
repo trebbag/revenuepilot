@@ -368,3 +368,77 @@ pytest --cov=backend --cov-report=json:coverage/python-coverage-raw.json
 ```
 
 Then convert the Python JSON to badge format (replicating the CI step) if desired.
+
+## FHIR / EHR Export
+
+The application can generate and (optionally) POST a FHIR Transaction Bundle representing the current clinical note plus selected billing / clinical codes.
+
+1. In the editor, select the codes you wish to include (checkbox list inside the suggestions panel).  If you do not select any, all suggested codes will be used.
+2. Click "Export to EHR" (available in both Draft and Beautified tabs).  The frontend calls the `/export` backend endpoint with the note HTML and selected codes.
+3. Backend behaviour:
+   * If `FHIR_SERVER_URL` points at a real server, a `Bundle` resource (type `transaction`) is POSTed to `<FHIR_SERVER_URL>/Bundle`.
+   * If `FHIR_SERVER_URL` is unset or left at the placeholder `https://fhir.example.com`, no network request is made and the bundle JSON is returned with status `bundle` so you can download it manually.
+
+### Bundle Contents
+
+The bundle currently includes these resources:
+
+* `Composition` – high level document structure referencing all created entries.
+* `Observation` – an Observation with `valueString` holding the raw note text.
+* `DocumentReference` – base64 encoded note content.
+* `Claim` – billing items built from submitted codes.
+* One resource per code inferred heuristically as one of: `Condition`, `Procedure`, `Observation`, `MedicationStatement`.
+  * Codes starting with `MED` -> MedicationStatement
+  * Starting with `PROC` or `P` + digits -> Procedure
+  * Starting with `OBS` or vital prefixes (`BP`, `HR`, `TEMP`) -> Observation
+  * Otherwise -> Condition (fallback)
+
+### Server Configuration
+
+Set these environment variables for automated posting:
+
+* `FHIR_SERVER_URL` – Base URL of the FHIR server (e.g. `https://ehr.example.org/fhir`).
+* OAuth2 Client Credentials (optional, preferred):
+  * `EHR_TOKEN_URL`
+  * `EHR_CLIENT_ID`
+  * `EHR_CLIENT_SECRET`
+* OR Basic / static token auth fallbacks:
+  * `EHR_BASIC_USER`, `EHR_BASIC_PASSWORD`
+  * `EHR_BEARER_TOKEN` (static pre‑issued bearer token)
+
+When OAuth2 variables are set the backend fetches and caches an access token. If token retrieval fails it transparently falls back to basic or static token auth if those credentials are present.
+
+### Manual Download Workflow
+
+If the server is not configured the `/export` response has:
+
+```json
+{ "status": "bundle", "bundle": { "resourceType": "Bundle", ... } }
+```
+
+The frontend triggers a download named `fhir_bundle.json`. You can upload this bundle via your EHR's import tooling or a generic FHIR test harness.
+
+### Testing
+
+Automated tests (`tests/test_ehr_integration.py`) verify:
+
+* Authentication requirements for `/export`.
+* Proper assembly of required resource types.
+* Handling of auth failures, server errors and network exceptions.
+
+To run only these tests:
+
+```bash
+pytest tests/test_ehr_integration.py -q
+```
+
+### UI Enhancements
+
+The editor displays a badge on the Export button showing the count of codes that will be sent. A classification summary row (C / P / O / M) appears beneath the patient / encounter ID inputs:
+
+* C – Condition (ICD-10 or fallback)
+* P – Procedure (CPT style codes)
+* O – Observation (LOINC pattern, vitals or OBS*)
+* M – MedicationStatement (MED* / RX* prefixes)
+
+If patient or encounter identifiers are entered they will be included in the relevant resource references (Claim, DocumentReference, Composition sections).

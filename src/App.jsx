@@ -136,17 +136,16 @@ function App() {
     summaryLang: 'en',
     specialty: '',
     payer: '',
-    // Array of custom clinical rules supplied by the user.  When non‑empty,
-    // these rules are appended to the prompt sent to the AI model.  Each
-    // entry should be a concise guideline such as “Payer X requires ROS for 99214”.
     rules: [],
     region: '',
     useLocalModels: false,
+    useOfflineMode: false,
     agencies: ['CDC', 'WHO'],
     template: null,
     beautifyModel: '',
     suggestModel: '',
     summarizeModel: '',
+    deidEngine: 'regex',
   };
   // User settings controlling theme and which suggestion categories are enabled.
   const [settingsState, setSettingsState] = useState(defaultSettings);
@@ -195,6 +194,7 @@ function App() {
     sex,
     region: settingsState.region,
     useLocalModels: settingsState.useLocalModels,
+    useOfflineMode: settingsState.useOfflineMode,
     agencies: settingsState.agencies,
     suggestModel: settingsState.suggestModel,
   };
@@ -295,6 +295,7 @@ function App() {
       specialty: settingsState.specialty,
       payer: settingsState.payer,
       useLocalModels: settingsState.useLocalModels,
+      useOfflineMode: settingsState.useOfflineMode,
       beautifyModel: settingsState.beautifyModel,
     })
       .then((cleaned) => {

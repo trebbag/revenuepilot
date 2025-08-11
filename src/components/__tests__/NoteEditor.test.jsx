@@ -78,12 +78,12 @@ test('inserts template and merges audio transcript', async () => {
     const [val, setVal] = useState('');
     return <NoteEditor id="m" value={val} onChange={setVal} />;
   }
-  const { findByText, container } = render(<Wrapper />);
+  const { findByText, container, findAllByText } = render(<Wrapper />);
   const tplBtn = await findByText('Tpl');
   fireEvent.click(tplBtn);
-  // provider insert button
-  const providerInsert = await findByText('Insert');
-  fireEvent.click(providerInsert);
+  // Insert provider transcript: match Insert case-insensitively
+  const insertButtons = await findAllByText(/Insert/i);
+  fireEvent.click(insertButtons[0]);
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => {
     expect(editor.innerHTML).toContain('Hello');
@@ -144,9 +144,9 @@ test('EHR export button triggers API call', async () => {
       id="e"
       value="Some"
       onChange={() => {}}
-      mode="beautified"
     />,
   );
+  // Ensure button visible (now present in draft view)
   fireEvent.click(getByText('Export to EHR'));
   await waitFor(() => expect(exportToEhr).toHaveBeenCalled());
 });
@@ -184,8 +184,7 @@ test('suggestion panel renders codes and inserts into draft', async () => {
   const { findByText, container } = render(<Wrapper />);
   await waitFor(() => expect(getSuggestions).toHaveBeenCalled());
   const code = await findByText(/99213/);
-  patchQuillSelection();
-  fireEvent.click(code.closest('li') || code);
+  fireEvent.click(code); // clicking list item text should trigger insert
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => expect(editor.innerHTML).toMatch(/99213/));
   expect(changeSpy).toHaveBeenCalled();

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -94,6 +95,87 @@ def _auth_headers() -> Dict[str, str]:
     return {}
 
 
+def _classify_code(code: str) -> dict:
+    """Return metadata for a clinical code.
+
+    Heuristics (can be replaced with terminology service later):
+      * LOINC: digits-digits pattern (e.g. 1234-5) -> Observation
+      * CPT: 5 digits OR one letter + 4 digits (e.g. 99213, A1234) -> Procedure
+      * ICD-10: Letter + 2 alphanumerics optionally followed by . + up to 4 (e.g. M16.5) -> Condition
+      * Medication (MED* or RX* prefix) -> MedicationStatement
+      * Vital prefixes (BP, HR, TEMP) -> Observation
+      * OBS* prefix -> Observation
+      * Fallback -> Condition
+    Returns dict with: {resourceType, system (optional), display}
+    """
+    c = code.upper()
+    # LOINC
+    if re.fullmatch(r"\d{1,5}-\d{1,4}", c):
+        return {"resourceType": "Observation", "system": "http://loinc.org", "display": code}
+    # CPT
+    if re.fullmatch(r"\d{5}", c) or re.fullmatch(r"[A-Z]\d{4}", c):
+        return {"resourceType": "Procedure", "system": "http://www.ama-assn.org/go/cpt", "display": code}
+    # ICD-10 (very loose)
+    if re.fullmatch(r"[A-TV-Z][0-9][0-9A-Z](?:\.[0-9A-Z]{1,4})?", c):
+        return {"resourceType": "Condition", "system": "http://hl7.org/fhir/sid/icd-10-cm", "display": code}
+    # Medication heuristics
+    if c.startswith("MED") or c.startswith("RX"):
+        return {"resourceType": "MedicationStatement", "system": "http://www.nlm.nih.gov/research/umls/rxnorm", "display": code}
+    # Vital / observation prefixes
+    if c.startswith("OBS") or any(c.startswith(p) for p in ("BP", "HR", "TEMP")):
+        return {"resourceType": "Observation", "display": code}
+    return {"resourceType": "Condition", "display": code}
+
+
+def _infer_resource_for_code(code: str) -> str:  # backward compat wrapper
+    return _classify_code(code)["resourceType"]
+
+
+def _code_resource(code: str) -> Dict[str, Any]:
+    meta = _classify_code(code)
+    rtype = meta["resourceType"]
+    system = meta.get("system")
+    coding: Dict[str, Any] = {"code": code}
+    if system:
+        coding["system"] = system
+    if rtype == "MedicationStatement":
+        return {
+            "request": {"method": "POST", "url": rtype},
+            "resource": {
+                "resourceType": rtype,
+                "status": "completed",
+                "medicationCodeableConcept": {"coding": [coding], "text": meta.get("display", code)},
+            },
+        }
+    if rtype == "Procedure":
+        return {
+            "request": {"method": "POST", "url": rtype},
+            "resource": {
+                "resourceType": rtype,
+                "status": "completed",
+                "code": {"coding": [coding], "text": meta.get("display", code)},
+            },
+        }
+    if rtype == "Observation":
+        return {
+            "request": {"method": "POST", "url": rtype},
+            "resource": {
+                "resourceType": rtype,
+                "status": "final",
+                "code": {"coding": [coding], "text": meta.get("display", code)},
+                "valueString": code,
+            },
+        }
+    # Condition fallback
+    return {
+        "request": {"method": "POST", "url": "Condition"},
+        "resource": {
+            "resourceType": "Condition",
+            "code": {"coding": [coding], "text": meta.get("display", code)},
+        },
+    }
+
+
 def _build_bundle(
     note: str,
     codes: Sequence[str],
@@ -125,16 +207,9 @@ def _build_bundle(
         ],
     }
 
+    # Add resources inferred from codes
     for code in codes:
-        bundle["entry"].append(
-            {
-                "request": {"method": "POST", "url": "Condition"},
-                "resource": {
-                    "resourceType": "Condition",
-                    "code": {"coding": [{"code": code}]},
-                },
-            }
-        )
+        bundle["entry"].append(_code_resource(code))
 
     doc_resource: Dict[str, Any] = {
         "resourceType": "DocumentReference",
@@ -157,6 +232,8 @@ def _build_bundle(
         {"request": {"method": "POST", "url": "DocumentReference"}, "resource": doc_resource}
     )
 
+    # Build Claim using only billing-relevant codes (Conditions + Procedures)
+    billing_codes = [c for c in codes]
     claim_resource: Dict[str, Any] = {
         "resourceType": "Claim",
         "status": "active",
@@ -166,7 +243,7 @@ def _build_bundle(
                 "sequence": idx + 1,
                 "productOrService": {"coding": [{"code": code}]},
             }
-            for idx, code in enumerate(codes)
+            for idx, code in enumerate(billing_codes)
         ],
     }
     if patient_id:
@@ -178,32 +255,65 @@ def _build_bundle(
         {"request": {"method": "POST", "url": "Claim"}, "resource": claim_resource}
     )
 
-    # Optional additional resources
+    # Optional additional resources from explicit procedure/medication lists
+    # (retain previous behaviour so API remains backwards compatible)
     for code in procedures or []:
-        bundle["entry"].append(
-            {
-                "request": {"method": "POST", "url": "Procedure"},
-                "resource": {
-                    "resourceType": "Procedure",
-                    "status": "completed",
-                    "code": {"coding": [{"code": code}]},
-                },
-            }
-        )
+        # Skip if already added via inference
+        if not any(
+            e["resource"].get("resourceType") == "Procedure" and code in str(e)
+            for e in bundle["entry"]
+        ):
+            bundle["entry"].append(
+                {
+                    "request": {"method": "POST", "url": "Procedure"},
+                    "resource": {
+                        "resourceType": "Procedure",
+                        "status": "completed",
+                        "code": {"coding": [{"code": code}]},
+                    },
+                }
+            )
 
     for code in medications or []:
-        bundle["entry"].append(
-            {
-                "request": {"method": "POST", "url": "MedicationStatement"},
-                "resource": {
-                    "resourceType": "MedicationStatement",
-                    "status": "completed",
-                    "medicationCodeableConcept": {
-                        "coding": [{"code": code}]
+        if not any(
+            e["resource"].get("resourceType") == "MedicationStatement" and code in str(e)
+            for e in bundle["entry"]
+        ):
+            bundle["entry"].append(
+                {
+                    "request": {"method": "POST", "url": "MedicationStatement"},
+                    "resource": {
+                        "resourceType": "MedicationStatement",
+                        "status": "completed",
+                        "medicationCodeableConcept": {"coding": [{"code": code}]},
                     },
-                },
-            }
-        )
+                }
+            )
+
+    # Add a Composition that references created entries (logical only)
+    comp_entries = []
+    for idx, entry in enumerate(bundle["entry"], start=1):
+        r = entry.get("resource", {})
+        rtype = r.get("resourceType")
+        if rtype in {"Observation", "DocumentReference", "Condition", "Procedure", "MedicationStatement"}:
+            comp_entries.append({"reference": f"urn:uuid:entry-{idx}", "display": rtype})
+            # Add fullUrl so references resolve inside bundle
+            entry.setdefault("fullUrl", f"urn:uuid:entry-{idx}")
+    composition = {
+        "request": {"method": "POST", "url": "Composition"},
+        "resource": {
+            "resourceType": "Composition",
+            "status": "final",
+            "type": {"text": "Clinical Note Composition"},
+            "title": "Clinical Note Export",
+            "section": [
+                {"title": e.get("display"), "entry": [e]} for e in comp_entries
+            ],
+        },
+    }
+    if patient_id:
+        composition["resource"]["subject"] = {"reference": f"Patient/{patient_id}"}
+    bundle["entry"].insert(0, composition)
 
     return bundle
 
@@ -216,25 +326,35 @@ def post_note_and_codes(
     procedures: Sequence[str] | None = None,
     medications: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
-    """Send ``note`` and associated data to the configured FHIR server."""
+    """Send ``note`` and associated data to the configured FHIR server.
 
-    url = f"{FHIR_SERVER_URL.rstrip('/')}/Bundle"
+    If the FHIR server URL is not configured (empty or points to the default
+    example domain), the bundle is returned without attempting a network call
+    so the frontend can offer a manual download.
+    """
+
     payload = _build_bundle(
         note, codes, patient_id, encounter_id, procedures, medications
     )
+
+    # Treat unset or example placeholder as not configured
+    if not FHIR_SERVER_URL or "example.com" in FHIR_SERVER_URL:
+        return {"status": "bundle", "bundle": payload}
+
+    url = f"{FHIR_SERVER_URL.rstrip('/')}/Bundle"
     headers = _auth_headers()
 
     resp = requests.post(url, json=payload, headers=headers or None, timeout=10)
 
     if resp.status_code in {401, 403}:
-        return {"status": "auth_error", "detail": resp.text}
+        return {"status": "auth_error", "detail": resp.text, "bundle": payload}
     if not resp.ok:
-        return {"status": "error", "detail": resp.text}
+        return {"status": "error", "detail": resp.text, "bundle": payload}
 
     data = resp.json()
     if isinstance(data, dict):
         data = {**data}
-    return {"status": "exported", **data}
+    return {"status": "exported", "response": data, "bundle": payload}
 
 
 __all__ = ["post_note_and_codes", "get_ehr_token"]

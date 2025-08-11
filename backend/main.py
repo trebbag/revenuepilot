@@ -26,7 +26,13 @@ import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, confloat, validator, StrictBool
+from pydantic import (
+    BaseModel,
+    Field,
+    validator,  # legacy import still used elsewhere
+    StrictBool,
+    field_validator,
+)
 
 
 import jwt
@@ -327,10 +333,24 @@ def require_role(role: str):
     ):
         data = get_current_user(credentials, required_role=role)
         if role == "admin":
-            db_conn.execute(
-                "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-                (time.time(), data["sub"], "admin_action", request.url.path),
-            )
+            # Robust insertion: some tests swap the in-memory db_conn after the
+            # dependency was created; ensure the audit_log table exists.
+            try:
+                db_conn.execute(
+                    "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+                    (time.time(), data["sub"], "admin_action", request.url.path),
+                )
+            except sqlite3.OperationalError as e:  # pragma: no cover - safety net
+                if "no such table: audit_log" in str(e):
+                    db_conn.execute(
+                        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+                    )
+                    db_conn.execute(
+                        "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+                        (time.time(), data["sub"], "admin_action", request.url.path),
+                    )
+                else:
+                    raise
             db_conn.commit()
         return data
 
@@ -373,8 +393,7 @@ class CategorySettings(BaseModel):
     publicHealth: StrictBool = True
     differentials: StrictBool = True
 
-    class Config:
-        extra = "forbid"
+    model_config = {"extra": "forbid"}
 
 
 class UserSettings(BaseModel):
@@ -393,25 +412,27 @@ class UserSettings(BaseModel):
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
-    # Remove alias to ensure external JSON key is camelCase `deidEngine` consistent with tests
     deidEngine: str = Field("regex", description="Selected de‑identification engine")
 
-    @validator("theme")
-    def validate_theme(cls, v: str) -> str:
+    @field_validator("theme")
+    @classmethod
+    def validate_theme(cls, v: str) -> str:  # noqa: D401,N805
         allowed = {"modern", "dark", "warm"}
         if v not in allowed:
             raise ValueError("invalid theme")
         return v
 
-    @validator("deidEngine")
+    @field_validator("deidEngine")
+    @classmethod
     def validate_deid_engine(cls, v: str) -> str:  # noqa: N805
         allowed = {"regex", "presidio", "philter", "scrubadub"}
         if v not in allowed:
             raise ValueError("invalid deid engine")
         return v
 
-    @validator("rules", pre=True)
-    def validate_rules(cls, v: List[str]) -> List[str]:
+    @field_validator("rules", mode="before")
+    @classmethod
+    def validate_rules(cls, v):  # type: ignore[override]
         if not v:
             return []
         cleaned: List[str] = []
@@ -434,7 +455,7 @@ async def register(model: RegisterModel) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Username already exists")
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
-    settings = UserSettings().dict()
+    settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -460,7 +481,7 @@ async def auth_register(model: RegisterModel):
         role = "user"
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
-    settings = UserSettings().dict()
+    settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -562,7 +583,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         }
     else:
-        settings = UserSettings().dict()
+        settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -650,8 +671,8 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             summarizeModel=rd["summarize_model"],
             deidEngine=rd["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         )
-        return settings.dict()
-    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).dict()
+        return settings.model_dump()
+    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).model_dump()
 
 
 @app.post("/settings")
@@ -674,7 +695,7 @@ async def save_user_settings(
         (
             row["id"],
             model.theme,
-            json.dumps(model.categories.dict()),
+            json.dumps(model.categories.model_dump()),
             json.dumps(model.rules),
             model.lang,
             model.summaryLang,
@@ -693,7 +714,7 @@ async def save_user_settings(
     )
 
     db_conn.commit()
-    return model.dict()
+    return model.model_dump()
 
 
 class NoteRequest(BaseModel):
@@ -1145,8 +1166,20 @@ def delete_template(
 
 
 class ExportRequest(BaseModel):
-    """Payload for exporting a note and codes to an external EHR system."""
+    """Payload for exporting a note and codes to an external EHR system.
 
+    ``codes`` are user‑selected billing / clinical codes. The backend will
+    infer resource types (Condition, Procedure, Observation, MedicationStatement)
+    and construct a FHIR Transaction Bundle containing:
+      * Composition (summary + references)
+      * Observation (raw note)
+      * DocumentReference (base64 note)
+      * Claim (billing items)
+      * Condition / Procedure / Observation / MedicationStatement resources
+        derived from supplied codes
+    When the FHIR server is not configured the generated bundle is returned
+    directly instead of being posted so the client can download it manually.
+    """
     note: str
     codes: List[str] = Field(default_factory=list)
     procedures: List[str] = Field(default_factory=list)
@@ -1159,8 +1192,11 @@ class ExportRequest(BaseModel):
 async def export_to_ehr(
     req: ExportRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    """Post the supplied note and codes to a FHIR server."""
+    """Post (or generate) a FHIR bundle for the supplied clinical note.
 
+    Returns the server response plus the constructed bundle when posted, or a
+    status of ``bundle`` with the bundle when no server is configured.
+    """
     try:
         from . import ehr_integration
         result = ehr_integration.post_note_and_codes(
@@ -1171,7 +1207,7 @@ async def export_to_ehr(
             req.procedures,
             req.medications,
         )
-        if result.get("status") != "exported":
+        if result.get("status") not in {"exported", "bundle"}:
             logger.error("EHR export failed: %s", result)
         return result
     except requests.exceptions.RequestException as exc:  # pragma: no cover - network failures

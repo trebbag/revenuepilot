@@ -193,9 +193,12 @@ export async function getSettings(token) {
     region: data.region || '',
     template: data.template || null,
     useLocalModels: data.useLocalModels || false,
+    useOfflineMode: data.useOfflineMode || false,
+    agencies: data.agencies || ['CDC', 'WHO'],
     beautifyModel: data.beautifyModel || '',
     suggestModel: data.suggestModel || '',
     summarizeModel: data.summarizeModel || '',
+    deidEngine: data.deidEngine || 'regex',
   };
 }
 
@@ -231,10 +234,12 @@ export async function saveSettings(settings, token) {
     region: settings.region || '',
     template: settings.template || null,
     useLocalModels: settings.useLocalModels || false,
+    useOfflineMode: settings.useOfflineMode || false,
     agencies: settings.agencies || [],
     beautifyModel: settings.beautifyModel || null,
     suggestModel: settings.suggestModel || null,
     summarizeModel: settings.summarizeModel || null,
+    deidEngine: settings.deidEngine || null,
   };
   const resp = await fetch(`${baseUrl}/settings`, {
     method: 'POST',
@@ -261,10 +266,12 @@ export async function saveSettings(settings, token) {
     region: data.region || '',
     template: data.template || null,
     useLocalModels: data.useLocalModels || false,
+    useOfflineMode: data.useOfflineMode || false,
     agencies: data.agencies || [],
     beautifyModel: data.beautifyModel || '',
     suggestModel: data.suggestModel || '',
     summarizeModel: data.summarizeModel || '',
+    deidEngine: data.deidEngine || 'regex',
   };
 }
 
@@ -286,6 +293,8 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
     if (context.payer) payload.payer = context.payer;
     if (typeof context.useLocalModels === 'boolean')
       payload.useLocalModels = context.useLocalModels;
+    if (typeof context.useOfflineMode === 'boolean')
+      payload.useOfflineMode = context.useOfflineMode;
     if (context.beautifyModel) payload.beautifyModel = context.beautifyModel;
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -353,6 +362,8 @@ export async function getSuggestions(text, context = {}) {
       : { 'Content-Type': 'application/json' };
     if (typeof context.useLocalModels === 'boolean')
       payload.useLocalModels = context.useLocalModels;
+    if (typeof context.useOfflineMode === 'boolean')
+      payload.useOfflineMode = context.useOfflineMode;
     if (context.suggestModel) payload.suggestModel = context.suggestModel;
     const resp = await fetch(`${baseUrl}/suggest`, {
       method: 'POST',
@@ -961,7 +972,7 @@ export async function exportToEhr(
     if (!resp.ok) {
       return { status: 'error', detail: data.detail || data.message || 'Export failed' };
     }
-    return data;
+    return data; // may include {status: exported|bundle|error, bundle?, response?}
   } catch (err) {
     return { status: 'error', detail: err.message };
   }
