@@ -21,7 +21,7 @@ from typing import Any, Dict, Tuple
 
 from openai import OpenAI
 
-from .key_manager import get_api_key
+from backend.key_manager import get_api_key
 
 # Public functions exported by this module.  Keeping this explicit makes the
 # intent clear for tools and readers alike.

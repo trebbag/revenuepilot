@@ -12,7 +12,7 @@ import json
 import os
 from functools import lru_cache
 
-from .guidelines import get_guidelines
+from backend.guidelines import get_guidelines
 try:
     import yaml
 except Exception:  # pragma: no cover - yaml is optional
@@ -284,7 +284,7 @@ def build_summary_prompt(
         ),
         "fr": (
             "Vous êtes un expert en communication clinique. Réécrivez la note clinique suivante "
-            "en un résumé concis qu'un patient peut comprendre facilement. Préservez tous les faits médicaux importants (symptômes, diagnostics, traitements, suivi) mais supprimez les codes de facturation et le jargon technique. Rédigez dans un langage simple d'un niveau d'environ la classe de 4e. N'inventez pas d'informations absentes de la note et n'incluez aucun identifiant patient ni PHI. Le résumé doit être en français."
+            "en un résumé concis qu'un patient peut comprendre facilement. Préservez tous les faits médicaux (symptômes, diagnostics, traitements, suivi) mais supprimez les codes de facturation et le jargon technique. Rédigez dans un langage simple d'un niveau d'environ la classe de 4e. N'inventez pas d'informations absentes de la note et n'incluez aucun identifiant patient ni PHI. Le résumé doit être en français."
         ),
         "de": (
             "Sie sind ein Experte für klinische Kommunikation. Formulieren Sie die folgende klinische Notiz zu einer prägnanten Zusammenfassung um, die ein Patient leicht verstehen kann. Erhalten Sie alle wichtigen medizinischen Fakten (Symptome, Diagnosen, Behandlungen, Nachsorge), entfernen Sie jedoch Abrechnungscodes und Fachjargon. Schreiben Sie in einfacher Sprache auf etwa Achtklassen-Niveau. Erfinden Sie keine Informationen, die nicht in der Notiz stehen, und fügen Sie keine Patientenkennungen oder PHI hinzu. Die Zusammenfassung muss auf Deutsch sein."

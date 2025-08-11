@@ -442,3 +442,32 @@ The editor displays a badge on the Export button showing the count of codes that
 * M – MedicationStatement (MED* / RX* prefixes)
 
 If patient or encounter identifiers are entered they will be included in the relevant resource references (Claim, DocumentReference, Composition sections).
+
+### Optional audio (diarisation) dependencies
+
+Heavy audio / diarisation packages have been extracted from the core backend requirements to avoid build failures on platforms without compatible wheels (notably `torchaudio`). They now reside in `backend/requirements_audio.txt` and are only attempted when you explicitly opt in.
+
+Environment flags:
+
+* `WANT_AUDIO_EXTRAS=true` – attempt to install `pyannote.audio`, `torchaudio` and related heavy deps.
+* `OFFLINE_TRANSCRIBE=true` – enables local Whisper usage; also triggers optional audio install if `WANT_AUDIO_EXTRAS` is not set.
+* `SKIP_PIP_UPGRADE=true` – skip the automatic `pip/setuptools/wheel` upgrade step during prebuild (useful in constrained / offline environments).
+
+If installation fails the prebuild script logs a warning and continues so the core app (note editor, FHIR export, de‑identification, LLM beautify) still works.
+
+Recommended macOS (CPU‑only) manual install sequence if you need diarisation and automatic install fails:
+
+```bash
+cd backend
+python3 -m venv venv
+./venv/bin/python -m pip install --upgrade pip setuptools wheel
+# Install a matching torch / torchaudio pair (example versions, adjust as needed)
+./venv/bin/pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+./venv/bin/pip install -r requirements_audio.txt
+```
+
+Then rerun the desktop build with `WANT_AUDIO_EXTRAS=true`.
+
+### Backend prebuild tooling upgrade
+
+`npm run backend:prebuild` now always attempts to upgrade `pip`, `setuptools` and `wheel` inside the freshly created virtualenv for more reliable wheel resolution. Set `SKIP_PIP_UPGRADE=true` to disable this behavior.

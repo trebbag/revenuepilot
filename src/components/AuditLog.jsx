@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getBackendBaseUrl } from '../api.js';
 
 function formatTimestamp(ts) {
   try {
@@ -15,10 +16,8 @@ export default function AuditLog({ token }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  // Centralized backend URL resolution
+  const baseUrl = getBackendBaseUrl();
 
   useEffect(() => {
     async function load() {
@@ -38,7 +37,7 @@ export default function AuditLog({ token }) {
       }
     }
     if (token) load();
-  }, [token]);
+  }, [token, baseUrl, t]);
 
   return (
     <div style={{ marginTop: '2rem' }}>

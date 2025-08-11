@@ -2,6 +2,8 @@
   "name": "revenuepilot-app",
   "version": "1.0.0",
   "private": true,
+  "description": "Clinical note taking app with FHIR export and offline/online AI features",
+  "author": "RevenuePilot Team",
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -9,13 +11,15 @@
     "preview": "vite preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
+    "electron:build:current": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder",
     "fetch-icons": "node scripts/fetch-icons.js",
     "backend:prebuild": "node scripts/backend-prebuild.js",
     "update-server": "node -r dotenv/config scripts/update-server.js",
     "setup-env": "node scripts/setup-env.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\""
+    "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\"",
+    "test:smoke": "npx playwright test e2e/smoke-login.spec.js"
   },
   "dependencies": {
     "chart.js": "^4.5.0",
@@ -61,12 +65,18 @@
         ]
       },
       "electron/main.js",
+      "electron/rtfExporter.js",
       "package.json"
     ],
     "extraResources": [
       {
         "from": "backend",
-        "to": "backend"
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
       }
     ],
     "directories": {
@@ -75,25 +85,17 @@
     "mac": {
       "target": "dmg",
       "category": "public.app-category.productivity",
-      "cscLink": "${env.CSC_LINK}",
-      "cscKeyPassword": "${env.CSC_KEY_PASSWORD}"
+      "identity": null
     },
     "win": {
-      "target": "nsis",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "cscLink": "${env.WIN_CSC_LINK}",
-      "cscKeyPassword": "${env.WIN_CSC_KEY_PASSWORD}"
+      "target": "nsis"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
-      "category": "Utility",
-      "cscLink": "${env.LINUX_CSC_LINK}",
-      "cscKeyPassword": "${env.LINUX_CSC_KEY_PASSWORD}"
+      "category": "Utility"
     },
     "publish": [
       {

@@ -14,8 +14,7 @@ presidio-anonymizer
 pyyaml
 philter
 spacy
-pyannote.audio
-torchaudio
+# Optional diarisation/audio extras moved to requirements_audio.txt
 passlib[bcrypt]
 llama-cpp-python
 requests-mock

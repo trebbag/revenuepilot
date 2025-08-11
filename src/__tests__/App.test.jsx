@@ -5,6 +5,7 @@ import '../i18n.js';
 import App from '../App.jsx';
 
 vi.mock('../api.js', () => ({
+  pingBackend: vi.fn().mockResolvedValue(true),
   getSettings: vi.fn().mockResolvedValue({
     theme: 'modern',
     lang: 'en',
