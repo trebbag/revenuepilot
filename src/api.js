@@ -1,3 +1,5 @@
+/* eslint-env browser */
+/* global window localStorage fetch setTimeout FormData console URLSearchParams */
 // Placeholder API functions.  In a real deployment these would
 // make HTTP requests to a backend service that calls OpenAI or
 // other AI models.  For now they simulate asynchronous
@@ -6,6 +8,33 @@
 // Keep a reference to the original ``fetch`` so we can implement
 // automatic token refresh without recursion.
 const rawFetch = globalThis.fetch.bind(globalThis);
+
+// Simplified and hardened backend URL resolver (replaces earlier experimental logic)
+function resolveBaseUrl() {
+  if (typeof window !== 'undefined' && window.__BACKEND_URL__) return window.__BACKEND_URL__;
+  try {
+    const env = typeof import.meta !== 'undefined' ? import.meta.env : undefined;
+    if (env && env.VITE_API_URL) return env.VITE_API_URL;
+  } catch { /* ignore */ }
+  if (typeof window !== 'undefined' && window.location && !window.location.origin.startsWith('file:')) {
+    return window.location.origin;
+  }
+  return 'http://127.0.0.1:8000';
+}
+
+export function getBackendBaseUrl() {
+  return resolveBaseUrl();
+}
+
+export async function pingBackend() {
+  const baseUrl = resolveBaseUrl();
+  try {
+    const res = await rawFetch(`${baseUrl}/health`, { method: 'GET' });
+    return res.ok || res.status === 404; // treat 404 as backend up
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Authenticate a user and retrieve JWT access and refresh tokens from the backend. After a
@@ -19,15 +48,17 @@ const rawFetch = globalThis.fetch.bind(globalThis);
  * @returns {Promise<{token: string, settings: object|null}>}
  */
 export async function login(username, password, lang = 'en') {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  const resp = await rawFetch(`${baseUrl}/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, lang }),
-  });
+  const baseUrl = resolveBaseUrl();
+  let resp;
+  try {
+    resp = await rawFetch(`${baseUrl}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, lang }),
+    });
+  } catch {
+    throw new Error('Cannot reach backend service. Please wait a few seconds for it to start and try again.');
+  }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     throw new Error(err.detail || err.message || 'Login failed');
@@ -42,15 +73,17 @@ export async function login(username, password, lang = 'en') {
 }
 
 export async function register(username, password, lang = 'en') {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  const resp = await rawFetch(`${baseUrl}/register`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password, lang }),
-  });
+  const baseUrl = resolveBaseUrl();
+  let resp;
+  try {
+    resp = await rawFetch(`${baseUrl}/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, lang }),
+    });
+  } catch {
+    throw new Error('Cannot reach backend service. Please wait a few seconds for it to start and try again.');
+  }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     throw new Error(err.detail || err.message || 'Registration failed');
@@ -69,10 +102,7 @@ export async function register(username, password, lang = 'en') {
  * @param {string} refreshToken
  */
 export async function refreshAccessToken(refreshToken) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const resp = await rawFetch(`${baseUrl}/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1053,28 +1083,17 @@ export async function summarizeNote(text, context = {}) {
  * @returns {Promise<Array<{eventType: string, timestamp: number, details: object}>>}
  */
 export async function getEvents() {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) {
-    return [];
-  }
+  const baseUrl = resolveBaseUrl();
+  if (!baseUrl) return [];
   try {
-    const token =
-      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const resp = await fetch(`${baseUrl}/events`, { headers });
-    if (resp.status === 401 || resp.status === 403) {
-      throw new Error('Unauthorized');
-    }
-    if (!resp.ok) {
-      throw new Error('Failed to fetch events');
-    }
+    const resp = await rawFetch(`${baseUrl}/events`, { headers });
+    if (resp.status === 401 || resp.status === 403) throw new Error('Unauthorized');
+    if (!resp.ok) throw new Error('Failed to fetch events');
     const data = await resp.json();
     return Array.isArray(data) ? data : [];
-  } catch (err) {
-    console.error('Error fetching events:', err);
-    throw err;
+  } catch {
+    throw new Error('Failed to fetch events');
   }
 }

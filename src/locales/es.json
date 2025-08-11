@@ -120,7 +120,8 @@
     "loginFailed": "Error de inicio de sesión",
     "register": "Registrarse",
     "registering": "Registrando…",
-    "registerFailed": "Error al registrar"
+    "registerFailed": "Error al registrar",
+    "backendUnavailable": "Backend no disponible"
   },
   "logs": {
     "title": "Registro de eventos",

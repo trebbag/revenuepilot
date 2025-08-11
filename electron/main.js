@@ -1,3 +1,5 @@
+/* eslint-env node */
+/* global __dirname, process, console, setTimeout */
 require('dotenv').config();
 
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
@@ -10,10 +12,8 @@ const http = require('http');
 const { writeRtfFile } = require('./rtfExporter');
 
 let backendProcess;
-const backendUrl =
-  process.env.BACKEND_URL ||
-  process.env.VITE_API_URL ||
-  'http://localhost:8000';
+let mainWindow;
+const backendUrl = process.env.BACKEND_URL || process.env.VITE_API_URL || 'http://localhost:8000';
 
 ipcMain.handle('export-note', async (_event, { beautified, summary }) => {
   const { canceled, filePath } = await dialog.showSaveDialog({
@@ -58,14 +58,13 @@ function waitForServer(url, timeout = 10000) {
       http
         .get(url, res => {
           res.resume();
-          resolve();
+            resolve(true);
         })
         .on('error', err => {
           if (Date.now() - start > timeout) {
-            reject(err);
-          } else {
-            setTimeout(check, 200);
+            return reject(err);
           }
+          setTimeout(check, 300);
         });
     };
     check();
@@ -81,84 +80,79 @@ async function startBackend() {
     : path.join(backendDir, 'venv', 'bin', 'python');
   const pythonExecutable = fs.existsSync(venvPath) ? venvPath : 'python';
 
-  const args = [
-    '-m',
-    'uvicorn',
-    'main:app',
-    '--host',
-    '127.0.0.1',
-    '--port',
-    '8000'
-  ];
+  const args = ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '8000'];
 
-  backendProcess = spawn(pythonExecutable, args, {
-    cwd: backendDir,
-    env: process.env,
-    stdio: 'inherit'
-  });
+  try {
+    backendProcess = spawn(pythonExecutable, args, { cwd: backendDir, env: process.env, stdio: 'inherit' });
+  } catch (e) {
+    console.error('Failed spawning backend process:', e);
+    dialog.showErrorBox('Backend Error', 'Failed to start backend process. Some features may not work.');
+    return;
+  }
 
-  await waitForServer('http://127.0.0.1:8000');
+  waitForServer('http://127.0.0.1:8000', 12000)
+    .then(() => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-ready'); })
+    .catch(err => { console.warn('Backend did not become ready in time:', err.message); if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed'); });
+}
+
+function resolveIndexHtml() {
+  const devPath = path.join(__dirname, 'dist', 'index.html'); // when running from source (electron/dist)
+  const packagedPath = path.join(__dirname, '..', 'dist', 'index.html'); // inside asar (dist)
+  if (fs.existsSync(devPath)) return devPath;
+  if (fs.existsSync(packagedPath)) return packagedPath;
+  console.error('Could not locate index.html. Looked in:', devPath, packagedPath);
+  return devPath; // attempt anyway so error is surfaced in logs
 }
 
 function createWindow() {
-  const win = new BrowserWindow({
-    width: 800,
-    height: 600,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
+  mainWindow = new BrowserWindow({
+    width: 1000,
+    height: 750,
+    show: false,
+    backgroundColor: '#111111',
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
   });
 
-  const indexPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'dist', 'index.html')
-    : path.join(__dirname, 'dist', 'index.html');
-  win.loadFile(indexPath);
+  const indexPath = resolveIndexHtml();
+  console.log('Loading index.html from', indexPath, 'app.isPackaged=', app.isPackaged);
+  mainWindow.loadFile(indexPath).catch(err => console.error('Failed to load index.html:', err));
 
-  // Inject the backend URL so the frontend can locate the API server.
-  // The value is read from BACKEND_URL or VITE_API_URL and falls back to
-  // http://localhost:8000 for local development.
-  win.webContents.on('dom-ready', () => {
-    win.webContents.executeJavaScript(
-      `window.__BACKEND_URL__ = ${JSON.stringify(backendUrl)};`
-    );
+  // Primary show path
+  mainWindow.once('ready-to-show', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show(); });
+  // Fallback show in case ready-to-show never fires (e.g. missing file) so user still sees a window
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      console.warn('Forcing window show (ready-to-show not fired).');
+      mainWindow.show();
+    }
+  }, 2500);
+
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow.webContents.executeJavaScript(`window.__BACKEND_URL__ = ${JSON.stringify(backendUrl)};`).catch(err => console.error('Inject URL failed:', err));
   });
 }
 
-app.whenReady().then(async () => {
-  await startBackend();
+app.whenReady().then(() => {
   createWindow();
-
+  startBackend();
   if (process.env.UPDATE_SERVER_URL) {
-    autoUpdater.setFeedURL({ url: process.env.UPDATE_SERVER_URL });
+    try {
+      autoUpdater.setFeedURL({ url: process.env.UPDATE_SERVER_URL });
+      autoUpdater.checkForUpdatesAndNotify();
+    } catch (e) {
+      console.warn('Auto-update setup failed:', e.message);
+    }
   } else {
     console.warn('UPDATE_SERVER_URL not set; auto-updates disabled.');
   }
-  autoUpdater.checkForUpdatesAndNotify();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
 app.on('window-all-closed', () => {
-  if (backendProcess) {
-    backendProcess.kill();
-  }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (backendProcess) backendProcess.kill();
+  if (process.platform !== 'darwin') app.quit();
 });
 
-autoUpdater.on('update-available', () => {
-  console.log('Update available');
-});
-
-autoUpdater.on('update-downloaded', () => {
-  console.log('Update downloaded; installing');
-  autoUpdater.quitAndInstall();
-});
-
-autoUpdater.on('error', (err) => {
-  console.error('Auto-update error:', err);
-});
+autoUpdater.on('update-available', () => { console.log('Update available'); });
+autoUpdater.on('update-downloaded', () => { console.log('Update downloaded; installing'); autoUpdater.quitAndInstall(); });
+autoUpdater.on('error', (err) => { console.error('Auto-update error:', err); });

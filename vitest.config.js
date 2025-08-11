@@ -12,6 +12,7 @@ export default defineConfig({
         'src/components/ClipboardExportButtons.jsx',
         'src/components/Dashboard.jsx',
         'src/components/Login.jsx',
+        'src/components/__tests__/Login.unified.test.jsx',
         'src/components/NoteEditor.jsx',
         'src/components/Settings.jsx',
         'src/components/Sidebar.jsx',

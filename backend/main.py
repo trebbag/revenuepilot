@@ -129,6 +129,31 @@ logging.basicConfig(
 app = FastAPI(title="RevenuePilot API")
 logger = logging.getLogger(__name__)
 
+# Record process start time for uptime calculations
+START_TIME = time.time()
+
+# Health/readiness endpoint used by the desktop app to know when the backend is up.
+# Returns basic process / db status without requiring auth.
+@app.get("/health", tags=["system"])  # pragma: no cover - trivial logic mostly, but still tested
+async def health():
+    """Lightweight health check.
+
+    Provides an OK status when the API process is running. Includes uptime (seconds)
+    and a best‑effort database connectivity flag. Avoid heavy checks so this remains fast
+    during startup.
+    """
+    try:
+        db_conn.execute("SELECT 1")
+        db_ok = True
+    except Exception:  # pragma: no cover - defensive
+        db_ok = False
+    return {
+        "status": "ok",
+        "uptime": round(time.time() - START_TIME, 2),
+        "db": db_ok,
+    }
+
+
 # Enable CORS so that the React frontend can communicate with this API.
 # Allowed origins are configurable via the ``ALLOWED_ORIGINS`` environment
 # variable (comma separated). Defaults to localhost for development.

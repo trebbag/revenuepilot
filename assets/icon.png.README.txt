@@ -1,0 +1,5 @@
+This directory should contain proper application icon assets.
+
+If not provided via environment variables ICON_PNG_URL / ICON_ICO_URL / ICON_ICNS_URL,
+a placeholder icon.png is generated. The current placeholder may be a tiny 1x1 PNG not
+suitable for production builds. Provide a 512x512 PNG to replace it.

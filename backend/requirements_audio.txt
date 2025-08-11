@@ -1,0 +1,4 @@
+# Optional heavy audio dependencies for advanced diarisation/noise reduction.
+# Install these only if you need multi-speaker diarisation.
+pyannote.audio
+torchaudio

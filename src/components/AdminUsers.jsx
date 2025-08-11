@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AuditLog from './AuditLog.jsx';
+import { getBackendBaseUrl } from '../api.js';
 
 function AdminUsers({ token }) {
   const { t } = useTranslation();
@@ -9,10 +10,8 @@ function AdminUsers({ token }) {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('user');
 
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  // Central backend base URL resolution
+  const baseUrl = getBackendBaseUrl();
 
   const fetchUsers = async () => {
     const resp = await fetch(`${baseUrl}/users`, {
@@ -26,7 +25,7 @@ function AdminUsers({ token }) {
 
   useEffect(() => {
     fetchUsers();
-  }, [token]);
+  }, [token, baseUrl]);
 
   const invite = async (e) => {
     e.preventDefault();
