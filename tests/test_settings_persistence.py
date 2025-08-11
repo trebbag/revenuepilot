@@ -62,5 +62,7 @@ def test_settings_roundtrip(monkeypatch):
     assert data["region"] == "us"
     assert data["agencies"] == ["CDC"]
     assert data["template"] == -1
+    assert data.get('useOfflineMode') in (False, None)
+    assert data.get('deidEngine') == 'regex'
 
 

@@ -140,3 +140,69 @@ def test_basic_auth(client, monkeypatch, requests_mock):
     assert resp.status_code == 200
     assert requests_mock.last_request.headers["Authorization"].startswith("Basic ")
 
+
+def test_manual_bundle_download_when_unconfigured(client, monkeypatch):
+    token = client.post("/login", json={"username": "admin", "password": "pw"}).json()[
+        "access_token"
+    ]
+    # Simulate unconfigured server
+    monkeypatch.setattr(ehr_integration, "FHIR_SERVER_URL", "https://fhir.example.com")
+    resp = client.post(
+        "/export",
+        json={"note": "Example note", "codes": ["99213", "M16.5", "1234-5", "MED123"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "bundle"
+    bundle = body["bundle"]
+    types = {e["resource"]["resourceType"] for e in bundle["entry"]}
+    # Ensure new classifications appear
+    assert {"Composition", "Procedure", "Condition", "Observation", "MedicationStatement"}.issubset(types)
+    # Composition should reference sections
+    composition = next(e["resource"] for e in bundle["entry"] if e["resource"]["resourceType"] == "Composition")
+    assert composition["section"]
+    # Each section should have at least one entry reference
+    assert all(sec.get("entry") for sec in composition["section"])
+
+
+def test_code_system_coding(client, monkeypatch, requests_mock):
+    token = client.post("/login", json={"username": "admin", "password": "pw"}).json()[
+        "access_token"
+    ]
+    monkeypatch.setattr(ehr_integration, "FHIR_SERVER_URL", "http://fhir.test")
+    monkeypatch.setattr(ehr_integration, "get_ehr_token", lambda: "tok123")
+    requests_mock.post("http://fhir.test/Bundle", json={"id": "bundle1"})
+
+    codes = ["99213", "M16.5", "1234-5", "MED123", "BP001"]
+    resp = client.post(
+        "/export",
+        json={"note": "Example note", "codes": codes},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    bundle = resp.json()["bundle"]
+    # Find resources for each supplied code and validate system heuristics
+    system_map = {}
+    for entry in bundle["entry"]:
+        r = entry["resource"]
+        if r["resourceType"] in {"Condition", "Procedure", "Observation", "MedicationStatement"}:
+            coding = None
+            if r["resourceType"] == "MedicationStatement":
+                coding = r["medicationCodeableConcept"].get("coding", [{}])[0]
+            elif r["resourceType"] == "Procedure":
+                coding = r["code"].get("coding", [{}])[0]
+            elif r["resourceType"] == "Observation":
+                if "coding" in r["code"]:
+                    coding = r["code"]["coding"][0]
+            elif r["resourceType"] == "Condition":
+                coding = r["code"].get("coding", [{}])[0]
+            if coding and coding.get("code"):
+                system_map[coding["code"]] = coding.get("system", "")
+    assert system_map["99213"].startswith("http://www.ama-assn.org")
+    assert system_map["M16.5"].endswith("icd-10-cm")
+    assert system_map["1234-5"].endswith("loinc.org")
+    assert system_map["MED123"].endswith("umls/rxnorm")
+    # BP vital sign Observation may not have system but should exist
+    assert "BP001" in system_map
+

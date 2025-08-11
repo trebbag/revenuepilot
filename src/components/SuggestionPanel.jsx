@@ -134,7 +134,14 @@ function SuggestionPanel({
             style={{ cursor: 'pointer' }}
             onClick={() => onInsert && onInsert(text)}
           >
-            <strong>{item.code}</strong>
+            <strong
+              onClick={(e) => {
+                e.stopPropagation();
+                if (onInsert) onInsert(text);
+              }}
+            >
+              {item.code}
+            </strong>
             {item.rationale ? ` — ${item.rationale}` : ''}
             {item.upgrade_to && (
               <span

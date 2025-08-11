@@ -14,6 +14,7 @@
     "update-server": "node -r dotenv/config scripts/update-server.js",
     "setup-env": "node scripts/setup-env.js",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\""
   },
   "dependencies": {

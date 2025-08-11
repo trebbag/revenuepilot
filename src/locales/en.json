@@ -228,7 +228,19 @@
     "summarizeModel": "Summarize model path",
     "downloadModels": "Download local models",
     "downloadModelsProgress": "Download progress",
-    "downloadModelsError": "Download failed"
+    "downloadModelsError": "Download failed",
+    "advanced": "Advanced",
+    "advancedSettings": "Advanced Settings",
+    "apiUrl": "API URL",
+    "apiUrlHelp": "Custom URL for the AI service API. Leave blank to use the default URL.",
+    "timeout": "Request Timeout",
+    "timeoutHelp": "Timeout for AI service requests in milliseconds. Default is 60000 (60 seconds).",
+    "retryAttempts": "Retry Attempts",
+    "retryAttemptsHelp": "Number of retry attempts for failed AI service requests. Default is 3.",
+    "logLevel": "Log Level",
+    "logLevelHelp": "Logging level for debugging. Default is 'info'.",
+    "enableDebug": "Enable Debugging",
+    "enableDebugHelp": "Enable detailed debugging information in logs."
   },
   "sidebar": {
     "notes": "Notes",

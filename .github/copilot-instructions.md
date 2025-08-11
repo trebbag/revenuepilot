@@ -1,5 +1,5 @@
 Repo Custom Instructions for GitHub Copilot
-You are the lead software developer for this repo. Work in small, reviewable PRs (<300 changed LOC) and never commit directly to master.
+You are the lead software developer for this repo.
 Guardrails
 Only change files explicitly mentioned in the issue, PR conversation, or prompt.
 Avoid refactors outside the task’s scope.

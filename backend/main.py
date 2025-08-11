@@ -26,7 +26,13 @@ import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, confloat, validator, StrictBool
+from pydantic import (
+    BaseModel,
+    Field,
+    validator,  # legacy import still used elsewhere
+    StrictBool,
+    field_validator,
+)
 
 
 import jwt
@@ -181,6 +187,20 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 ensure_events_table(db_conn)
 
 
+# Helper to (re)initialise core tables when db_conn is swapped in tests.
+def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+    )
+    ensure_settings_table(conn)
+    ensure_templates_table(conn)
+    ensure_events_table(conn)
+    conn.commit()
+
+
 # Table for user accounts used in role-based authentication.
 db_conn.execute(
     "CREATE TABLE IF NOT EXISTS users ("
@@ -313,10 +333,24 @@ def require_role(role: str):
     ):
         data = get_current_user(credentials, required_role=role)
         if role == "admin":
-            db_conn.execute(
-                "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-                (time.time(), data["sub"], "admin_action", request.url.path),
-            )
+            # Robust insertion: some tests swap the in-memory db_conn after the
+            # dependency was created; ensure the audit_log table exists.
+            try:
+                db_conn.execute(
+                    "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+                    (time.time(), data["sub"], "admin_action", request.url.path),
+                )
+            except sqlite3.OperationalError as e:  # pragma: no cover - safety net
+                if "no such table: audit_log" in str(e):
+                    db_conn.execute(
+                        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+                    )
+                    db_conn.execute(
+                        "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+                        (time.time(), data["sub"], "admin_action", request.url.path),
+                    )
+                else:
+                    raise
             db_conn.commit()
         return data
 
@@ -359,8 +393,7 @@ class CategorySettings(BaseModel):
     publicHealth: StrictBool = True
     differentials: StrictBool = True
 
-    class Config:
-        extra = "forbid"
+    model_config = {"extra": "forbid"}
 
 
 class UserSettings(BaseModel):
@@ -379,24 +412,27 @@ class UserSettings(BaseModel):
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
-    deidEngine: str = Field("regex", alias="deid_engine", description="Selected de‑identification engine")
+    deidEngine: str = Field("regex", description="Selected de‑identification engine")
 
-    @validator("theme")
-    def validate_theme(cls, v: str) -> str:
+    @field_validator("theme")
+    @classmethod
+    def validate_theme(cls, v: str) -> str:  # noqa: D401,N805
         allowed = {"modern", "dark", "warm"}
         if v not in allowed:
             raise ValueError("invalid theme")
         return v
 
-    @validator("deidEngine")
+    @field_validator("deidEngine")
+    @classmethod
     def validate_deid_engine(cls, v: str) -> str:  # noqa: N805
         allowed = {"regex", "presidio", "philter", "scrubadub"}
         if v not in allowed:
             raise ValueError("invalid deid engine")
         return v
 
-    @validator("rules", pre=True)
-    def validate_rules(cls, v: List[str]) -> List[str]:
+    @field_validator("rules", mode="before")
+    @classmethod
+    def validate_rules(cls, v):  # type: ignore[override]
         if not v:
             return []
         cleaned: List[str] = []
@@ -419,7 +455,7 @@ async def register(model: RegisterModel) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Username already exists")
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
-    settings = UserSettings().dict()
+    settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -445,7 +481,7 @@ async def auth_register(model: RegisterModel):
         role = "user"
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
-    settings = UserSettings().dict()
+    settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -547,7 +583,7 @@ async def login(model: LoginModel) -> Dict[str, Any]:
             "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         }
     else:
-        settings = UserSettings().dict()
+        settings = UserSettings().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
@@ -635,8 +671,8 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
             summarizeModel=rd["summarize_model"],
             deidEngine=rd["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
         )
-        return settings.dict(by_alias=True)
-    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).dict(by_alias=True)
+        return settings.model_dump()
+    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).model_dump()
 
 
 @app.post("/settings")
@@ -644,6 +680,9 @@ async def save_user_settings(
     model: UserSettings, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
     """Persist settings for the authenticated user."""
+    # Explicit validation of deidEngine (pydantic may be bypassed if missing fields in test payload)
+    if model.deidEngine not in {"regex", "presidio", "philter", "scrubadub"}:
+        raise HTTPException(status_code=422, detail="invalid deid engine")
     row = db_conn.execute(
         "SELECT id FROM users WHERE username=?",
         (user["sub"],),
@@ -656,7 +695,7 @@ async def save_user_settings(
         (
             row["id"],
             model.theme,
-            json.dumps(model.categories.dict()),
+            json.dumps(model.categories.model_dump()),
             json.dumps(model.rules),
             model.lang,
             model.summaryLang,
@@ -675,7 +714,7 @@ async def save_user_settings(
     )
 
     db_conn.commit()
-    return model.dict(by_alias=True)
+    return model.model_dump()
 
 
 class NoteRequest(BaseModel):
@@ -723,7 +762,7 @@ class PublicHealthSuggestion(BaseModel):
     recommendation: str
     reason: Optional[str] = None
     source: Optional[str] = None
-    evidenceLevel: Optional[str] = Field(None, alias="evidence_level")
+    evidenceLevel: Optional[str] = None
 
 
 class DifferentialSuggestion(BaseModel):
@@ -1127,8 +1166,20 @@ def delete_template(
 
 
 class ExportRequest(BaseModel):
-    """Payload for exporting a note and codes to an external EHR system."""
+    """Payload for exporting a note and codes to an external EHR system.
 
+    ``codes`` are user‑selected billing / clinical codes. The backend will
+    infer resource types (Condition, Procedure, Observation, MedicationStatement)
+    and construct a FHIR Transaction Bundle containing:
+      * Composition (summary + references)
+      * Observation (raw note)
+      * DocumentReference (base64 note)
+      * Claim (billing items)
+      * Condition / Procedure / Observation / MedicationStatement resources
+        derived from supplied codes
+    When the FHIR server is not configured the generated bundle is returned
+    directly instead of being posted so the client can download it manually.
+    """
     note: str
     codes: List[str] = Field(default_factory=list)
     procedures: List[str] = Field(default_factory=list)
@@ -1141,8 +1192,11 @@ class ExportRequest(BaseModel):
 async def export_to_ehr(
     req: ExportRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    """Post the supplied note and codes to a FHIR server."""
+    """Post (or generate) a FHIR bundle for the supplied clinical note.
 
+    Returns the server response plus the constructed bundle when posted, or a
+    status of ``bundle`` with the bundle when no server is configured.
+    """
     try:
         from . import ehr_integration
         result = ehr_integration.post_note_and_codes(
@@ -1153,7 +1207,7 @@ async def export_to_ehr(
             req.procedures,
             req.medications,
         )
-        if result.get("status") != "exported":
+        if result.get("status") not in {"exported", "bundle"}:
             logger.error("EHR export failed: %s", result)
         return result
     except requests.exceptions.RequestException as exc:  # pragma: no cover - network failures
@@ -1376,18 +1430,17 @@ async def get_metrics(
                 and patient_id in last_start_for_patient
             ):
                 duration = ts - last_start_for_patient[patient_id]
-                if duration >= 0:
-                    beautify_time_sum += duration
-                    beautify_time_count += 1
-                    if collect_timeseries:
-                        day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
-                        week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
-                        drec = beautify_daily.setdefault(day, [0.0, 0])
-                        drec[0] += duration
-                        drec[1] += 1
-                        wrec = beautify_weekly.setdefault(week, [0.0, 0])
-                        wrec[0] += duration
-                        wrec[1] += 1
+                beautify_time_sum += duration
+                beautify_time_count += 1
+                if collect_timeseries:
+                    day = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                    week = datetime.utcfromtimestamp(ts).strftime("%Y-%W")
+                    drec = beautify_daily.setdefault(day, [0.0, 0])
+                    drec[0] += duration
+                    drec[1] += 1
+                    wrec = beautify_weekly.setdefault(week, [0.0, 0])
+                    wrec[0] += duration
+                    wrec[1] += 1
 
         avg_beautify_time = (
             beautify_time_sum / beautify_time_count if beautify_time_count else 0
@@ -1448,7 +1501,7 @@ async def get_metrics(
                 SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
                 SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
@@ -1837,7 +1890,7 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         return {"beautified": beautified, "error": str(exc)}
 
 
-@app.post("/suggest", response_model=SuggestionsResponse)
+@app.post("/suggest", response_model=SuggestionsResponse, response_model_exclude_none=True)
 async def suggest(
     req: NoteRequest, user=Depends(require_role("user"))
 ) -> SuggestionsResponse:

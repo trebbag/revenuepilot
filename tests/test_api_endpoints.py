@@ -10,34 +10,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import main, prompts, migrations, ehr_integration
+from backend.main import _init_core_tables
 
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     # Isolate database and events
-    db = sqlite3.connect(":memory:", check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute(
-        "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT NOT NULL, timestamp REAL NOT NULL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
-    )
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-    )
-    db.execute(
-        "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
-    )
-    migrations.ensure_settings_table(db)
+    main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
+    main.db_conn.row_factory = sqlite3.Row
+    _init_core_tables(main.db_conn)
+    migrations.ensure_settings_table(main.db_conn)
     pwd = main.hash_password("pw")
-    db.execute(
+    main.db_conn.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("admin", pwd, "admin"),
     )
-    db.execute(
+    main.db_conn.execute(
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("user", pwd, "user"),
     )
-    db.commit()
-    monkeypatch.setattr(main, "db_conn", db)
+    main.db_conn.commit()
+    monkeypatch.setattr(main, "db_conn", main.db_conn)
     monkeypatch.setattr(main, "events", [])
     monkeypatch.setattr(
         main,

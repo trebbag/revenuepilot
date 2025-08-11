@@ -787,6 +787,36 @@ function Settings({ settings, updateSettings }) {
           </button>
         </>
       )}
+
+      <h3>{t('settings.advanced')}</h3>
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        <input
+          type="checkbox"
+          checked={settings.useOfflineMode}
+          onChange={() => handleToggle('useOfflineMode')}
+        />{' '}
+        Offline (deterministic) mode
+      </label>
+      <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
+        When enabled, the app returns deterministic offline responses instead of calling remote models.
+      </p>
+
+      <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+        De‑identification Engine
+        <select
+          value={settings.deidEngine || 'regex'}
+          onChange={(e) => {
+            const updated = { ...settings, deidEngine: e.target.value };
+            saveSettings(updated).then(updateSettings).catch(console.error);
+          }}
+          style={{ width: '100%', padding: '0.5rem', marginTop: '0.25rem' }}
+        >
+          <option value="regex">Regex (built‑in)</option>
+          <option value="presidio">Presidio</option>
+          <option value="philter">Philter</option>
+          <option value="scrubadub">scrubadub</option>
+        </select>
+      </label>
     </div>
   );
 }

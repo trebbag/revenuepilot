@@ -228,7 +228,19 @@
     "summarizeModel": "Ruta del modelo de resumen",
     "downloadModels": "Descargar modelos locales",
     "downloadModelsProgress": "Progreso de la descarga",
-    "downloadModelsError": "Descarga fallida"
+    "downloadModelsError": "Descarga fallida",
+    "advanced": "Avanzado",
+    "advancedSettings": "Configuración avanzada",
+    "apiUrl": "URL de la API",
+    "apiUrlHelp": "URL personalizada para la API del servicio de IA. Deje en blanco para usar la predeterminada.",
+    "timeout": "Tiempo de espera",
+    "timeoutHelp": "Tiempo de espera para solicitudes al servicio de IA en ms. Predeterminado 60000.",
+    "retryAttempts": "Reintentos",
+    "retryAttemptsHelp": "Número de reintentos para solicitudes fallidas. Predeterminado 3.",
+    "logLevel": "Nivel de registro",
+    "logLevelHelp": "Nivel de registro para depuración. Predeterminado 'info'.",
+    "enableDebug": "Habilitar depuración",
+    "enableDebugHelp": "Activar información de depuración detallada en los registros."
   },
   "sidebar": {
     "notes": "Notas",
