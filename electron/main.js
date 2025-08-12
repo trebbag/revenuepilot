@@ -30,6 +30,71 @@ let chosenPort = 8000; // may be reassigned if 8000 is busy
 const DEFAULT_PORT = 8000;
 let backendPortFile = process.env.BACKEND_PORT_FILE || null; // optional file for integration tests
 
+// New: simple splash window while backend initializes (e.g., first-run model downloads)
+let splashWindow = null;
+function showSplash() {
+  if (splashWindow && !splashWindow.isDestroyed()) return;
+  splashWindow = new BrowserWindow({
+    width: 460,
+    height: 320,
+    resizable: false,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    frame: false,
+    backgroundColor: '#111111',
+    show: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  const html = `data:text/html;charset=utf-8,${encodeURIComponent(`
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>RevenuePilot – Initializing…</title>
+      <style>
+        html, body { margin: 0; padding: 0; height: 100%; background: #111; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+        .wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding: 16px; box-sizing: border-box; }
+        h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; color: #fff; }
+        p { margin: 4px 0; color: #cbd5e1; font-size: 13px; text-align: center; }
+        .box { width: 100%; max-width: 420px; background: #0b1220; border: 1px solid #223; border-radius: 8px; padding: 12px; box-sizing: border-box; }
+        .progress { position: relative; height: 6px; background: #0f172a; border: 1px solid #1e293b; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+        .bar { position:absolute; left:-40%; top:0; height:100%; width:40%; background: linear-gradient(90deg,#22d3ee,#3b82f6); animation: slide 1.4s infinite; }
+        @keyframes slide { 0%{ left:-40% } 50%{ left:60% } 100%{ left:100% } }
+        pre { margin: 8px 0 0; padding: 8px; height: 120px; overflow: auto; font-size: 11px; line-height: 1.3; background: #0a0f1a; border: 1px solid #1e293b; border-radius: 6px; color: #9fb3c8; }
+        .hint { font-size: 12px; color: #94a3b8; margin-top: 8px; }
+        .last { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; color:#cbd5e1; margin-top:6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="box">
+          <h1>Starting RevenuePilot backend…</h1>
+          <p id="status">Initializing. This can take several minutes on first run while models are downloaded.</p>
+          <div class="progress"><div class="bar"></div></div>
+          <div id="last" class="last"></div>
+          <pre id="log"></pre>
+          <p class="hint">If this takes too long, ensure your internet connection is stable. The window will continue automatically when ready.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `)}`;
+  splashWindow.loadURL(html).catch(() => {});
+}
+function updateSplash(message, logTail) {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  const safeMsg = (message || '').replace(/`/g, '\\`');
+  const tailArr = Array.isArray(logTail) ? logTail.slice(-80) : [];
+  const lastLine = tailArr.length ? tailArr[tailArr.length - 1] : '';
+  const safeLast = (lastLine || '').replace(/`/g, '\\`');
+  const safeLog = tailArr.join('\n').replace(/`/g, '\\`');
+  splashWindow.webContents.executeJavaScript(
+    `(() => { const s = document.getElementById('status'); if (s) s.textContent = \`${safeMsg}\`; const pre = document.getElementById('log'); if (pre) pre.textContent = \`${safeLog}\`; const last = document.getElementById('last'); if (last) last.textContent = \`${safeLast}\`; })();`
+  ).catch(() => {});
+}
+
 // Ring buffer of recent backend startup log lines for diagnostics surfaced in Login UI
 // Replaced dynamic array + splice (O(n) churn) with fixed-size circular buffer to avoid
 // incremental memory growth and GC pressure under very chatty backends.
@@ -71,6 +136,8 @@ function sendDiagnostics(message, extra = {}) {
       ...extra,
     });
   }
+  // Update splash concurrently if visible
+  try { updateSplash(message, getBackendLogTail(80)); } catch { /* ignore */ }
 }
 
 // Choose an available localhost port starting from DEFAULT_PORT
@@ -170,6 +237,7 @@ function detectSystemPython() {
 
 let backendReadyAttempted = false; // prevent duplicate backend spawns
 let healthPollTimer = null; // track waitForServer polling timer for cleanup
+let lastSplashUpdate = 0;
 
 async function startBackend() {
   if (backendReadyAttempted) { appendBackendLog('startBackend called again – ignoring duplicate invocation'); return; }
@@ -203,6 +271,7 @@ async function startBackend() {
       appendBackendLog('No system Python interpreter found. Backend cannot start.');
       sendDiagnostics('Python interpreter missing. Install Python 3.11+ and restart the app.', { fatal: true });
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+      updateSplash('Python 3.11+ not found. Please install Python and restart.');
       return;
     }
   }
@@ -217,6 +286,8 @@ async function startBackend() {
   const env = { ...process.env };
   // Ensure PYTHONPATH contains parent so backend package resolves even if cwd changes elsewhere later
   env.PYTHONPATH = env.PYTHONPATH ? `${backendParentDir}:${env.PYTHONPATH}` : backendParentDir;
+  // Hint Presidio to use a lightweight spaCy model if/when initialized, avoiding large downloads like en_core_web_lg
+  if (!env.PRESIDIO_SPACY_MODEL) env.PRESIDIO_SPACY_MODEL = 'en_core_web_sm';
 
   try {
     backendProcess = spawn(pythonExecutable, args, { cwd: backendParentDir, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
@@ -224,19 +295,30 @@ async function startBackend() {
     appendBackendLog(`Failed spawning backend process: ${e.message}`);
     sendDiagnostics(`Failed to spawn backend process: ${e.message}`, { fatal: true, code: e.code || null });
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+    updateSplash('Failed to start backend process. See log for details.');
     return;
   }
 
-  backendProcess.stdout.on('data', d => appendBackendLog(d));
-  backendProcess.stderr.on('data', d => appendBackendLog(d));
+  backendProcess.stdout.on('data', d => {
+    appendBackendLog(d);
+    const now = Date.now();
+    if (now - lastSplashUpdate > 500) { lastSplashUpdate = now; updateSplash('Initializing backend…', getBackendLogTail(80)); }
+  });
+  backendProcess.stderr.on('data', d => {
+    appendBackendLog(d);
+    const now = Date.now();
+    if (now - lastSplashUpdate > 500) { lastSplashUpdate = now; updateSplash('Initializing backend…', getBackendLogTail(80)); }
+  });
   backendProcess.on('exit', (code, signal) => {
     appendBackendLog(`Backend process exited (code=${code} signal=${signal || 'none'})`);
     sendDiagnostics(`Backend exited unexpectedly (code=${code}).`, { fatal: true });
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
+    updateSplash(`Backend exited unexpectedly (code=${code}). See logs above.`);
   });
 
-  // Replace inline waitForServer call with cancellable logic
-  const deadline = Date.now() + 20000;
+  // Cancellable readiness polling. For first-run model downloads, allow long waits.
+  const READY_TIMEOUT_MS = parseInt(process.env.BACKEND_READY_TIMEOUT_MS || '900000', 10); // default 15 min
+  const deadline = Date.now() + READY_TIMEOUT_MS;
   const poll = () => {
     http.get(`http://127.0.0.1:${chosenPort}/health`, res => {
       if (res.statusCode && res.statusCode >= 200 && res.statusCode < 500) {
@@ -246,25 +328,25 @@ async function startBackend() {
           mainWindow.webContents.send('backend-ready');
           sendDiagnostics('Backend ready', { port: chosenPort });
         }
+        updateSplash('Backend ready. Launching UI…', getBackendLogTail(40));
         if (healthPollTimer) clearTimeout(healthPollTimer);
+        // Create main window on readiness, close splash
+        createWindow();
+        try { if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close(); } catch { /* ignore */ }
         return;
       }
       res.resume();
       if (Date.now() > deadline) {
-        appendBackendLog(`Backend did not become ready in time: Status ${res.statusCode}`);
-        sendDiagnostics('Backend failed to become ready within timeout.', { timeout: true, port: chosenPort });
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
-        return;
+        // Keep waiting but inform user; do not fail hard since downloads may still be ongoing.
+        sendDiagnostics('Still initializing. Large model downloads may be in progress.', { timeout: true, port: chosenPort });
+        updateSplash('Still initializing. Large model downloads may be in progress…', getBackendLogTail(80));
       }
-      healthPollTimer = setTimeout(poll, 400);
-    }).on('error', err => {
+      healthPollTimer = setTimeout(poll, 1000);
+    }).on('error', () => {
       if (Date.now() > deadline) {
-        appendBackendLog(`Backend did not become ready in time: ${err.message}`);
-        sendDiagnostics('Backend failed to become ready within timeout.', { timeout: true, port: chosenPort });
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('backend-failed');
-        return;
+        updateSplash('Still initializing. This can take several minutes on first run…', getBackendLogTail(80));
       }
-      healthPollTimer = setTimeout(poll, 400);
+      healthPollTimer = setTimeout(poll, 1000);
     });
   };
   poll();
@@ -292,6 +374,26 @@ function createWindow() {
   console.log('Loading index.html from', indexPath, 'app.isPackaged=', app.isPackaged);
   mainWindow.loadFile(indexPath).catch(err => console.error('Failed to load index.html:', err));
 
+  // Prevent renderer from navigating away (e.g., window.location = '/') which can cause blank screens in file:// scheme
+  mainWindow.webContents.on('will-navigate', (event) => {
+    try { event.preventDefault(); } catch { /* ignore */ }
+    const safeIndex = resolveIndexHtml();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadFile(safeIndex).catch(err => console.error('Reload index failed:', err));
+    }
+  });
+  // Block window.open and external navigations
+  try {
+    mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  } catch { /* older electron */ }
+  // If a load fails for any reason, retry loading our index
+  mainWindow.webContents.on('did-fail-load', () => {
+    const safeIndex = resolveIndexHtml();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadFile(safeIndex).catch(err => console.error('Retry load failed:', err));
+    }
+  });
+
   // Primary show path
   mainWindow.once('ready-to-show', () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show(); });
   // Fallback show in case ready-to-show never fires (e.g. missing file) so user still sees a window
@@ -309,7 +411,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  createWindow();
+  // Show splash first, then start backend; create main window once backend is healthy
+  showSplash();
   startBackend();
   if (process.env.UPDATE_SERVER_URL) {
     try {
@@ -321,7 +424,7 @@ app.whenReady().then(() => {
   } else {
     console.warn('UPDATE_SERVER_URL not set; auto-updates disabled.');
   }
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { showSplash(); startBackend(); } });
 });
 
 app.on('before-quit', () => {

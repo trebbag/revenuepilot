@@ -56,7 +56,7 @@ function Settings({ settings, updateSettings }) {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
-          window.location.href = '/';
+          // window.location.href = '/'; // Avoid in Electron; App will render login when token is cleared
         } else {
           setTplError(e.message);
         }
@@ -67,7 +67,7 @@ function Settings({ settings, updateSettings }) {
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
-          window.location.href = '/';
+          // window.location.href = '/';
         } else {
           setPromptError(e.message);
         }
@@ -82,7 +82,7 @@ function Settings({ settings, updateSettings }) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
         alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
-        window.location.href = '/';
+        // window.location.href = '/';
       } else {
         setTplError(e.message);
       }
@@ -121,7 +121,7 @@ function Settings({ settings, updateSettings }) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
         alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
-        window.location.href = '/';
+        // window.location.href = '/';
       } else {
         setTplError(e.message);
       }
@@ -297,7 +297,7 @@ function Settings({ settings, updateSettings }) {
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
         alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
-        window.location.href = '/';
+        // window.location.href = '/';
       } else {
         setPromptError(e.message);
       }
@@ -798,7 +798,8 @@ function Settings({ settings, updateSettings }) {
         Offline (deterministic) mode
       </label>
       <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
-        When enabled, the app returns deterministic offline responses instead of calling remote models.
+        When enabled, the app returns deterministic offline responses instead of
+        calling remote models.
       </p>
 
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>

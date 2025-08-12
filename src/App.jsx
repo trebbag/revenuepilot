@@ -169,6 +169,7 @@ function App() {
     setToken(null);
     setRefreshToken(null);
     setUserRole(null);
+    setView('note');
     if (typeof window !== 'undefined') {
       localStorage.removeItem('token');
       localStorage.removeItem('refreshToken');
@@ -178,9 +179,7 @@ function App() {
   const handleUnauthorized = () => {
     alert(t('sessionExpired'));
     logout();
-    if (typeof window !== 'undefined') {
-      window.location.href = '/';
-    }
+    // Do not navigate with window.location in Electron; React will render the Login view when token is cleared.
   };
 
   const suggestionContext = {
@@ -241,7 +240,11 @@ function App() {
         setSettingsState(merged);
         i18n.changeLanguage(merged.lang);
       } catch (e) {
-        console.error('Failed to load settings', e);
+        if (e && e.message === 'Unauthorized') {
+          handleUnauthorized();
+        } else {
+          console.error('Failed to load settings', e);
+        }
       }
     }
     fetchSettings();
@@ -557,9 +560,9 @@ function App() {
         collapsed={sidebarCollapsed}
         toggleCollapsed={() => setSidebarCollapsed((c) => !c)}
         onNavigate={(key) => {
-          setView(key);
-          // Reset active tab when switching views so that returning to notes
-          // always starts on the draft tab.
+          const allowed = new Set(['note','dashboard','logs','settings','help','drafts','admin-users']);
+          if (!token && key !== 'help') return; // ignore navigation when not authenticated, except Help
+          setView(allowed.has(key) ? key : 'note');
           setActiveTab('draft');
         }}
         role={userRole}

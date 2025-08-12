@@ -46,7 +46,7 @@ function TemplatesModal({
         if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
-          window.location.href = '/';
+          // window.location.href = '/';
         } else {
           setError(e.message);
         }
@@ -74,7 +74,7 @@ function TemplatesModal({
           if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
             alert(t('dashboard.accessDenied'));
             localStorage.removeItem('token');
-            window.location.href = '/';
+            // window.location.href = '/';
           }
         });
     } else {
@@ -118,7 +118,7 @@ function TemplatesModal({
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
         alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
-        window.location.href = '/';
+        // window.location.href = '/';
       } else {
         setError(e.message);
       }
@@ -139,7 +139,7 @@ function TemplatesModal({
       if (e.message === 'Unauthorized' && typeof window !== 'undefined') {
         alert(t('dashboard.accessDenied'));
         localStorage.removeItem('token');
-        window.location.href = '/';
+        // window.location.href = '/';
       } else {
         setError(e.message);
       }

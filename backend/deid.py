@@ -48,7 +48,8 @@ try:  # scrubadub
 except Exception:  # pragma: no cover - optional
     scrubadub = None  # type: ignore
 
-_analyzer = AnalyzerEngine() if _PRESIDIO_AVAILABLE else None
+# Analyzer instances are now created lazily to avoid heavy model downloads on import/startup.
+_analyzer = None
 _philter = None
 if _PHILTER_AVAILABLE:
     try:  # pragma: no cover - optional
@@ -96,6 +97,10 @@ _PRESIDIO_ENTITY_MAP = {
     "US_SOCIAL_SECURITY_NUMBER": "SSN",
     "DATE_TIME": "DATE",
     "LOCATION": "ADDRESS",
+    "STREET_ADDRESS": "ADDRESS",
+    "GPE": "ADDRESS",
+    "LOC": "ADDRESS",
+    "FAC": "ADDRESS",
     "EMAIL_ADDRESS": "EMAIL",
     "IP_ADDRESS": "IP",
     "DOMAIN_NAME": "URL",
@@ -106,6 +111,38 @@ _PRESIDIO_ENTITY_MAP = {
 
 def _hash(value: str, hash_tokens: bool) -> str:
     return hashlib.sha1(value.encode()).hexdigest()[:10] if hash_tokens else value
+
+# Lazily construct a Presidio AnalyzerEngine configured for a lightweight spaCy model.
+def _get_presidio_analyzer():  # pragma: no cover - exercised via tests indirectly
+    global _analyzer
+    if _analyzer is not None:
+        return _analyzer
+    if not _PRESIDIO_AVAILABLE or AnalyzerEngine is None:
+        return None
+    try:
+        # Prefer a smaller model to avoid huge first-run downloads.
+        # Allow override via env PRESIDIO_SPACY_MODEL (default: en_core_web_sm).
+        model_name = os.getenv("PRESIDIO_SPACY_MODEL", "en_core_web_sm")
+        try:
+            # Newer Presidio exposes NlpEngineProvider in this module path.
+            from presidio_analyzer.nlp_engine import NlpEngineProvider  # type: ignore
+        except Exception:
+            NlpEngineProvider = None  # type: ignore
+        nlp_engine = None
+        if NlpEngineProvider is not None:
+            nlp_configuration = {
+                "nlp_engine_name": "spacy",
+                "models": [{"lang_code": "en", "model_name": model_name}],
+            }
+            provider = NlpEngineProvider(nlp_configuration=nlp_configuration)
+            nlp_engine = provider.create_engine()
+        # If provider path unavailable, AnalyzerEngine can still try default English without forcing downloads.
+        _analyzer = AnalyzerEngine(nlp_engine=nlp_engine) if nlp_engine else AnalyzerEngine()
+        return _analyzer
+    except Exception:
+        # Do not attempt to download models here; fall back to regex if creation fails
+        return None
+
 
 def _regex_scrub(text: str, hash_tokens: bool = True) -> str:
     # First replace emails explicitly so URL pattern doesn't consume them.
@@ -132,8 +169,12 @@ def _regex_scrub(text: str, hash_tokens: bool = True) -> str:
     text = EMAIL_PATTERN.sub(_repl_email, text)
     return text
 
+
 def _presidio(text: str, hash_tokens: bool = True) -> str:
-    if not _PRESIDIO_AVAILABLE or not _analyzer:
+    # Lazily initialize analyzer; if unavailable or fails, fall back to regex.
+    analyzer = _get_presidio_analyzer()
+    # If analyzer is missing or doesn't provide analyze(), fall back to regex.
+    if analyzer is None or not hasattr(analyzer, "analyze"):
         return _regex_scrub(text, hash_tokens)
     try:
         # Collect email spans first to avoid partial DOMAIN/URL replacements by Presidio.
@@ -144,7 +185,7 @@ def _presidio(text: str, hash_tokens: bool = True) -> str:
             raw = m.group(0).rstrip('.,;:')
             end = m.start() + len(raw)
             email_spans.append((m.start(), end, raw))
-        results = _analyzer.analyze(text=text, entities=None, language="en")
+        results = analyzer.analyze(text=text, entities=None, language="en")
         # Filter out analyzer spans that overlap email spans so we can replace whole email.
         def overlaps(a_start, a_end, b_start, b_end):
             return not (a_end <= b_start or b_end <= a_start)
@@ -171,9 +212,12 @@ def _presidio(text: str, hash_tokens: bool = True) -> str:
         text = MRN_PATTERN.sub(lambda m: f"[MRN:{_hash(m.group(1), hash_tokens)}]", text)
         # Final pass to ensure any raw emails escaped earlier are scrubbed.
         text = EMAIL_PATTERN.sub(lambda m: f"[EMAIL:{_hash(m.group(0), hash_tokens)}]", text)
+        # Ensure any leftover street addresses are masked by regex
+        text = ADDRESS_PATTERN.sub(lambda m: f"[ADDRESS:{_hash(m.group(0).rstrip('.'), hash_tokens)}]", text)
         return text
     except Exception:  # pragma: no cover - fall back
         return _regex_scrub(text, hash_tokens)
+
 
 def _philter_engine(text: str, hash_tokens: bool = True) -> str:
     if not _PHILTER_AVAILABLE or not _philter:
@@ -185,6 +229,7 @@ def _philter_engine(text: str, hash_tokens: bool = True) -> str:
         return re.sub(r"\*{3,}", lambda m: f"[PHI:{_hash(m.group(0), hash_tokens)}]", result)
     except Exception:  # pragma: no cover
         return _regex_scrub(text, hash_tokens)
+
 
 def _scrubadub_engine(text: str, hash_tokens: bool = True) -> str:
     if not _SCRUBBER_AVAILABLE or not scrubadub:  # type: ignore
@@ -202,6 +247,7 @@ def _scrubadub_engine(text: str, hash_tokens: bool = True) -> str:
         return text
     except Exception:  # pragma: no cover
         return _regex_scrub(text, hash_tokens)
+
 
 def deidentify(
     text: str,

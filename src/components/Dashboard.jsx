@@ -43,7 +43,7 @@ function Dashboard() {
   if (role !== 'admin') {
     if (typeof window !== 'undefined') {
       alert(t('dashboard.accessDenied'));
-      window.location.href = '/';
+      // window.location.href = '/';
     }
     return null;
   }
@@ -75,7 +75,7 @@ function Dashboard() {
         if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
-          window.location.href = '/';
+          // window.location.href = '/';
         } else {
           setError(err.message);
         }

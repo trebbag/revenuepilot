@@ -33,7 +33,7 @@ export default function Logs() {
         if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
           alert(t('dashboard.accessDenied'));
           localStorage.removeItem('token');
-          window.location.href = '/';
+          // window.location.href = '/';
         } else {
           setError(t('logs.fetchFailed'));
         }

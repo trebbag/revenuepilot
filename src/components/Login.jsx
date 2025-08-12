@@ -3,9 +3,19 @@ import { useState, useEffect, useCallback } from 'react';
 import { login, resetPassword, register, pingBackend } from '../api.js';
 
 // Detect Electron renderer context (simplistic)
-const isElectron = typeof window !== 'undefined' && !!window.require && !!window.process && window.process.type === 'renderer';
+const isElectron =
+  typeof window !== 'undefined' &&
+  !!window.require &&
+  !!window.process &&
+  window.process.type === 'renderer';
 let ipcRenderer = null;
-try { if (isElectron) { ipcRenderer = window.require('electron').ipcRenderer; } } catch { /* ignore */ }
+try {
+  if (isElectron) {
+    ipcRenderer = window.require('electron').ipcRenderer;
+  }
+} catch {
+  /* ignore */
+}
 
 /**
  * Unified authentication form with login, registration and password reset flows.
@@ -41,9 +51,15 @@ function Login({ onLoggedIn }) {
   // Listen for backend-ready / failed signals from main process to auto-retry
   useEffect(() => {
     if (!ipcRenderer) return; // not in electron
-    const handleReady = () => { checkBackend(); };
-    const handleFailed = () => { setBackendUp(false); };
-    const handleDiagnostics = (_event, payload) => { setDiag(payload); };
+    const handleReady = () => {
+      checkBackend();
+    };
+    const handleFailed = () => {
+      setBackendUp(false);
+    };
+    const handleDiagnostics = (_event, payload) => {
+      setDiag(payload);
+    };
     ipcRenderer.on('backend-ready', handleReady);
     ipcRenderer.on('backend-failed', handleFailed);
     ipcRenderer.on('backend-diagnostics', handleDiagnostics);
@@ -87,24 +103,38 @@ function Login({ onLoggedIn }) {
     setLoading(true);
     try {
       if (mode === 'login') {
-        const { token, refreshToken, settings } = await login(username, password, lang);
+        const { token, refreshToken, settings } = await login(
+          username,
+          password,
+          lang,
+        );
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
         }
-        const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
+        const newSettings = settings
+          ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+          : { lang, summaryLang: lang };
         onLoggedIn(token, newSettings);
       } else if (mode === 'register') {
-        const { token, refreshToken, settings } = await register(username, password, lang);
+        const { token, refreshToken, settings } = await register(
+          username,
+          password,
+          lang,
+        );
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
         }
-        const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
+        const newSettings = settings
+          ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+          : { lang, summaryLang: lang };
         onLoggedIn(token, newSettings); // auto-login after registration
       } else if (mode === 'reset') {
         await resetPassword(username, password, newPassword);
-        setInfo(t('login.resetSuccess') || 'Password updated. You can now log in.');
+        setInfo(
+          t('login.resetSuccess') || 'Password updated. You can now log in.',
+        );
         setMode('login');
         setPassword('');
         setNewPassword('');
@@ -121,30 +151,76 @@ function Login({ onLoggedIn }) {
   }
 
   return (
-    <div className="login-form" style={{ maxWidth: '26rem', margin: '2.5rem auto', fontFamily: 'system-ui, sans-serif' }}>
+    <div
+      className="login-form"
+      style={{
+        maxWidth: '26rem',
+        margin: '2.5rem auto',
+        fontFamily: 'system-ui, sans-serif',
+      }}
+    >
       <h2 style={{ textAlign: 'center' }}>
-        {mode === 'login' ? t('login.title') : mode === 'register' ? t('login.register') : t('login.resetPassword')}
+        {mode === 'login'
+          ? t('login.title')
+          : mode === 'register'
+            ? t('login.register')
+            : t('login.resetPassword')}
       </h2>
       {!backendUp && !checking && (
-        <div style={{ background: '#ffe9e9', padding: '0.75rem', borderRadius: 4, marginBottom: '1rem', color: '#900' }}>
-          <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
+        <div
+          style={{
+            background: '#ffe9e9',
+            padding: '0.75rem',
+            borderRadius: 4,
+            marginBottom: '1rem',
+            color: '#900',
+          }}
+        >
+          <strong>
+            {t('login.backendUnavailable') || 'Backend not reachable.'}
+          </strong>
           <div style={{ fontSize: 12, marginTop: 6 }}>
             {/* Attempt to pull diagnostic detail if available */}
-            {(() => { try { const { getLastBackendError } = require('../api.js'); const d = getLastBackendError && getLastBackendError(); return d ? ` (${d})` : null; } catch { return null; } })()}
+            {(() => {
+              try {
+                const { getLastBackendError } = require('../api.js');
+                const d = getLastBackendError && getLastBackendError();
+                return d ? ` (${d})` : null;
+              } catch {
+                return null;
+              }
+            })()}
             {diag && diag.message ? ` – ${diag.message}` : null}
           </div>
           {diag && diag.logTail && diag.logTail.length > 0 && (
             <details style={{ marginTop: 6 }}>
-              <summary style={{ cursor: 'pointer' }}>Startup log (tail)</summary>
-              <pre style={{ maxHeight: 160, overflow: 'auto', background: '#fff', padding: 8, fontSize: 11, lineHeight: 1.2 }}>
+              <summary style={{ cursor: 'pointer' }}>
+                Startup log (tail)
+              </summary>
+              <pre
+                style={{
+                  maxHeight: 160,
+                  overflow: 'auto',
+                  background: '#fff',
+                  padding: 8,
+                  fontSize: 11,
+                  lineHeight: 1.2,
+                }}
+              >
                 {diag.logTail.join('\n')}
               </pre>
-              {diag.logFile && <div style={{ fontSize: 11, marginTop: 4 }}>Full log: {diag.logFile}</div>}
+              {diag.logFile && (
+                <div style={{ fontSize: 11, marginTop: 4 }}>
+                  Full log: {diag.logFile}
+                </div>
+              )}
             </details>
           )}
           <div style={{ marginTop: 4 }}>
             <button type="button" onClick={checkBackend} disabled={checking}>
-              {checking ? t('login.checking') || 'Checking...' : t('login.retry') || 'Retry'}
+              {checking
+                ? t('login.checking') || 'Checking...'
+                : t('login.retry') || 'Retry'}
             </button>
           </div>
         </div>
@@ -165,13 +241,17 @@ function Login({ onLoggedIn }) {
         </div>
         <div style={{ marginBottom: '0.5rem' }}>
           <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-            {mode === 'reset' ? t('login.currentPassword') || t('login.password') : t('login.password')}
+            {mode === 'reset'
+              ? t('login.currentPassword') || t('login.password')
+              : t('login.password')}
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+              autoComplete={
+                mode === 'register' ? 'new-password' : 'current-password'
+              }
               style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
             />
           </label>
@@ -180,7 +260,16 @@ function Login({ onLoggedIn }) {
               {strengthLabel(passwordScore(password))}
               <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
                 {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} style={{ flex: 1, height: 4, background: i < passwordScore(password) ? '#4caf50' : '#ddd', borderRadius: 2 }} />
+                  <div
+                    key={i}
+                    style={{
+                      flex: 1,
+                      height: 4,
+                      background:
+                        i < passwordScore(password) ? '#4caf50' : '#ddd',
+                      borderRadius: 2,
+                    }}
+                  />
                 ))}
               </div>
             </div>
@@ -245,7 +334,11 @@ function Login({ onLoggedIn }) {
             {info}
           </p>
         )}
-        <button type="submit" disabled={loading || checking || !backendUp} style={{ width: '100%', padding: '0.75rem', marginTop: '0.25rem' }}>
+        <button
+          type="submit"
+          disabled={loading || checking || !backendUp}
+          style={{ width: '100%', padding: '0.75rem', marginTop: '0.25rem' }}
+        >
           {loading
             ? t('login.pleaseWait') || 'Please wait…'
             : mode === 'login'
@@ -255,24 +348,84 @@ function Login({ onLoggedIn }) {
                 : t('login.resetPassword')}
         </button>
       </form>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          marginTop: '0.75rem',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
+        }}
+      >
         {mode !== 'login' && (
-          <button type="button" onClick={() => { setMode('login'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
+          <button
+            type="button"
+            onClick={() => {
+              setMode('login');
+              setError(null);
+              setInfo(null);
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#0366d6',
+              cursor: 'pointer',
+            }}
+          >
             {t('login.backToLogin')}
           </button>
         )}
         {mode === 'login' && (
           <>
-            <button type="button" onClick={() => { setMode('register'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setMode('register');
+                setError(null);
+                setInfo(null);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#0366d6',
+                cursor: 'pointer',
+              }}
+            >
               {t('login.register')}
             </button>
-            <button type="button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
+            <button
+              type="button"
+              onClick={() => {
+                setMode('reset');
+                setError(null);
+                setInfo(null);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#0366d6',
+                cursor: 'pointer',
+              }}
+            >
               {t('login.resetPassword')}
             </button>
           </>
         )}
         {mode === 'register' && (
-          <button type="button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
+          <button
+            type="button"
+            onClick={() => {
+              setMode('reset');
+              setError(null);
+              setInfo(null);
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#0366d6',
+              cursor: 'pointer',
+            }}
+          >
             {t('login.resetPassword')}
           </button>
         )}

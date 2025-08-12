@@ -113,6 +113,12 @@ _philter = getattr(deid_module, "_philter", None)  # type: ignore
 
 # Wrapper used throughout main; propagates any monkeypatched flags to the modular implementation.
 def deidentify(text: str) -> str:  # pragma: no cover - thin wrapper
+    # Ensure tests that monkeypatch backend.main._analyzer influence the deid module.
+    try:
+        if _analyzer is not None:
+            setattr(deid_module, "_analyzer", _analyzer)
+    except Exception:
+        pass
     return deid_module.deidentify(
         text,
         engine=_DEID_ENGINE,
@@ -1660,11 +1666,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1812,6 +1818,10 @@ async def get_metrics(
         for k in keys
     }
 
+    # Compute top compliance flags list for convenience (empty list when none)
+    top_compliance_items = sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    top_compliance = [{"flag": k, "count": v} for k, v in top_compliance_items]
+
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
@@ -1827,6 +1837,7 @@ async def get_metrics(
         },
         "clinicians": clinicians,
         "timeseries": timeseries,
+        "top_compliance": top_compliance,
     }
 
 
@@ -1854,7 +1865,7 @@ async def summarize(
     cleaned = deidentify(combined)
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
-        # check user stored preference (table may not exist in some test fixtures)
+               # check user stored preference (table may not exist in some test fixtures)
         try:
             row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
             if row:
