@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
 import { login, resetPassword, register, pingBackend, getLastBackendError } from '../api.js';
 
