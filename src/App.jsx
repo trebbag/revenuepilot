@@ -736,17 +736,6 @@ function App() {
                   />
                 )}
               </div>
-              {(() => {
-                return (
-                  <SuggestionPanel
-                    suggestions={suggestions}
-                    settingsState={settingsState}
-                    loading={loadingSuggestions}
-                    className={showSuggestions ? '' : 'collapsed'}
-                    onInsert={handleInsertSuggestion}
-                  />
-                );
-              })()}
             </>
           )}
           {view === 'dashboard' && <Dashboard />}
