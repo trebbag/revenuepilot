@@ -24,8 +24,9 @@ function SuggestionPanel({
 }) {
   const { t } = useTranslation();
   const [showPublicHealth, setShowPublicHealth] = useState(true);
-  const [specialty, setSpecialty] = useState(settingsState?.specialty || '');
-  const [payer, setPayer] = useState(settingsState?.payer || '');
+  // Use specialty/payer provided by parent (do not render controls here)
+  const parentSpecialty = (settingsState && settingsState.specialty) || '';
+  const parentPayer = (settingsState && settingsState.payer) || '';
   // Debounce backend suggestion calls.  When `text` changes rapidly we clear
   // the previous timeout and only invoke `fetchSuggestions` once the user has
   // paused typing for 300ms.
@@ -34,10 +35,10 @@ function SuggestionPanel({
     if (!fetchSuggestions || typeof text !== 'string') return undefined;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchSuggestions(text, { specialty, payer });
+      fetchSuggestions(text, { specialty: parentSpecialty, payer: parentPayer });
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [text, fetchSuggestions]);
+  }, [text, fetchSuggestions, parentSpecialty, parentPayer]);
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
 
   const cards = [];
