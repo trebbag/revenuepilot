@@ -567,17 +567,10 @@ function App() {
           {view !== 'note' ? (
             <button onClick={() => setView('note')}>{t('app.back')}</button>
           ) : (
-            <button onClick={() => setView('note')}>{t('app.file')}</button>
+            <></>
           )}
           {view === 'note' && (
             <>
-              <input
-                type="text"
-                placeholder={t('app.patientId')}
-                value={patientID}
-                onChange={(e) => setPatientID(e.target.value)}
-                className="patient-input"
-              />
               {/* Primary actions */}
               <button
                 disabled={loadingBeautify || !draftText.trim()}
@@ -600,18 +593,17 @@ function App() {
                   aria-expanded={showToolbarMenu}
                   onClick={() => setShowToolbarMenu((s) => !s)}
                 >
-More ▾
+                  More ▾
                 </button>
                 {showToolbarMenu && (
                   <div className="toolbar-menu-content" role="menu">
-                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                       <ClipboardExportButtons
                         beautified={beautified}
                         summary={summaryText}
                         patientID={patientID}
                         suggestions={suggestions}
                       />
-
                       <button
                         disabled={!patientID || !draftText.trim()}
                         onClick={() => {
@@ -625,7 +617,6 @@ More ▾
                       >
                         {t('app.saveDraft')}
                       </button>
-
                       <button
                         onClick={() => {
                           if (fileInputRef.current) fileInputRef.current.click();
@@ -634,15 +625,8 @@ More ▾
                       >
                         {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
                       </button>
-
                       <button onClick={() => { setShowSuggestions((s) => !s); setShowToolbarMenu(false); }}>
                         {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
-                      </button>
-
-                      <hr style={{ border: 'none', borderTop: '1px solid var(--disabled)', margin: '0.25rem 0' }} />
-
-                      <button onClick={() => { setShowTemplatesModal(true); setShowToolbarMenu(false); }}>
-                        {t('app.templates')}
                       </button>
                     </div>
                   </div>
