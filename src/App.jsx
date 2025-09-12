@@ -620,13 +620,14 @@ More ▾
                 </button>
                 {showToolbarMenu && (
                   <div className="toolbar-menu-content" role="menu">
-                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       <ClipboardExportButtons
                         beautified={beautified}
                         summary={summaryText}
                         patientID={patientID}
                         suggestions={suggestions}
                       />
+
                       <button
                         disabled={!patientID || !draftText.trim()}
                         onClick={() => {
@@ -640,6 +641,7 @@ More ▾
                       >
                         {t('app.saveDraft')}
                       </button>
+
                       <button
                         onClick={() => {
                           if (fileInputRef.current) fileInputRef.current.click();
@@ -648,9 +650,42 @@ More ▾
                       >
                         {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
                       </button>
+
                       <button onClick={() => { setShowSuggestions((s) => !s); setShowToolbarMenu(false); }}>
                         {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
                       </button>
+
+                      <hr style={{ border: 'none', borderTop: '1px solid var(--disabled)', margin: '0.25rem 0' }} />
+
+                      <button onClick={() => { setShowTemplatesModal(true); setShowToolbarMenu(false); }}>
+                        {t('app.templates')}
+                      </button>
+
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.9rem' }}>Language:</span>
+                        <select
+                          value={settingsState.summaryLang}
+                          onChange={(e) => {
+                            const merged = { ...settingsState, summaryLang: e.target.value };
+                            setSettingsState(merged);
+                            i18n.changeLanguage(merged.lang || merged.summaryLang);
+                            setShowToolbarMenu(false);
+                          }}
+                        >
+                          <option value="en">English</option>
+                          <option value="es">Español</option>
+                        </select>
+                      </label>
+
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.9rem' }}>{t('app.patientAge')}</span>
+                        <input
+                          type="number"
+                          value={age}
+                          onChange={(e) => setAge(e.target.value)}
+                          style={{ width: '4rem' }}
+                        />
+                      </label>
                     </div>
                   </div>
                 )}
