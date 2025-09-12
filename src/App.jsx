@@ -594,25 +594,6 @@ function App() {
                 className="patient-age-input"
                 style={{ width: '4rem', marginLeft: '0.5rem' }}
               />
-              <button
-                onClick={() => setShowTemplatesModal(true)}
-                aria-label={t('app.templates')}
-              >
-                {t('app.templates')}
-              </button>
-              <button
-                disabled={loadingBeautify || !draftText.trim()}
-                onClick={handleBeautify}
-              >
-                {loadingBeautify ? t('app.beautifying') : t('app.beautify')}
-              </button>
-              <button
-                disabled={loadingSummary || !draftText.trim()}
-                onClick={handleSummarize}
-                style={{ marginLeft: '0.5rem' }}
-              >
-                {loadingSummary ? t('app.summarizing') : t('app.summarize')}
-              </button>
               {/* Primary actions */}
               <button
                 disabled={loadingBeautify || !draftText.trim()}
@@ -635,7 +616,7 @@ function App() {
                   aria-expanded={showToolbarMenu}
                   onClick={() => setShowToolbarMenu((s) => !s)}
                 >
-                  {t('app.more') || 'More'} ▾
+More ▾
                 </button>
                 {showToolbarMenu && (
                   <div className="toolbar-menu-content" role="menu">
@@ -674,41 +655,6 @@ function App() {
                   </div>
                 )}
               </div>
-              {/* Upload an exported chart (text or PDF) */}
-              <input
-                type="file"
-                accept=".txt,.pdf,.html,.xml"
-                style={{ display: 'none' }}
-                ref={fileInputRef}
-                onChange={handleChartChange}
-              />
-              <button
-                onClick={() => {
-                  if (fileInputRef.current) fileInputRef.current.click();
-                }}
-              >
-                {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
-              </button>
-              {chartFileName && (
-                <span
-                  style={{
-                    fontSize: '0.8rem',
-                    marginLeft: '0.5rem',
-                    color: 'var(--secondary)',
-                  }}
-                >
-                  {chartFileName}
-                </span>
-              )}
-              {/* Toggle suggestion panel visibility */}
-              <button
-                onClick={() => setShowSuggestions((s) => !s)}
-                style={{ marginLeft: '0.5rem' }}
-              >
-                {showSuggestions
-                  ? t('app.hideSuggestions')
-                  : t('app.showSuggestions')}
-              </button>
             </>
           )}
         </header>
