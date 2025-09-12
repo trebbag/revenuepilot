@@ -3,9 +3,10 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, Roboto, sans-serif;
+  font-family: Inter, Roboto, -apple-system, system-ui, "Segoe UI", "Helvetica Neue", Arial;
   font-size: 16px;
-  line-height: 1.5;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
 button:focus,
@@ -16,432 +17,101 @@ textarea:focus {
   outline-offset: 2px;
 }
 
-/* Layout */
-.app {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-}
+/* Keep app layout unchanged for other pages */
+.app { display: flex; height: 100vh; overflow: hidden; }
 
-/* Sidebar navigation */
-.sidebar {
-  background: var(--panel-bg);
-  border-right: 1px solid var(--disabled);
-  width: 200px;
-  transition: width 0.3s ease;
-  display: flex;
-  flex-direction: column;
-}
-
-.sidebar.collapsed {
-  width: 60px;
-}
-
-.collapse-btn {
-  background: none;
-  border: none;
-  padding: 0.5rem;
-  cursor: pointer;
-  color: var(--text);
-  font-size: 1.2rem;
-}
-
-.nav-items {
-  display: flex;
-  flex-direction: column;
-  margin-top: 1rem;
-}
-
-.nav-items button {
-  background: none;
-  border: none;
-  color: var(--text);
-  padding: 0.5rem 1rem;
-  text-align: left;
-  cursor: pointer;
-  font-size: 0.9rem;
-}
-
-.nav-items button:hover {
-  background: var(--disabled);
-}
-
-/* Content area (everything except sidebar) */
-.content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.toolbar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  align-items: center;
-  background: var(--panel-bg);
-  border-bottom: 1px solid var(--disabled);
-}
-
-.toolbar button {
-  background: var(--primary);
-  color: #ffffff;
-  border: none;
-  padding: 0.4rem 0.8rem;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 1rem;
-}
-
-.toolbar button:disabled {
-  background: var(--disabled);
-  color: var(--text);
-  cursor: not-allowed;
-}
-
-.patient-input,
-.template-select {
-  padding: 0.35rem 0.5rem;
-  border: 1px solid var(--disabled);
-  border-radius: 4px;
-  margin-right: 0.5rem;
-  font-size: 0.9rem;
-}
-
-/* Main content area below toolbar */
-.main {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-  padding: 1rem;
-  gap: 1rem;
-  background: var(--bg);
-}
-
-/* Editor wrapper containing tabs and content */
-.editor-wrapper {
-  flex: 2;
-  display: flex;
-  flex-direction: column;
-}
-
-/* Tabs */
-.tabs {
-  display: flex;
-  background: var(--panel-bg);
-  border-bottom: 1px solid var(--disabled);
-}
-
-.tab {
-  flex: 1;
-  padding: 0.5rem;
-  background: var(--disabled);
-  border: none;
-  cursor: pointer;
-  font-size: 0.875rem;
-  color: var(--text);
-}
-
-.tab.active {
-  background: var(--panel-bg);
-  border-bottom: 2px solid var(--primary);
-  color: var(--primary);
-}
-
-.tab.disabled {
-  background: var(--disabled);
-  color: #a0a7b3;
-  cursor: not-allowed;
-}
-
-.editor-area {
-  flex: 1;
-  padding: 0.5rem;
-  overflow-y: auto;
-}
-
-.beautified-view {
-  white-space: pre-wrap;
-}
-
-/* Card container used for the editor and suggestion panels */
-.card {
-  background: var(--panel-bg);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
-  border: 1px solid var(--disabled);
-  border-radius: 8px;
-  padding: 0.5rem;
-}
-
-/* Suggestion panel */
-.suggestion-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  background: var(--bg);
-  transition: transform 0.3s ease, opacity 0.3s ease;
-  transform: translateX(0%);
-  opacity: 1;
-}
-
-.suggestion-panel .card {
-  padding: 0.5rem;
-  font-size: 0.875rem;
-  position: relative;
-}
-
-/* List styling inside suggestion cards */
-.suggestion-panel .card ul {
-  margin: 0.5rem 0 0 1rem;
-  padding: 0;
-  list-style: disc inside;
-}
-
-.suggestion-panel .card li {
-  margin: 0.2rem 0;
-  font-size: 0.75rem;
-  color: var(--text);
-}
-
-/* Sliding behaviour: when collapsed, hide the panel by shifting it off screen */
-.suggestion-panel.collapsed {
-  transform: translateX(100%);
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Drafts view styles */
-.drafts-view {
-  padding: 1rem;
-  overflow-y: auto;
-}
-
-.drafts-view h2 {
-  margin-top: 0;
-  margin-bottom: 1rem;
-}
-
-.drafts-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.draft-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: var(--panel-bg);
-  border: 1px solid var(--disabled);
-  border-radius: 8px;
-  padding: 0.5rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-.draft-info {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-}
-
-.draft-open-btn {
-  background: none;
-  border: none;
-  color: var(--primary);
-  font-weight: bold;
-  font-size: 0.9rem;
-  cursor: pointer;
-  text-align: left;
-  padding: 0;
-  margin: 0;
-}
-.draft-open-btn:hover {
-  text-decoration: underline;
-}
-
-.draft-snippet {
-  font-size: 0.75rem;
-  color: var(--text);
-  margin-top: 0.25rem;
-}
-
-.draft-delete-btn {
-  background: none;
-  border: none;
-  color: #e53e3e;
-  font-size: 1rem;
-  cursor: pointer;
-  padding: 0 0.25rem;
-}
-.draft-delete-btn:hover {
-  color: #c53030;
-}
-
-/* Dashboard styles */
-.dashboard {
-  flex: 1;
-  padding: 1rem;
-  overflow-y: auto;
-  background: var(--bg);
-  color: var(--text);
-}
-
-.dashboard h2 {
-  margin-top: 0;
-  margin-bottom: 0.5rem;
-}
-
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 1rem;
-}
-
-.metric-card {
-  background: var(--panel-bg);
-  border: 1px solid var(--disabled);
-  border-left: 4px solid var(--primary);
-  border-radius: 4px;
-  padding: 0.5rem;
-}
-
-.metric-card h3 {
-  margin: 0 0 0.25rem 0;
-  font-size: 0.9rem;
-}
-
-.metric-card p {
-  margin: 0.1rem 0;
-  font-size: 0.75rem;
-}
-
-/* Help page styling */
-.help-page h2 {
-  margin-top: 0;
-  color: var(--primary);
-}
-
-.help-page h3 {
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  color: var(--primary);
-  font-size: 1rem;
-}
-
-.help-page ul {
-  margin-left: 1.5rem;
-  list-style: disc;
-  padding-left: 0;
-}
-
-.help-page li {
-  margin-bottom: 0.4rem;
-  font-size: 0.9rem;
-  color: var(--text);
-}
-
-/* Settings page styling */
-.settings-page h2 {
-  margin-top: 0;
-  color: var(--primary);
-}
-
-.settings-page h3 {
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  color: var(--primary);
-  font-size: 1rem;
-}
-
-.settings-page label {
-  margin-bottom: 0.5rem;
-  font-size: 0.9rem;
-  color: var(--text);
-}
-
-/* Accent borders for suggestion cards using additional palette colours */
-.card.codes {
-  border-left: 4px solid var(--accent-green);
-}
-
-.card.compliance {
-  border-left: 4px solid var(--accent-purple);
-}
-
-.card.public-health {
-  border-left: 4px solid var(--accent-light-blue);
-}
-
-.card.differentials {
-  border-left: 4px solid var(--accent-gold);
-}
-
-/* ======= Login / Auth styles ======= */
+/* ======= Login / Auth styles (refined for a professional medical app) ======= */
 .auth-root {
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 2rem 1rem;
-  background: linear-gradient(180deg, rgba(30,58,138,0.03) 0%, transparent 40%);
+  padding: 3rem 1rem;
+  background: linear-gradient(180deg, rgba(30,58,138,0.04) 0%, transparent 50%);
 }
 
+/* Two-column area: primary auth card and right-side info */
 .auth-viewport {
   display: grid;
-  grid-template-columns: 420px 240px;
+  grid-template-columns: 460px 260px;
   gap: 1.25rem;
   align-items: start;
   width: 100%;
-  max-width: 920px;
+  max-width: 980px;
 }
 
+/* Branding block inside left column */
 .auth-brand {
   display: flex;
   gap: 1rem;
   align-items: center;
+  margin-bottom: 0.5rem;
 }
 
 .auth-logo {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   border-radius: 12px;
   object-fit: cover;
+  box-shadow: 0 6px 18px rgba(30,58,138,0.12);
+  border: 1px solid rgba(30,58,138,0.06);
 }
 
 .auth-brand-text .auth-app {
   margin: 0;
   font-size: 1.25rem;
   color: var(--primary);
+  letter-spacing: -0.2px;
 }
 
 .auth-brand-text .auth-tagline {
   margin: 0;
   font-size: 0.875rem;
-  color: #374151;
+  color: #475569;
 }
 
+/* Card container - fixed height with internal scroll to keep everything contained */
 .auth-card {
   background: var(--panel-bg);
   border: 1px solid var(--disabled);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 1.25rem;
-  box-shadow: 0 8px 24px rgba(31,41,55,0.06);
+  box-shadow: 0 12px 40px rgba(15,23,42,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 560px;
+  overflow: hidden;
+}
+
+/* Header area inside card */
+.auth-card .auth-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
 }
 
 .auth-title {
-  margin: 0 0 1rem 0;
+  margin: 0;
   font-size: 1.125rem;
   color: var(--text);
+  font-weight: 600;
+}
+
+.auth-subtle { color: #6b7280; font-size: 0.9rem; }
+
+/* Inner scroll region for the form - keeps action buttons visible */
+.auth-card .auth-card-body {
+  overflow-y: auto;
+  padding-right: 6px; /* allow for scrollbar without layout shift */
 }
 
 .auth-form {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.85rem;
+  margin-top: 0.35rem;
 }
 
 .auth-label {
@@ -453,15 +123,17 @@ textarea:focus {
   font-size: 0.9rem;
 }
 
-.auth-label.compact { gap: 0.25rem; }
+.auth-label.compact { gap: 0.35rem; }
 
 .auth-input,
 .auth-select {
-  padding: 0.55rem 0.6rem;
+  padding: 0.65rem 0.7rem;
   border: 1px solid var(--disabled);
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fff;
   font-size: 0.95rem;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .auth-password-row { display: flex; gap: 0.5rem; align-items: center; }
@@ -469,54 +141,84 @@ textarea:focus {
 .show-password {
   background: none;
   border: 1px solid var(--disabled);
-  padding: 0.35rem 0.6rem;
-  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  border-radius: 10px;
   cursor: pointer;
   color: var(--primary);
+  font-weight: 600;
 }
 
-.password-strength { margin-top: 0.5rem; }
-.strength-label { font-size: 0.8rem; color: #6b7280; margin-bottom: 0.25rem; }
-.strength-bars { display: flex; gap: 6px; }
-.strength-bar { flex: 1; height: 6px; border-radius: 3px; background: #e5e7eb; }
+.password-strength { margin-top: 0.45rem; }
+.strength-label { font-size: 0.82rem; color: #6b7280; margin-bottom: 0.35rem; }
+.strength-bars { display: flex; gap: 8px; }
+.strength-bar { flex: 1; height: 7px; border-radius: 4px; background: #eef2f7; }
 .strength-bar.active { background: var(--accent-green); }
 
 .auth-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 
 .remember { display: flex; gap: 0.5rem; align-items: center; font-weight: 500; color: #374151; }
 
-.auth-link-button { background: none; border: none; color: var(--primary); cursor: pointer; padding: 0; font-size: 0.9rem; }
+.auth-link-button { background: none; border: none; color: var(--primary); cursor: pointer; padding: 0; font-size: 0.92rem; font-weight: 600; }
 
-.auth-button {
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  padding: 0.8rem 1rem;
-  border-radius: 8px;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 1rem;
+/* Primary action kept fixed at bottom of card */
+.auth-card .auth-card-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid rgba(15,23,42,0.03);
 }
 
-.auth-button:disabled { background: var(--disabled); cursor: not-allowed; }
+.auth-button {
+  background: linear-gradient(180deg, var(--primary), #12306b);
+  color: #fff;
+  border: none;
+  padding: 0.85rem 1rem;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1rem;
+  box-shadow: 0 8px 20px rgba(30,58,138,0.12);
+  min-width: 160px;
+}
 
-.auth-footer { margin-top: 0.75rem; display: flex; gap: 1rem; }
+.auth-button:disabled { background: var(--disabled); cursor: not-allowed; box-shadow: none; color: #94a3b8; }
 
-.auth-error { color: #b91c1c; background: #fff5f5; padding: 0.5rem; border-radius: 6px; font-size: 0.9rem; }
-.auth-info { color: #166534; background: #f0fdf4; padding: 0.5rem; border-radius: 6px; font-size: 0.9rem; }
+.auth-footer { margin-top: 0.6rem; display: flex; gap: 1rem; flex-wrap: wrap; }
 
-.backend-warning { background: #fff7f7; border: 1px solid var(--accent-red); padding: 0.75rem; border-radius: 6px; margin-bottom: 0.75rem; }
-.backend-details { font-size: 0.85rem; color: #6b7280; margin-top: 0.25rem; }
+.auth-error { color: #991b1b; background: #fff5f5; padding: 0.6rem; border-radius: 8px; font-size: 0.92rem; }
+.auth-info { color: #065f46; background: #f0fdf4; padding: 0.6rem; border-radius: 8px; font-size: 0.92rem; }
+
+.backend-warning { background: #fff7f7; border: 1px solid var(--accent-red); padding: 0.7rem; border-radius: 8px; margin-bottom: 0.75rem; }
+.backend-details { font-size: 0.86rem; color: #6b7280; margin-top: 0.25rem; }
 .backend-log { margin-top: 0.5rem; }
-.backend-log-pre { max-height: 160px; overflow: auto; background: #fff; padding: 0.5rem; font-size: 12px; }
+.backend-log-pre { max-height: 140px; overflow: auto; background: #fff; padding: 0.5rem; font-size: 12px; }
 .backend-actions { margin-top: 0.5rem; }
 
-.auth-help { background: transparent; color: var(--text); }
+.auth-help { background: transparent; color: var(--text); padding-top: 6px; }
 .auth-help h3 { margin-top: 0; margin-bottom: 0.5rem; color: var(--primary); }
-.auth-help p { margin: 0; color: #4b5563; }
+.auth-help p { margin: 0; color: #374151; font-size: 0.95rem; }
 
-/* Responsiveness */
-@media (max-width: 860px) {
-  .auth-viewport { grid-template-columns: 1fr; }
-  .auth-help { display: none; }
+/* subtle right panel style: separate box with supportive content */
+.auth-help {
+  background: #ffffffcc;
+  border: 1px solid rgba(7,89,133,0.04);
+  border-radius: 10px;
+  padding: 1rem;
+  box-shadow: 0 6px 20px rgba(12,45,78,0.04);
+  align-self: start;
+}
+
+/* responsive adjustments */
+@media (max-width: 920px) {
+  .auth-viewport { grid-template-columns: 1fr; max-width: 560px; }
+  .auth-help { order: 2; }
+  .auth-card { max-height: none; }
+}
+
+@media (max-width: 480px) {
+  .auth-viewport { padding: 0 10px; }
+  .auth-logo { width: 52px; height: 52px; }
+  .auth-button { width: 100%; }
 }
