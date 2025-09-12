@@ -123,6 +123,19 @@ textarea:focus {
   flex: 2;
   display: flex;
   flex-direction: column;
+  min-width: 0; /* allow this flex child to shrink to prevent horizontal overflow */
+}
+
+/* Ensure suggestion panel can shrink inside flex layout */
+.suggestion-panel {
+  min-width: 0;
+}
+
+/* Card and content box sizing to avoid unexpected growth */
+.card,
+.content,
+.editor-area {
+  box-sizing: border-box;
 }
 
 /* Tabs */
