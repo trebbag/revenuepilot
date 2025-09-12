@@ -277,26 +277,6 @@ function App() {
       .catch(() => setBaseTemplates([]));
   }, []);
 
-  // If there is no JWT stored, show the login form instead of the main app
-  if (!token) {
-    return (
-      <Login
-        onLoggedIn={(tok, settings) => {
-          setToken(tok);
-          setRefreshToken(
-            typeof window !== 'undefined'
-              ? localStorage.getItem('refreshToken')
-              : null,
-          );
-          if (settings) {
-            const merged = { ...defaultSettings, ...settings };
-            updateSettings(merged);
-            i18n.changeLanguage(merged.lang);
-          }
-        }}
-      />
-    );
-  }
 
   // When the user clicks the Beautify button, run a placeholder transformation.
   // In the real app this will call the LLM API to reformat the note.
