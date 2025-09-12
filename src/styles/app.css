@@ -3,10 +3,9 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, Roboto, -apple-system, system-ui, "Segoe UI", "Helvetica Neue", Arial;
+  font-family: Inter, Roboto, sans-serif;
   font-size: 16px;
-  line-height: 1.45;
-  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
 }
 
 button:focus,
@@ -17,10 +16,371 @@ textarea:focus {
   outline-offset: 2px;
 }
 
-/* Keep app layout unchanged for other pages */
-.app { display: flex; height: 100vh; overflow: hidden; }
+/* Layout */
+.app {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
 
-/* ======= Login / Auth styles (refined for a professional medical app) ======= */
+/* Sidebar navigation */
+.sidebar {
+  background: var(--panel-bg);
+  border-right: 1px solid var(--disabled);
+  width: 200px;
+  transition: width 0.3s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar.collapsed {
+  width: 60px;
+}
+
+.collapse-btn {
+  background: none;
+  border: none;
+  padding: 0.5rem;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 1.2rem;
+}
+
+.nav-items {
+  display: flex;
+  flex-direction: column;
+  margin-top: 1rem;
+}
+
+.nav-items button {
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 0.5rem 1rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.nav-items button:hover {
+  background: var(--disabled);
+}
+
+/* Content area (everything except sidebar) */
+.content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  align-items: center;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--disabled);
+}
+
+.toolbar button {
+  background: var(--primary);
+  color: #ffffff;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.toolbar button:disabled {
+  background: var(--disabled);
+  color: var(--text);
+  cursor: not-allowed;
+}
+
+.patient-input,
+.template-select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--disabled);
+  border-radius: 4px;
+  margin-right: 0.5rem;
+  font-size: 0.9rem;
+}
+
+/* Main content area below toolbar */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  padding: 1rem;
+  gap: 1rem;
+  background: var(--bg);
+}
+
+/* Editor wrapper containing tabs and content */
+.editor-wrapper {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--disabled);
+}
+
+.tab {
+  flex: 1;
+  padding: 0.5rem;
+  background: var(--disabled);
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--panel-bg);
+  border-bottom: 2px solid var(--primary);
+  color: var(--primary);
+}
+
+.tab.disabled {
+  background: var(--disabled);
+  color: #a0a7b3;
+  cursor: not-allowed;
+}
+
+.editor-area {
+  flex: 1;
+  padding: 0.5rem;
+  overflow-y: auto;
+}
+
+.beautified-view {
+  white-space: pre-wrap;
+}
+
+/* Card container used for the editor and suggestion panels */
+.card {
+  background: var(--panel-bg);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--disabled);
+  border-radius: 8px;
+  padding: 0.5rem;
+}
+
+/* Suggestion panel */
+.suggestion-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: var(--bg);
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  transform: translateX(0%);
+  opacity: 1;
+}
+
+.suggestion-panel .card {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  position: relative;
+}
+
+/* List styling inside suggestion cards */
+.suggestion-panel .card ul {
+  margin: 0.5rem 0 0 1rem;
+  padding: 0;
+  list-style: disc inside;
+}
+
+.suggestion-panel .card li {
+  margin: 0.2rem 0;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+/* Sliding behaviour: when collapsed, hide the panel by shifting it off screen */
+.suggestion-panel.collapsed {
+  transform: translateX(100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Drafts view styles */
+.drafts-view {
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.drafts-view h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+}
+
+.drafts-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.draft-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--panel-bg);
+  border: 1px solid var(--disabled);
+  border-radius: 8px;
+  padding: 0.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.draft-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.draft-open-btn {
+  background: none;
+  border: none;
+  color: var(--primary);
+  font-weight: bold;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  margin: 0;
+}
+.draft-open-btn:hover {
+  text-decoration: underline;
+}
+
+.draft-snippet {
+  font-size: 0.75rem;
+  color: var(--text);
+  margin-top: 0.25rem;
+}
+
+.draft-delete-btn {
+  background: none;
+  border: none;
+  color: #e53e3e;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.draft-delete-btn:hover {
+  color: #c53030;
+}
+
+/* Dashboard styles */
+.dashboard {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.dashboard h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.metric-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--disabled);
+  border-left: 4px solid var(--primary);
+  border-radius: 4px;
+  padding: 0.5rem;
+}
+
+.metric-card h3 {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.metric-card p {
+  margin: 0.1rem 0;
+  font-size: 0.75rem;
+}
+
+/* Help page styling */
+.help-page h2 {
+  margin-top: 0;
+  color: var(--primary);
+}
+
+.help-page h3 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--primary);
+  font-size: 1rem;
+}
+
+.help-page ul {
+  margin-left: 1.5rem;
+  list-style: disc;
+  padding-left: 0;
+}
+
+.help-page li {
+  margin-bottom: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+/* Settings page styling */
+.settings-page h2 {
+  margin-top: 0;
+  color: var(--primary);
+}
+
+.settings-page h3 {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--primary);
+  font-size: 1rem;
+}
+
+.settings-page label {
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+/* Accent borders for suggestion cards using additional palette colours */
+.card.codes {
+  border-left: 4px solid var(--accent-green);
+}
+
+.card.compliance {
+  border-left: 4px solid var(--accent-purple);
+}
+
+.card.public-health {
+  border-left: 4px solid var(--accent-light-blue);
+}
+
+.card.differentials {
+  border-left: 4px solid var(--accent-gold);
+}
+
+/* ======= Refined Login / Auth styles ======= */
 .auth-root {
   min-height: 100vh;
   display: flex;
@@ -30,7 +390,6 @@ textarea:focus {
   background: linear-gradient(180deg, rgba(30,58,138,0.04) 0%, transparent 50%);
 }
 
-/* Two-column area: primary auth card and right-side info */
 .auth-viewport {
   display: grid;
   grid-template-columns: 460px 260px;
@@ -40,7 +399,6 @@ textarea:focus {
   max-width: 980px;
 }
 
-/* Branding block inside left column */
 .auth-brand {
   display: flex;
   gap: 1rem;
@@ -70,7 +428,6 @@ textarea:focus {
   color: #475569;
 }
 
-/* Card container - fixed height with internal scroll to keep everything contained */
 .auth-card {
   background: var(--panel-bg);
   border: 1px solid var(--disabled);
@@ -84,7 +441,6 @@ textarea:focus {
   overflow: hidden;
 }
 
-/* Header area inside card */
 .auth-card .auth-card-header {
   display: flex;
   justify-content: space-between;
@@ -101,10 +457,9 @@ textarea:focus {
 
 .auth-subtle { color: #6b7280; font-size: 0.9rem; }
 
-/* Inner scroll region for the form - keeps action buttons visible */
 .auth-card .auth-card-body {
   overflow-y: auto;
-  padding-right: 6px; /* allow for scrollbar without layout shift */
+  padding-right: 6px;
 }
 
 .auth-form {
@@ -160,7 +515,6 @@ textarea:focus {
 
 .auth-link-button { background: none; border: none; color: var(--primary); cursor: pointer; padding: 0; font-size: 0.92rem; font-weight: 600; }
 
-/* Primary action kept fixed at bottom of card */
 .auth-card .auth-card-actions {
   display: flex;
   justify-content: space-between;
@@ -200,7 +554,6 @@ textarea:focus {
 .auth-help h3 { margin-top: 0; margin-bottom: 0.5rem; color: var(--primary); }
 .auth-help p { margin: 0; color: #374151; font-size: 0.95rem; }
 
-/* subtle right panel style: separate box with supportive content */
 .auth-help {
   background: #ffffffcc;
   border: 1px solid rgba(7,89,133,0.04);
@@ -210,11 +563,10 @@ textarea:focus {
   align-self: start;
 }
 
-/* responsive adjustments */
-@media (max-width: 920px) {
-  .auth-viewport { grid-template-columns: 1fr; max-width: 560px; }
-  .auth-help { order: 2; }
-  .auth-card { max-height: none; }
+/* Responsiveness */
+@media (max-width: 860px) {
+  .auth-viewport { grid-template-columns: 1fr; }
+  .auth-help { display: none; }
 }
 
 @media (max-width: 480px) {
