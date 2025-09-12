@@ -676,6 +676,18 @@ function App() {
                       onTranscriptChange={handleTranscriptChange}
                       specialty={settingsState.specialty}
                       payer={settingsState.payer}
+                      patientId={patientID}
+                      onPatientIdChange={(v) => setPatientID(v)}
+                      onSpecialtyChange={(v) => {
+                        const merged = { ...settingsState, specialty: v };
+                        setSettingsState(merged);
+                        updateSettings(merged);
+                      }}
+                      onPayerChange={(v) => {
+                        const merged = { ...settingsState, payer: v };
+                        setSettingsState(merged);
+                        updateSettings(merged);
+                      }}
                       defaultTemplateId={settingsState.template}
                       onTemplateChange={handleDefaultTemplateChange}
                       error={transcriptionError}
