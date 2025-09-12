@@ -225,6 +225,7 @@ textarea:focus {
   transition: transform 0.3s ease, opacity 0.3s ease;
   transform: translateX(0%);
   opacity: 1;
+  padding-left: 0.75rem; /* ensure visual separation from editor */
 }
 
 .suggestion-panel .card {
