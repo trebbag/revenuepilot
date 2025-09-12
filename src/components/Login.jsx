@@ -178,7 +178,7 @@ function Login({ onLoggedIn }) {
           </div>
 
           <div className="auth-card-body">
-            {!backendUp && !checking && (
+            {!backendUp && !checking && !offlineMode && (
               <div className="backend-warning" role="alert">
                 <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
                 <div className="backend-details">{diag || (getLastBackendError && getLastBackendError())}</div>
@@ -188,8 +188,13 @@ function Login({ onLoggedIn }) {
                 </details>
                 <div className="backend-actions">
                   <button type="button" className="auth-link-button" onClick={checkBackend} disabled={checking}>{checking ? (t('login.checking') || 'Checking...') : (t('login.retry') || 'Retry')}</button>
+                  <button type="button" className="auth-link-button" onClick={() => setOfflineMode(true)}>Proceed offline (simulate)</button>
                 </div>
               </div>
+            )}
+
+            {offlineMode && (
+              <div className="auth-info" role="status">Running in offline simulation mode — authentication is simulated locally for development.</div>
             )}
 
             <form id="auth-form" onSubmit={handleSubmit} className="auth-form" aria-busy={loading || checking}>
