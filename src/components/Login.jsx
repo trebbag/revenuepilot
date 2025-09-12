@@ -94,10 +94,6 @@ function Login({ onLoggedIn }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null); setInfo(null);
-    if (!backendUp) {
-      setError('Backend not reachable.');
-      return;
-    }
 
     if (!validUsername(username)) {
       setError('Please enter a valid username (at least 3 characters).');
@@ -122,8 +118,43 @@ function Login({ onLoggedIn }) {
       }
     }
 
+    if (!backendUp && !offlineMode) {
+      setError('Backend not reachable. Retry or use "Proceed offline" to simulate authentication for development.');
+      return;
+    }
+
     setLoading(true);
     try {
+      if (offlineMode) {
+        // Simulate successful authentication flows for development
+        if (mode === 'login') {
+          const token = 'offline-token';
+          const refreshToken = 'offline-refresh';
+          const settings = { lang, summaryLang: lang };
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('token', token);
+            localStorage.setItem('refreshToken', refreshToken);
+            if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+          }
+          onLoggedIn(token, settings);
+        } else if (mode === 'register') {
+          const token = 'offline-token-reg';
+          const refreshToken = 'offline-refresh-reg';
+          const settings = { lang, summaryLang: lang };
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('token', token);
+            localStorage.setItem('refreshToken', refreshToken);
+            if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+          }
+          onLoggedIn(token, settings);
+        } else if (mode === 'reset') {
+          setInfo(t('login.resetSuccess') || 'Password updated (simulated). You can now log in.');
+          setMode('login');
+          setPassword(''); setNewPassword('');
+        }
+        return;
+      }
+
       if (mode === 'login') {
         const { token, refreshToken, settings } = await login(username, password, lang);
         if (typeof window !== 'undefined') {
