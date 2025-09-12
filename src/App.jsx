@@ -688,6 +688,7 @@ function App() {
                         setSettingsState(merged);
                         updateSettings(merged);
                       }}
+                      onFileClick={() => { if (fileInputRef.current) fileInputRef.current.click(); }}
                       defaultTemplateId={settingsState.template}
                       onTemplateChange={handleDefaultTemplateChange}
                       error={transcriptionError}
