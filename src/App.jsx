@@ -613,24 +613,67 @@ function App() {
               >
                 {loadingSummary ? t('app.summarizing') : t('app.summarize')}
               </button>
-              <ClipboardExportButtons
-                beautified={beautified}
-                summary={summaryText}
-                patientID={patientID}
-                suggestions={suggestions}
-              />
+              {/* Primary actions */}
               <button
-                disabled={!patientID || !draftText.trim()}
-                onClick={() => {
-                  localStorage.setItem(`draft_${patientID}`, draftText);
-                  logEvent('note_saved', {
-                    patientID,
-                    length: draftText.length,
-                  }).catch(() => {});
-                }}
+                disabled={loadingBeautify || !draftText.trim()}
+                onClick={handleBeautify}
               >
-                {t('app.saveDraft')}
+                {loadingBeautify ? t('app.beautifying') : t('app.beautify')}
               </button>
+              <button
+                disabled={loadingSummary || !draftText.trim()}
+                onClick={handleSummarize}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                {loadingSummary ? t('app.summarizing') : t('app.summarize')}
+              </button>
+
+              {/* Compact "More" menu that holds secondary actions to reduce toolbar width */}
+              <div className="toolbar-menu" style={{ position: 'relative', marginLeft: '0.5rem' }}>
+                <button
+                  aria-haspopup="true"
+                  aria-expanded={showToolbarMenu}
+                  onClick={() => setShowToolbarMenu((s) => !s)}
+                >
+                  {t('app.more') || 'More'} ▾
+                </button>
+                {showToolbarMenu && (
+                  <div className="toolbar-menu-content" role="menu">
+                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <ClipboardExportButtons
+                        beautified={beautified}
+                        summary={summaryText}
+                        patientID={patientID}
+                        suggestions={suggestions}
+                      />
+                      <button
+                        disabled={!patientID || !draftText.trim()}
+                        onClick={() => {
+                          localStorage.setItem(`draft_${patientID}`, draftText);
+                          logEvent('note_saved', {
+                            patientID,
+                            length: draftText.length,
+                          }).catch(() => {});
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {t('app.saveDraft')}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (fileInputRef.current) fileInputRef.current.click();
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
+                      </button>
+                      <button onClick={() => { setShowSuggestions((s) => !s); setShowToolbarMenu(false); }}>
+                        {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
               {/* Upload an exported chart (text or PDF) */}
               <input
                 type="file"
