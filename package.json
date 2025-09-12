@@ -19,8 +19,10 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\"",
-    "test:smoke": "npx playwright test e2e/smoke-login.spec.js"
-  },
+    "test:smoke": "npx playwright test e2e/smoke-login.spec.js",
+    "mock": "node mock/server.js"
+    },
+    "dependencies": {
   "dependencies": {
     "chart.js": "^4.5.0",
     "dotenv": "^17.2.1",
@@ -105,4 +107,4 @@
     ],
     "icon": "assets/icon.png"
   }
-}
+}}
