@@ -234,10 +234,43 @@ export async function getSettings(token) {
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
-  const resp = await fetch(`${baseUrl}/settings`, {
-    headers: { Authorization: `Bearer ${auth}` },
-  });
-  if (!resp.ok) throw new Error('Failed to fetch settings');
+
+  // Try a few likely endpoints so the frontend is resilient to different
+  // backend path configurations (root /settings, /api/settings, etc.). If
+  // the server returns 401/403 propagate Unauthorized so callers can handle
+  // token refresh; otherwise fall back to an empty settings object so the
+  // UI can continue with defaults instead of failing loudly.
+  const endpoints = [`${baseUrl}/settings`, `${baseUrl}/api/settings`, `/settings`, `/api/settings`];
+  let lastErr = null;
+  let resp = null;
+  for (const url of endpoints) {
+    try {
+      resp = await fetch(url, { headers: { Authorization: `Bearer ${auth}` } });
+    } catch (e) {
+      // network error — remember and try next endpoint
+      lastErr = e;
+      continue;
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (resp.ok) break;
+    // non-auth client/server error — record and try next
+    try {
+      const txt = await resp.text();
+      lastErr = new Error(`HTTP ${resp.status}: ${txt}`);
+    } catch (e) {
+      lastErr = new Error(`HTTP ${resp.status}`);
+    }
+  }
+
+  if (!resp || !resp.ok) {
+    // Log underlying issue for diagnostics, but return an empty settings
+    // object so the application can continue using defaults.
+    __lastBackendError = lastErr ? lastErr.message || String(lastErr) : 'Failed to fetch settings';
+    return {};
+  }
+
   const data = await resp.json();
   const categories = data.categories || {};
   return {
