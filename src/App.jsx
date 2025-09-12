@@ -530,7 +530,23 @@ function App() {
     });
   }, [settingsState.theme]);
 
-  return (
+  return !token ? (
+    <Login
+      onLoggedIn={(tok, settings) => {
+        setToken(tok);
+        setRefreshToken(
+          typeof window !== 'undefined'
+            ? localStorage.getItem('refreshToken')
+            : null,
+        );
+        if (settings) {
+          const merged = { ...defaultSettings, ...settings };
+          updateSettings(merged);
+          i18n.changeLanguage(merged.lang);
+        }
+      }}
+    />
+  ) : (
     <div className="app">
       <Sidebar
         collapsed={sidebarCollapsed}
