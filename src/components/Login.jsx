@@ -305,7 +305,7 @@ function Login({ onLoggedIn }) {
           </div>
 
           <div className="auth-card-actions">
-            <button type="submit" form="auth-form" className="auth-button" disabled={loading || checking || !backendUp}>
+            <button type="submit" form="auth-form" className="auth-button" disabled={loading || checking}>
               {loading ? (t('login.pleaseWait') || 'Please wait…') : mode === 'login' ? (t('login.login') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Update password')}
             </button>
           </div>
