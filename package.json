@@ -21,8 +21,7 @@
     "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\"",
     "test:smoke": "npx playwright test e2e/smoke-login.spec.js",
     "mock": "node mock/server.js"
-    },
-    "dependencies": {
+  },
   "dependencies": {
     "chart.js": "^4.5.0",
     "dotenv": "^17.2.1",
@@ -41,8 +40,8 @@
     "cors": "^2.8.5",
     "body-parser": "^1.20.2",
     "jsonwebtoken": "^9.0.0"
-    },
-    "devDependencies": {
+  },
+  "devDependencies": {
     "@playwright/test": "^1.54.2",
     "@testing-library/react": "^16.3.0",
     "@vitejs/plugin-react": "^5.0.0",
@@ -111,4 +110,4 @@
     ],
     "icon": "assets/icon.png"
   }
-}}
+}
