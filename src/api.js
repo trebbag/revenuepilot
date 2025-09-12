@@ -167,7 +167,21 @@ function clearStoredTokens() {
 let refreshFailures = 0;
 
 async function authFetch(input, init = {}, retry = true) {
-  let resp = await rawFetch(input, init);
+  let resp;
+  try {
+    resp = await rawFetch(input, init);
+  } catch (e) {
+    // Network error (backend not reachable). Record last error and return
+    // a Response-like object so callers can handle a failed fetch without
+    // an uncaught TypeError.
+    __lastBackendError = (e && e.message) ? e.message : 'fetch_failed';
+    return {
+      ok: false,
+      status: 0,
+      json: async () => ({ detail: __lastBackendError }),
+      text: async () => __lastBackendError,
+    };
+  }
   if ((resp.status === 401 || resp.status === 403) && retry) {
     const refreshToken =
       typeof window !== 'undefined'
