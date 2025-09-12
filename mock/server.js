@@ -31,7 +31,9 @@ if (!users.has('demo')) {
 }
 
 function signAccessToken(username, role) {
-  return jwt.sign({ sub: username, role }, JWT_SECRET, { expiresIn: ACCESS_TTL });
+  return jwt.sign({ sub: username, role }, JWT_SECRET, {
+    expiresIn: ACCESS_TTL,
+  });
 }
 
 function createRefreshToken(username) {
@@ -42,9 +44,11 @@ function createRefreshToken(username) {
 
 function authMiddleware(req, res, next) {
   const auth = req.headers.authorization;
-  if (!auth) return res.status(401).json({ detail: 'Missing Authorization header' });
+  if (!auth)
+    return res.status(401).json({ detail: 'Missing Authorization header' });
   const parts = auth.split(' ');
-  if (parts.length !== 2) return res.status(401).json({ detail: 'Invalid Authorization header' });
+  if (parts.length !== 2)
+    return res.status(401).json({ detail: 'Invalid Authorization header' });
   const token = parts[1];
   try {
     const data = jwt.verify(token, JWT_SECRET);
@@ -61,31 +65,47 @@ app.get('/health', (req, res) => {
 
 app.post('/login', (req, res) => {
   const { username, password, lang } = req.body || {};
-  if (!username || !password) return res.status(400).json({ detail: 'Missing credentials' });
+  if (!username || !password)
+    return res.status(400).json({ detail: 'Missing credentials' });
   const u = users.get(username);
-  if (!u || u.password !== password) return res.status(401).json({ detail: 'Invalid username or password' });
+  if (!u || u.password !== password)
+    return res.status(401).json({ detail: 'Invalid username or password' });
   const access_token = signAccessToken(username, u.role);
   const refresh_token = createRefreshToken(username);
-  const settings = settingsStore.get(username) || { lang: lang || 'en', summaryLang: lang || 'en' };
+  const settings = settingsStore.get(username) || {
+    lang: lang || 'en',
+    summaryLang: lang || 'en',
+  };
   res.json({ access_token, refresh_token, settings });
 });
 
 app.post('/auth/register', (req, res) => {
   const { username, password, lang } = req.body || {};
-  if (!username || !password) return res.status(400).json({ detail: 'Missing fields' });
-  if (users.has(username)) return res.status(409).json({ detail: 'User exists' });
+  if (!username || !password)
+    return res.status(400).json({ detail: 'Missing fields' });
+  if (users.has(username))
+    return res.status(409).json({ detail: 'User exists' });
   users.set(username, { password, role: 'user' });
-  settingsStore.set(username, { theme: 'modern', lang: lang || 'en', summaryLang: lang || 'en' });
+  settingsStore.set(username, {
+    theme: 'modern',
+    lang: lang || 'en',
+    summaryLang: lang || 'en',
+  });
   const access_token = signAccessToken(username, 'user');
   const refresh_token = createRefreshToken(username);
-  res.json({ access_token, refresh_token, settings: settingsStore.get(username) });
+  res.json({
+    access_token,
+    refresh_token,
+    settings: settingsStore.get(username),
+  });
 });
 
 app.post('/register', (req, res) => app._router.handle(req, res, () => {})); // alias handled above
 
 app.post('/refresh', (req, res) => {
   const { refresh_token } = req.body || {};
-  if (!refresh_token) return res.status(400).json({ detail: 'No refresh token' });
+  if (!refresh_token)
+    return res.status(400).json({ detail: 'No refresh token' });
   const stored = refreshStore.get(refresh_token);
   if (!stored) return res.status(401).json({ detail: 'Invalid refresh token' });
   const username = stored.username;
@@ -96,8 +116,21 @@ app.post('/refresh', (req, res) => {
 
 app.get('/settings', authMiddleware, (req, res) => {
   const username = req.user.username;
-  const s = settingsStore.get(username) || { theme: 'modern', lang: 'en', summaryLang: 'en' };
-  res.json({ ...s, categories: { codes: true, compliance: true, publicHealth: true, differentials: true }, rules: [] });
+  const s = settingsStore.get(username) || {
+    theme: 'modern',
+    lang: 'en',
+    summaryLang: 'en',
+  };
+  res.json({
+    ...s,
+    categories: {
+      codes: true,
+      compliance: true,
+      publicHealth: true,
+      differentials: true,
+    },
+    rules: [],
+  });
 });
 
 app.post('/settings', authMiddleware, (req, res) => {
@@ -109,20 +142,37 @@ app.post('/settings', authMiddleware, (req, res) => {
 
 app.get('/transcribe', authMiddleware, (req, res) => {
   // Return a small static transcript for UX testing
-  res.json({ provider: 'Dr. Smith', patient: 'Jane Doe', segments: [{ text: 'Patient reports mild headache.' }] });
+  res.json({
+    provider: 'Dr. Smith',
+    patient: 'Jane Doe',
+    segments: [{ text: 'Patient reports mild headache.' }],
+  });
 });
 
 app.post('/suggest', authMiddleware, (req, res) => {
   const { text } = req.body || {};
   // Return deterministic stub suggestions
-  const codes = text && text.toLowerCase().includes('cough') ? [{ code: '99213', rationale: 'Visit level' }] : [{ code: '99214', rationale: 'Complex visit' }];
-  res.json({ codes, compliance: ['Ensure follow-up'], publicHealth: [], differentials: [{ diagnosis: 'Viral upper respiratory infection', score: 0.7 }] });
+  const codes =
+    text && text.toLowerCase().includes('cough')
+      ? [{ code: '99213', rationale: 'Visit level' }]
+      : [{ code: '99214', rationale: 'Complex visit' }];
+  res.json({
+    codes,
+    compliance: ['Ensure follow-up'],
+    publicHealth: [],
+    differentials: [
+      { diagnosis: 'Viral upper respiratory infection', score: 0.7 },
+    ],
+  });
 });
 
 app.post('/beautify', authMiddleware, (req, res) => {
   const { text } = req.body || {};
   if (!text) return res.status(400).json({ detail: 'Missing text' });
-  const beautified = text.trim().replace(/\s+/g, ' ').replace(/\s+([.,!?;:])/g, '$1');
+  const beautified = text
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([.,!?;:])/g, '$1');
   res.json({ beautified });
 });
 
@@ -154,5 +204,7 @@ app.get('/events', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Mock RevenuePilot backend listening on http://localhost:${PORT}`);
+  console.log(
+    `Mock RevenuePilot backend listening on http://localhost:${PORT}`,
+  );
 });

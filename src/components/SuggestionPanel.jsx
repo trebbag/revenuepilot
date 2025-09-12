@@ -35,7 +35,10 @@ function SuggestionPanel({
     if (!fetchSuggestions || typeof text !== 'string') return undefined;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchSuggestions(text, { specialty: parentSpecialty, payer: parentPayer });
+      fetchSuggestions(text, {
+        specialty: parentSpecialty,
+        payer: parentPayer,
+      });
     }, 300);
     return () => clearTimeout(debounceRef.current);
   }, [text, fetchSuggestions, parentSpecialty, parentPayer]);

@@ -1,11 +1,27 @@
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
-import { login, resetPassword, register, pingBackend, getLastBackendError } from '../api.js';
+import {
+  login,
+  resetPassword,
+  register,
+  pingBackend,
+  getLastBackendError,
+} from '../api.js';
 
 // Detect Electron renderer context (simplistic)
-const isElectron = typeof window !== 'undefined' && !!window.require && !!window.process && window.process.type === 'renderer';
+const isElectron =
+  typeof window !== 'undefined' &&
+  !!window.require &&
+  !!window.process &&
+  window.process.type === 'renderer';
 let ipcRenderer = null;
-try { if (isElectron) { ipcRenderer = window.require('electron').ipcRenderer; } } catch { /* ignore */ }
+try {
+  if (isElectron) {
+    ipcRenderer = window.require('electron').ipcRenderer;
+  }
+} catch {
+  /* ignore */
+}
 
 /**
  * Unified authentication form for RevenuePilot with improved UX, styling and
@@ -47,13 +63,21 @@ function Login({ onLoggedIn }) {
     if (!ok) setDiag(getLastBackendError && getLastBackendError());
   }, []);
 
-  useEffect(() => { checkBackend(); }, [checkBackend]);
+  useEffect(() => {
+    checkBackend();
+  }, [checkBackend]);
 
   useEffect(() => {
     if (!ipcRenderer) return;
-    const handleReady = () => { checkBackend(); };
-    const handleFailed = () => { setBackendUp(false); };
-    const handleDiagnostics = (_event, payload) => { setDiag(payload); };
+    const handleReady = () => {
+      checkBackend();
+    };
+    const handleFailed = () => {
+      setBackendUp(false);
+    };
+    const handleDiagnostics = (_event, payload) => {
+      setDiag(payload);
+    };
     ipcRenderer.on('backend-ready', handleReady);
     ipcRenderer.on('backend-failed', handleFailed);
     ipcRenderer.on('backend-diagnostics', handleDiagnostics);
@@ -93,7 +117,8 @@ function Login({ onLoggedIn }) {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError(null); setInfo(null);
+    setError(null);
+    setInfo(null);
 
     if (!validUsername(username)) {
       setError('Please enter a valid username (at least 3 characters).');
@@ -119,7 +144,9 @@ function Login({ onLoggedIn }) {
     }
 
     if (!backendUp && !offlineMode) {
-      setError('Backend not reachable. Retry or use "Proceed offline" to simulate authentication for development.');
+      setError(
+        'Backend not reachable. Retry or use "Proceed offline" to simulate authentication for development.',
+      );
       return;
     }
 
@@ -134,7 +161,8 @@ function Login({ onLoggedIn }) {
           if (typeof window !== 'undefined') {
             localStorage.setItem('token', token);
             localStorage.setItem('refreshToken', refreshToken);
-            if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+            if (rememberUsername)
+              localStorage.setItem('rememberedUsername', username);
           }
           onLoggedIn(token, settings);
         } else if (mode === 'register') {
@@ -144,44 +172,66 @@ function Login({ onLoggedIn }) {
           if (typeof window !== 'undefined') {
             localStorage.setItem('token', token);
             localStorage.setItem('refreshToken', refreshToken);
-            if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+            if (rememberUsername)
+              localStorage.setItem('rememberedUsername', username);
           }
           onLoggedIn(token, settings);
         } else if (mode === 'reset') {
-          setInfo(t('login.resetSuccess') || 'Password updated (simulated). You can now log in.');
+          setInfo(
+            t('login.resetSuccess') ||
+              'Password updated (simulated). You can now log in.',
+          );
           setMode('login');
-          setPassword(''); setNewPassword('');
+          setPassword('');
+          setNewPassword('');
         }
         return;
       }
 
       if (mode === 'login') {
-        const { token, refreshToken, settings } = await login(username, password, lang);
+        const { token, refreshToken, settings } = await login(
+          username,
+          password,
+          lang,
+        );
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
-          if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+          if (rememberUsername)
+            localStorage.setItem('rememberedUsername', username);
           else localStorage.removeItem('rememberedUsername');
         }
-        const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
+        const newSettings = settings
+          ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+          : { lang, summaryLang: lang };
         onLoggedIn(token, newSettings);
       } else if (mode === 'register') {
-        const { token, refreshToken, settings } = await register(username, password, lang);
+        const { token, refreshToken, settings } = await register(
+          username,
+          password,
+          lang,
+        );
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
-          if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+          if (rememberUsername)
+            localStorage.setItem('rememberedUsername', username);
         }
-        const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
+        const newSettings = settings
+          ? { ...settings, lang, summaryLang: settings.summaryLang || lang }
+          : { lang, summaryLang: lang };
         onLoggedIn(token, newSettings);
       } else if (mode === 'reset') {
         await resetPassword(username, password, newPassword);
-        setInfo(t('login.resetSuccess') || 'Password updated. You can now log in.');
+        setInfo(
+          t('login.resetSuccess') || 'Password updated. You can now log in.',
+        );
         setMode('login');
-        setPassword(''); setNewPassword('');
+        setPassword('');
+        setNewPassword('');
       }
     } catch (err) {
-      setError((err && err.message) ? err.message : 'Operation failed');
+      setError(err && err.message ? err.message : 'Operation failed');
       if (typeof window !== 'undefined') {
         localStorage.removeItem('token');
         localStorage.removeItem('refreshToken');
@@ -195,51 +245,128 @@ function Login({ onLoggedIn }) {
     <div className="auth-root">
       <div className="auth-viewport">
         <div className="auth-brand">
-          <img src="/assets/icon.png" alt="RevenuePilot" className="auth-logo" />
+          <img
+            src="/assets/icon.png"
+            alt="RevenuePilot"
+            className="auth-logo"
+          />
           <div className="auth-brand-text">
             <h1 className="auth-app">RevenuePilot</h1>
-            <p className="auth-tagline">Clinical documentation that improves outcomes and revenue.</p>
+            <p className="auth-tagline">
+              Clinical documentation that improves outcomes and revenue.
+            </p>
           </div>
         </div>
 
         <div className="auth-card">
           <div className="auth-card-header">
-            <h2 className="auth-title">{mode === 'login' ? (t('login.title') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Reset password')}</h2>
-            <div className="auth-subtle">{mode === 'login' ? (t('login.subtitle') || 'Secure access to RevenuePilot') : null}</div>
+            <h2 className="auth-title">
+              {mode === 'login'
+                ? t('login.title') || 'Sign in'
+                : mode === 'register'
+                  ? t('login.register') || 'Create account'
+                  : t('login.resetPassword') || 'Reset password'}
+            </h2>
+            <div className="auth-subtle">
+              {mode === 'login'
+                ? t('login.subtitle') || 'Secure access to RevenuePilot'
+                : null}
+            </div>
           </div>
 
           <div className="auth-card-body">
             {!backendUp && !checking && !offlineMode && (
               <div className="backend-warning" role="alert">
-                <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
-                <div className="backend-details">{diag || (getLastBackendError && getLastBackendError())}</div>
+                <strong>
+                  {t('login.backendUnavailable') || 'Backend not reachable.'}
+                </strong>
+                <div className="backend-details">
+                  {diag || (getLastBackendError && getLastBackendError())}
+                </div>
                 <details className="backend-log">
                   <summary>Startup log (tail)</summary>
-                  <pre className="backend-log-pre">{diag && diag.logTail ? diag.logTail.join('\n') : ''}</pre>
+                  <pre className="backend-log-pre">
+                    {diag && diag.logTail ? diag.logTail.join('\n') : ''}
+                  </pre>
                 </details>
                 <div className="backend-actions">
-                  <button type="button" className="auth-link-button" onClick={checkBackend} disabled={checking}>{checking ? (t('login.checking') || 'Checking...') : (t('login.retry') || 'Retry')}</button>
-                  <button type="button" className="auth-link-button" onClick={() => setOfflineMode(true)}>Proceed offline (simulate)</button>
+                  <button
+                    type="button"
+                    className="auth-link-button"
+                    onClick={checkBackend}
+                    disabled={checking}
+                  >
+                    {checking
+                      ? t('login.checking') || 'Checking...'
+                      : t('login.retry') || 'Retry'}
+                  </button>
+                  <button
+                    type="button"
+                    className="auth-link-button"
+                    onClick={() => setOfflineMode(true)}
+                  >
+                    Proceed offline (simulate)
+                  </button>
                 </div>
               </div>
             )}
 
             {offlineMode && (
-              <div className="auth-info" role="status">Running in offline simulation mode — authentication is simulated locally for development.</div>
+              <div className="auth-info" role="status">
+                Running in offline simulation mode — authentication is simulated
+                locally for development.
+              </div>
             )}
 
-            <form id="auth-form" onSubmit={handleSubmit} className="auth-form" aria-busy={loading || checking}>
+            <form
+              id="auth-form"
+              onSubmit={handleSubmit}
+              className="auth-form"
+              aria-busy={loading || checking}
+            >
               <label className="auth-label">
                 <span> {t('login.username') || 'Email or username'}</span>
-                <input className="auth-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="username" aria-label="username" />
+                <input
+                  className="auth-input"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                  autoComplete="username"
+                  aria-label="username"
+                />
               </label>
 
               {mode !== 'register' && (
                 <label className="auth-label">
-                  <span>{mode === 'reset' ? (t('login.currentPassword') || 'Current password') : (t('login.password') || 'Password')}</span>
+                  <span>
+                    {mode === 'reset'
+                      ? t('login.currentPassword') || 'Current password'
+                      : t('login.password') || 'Password'}
+                  </span>
                   <div className="auth-password-row">
-                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete={mode === 'register' ? 'new-password' : 'current-password'} aria-label="password" />
-                    <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword} aria-label="Toggle password visibility">{showPassword ? 'Hide' : 'Show'}</button>
+                    <input
+                      className="auth-input"
+                      type={showPassword ? 'text' : 'password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      autoComplete={
+                        mode === 'register'
+                          ? 'new-password'
+                          : 'current-password'
+                      }
+                      aria-label="password"
+                    />
+                    <button
+                      type="button"
+                      className="show-password"
+                      onClick={() => setShowPassword((s) => !s)}
+                      aria-pressed={showPassword}
+                      aria-label="Toggle password visibility"
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
                   </div>
                 </label>
               )}
@@ -249,15 +376,35 @@ function Login({ onLoggedIn }) {
                   <label className="auth-label">
                     <span>{t('login.password') || 'Password'}</span>
                     <div className="auth-password-row">
-                      <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
-                      <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword}>{showPassword ? 'Hide' : 'Show'}</button>
+                      <input
+                        className="auth-input"
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        autoComplete="new-password"
+                        aria-label="new-password"
+                      />
+                      <button
+                        type="button"
+                        className="show-password"
+                        onClick={() => setShowPassword((s) => !s)}
+                        aria-pressed={showPassword}
+                      >
+                        {showPassword ? 'Hide' : 'Show'}
+                      </button>
                     </div>
                     {password && (
                       <div className="password-strength">
-                        <div className="strength-label">{strengthLabel(passwordScore(password))}</div>
+                        <div className="strength-label">
+                          {strengthLabel(passwordScore(password))}
+                        </div>
                         <div className="strength-bars">
                           {Array.from({ length: 5 }).map((_, i) => (
-                            <div key={i} className={`strength-bar ${i < passwordScore(password) ? 'active' : ''}`} />
+                            <div
+                              key={i}
+                              className={`strength-bar ${i < passwordScore(password) ? 'active' : ''}`}
+                            />
                           ))}
                         </div>
                       </div>
@@ -265,8 +412,18 @@ function Login({ onLoggedIn }) {
                   </label>
 
                   <label className="auth-label">
-                    <span>{t('login.confirmPassword') || 'Confirm password'}</span>
-                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required autoComplete="new-password" aria-label="confirm-password" />
+                    <span>
+                      {t('login.confirmPassword') || 'Confirm password'}
+                    </span>
+                    <input
+                      className="auth-input"
+                      type={showPassword ? 'text' : 'password'}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                      autoComplete="new-password"
+                      aria-label="confirm-password"
+                    />
                   </label>
                 </>
               )}
@@ -274,15 +431,35 @@ function Login({ onLoggedIn }) {
               {mode === 'reset' && (
                 <label className="auth-label">
                   <span>{t('login.newPassword') || 'New password'}</span>
-                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
+                  <input
+                    className="auth-input"
+                    type={showPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                    autoComplete="new-password"
+                    aria-label="new-password"
+                  />
                 </label>
               )}
 
               <label className="auth-label compact">
                 <span>{t('settings.language') || 'Language'}</span>
-                <select className="auth-select" value={lang} onChange={(e) => { const l = e.target.value; setLang(l); i18n.changeLanguage(l); }}>
-                  <option value="en">{t('settings.english') || 'English'}</option>
-                  <option value="es">{t('settings.spanish') || 'Spanish'}</option>
+                <select
+                  className="auth-select"
+                  value={lang}
+                  onChange={(e) => {
+                    const l = e.target.value;
+                    setLang(l);
+                    i18n.changeLanguage(l);
+                  }}
+                >
+                  <option value="en">
+                    {t('settings.english') || 'English'}
+                  </option>
+                  <option value="es">
+                    {t('settings.spanish') || 'Spanish'}
+                  </option>
                   <option value="fr">{t('settings.french') || 'French'}</option>
                   <option value="de">{t('settings.german') || 'German'}</option>
                 </select>
@@ -290,33 +467,104 @@ function Login({ onLoggedIn }) {
 
               <div className="auth-row">
                 <label className="remember">
-                  <input type="checkbox" checked={rememberUsername} onChange={(e) => setRememberUsername(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={rememberUsername}
+                    onChange={(e) => setRememberUsername(e.target.checked)}
+                  />
                   <span>Remember username</span>
                 </label>
 
                 {mode === 'login' && (
-                  <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Forgot?</button>
+                  <button
+                    type="button"
+                    className="auth-link-button"
+                    onClick={() => {
+                      setMode('reset');
+                      setError(null);
+                      setInfo(null);
+                    }}
+                  >
+                    Forgot?
+                  </button>
                 )}
               </div>
 
-              {error && (<div className="auth-error" role="alert" data-testid="login-error">{error}</div>)}
-              {info && (<div className="auth-info" role="status" data-testid="login-info">{info}</div>)}
+              {error && (
+                <div
+                  className="auth-error"
+                  role="alert"
+                  data-testid="login-error"
+                >
+                  {error}
+                </div>
+              )}
+              {info && (
+                <div
+                  className="auth-info"
+                  role="status"
+                  data-testid="login-info"
+                >
+                  {info}
+                </div>
+              )}
             </form>
           </div>
 
           <div className="auth-card-actions">
-            <button type="submit" form="auth-form" className="auth-button" disabled={loading || checking}>
-              {loading ? (t('login.pleaseWait') || 'Please wait…') : mode === 'login' ? (t('login.login') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Update password')}
+            <button
+              type="submit"
+              form="auth-form"
+              className="auth-button"
+              disabled={loading || checking}
+            >
+              {loading
+                ? t('login.pleaseWait') || 'Please wait…'
+                : mode === 'login'
+                  ? t('login.login') || 'Sign in'
+                  : mode === 'register'
+                    ? t('login.register') || 'Create account'
+                    : t('login.resetPassword') || 'Update password'}
             </button>
           </div>
 
           <div className="auth-footer">
             {mode !== 'login' ? (
-              <button type="button" className="auth-link-button" onClick={() => { setMode('login'); setError(null); setInfo(null); }}>Back to sign in</button>
+              <button
+                type="button"
+                className="auth-link-button"
+                onClick={() => {
+                  setMode('login');
+                  setError(null);
+                  setInfo(null);
+                }}
+              >
+                Back to sign in
+              </button>
             ) : (
               <>
-                <button type="button" className="auth-link-button" onClick={() => { setMode('register'); setError(null); setInfo(null); }}>Create account</button>
-                <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Reset password</button>
+                <button
+                  type="button"
+                  className="auth-link-button"
+                  onClick={() => {
+                    setMode('register');
+                    setError(null);
+                    setInfo(null);
+                  }}
+                >
+                  Create account
+                </button>
+                <button
+                  type="button"
+                  className="auth-link-button"
+                  onClick={() => {
+                    setMode('reset');
+                    setError(null);
+                    setInfo(null);
+                  }}
+                >
+                  Reset password
+                </button>
               </>
             )}
           </div>
@@ -324,7 +572,10 @@ function Login({ onLoggedIn }) {
 
         <div className="auth-help">
           <h3>Why RevenuePilot?</h3>
-          <p>Write notes faster with AI-assisted drafting, export to FHIR, and keep your documentation compliant.</p>
+          <p>
+            Write notes faster with AI-assisted drafting, export to FHIR, and
+            keep your documentation compliant.
+          </p>
         </div>
       </div>
     </div>

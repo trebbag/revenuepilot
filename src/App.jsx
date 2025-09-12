@@ -112,7 +112,9 @@ function App() {
       patientID
     ) {
       // Log a note_started event when the user begins typing a new draft
-      logEvent('note_started', { patientID, length: draftText.length }).catch(() => {});
+      logEvent('note_started', { patientID, length: draftText.length }).catch(
+        () => {},
+      );
     }
     prevDraftRef.current = draftText;
   }, [draftText, patientID]);
@@ -278,7 +280,6 @@ function App() {
       .then((data) => setBaseTemplates(data))
       .catch(() => setBaseTemplates([]));
   }, []);
-
 
   // When the user clicks the Beautify button, run a placeholder transformation.
   // In the real app this will call the LLM API to reformat the note.
@@ -497,7 +498,6 @@ function App() {
     }));
   };
 
-
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
     const themes = {
@@ -587,7 +587,10 @@ function App() {
               </button>
 
               {/* Compact "More" menu that holds secondary actions to reduce toolbar width */}
-              <div className="toolbar-menu" style={{ position: 'relative', marginLeft: '0.5rem' }}>
+              <div
+                className="toolbar-menu"
+                style={{ position: 'relative', marginLeft: '0.5rem' }}
+              >
                 <button
                   aria-haspopup="true"
                   aria-expanded={showToolbarMenu}
@@ -597,7 +600,14 @@ function App() {
                 </button>
                 {showToolbarMenu && (
                   <div className="toolbar-menu-content" role="menu">
-                    <div style={{ padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    <div
+                      style={{
+                        padding: '0.5rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.25rem',
+                      }}
+                    >
                       <ClipboardExportButtons
                         beautified={beautified}
                         summary={summaryText}
@@ -619,14 +629,24 @@ function App() {
                       </button>
                       <button
                         onClick={() => {
-                          if (fileInputRef.current) fileInputRef.current.click();
+                          if (fileInputRef.current)
+                            fileInputRef.current.click();
                           setShowToolbarMenu(false);
                         }}
                       >
-                        {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
+                        {chartFileName
+                          ? t('app.changeChart')
+                          : t('app.uploadChart')}
                       </button>
-                      <button onClick={() => { setShowSuggestions((s) => !s); setShowToolbarMenu(false); }}>
-                        {showSuggestions ? t('app.hideSuggestions') : t('app.showSuggestions')}
+                      <button
+                        onClick={() => {
+                          setShowSuggestions((s) => !s);
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {showSuggestions
+                          ? t('app.hideSuggestions')
+                          : t('app.showSuggestions')}
                       </button>
                     </div>
                   </div>
@@ -667,7 +687,6 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-
                     <NoteEditor
                       ref={editorRef}
                       id="draft-input"
@@ -688,7 +707,9 @@ function App() {
                         setSettingsState(merged);
                         updateSettings(merged);
                       }}
-                      onFileClick={() => { if (fileInputRef.current) fileInputRef.current.click(); }}
+                      onFileClick={() => {
+                        if (fileInputRef.current) fileInputRef.current.click();
+                      }}
                       defaultTemplateId={settingsState.template}
                       onTemplateChange={handleDefaultTemplateChange}
                       error={transcriptionError}
@@ -707,7 +728,6 @@ function App() {
                   ) : (
                     <div className="beautified-view">{summaryText}</div>
                   )}
-
                 </div>
                 {audioTranscript.segments.length > 0 && (
                   <TranscriptView
