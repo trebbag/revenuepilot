@@ -125,6 +125,8 @@ function App() {
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [baseTemplates, setBaseTemplates] = useState([]);
   const [templateContext, setTemplateContext] = useState('');
+  // Toolbar menu state for grouping secondary actions
+  const [showToolbarMenu, setShowToolbarMenu] = useState(false);
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
