@@ -288,38 +288,6 @@ function SuggestionPanel({
 
   return (
     <div className={`suggestion-panel ${className}`}>
-      <div style={{ marginBottom: '0.5rem' }}>
-        <label style={{ marginRight: '0.5rem' }}>
-          {t('settings.specialty')}
-          <select
-            value={specialty}
-            onChange={onSpecialtyChange}
-            style={{ marginLeft: '0.25rem' }}
-          >
-            <option value="">--</option>
-            {specialtyOptions.map((s) => (
-              <option key={s} value={s}>
-                {t(`settings.specialties.${s}`) || s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {t('settings.payer')}
-          <select
-            value={payer}
-            onChange={onPayerChange}
-            style={{ marginLeft: '0.25rem' }}
-          >
-            <option value="">--</option>
-            {payerOptions.map((p) => (
-              <option key={p} value={p}>
-                {t(`settings.payers.${p}`) || p}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
       {cards.map(({ type, key, title, items }) => (
         <div key={type} className={`card ${type}`}>
           <div
