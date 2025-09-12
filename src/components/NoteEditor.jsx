@@ -703,18 +703,24 @@ const NoteEditor = forwardRef(function NoteEditor(
               flexDirection: 'column',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center' }}>
-              {sidebar}
-              {isNarrow && (
-                <button
-                  type="button"
-                  onClick={() => setPanelOpen(false)}
-                  style={{ marginLeft: 'auto' }}
-                  aria-label={t('app.hideSuggestions') || 'Hide Suggestions'}
-                >
-                  ×
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {/* Bundle audio controls and transcript controls above the editor */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {audioControls}
+                {transcriptControls}
+              </div>
+
+              {/* Templates dropdown */}
+              <div style={{ position: 'relative' }}>
+                <button type="button" onClick={() => setShowTemplateDropdown((s) => !s)}>
+                  Templates ▾
                 </button>
-              )}
+                {showTemplateDropdown && (
+                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: 'var(--panel-bg)', border: '1px solid var(--disabled)', boxShadow: '0 6px 12px rgba(0,0,0,0.08)', borderRadius: '6px', zIndex: 30, minWidth: '220px', padding: '0.5rem' }}>
+                    {templateList}
+                  </div>
+                )}
+              </div>
             </div>
             <div style={{ flex: 1, overflow: 'auto', marginTop: '0.5rem' }}>
               <SuggestionPanel
