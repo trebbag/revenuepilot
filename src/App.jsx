@@ -101,6 +101,10 @@ function App() {
   // Ref for the hidden chart file input
   const fileInputRef = useRef(null);
 
+  // Track the current patient ID for draft saving
+  const [patientID, setPatientID] = useState('');
+  const [encounterID, setEncounterID] = useState('');
+
   useEffect(() => {
     if (
       prevDraftRef.current.trim() === '' &&
@@ -121,10 +125,6 @@ function App() {
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [baseTemplates, setBaseTemplates] = useState([]);
   const [templateContext, setTemplateContext] = useState('');
-
-  // Track the current patient ID for draft saving
-    const [patientID, setPatientID] = useState('');
-    const [encounterID, setEncounterID] = useState('');
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
