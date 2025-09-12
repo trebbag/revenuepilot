@@ -371,22 +371,19 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const templateList = templates.length ? (
     <div>
-      <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
+      <ul style={{ listStyle: 'none', paddingLeft: 0, margin: 0 }}>
         {templates.map((tpl) => (
           <li key={tpl.id} style={{ marginBottom: '0.25rem' }}>
-            <button type="button" onClick={() => handleTemplateClick(tpl)}>
+            <button type="button" onClick={() => { handleTemplateClick(tpl); setShowTemplateDropdown(false); }}>
               {tpl.name}
             </button>
           </li>
         ))}
       </ul>
-      {/* Also display transcript insert controls here so tests/finders can access without switching tabs */}
-      {transcriptControls}
     </div>
   ) : (
-    <div>
+    <div style={{ padding: '0.5rem' }}>
       <p>{t('settings.noTemplates')}</p>
-      {transcriptControls}
     </div>
   );
 
