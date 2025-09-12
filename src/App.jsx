@@ -578,22 +578,6 @@ function App() {
                 onChange={(e) => setPatientID(e.target.value)}
                 className="patient-input"
               />
-              <select
-                value={settingsState.summaryLang}
-                onChange={(e) => setSettingsState({ ...settingsState, summaryLang: e.target.value })}
-                aria-label={t('app.patientLanguage')}
-              >
-                <option value="en">English</option>
-                <option value="es">Español</option>
-              </select>
-              <input
-                type="number"
-                placeholder={t('app.patientAge')}
-                value={age}
-                onChange={(e) => setAge(e.target.value)}
-                className="patient-age-input"
-                style={{ width: '4rem', marginLeft: '0.5rem' }}
-              />
               {/* Primary actions */}
               <button
                 disabled={loadingBeautify || !draftText.trim()}
