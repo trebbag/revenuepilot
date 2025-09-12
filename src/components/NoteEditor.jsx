@@ -873,8 +873,7 @@ const NoteEditor = forwardRef(function NoteEditor(
           </div>
         )}
       </div>
-      {sidebar}
-      {/* Suggestion panel also rendered in fallback mode for tests */}
+      {/* Suggestion panel rendered to the right for suggestions */}
       <div style={{ width: '250px', marginLeft: '0.5rem' }}>
         <SuggestionPanel
           suggestions={suggestions || { codes: [], compliance: [], publicHealth: [], differentials: [] }}
