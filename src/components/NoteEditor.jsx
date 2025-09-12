@@ -825,7 +825,22 @@ const NoteEditor = forwardRef(function NoteEditor(
         </div>
         {activeTab === 'draft' && (
           <>
-            {audioControls}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {audioControls}
+                {transcriptControls}
+              </div>
+              <div style={{ position: 'relative' }}>
+                <button type="button" onClick={() => setShowTemplateDropdown((s) => !s)}>
+                  Templates ▾
+                </button>
+                {showTemplateDropdown && (
+                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', right: 0, background: 'var(--panel-bg)', border: '1px solid var(--disabled)', boxShadow: '0 6px 12px rgba(0,0,0,0.08)', borderRadius: '6px', zIndex: 30, minWidth: '220px', padding: '0.5rem' }}>
+                    {templateList}
+                  </div>
+                )}
+              </div>
+            </div>
             <textarea
               ref={textAreaRef}
               id={id}
