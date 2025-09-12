@@ -29,6 +29,7 @@ function Login({ onLoggedIn }) {
   const [diag, setDiag] = useState(null);
   const [showPassword, setShowPassword] = useState(false);
   const [rememberUsername, setRememberUsername] = useState(true);
+  const [offlineMode, setOfflineMode] = useState(false);
 
   useEffect(() => {
     // restore remembered username
