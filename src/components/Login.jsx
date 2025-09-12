@@ -171,100 +171,107 @@ function Login({ onLoggedIn }) {
         </div>
 
         <div className="auth-card">
-          <h2 className="auth-title">{mode === 'login' ? (t('login.title') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Reset password')}</h2>
+          <div className="auth-card-header">
+            <h2 className="auth-title">{mode === 'login' ? (t('login.title') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Reset password')}</h2>
+            <div className="auth-subtle">{mode === 'login' ? (t('login.subtitle') || 'Secure access to RevenuePilot') : null}</div>
+          </div>
 
-          {!backendUp && !checking && (
-            <div className="backend-warning" role="alert">
-              <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
-              <div className="backend-details">{diag || getLastBackendError && getLastBackendError()}</div>
-              <details className="backend-log">
-                <summary>Startup log (tail)</summary>
-                <pre className="backend-log-pre">{diag && diag.logTail ? diag.logTail.join('\n') : ''}</pre>
-              </details>
-              <div className="backend-actions">
-                <button type="button" className="auth-link-button" onClick={checkBackend} disabled={checking}>{checking ? (t('login.checking') || 'Checking...') : (t('login.retry') || 'Retry')}</button>
-              </div>
-            </div>
-          )}
-
-          <form onSubmit={handleSubmit} className="auth-form" aria-busy={loading || checking}>
-            <label className="auth-label">
-              <span> {t('login.username') || 'Email or username'}</span>
-              <input className="auth-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="username" aria-label="username" />
-            </label>
-
-            {mode !== 'register' && (
-              <label className="auth-label">
-                <span>{mode === 'reset' ? (t('login.currentPassword') || 'Current password') : (t('login.password') || 'Password')}</span>
-                <div className="auth-password-row">
-                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete={mode === 'register' ? 'new-password' : 'current-password'} aria-label="password" />
-                  <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword} aria-label="Toggle password visibility">{showPassword ? 'Hide' : 'Show'}</button>
+          <div className="auth-card-body">
+            {!backendUp && !checking && (
+              <div className="backend-warning" role="alert">
+                <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
+                <div className="backend-details">{diag || (getLastBackendError && getLastBackendError())}</div>
+                <details className="backend-log">
+                  <summary>Startup log (tail)</summary>
+                  <pre className="backend-log-pre">{diag && diag.logTail ? diag.logTail.join('\n') : ''}</pre>
+                </details>
+                <div className="backend-actions">
+                  <button type="button" className="auth-link-button" onClick={checkBackend} disabled={checking}>{checking ? (t('login.checking') || 'Checking...') : (t('login.retry') || 'Retry')}</button>
                 </div>
-              </label>
+              </div>
             )}
 
-            {mode === 'register' && (
-              <>
-                <label className="auth-label">
-                  <span>{t('login.password') || 'Password'}</span>
-                  <div className="auth-password-row">
-                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
-                    <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword}>{showPassword ? 'Hide' : 'Show'}</button>
-                  </div>
-                  {password && (
-                    <div className="password-strength">
-                      <div className="strength-label">{strengthLabel(passwordScore(password))}</div>
-                      <div className="strength-bars">
-                        {Array.from({ length: 5 }).map((_, i) => (
-                          <div key={i} className={`strength-bar ${i < passwordScore(password) ? 'active' : ''}`} />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </label>
-
-                <label className="auth-label">
-                  <span>{t('login.confirmPassword') || 'Confirm password'}</span>
-                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required autoComplete="new-password" aria-label="confirm-password" />
-                </label>
-              </>
-            )}
-
-            {mode === 'reset' && (
+            <form id="auth-form" onSubmit={handleSubmit} className="auth-form" aria-busy={loading || checking}>
               <label className="auth-label">
-                <span>{t('login.newPassword') || 'New password'}</span>
-                <input className="auth-input" type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
-              </label>
-            )}
-
-            <label className="auth-label compact">
-              <span>{t('settings.language') || 'Language'}</span>
-              <select className="auth-select" value={lang} onChange={(e) => { const l = e.target.value; setLang(l); i18n.changeLanguage(l); }}>
-                <option value="en">{t('settings.english') || 'English'}</option>
-                <option value="es">{t('settings.spanish') || 'Spanish'}</option>
-                <option value="fr">{t('settings.french') || 'French'}</option>
-                <option value="de">{t('settings.german') || 'German'}</option>
-              </select>
-            </label>
-
-            <div className="auth-row">
-              <label className="remember">
-                <input type="checkbox" checked={rememberUsername} onChange={(e) => setRememberUsername(e.target.checked)} />
-                <span>Remember username</span>
+                <span> {t('login.username') || 'Email or username'}</span>
+                <input className="auth-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="username" aria-label="username" />
               </label>
 
-              {mode === 'login' && (
-                <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Forgot?</button>
+              {mode !== 'register' && (
+                <label className="auth-label">
+                  <span>{mode === 'reset' ? (t('login.currentPassword') || 'Current password') : (t('login.password') || 'Password')}</span>
+                  <div className="auth-password-row">
+                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete={mode === 'register' ? 'new-password' : 'current-password'} aria-label="password" />
+                    <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword} aria-label="Toggle password visibility">{showPassword ? 'Hide' : 'Show'}</button>
+                  </div>
+                </label>
               )}
-            </div>
 
-            {error && (<div className="auth-error" role="alert" data-testid="login-error">{error}</div>)}
-            {info && (<div className="auth-info" role="status" data-testid="login-info">{info}</div>)}
+              {mode === 'register' && (
+                <>
+                  <label className="auth-label">
+                    <span>{t('login.password') || 'Password'}</span>
+                    <div className="auth-password-row">
+                      <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
+                      <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword}>{showPassword ? 'Hide' : 'Show'}</button>
+                    </div>
+                    {password && (
+                      <div className="password-strength">
+                        <div className="strength-label">{strengthLabel(passwordScore(password))}</div>
+                        <div className="strength-bars">
+                          {Array.from({ length: 5 }).map((_, i) => (
+                            <div key={i} className={`strength-bar ${i < passwordScore(password) ? 'active' : ''}`} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </label>
 
-            <button type="submit" className="auth-button" disabled={loading || checking || !backendUp}>
+                  <label className="auth-label">
+                    <span>{t('login.confirmPassword') || 'Confirm password'}</span>
+                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required autoComplete="new-password" aria-label="confirm-password" />
+                  </label>
+                </>
+              )}
+
+              {mode === 'reset' && (
+                <label className="auth-label">
+                  <span>{t('login.newPassword') || 'New password'}</span>
+                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
+                </label>
+              )}
+
+              <label className="auth-label compact">
+                <span>{t('settings.language') || 'Language'}</span>
+                <select className="auth-select" value={lang} onChange={(e) => { const l = e.target.value; setLang(l); i18n.changeLanguage(l); }}>
+                  <option value="en">{t('settings.english') || 'English'}</option>
+                  <option value="es">{t('settings.spanish') || 'Spanish'}</option>
+                  <option value="fr">{t('settings.french') || 'French'}</option>
+                  <option value="de">{t('settings.german') || 'German'}</option>
+                </select>
+              </label>
+
+              <div className="auth-row">
+                <label className="remember">
+                  <input type="checkbox" checked={rememberUsername} onChange={(e) => setRememberUsername(e.target.checked)} />
+                  <span>Remember username</span>
+                </label>
+
+                {mode === 'login' && (
+                  <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Forgot?</button>
+                )}
+              </div>
+
+              {error && (<div className="auth-error" role="alert" data-testid="login-error">{error}</div>)}
+              {info && (<div className="auth-info" role="status" data-testid="login-info">{info}</div>)}
+            </form>
+          </div>
+
+          <div className="auth-card-actions">
+            <button type="submit" form="auth-form" className="auth-button" disabled={loading || checking || !backendUp}>
               {loading ? (t('login.pleaseWait') || 'Please wait…') : mode === 'login' ? (t('login.login') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Update password')}
             </button>
-          </form>
+          </div>
 
           <div className="auth-footer">
             {mode !== 'login' ? (
