@@ -11,19 +11,29 @@ const rawFetch = globalThis.fetch.bind(globalThis);
 
 // Simplified and hardened backend URL resolver (replaces earlier experimental logic)
 function resolveBaseUrl() {
-  if (typeof window !== 'undefined' && window.__BACKEND_URL__) return window.__BACKEND_URL__;
+  if (typeof window !== 'undefined' && window.__BACKEND_URL__)
+    return window.__BACKEND_URL__;
   try {
-    const env = typeof import.meta !== 'undefined' ? import.meta.env : undefined;
+    const env =
+      typeof import.meta !== 'undefined' ? import.meta.env : undefined;
     if (env && env.VITE_API_URL) return env.VITE_API_URL;
-  } catch { /* ignore */ }
-  if (typeof window !== 'undefined' && window.location && !window.location.origin.startsWith('file:')) {
+  } catch {
+    /* ignore */
+  }
+  if (
+    typeof window !== 'undefined' &&
+    window.location &&
+    !window.location.origin.startsWith('file:')
+  ) {
     return window.location.origin;
   }
   return 'http://127.0.0.1:8000';
 }
 
 let __lastBackendError = null; // store last connectivity error details
-export function getLastBackendError(){ return __lastBackendError; }
+export function getLastBackendError() {
+  return __lastBackendError;
+}
 
 export async function pingBackend(opts = {}) {
   const { attempts = 3, timeoutMs = 8000, intervalMs = 750 } = opts || {};
@@ -33,7 +43,10 @@ export async function pingBackend(opts = {}) {
       const controller = new AbortController();
       const to = setTimeout(() => controller.abort(), timeoutMs);
       const started = performance.now ? performance.now() : Date.now();
-      const res = await rawFetch(`${baseUrl}/health`, { method: 'GET', signal: controller.signal });
+      const res = await rawFetch(`${baseUrl}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
       clearTimeout(to);
       if (res.ok) {
         __lastBackendError = null;
@@ -41,10 +54,10 @@ export async function pingBackend(opts = {}) {
       }
       __lastBackendError = `Health status ${res.status}`;
     } catch (e) {
-      __lastBackendError = (e && e.message) ? e.message : 'fetch_failed';
+      __lastBackendError = e && e.message ? e.message : 'fetch_failed';
     }
     if (i < attempts) {
-      await new Promise(r => setTimeout(r, intervalMs));
+      await new Promise((r) => setTimeout(r, intervalMs));
     }
   }
   return false;
@@ -71,7 +84,9 @@ export async function login(username, password, lang = 'en') {
       body: JSON.stringify({ username, password, lang }),
     });
   } catch {
-    throw new Error('Cannot reach backend service. Please wait a few seconds for it to start and try again.');
+    throw new Error(
+      'Cannot reach backend service. Please wait a few seconds for it to start and try again.',
+    );
   }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
@@ -92,7 +107,7 @@ export async function register(username, password, lang = 'en') {
   // Prefer /auth/register (idempotent) fall back to /register
   const endpoints = [`${baseUrl}/auth/register`, `${baseUrl}/register`];
   let lastErr;
-  for (const url of endpoints){
+  for (const url of endpoints) {
     try {
       resp = await rawFetch(url, {
         method: 'POST',
@@ -104,11 +119,14 @@ export async function register(username, password, lang = 'en') {
       continue;
     }
     if (resp && resp.ok) break;
-    lastErr = await resp.json().catch(()=>({detail:`HTTP ${resp.status}`}));
+    lastErr = await resp
+      .json()
+      .catch(() => ({ detail: `HTTP ${resp.status}` }));
     if (resp.status < 500) break; // don't try second endpoint for client errors
   }
   if (!resp || !resp.ok) {
-    const err = (lastErr && lastErr.detail) ? lastErr : await resp.json().catch(() => ({}));
+    const err =
+      lastErr && lastErr.detail ? lastErr : await resp.json().catch(() => ({}));
     throw new Error(err.detail || err.message || 'Registration failed');
   }
   const data = await resp.json();
@@ -167,7 +185,21 @@ function clearStoredTokens() {
 let refreshFailures = 0;
 
 async function authFetch(input, init = {}, retry = true) {
-  let resp = await rawFetch(input, init);
+  let resp;
+  try {
+    resp = await rawFetch(input, init);
+  } catch (e) {
+    // Network error (backend not reachable). Record last error and return
+    // a Response-like object so callers can handle a failed fetch without
+    // an uncaught TypeError.
+    __lastBackendError = e && e.message ? e.message : 'fetch_failed';
+    return {
+      ok: false,
+      status: 0,
+      json: async () => ({ detail: __lastBackendError }),
+      text: async () => __lastBackendError,
+    };
+  }
   if ((resp.status === 401 || resp.status === 403) && retry) {
     const refreshToken =
       typeof window !== 'undefined'
@@ -220,11 +252,68 @@ export async function getSettings(token) {
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
   if (!auth) throw new Error('Not authenticated');
-  const resp = await fetch(`${baseUrl}/settings`, {
-    headers: { Authorization: `Bearer ${auth}` },
-  });
-  if (!resp.ok) throw new Error('Failed to fetch settings');
-  const data = await resp.json();
+
+  // Try a few likely endpoints so the frontend is resilient to different
+  // backend path configurations (root /settings, /api/settings, etc.). If
+  // the server returns 401/403 propagate Unauthorized so callers can handle
+  // token refresh; otherwise fall back to an empty settings object so the
+  // UI can continue with defaults instead of failing loudly.
+  const endpoints = [
+    `${baseUrl}/settings`,
+    `${baseUrl}/api/settings`,
+    `/settings`,
+    `/api/settings`,
+  ];
+  let lastErr = null;
+  let resp = null;
+  for (const url of endpoints) {
+    try {
+      resp = await fetch(url, { headers: { Authorization: `Bearer ${auth}` } });
+    } catch (e) {
+      // network error — remember and try next endpoint
+      lastErr = e;
+      continue;
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (resp.ok) break;
+    // non-auth client/server error — record and try next
+    try {
+      const txt = await resp.text();
+      lastErr = new Error(`HTTP ${resp.status}: ${txt}`);
+    } catch (e) {
+      lastErr = new Error(`HTTP ${resp.status}`);
+    }
+  }
+
+  if (!resp || !resp.ok) {
+    // Log underlying issue for diagnostics, but return an empty settings
+    // object so the application can continue using defaults.
+    __lastBackendError = lastErr
+      ? lastErr.message || String(lastErr)
+      : 'Failed to fetch settings';
+    return {};
+  }
+
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    // Response was not valid JSON (e.g., an HTML error page). Record the
+    // response text for diagnostics and return empty settings so the
+    // frontend can proceed with defaults.
+    try {
+      const txt = await resp.text();
+      __lastBackendError =
+        txt && txt.length > 0
+          ? txt.slice(0, 1024)
+          : 'Invalid JSON in settings response';
+    } catch (ee) {
+      __lastBackendError = 'Invalid JSON in settings response';
+    }
+    return {};
+  }
   const categories = data.categories || {};
   return {
     theme: data.theme,
@@ -477,7 +566,8 @@ export async function scheduleFollowUp(text, codes = []) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -503,7 +593,8 @@ export async function exportFollowUp(interval, summary = '') {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
@@ -1014,7 +1105,10 @@ export async function exportToEhr(
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      return { status: 'error', detail: data.detail || data.message || 'Export failed' };
+      return {
+        status: 'error',
+        detail: data.detail || data.message || 'Export failed',
+      };
     }
     return data; // may include {status: exported|bundle|error, bundle?, response?}
   } catch (err) {
@@ -1100,10 +1194,12 @@ export async function getEvents() {
   const baseUrl = resolveBaseUrl();
   if (!baseUrl) return [];
   try {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token ? { Authorization: `Bearer ${token}` } : {};
     const resp = await rawFetch(`${baseUrl}/events`, { headers });
-    if (resp.status === 401 || resp.status === 403) throw new Error('Unauthorized');
+    if (resp.status === 401 || resp.status === 403)
+      throw new Error('Unauthorized');
     if (!resp.ok) throw new Error('Failed to fetch events');
     const data = await resp.json();
     return Array.isArray(data) ? data : [];
@@ -1112,4 +1208,6 @@ export async function getEvents() {
   }
 }
 
-export function getBackendBaseUrl() { return resolveBaseUrl(); }
+export function getBackendBaseUrl() {
+  return resolveBaseUrl();
+}

@@ -96,6 +96,29 @@ function App() {
   const audioChunksRef = useRef([]);
   const editorRef = useRef(null);
 
+  // Keep track of previous draft text to detect when a new note is started
+  const prevDraftRef = useRef('');
+  // Ref for the hidden chart file input
+  const fileInputRef = useRef(null);
+
+  // Track the current patient ID for draft saving
+  const [patientID, setPatientID] = useState('');
+  const [encounterID, setEncounterID] = useState('');
+
+  useEffect(() => {
+    if (
+      prevDraftRef.current.trim() === '' &&
+      draftText.trim() !== '' &&
+      patientID
+    ) {
+      // Log a note_started event when the user begins typing a new draft
+      logEvent('note_started', { patientID, length: draftText.length }).catch(
+        () => {},
+      );
+    }
+    prevDraftRef.current = draftText;
+  }, [draftText, patientID]);
+
   // Track whether the sidebar is collapsed
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -104,10 +127,8 @@ function App() {
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [baseTemplates, setBaseTemplates] = useState([]);
   const [templateContext, setTemplateContext] = useState('');
-
-  // Track the current patient ID for draft saving
-    const [patientID, setPatientID] = useState('');
-    const [encounterID, setEncounterID] = useState('');
+  // Toolbar menu state for grouping secondary actions
+  const [showToolbarMenu, setShowToolbarMenu] = useState(false);
   // Demographic details used for public health suggestions
   const [age, setAge] = useState('');
   const [sex, setSex] = useState('');
@@ -259,27 +280,6 @@ function App() {
       .then((data) => setBaseTemplates(data))
       .catch(() => setBaseTemplates([]));
   }, []);
-
-  // If there is no JWT stored, show the login form instead of the main app
-  if (!token) {
-    return (
-      <Login
-        onLoggedIn={(tok, settings) => {
-          setToken(tok);
-          setRefreshToken(
-            typeof window !== 'undefined'
-              ? localStorage.getItem('refreshToken')
-              : null,
-          );
-          if (settings) {
-            const merged = { ...defaultSettings, ...settings };
-            updateSettings(merged);
-            i18n.changeLanguage(merged.lang);
-          }
-        }}
-      />
-    );
-  }
 
   // When the user clicks the Beautify button, run a placeholder transformation.
   // In the real app this will call the LLM API to reformat the note.
@@ -498,25 +498,6 @@ function App() {
     }));
   };
 
-  // Keep track of previous draft text to detect when a new note is started
-  const prevDraftRef = useRef('');
-
-  // Ref for the hidden chart file input
-  const fileInputRef = useRef(null);
-  useEffect(() => {
-    if (
-      prevDraftRef.current.trim() === '' &&
-      draftText.trim() !== '' &&
-      patientID
-    ) {
-      // Log a note_started event when the user begins typing a new draft
-      logEvent('note_started', { patientID, length: draftText.length }).catch(
-        () => {},
-      );
-    }
-    prevDraftRef.current = draftText;
-  }, [draftText, patientID]);
-
   // Effect: apply theme colours to CSS variables when the theme changes
   useEffect(() => {
     const themes = {
@@ -551,7 +532,23 @@ function App() {
     });
   }, [settingsState.theme]);
 
-  return (
+  return !token ? (
+    <Login
+      onLoggedIn={(tok, settings) => {
+        setToken(tok);
+        setRefreshToken(
+          typeof window !== 'undefined'
+            ? localStorage.getItem('refreshToken')
+            : null,
+        );
+        if (settings) {
+          const merged = { ...defaultSettings, ...settings };
+          updateSettings(merged);
+          i18n.changeLanguage(merged.lang);
+        }
+      }}
+    />
+  ) : (
     <div className="app">
       <Sidebar
         collapsed={sidebarCollapsed}
@@ -570,39 +567,11 @@ function App() {
           {view !== 'note' ? (
             <button onClick={() => setView('note')}>{t('app.back')}</button>
           ) : (
-            <button onClick={() => setView('note')}>{t('app.file')}</button>
+            <></>
           )}
           {view === 'note' && (
             <>
-              <input
-                type="text"
-                placeholder={t('app.patientId')}
-                value={patientID}
-                onChange={(e) => setPatientID(e.target.value)}
-                className="patient-input"
-              />
-              <select
-                value={settingsState.summaryLang}
-                onChange={(e) => setSettingsState({ ...settingsState, summaryLang: e.target.value })}
-                aria-label={t('app.patientLanguage')}
-              >
-                <option value="en">English</option>
-                <option value="es">Español</option>
-              </select>
-              <input
-                type="number"
-                placeholder={t('app.patientAge')}
-                value={age}
-                onChange={(e) => setAge(e.target.value)}
-                className="patient-age-input"
-                style={{ width: '4rem', marginLeft: '0.5rem' }}
-              />
-              <button
-                onClick={() => setShowTemplatesModal(true)}
-                aria-label={t('app.templates')}
-              >
-                {t('app.templates')}
-              </button>
+              {/* Primary actions */}
               <button
                 disabled={loadingBeautify || !draftText.trim()}
                 onClick={handleBeautify}
@@ -616,59 +585,73 @@ function App() {
               >
                 {loadingSummary ? t('app.summarizing') : t('app.summarize')}
               </button>
-              <ClipboardExportButtons
-                beautified={beautified}
-                summary={summaryText}
-                patientID={patientID}
-                suggestions={suggestions}
-              />
-              <button
-                disabled={!patientID || !draftText.trim()}
-                onClick={() => {
-                  localStorage.setItem(`draft_${patientID}`, draftText);
-                  logEvent('note_saved', {
-                    patientID,
-                    length: draftText.length,
-                  }).catch(() => {});
-                }}
+
+              {/* Compact "More" menu that holds secondary actions to reduce toolbar width */}
+              <div
+                className="toolbar-menu"
+                style={{ position: 'relative', marginLeft: '0.5rem' }}
               >
-                {t('app.saveDraft')}
-              </button>
-              {/* Upload an exported chart (text or PDF) */}
-              <input
-                type="file"
-                accept=".txt,.pdf,.html,.xml"
-                style={{ display: 'none' }}
-                ref={fileInputRef}
-                onChange={handleChartChange}
-              />
-              <button
-                onClick={() => {
-                  if (fileInputRef.current) fileInputRef.current.click();
-                }}
-              >
-                {chartFileName ? t('app.changeChart') : t('app.uploadChart')}
-              </button>
-              {chartFileName && (
-                <span
-                  style={{
-                    fontSize: '0.8rem',
-                    marginLeft: '0.5rem',
-                    color: 'var(--secondary)',
-                  }}
+                <button
+                  aria-haspopup="true"
+                  aria-expanded={showToolbarMenu}
+                  onClick={() => setShowToolbarMenu((s) => !s)}
                 >
-                  {chartFileName}
-                </span>
-              )}
-              {/* Toggle suggestion panel visibility */}
-              <button
-                onClick={() => setShowSuggestions((s) => !s)}
-                style={{ marginLeft: '0.5rem' }}
-              >
-                {showSuggestions
-                  ? t('app.hideSuggestions')
-                  : t('app.showSuggestions')}
-              </button>
+                  More ▾
+                </button>
+                {showToolbarMenu && (
+                  <div className="toolbar-menu-content" role="menu">
+                    <div
+                      style={{
+                        padding: '0.5rem',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '0.25rem',
+                      }}
+                    >
+                      <ClipboardExportButtons
+                        beautified={beautified}
+                        summary={summaryText}
+                        patientID={patientID}
+                        suggestions={suggestions}
+                      />
+                      <button
+                        disabled={!patientID || !draftText.trim()}
+                        onClick={() => {
+                          localStorage.setItem(`draft_${patientID}`, draftText);
+                          logEvent('note_saved', {
+                            patientID,
+                            length: draftText.length,
+                          }).catch(() => {});
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {t('app.saveDraft')}
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (fileInputRef.current)
+                            fileInputRef.current.click();
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {chartFileName
+                          ? t('app.changeChart')
+                          : t('app.uploadChart')}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowSuggestions((s) => !s);
+                          setShowToolbarMenu(false);
+                        }}
+                      >
+                        {showSuggestions
+                          ? t('app.hideSuggestions')
+                          : t('app.showSuggestions')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </>
           )}
         </header>
@@ -704,7 +687,6 @@ function App() {
                 </div>
                 <div className="editor-area card">
                   {activeTab === 'draft' ? (
-
                     <NoteEditor
                       ref={editorRef}
                       id="draft-input"
@@ -713,6 +695,21 @@ function App() {
                       onTranscriptChange={handleTranscriptChange}
                       specialty={settingsState.specialty}
                       payer={settingsState.payer}
+                      patientId={patientID}
+                      onPatientIdChange={(v) => setPatientID(v)}
+                      onSpecialtyChange={(v) => {
+                        const merged = { ...settingsState, specialty: v };
+                        setSettingsState(merged);
+                        updateSettings(merged);
+                      }}
+                      onPayerChange={(v) => {
+                        const merged = { ...settingsState, payer: v };
+                        setSettingsState(merged);
+                        updateSettings(merged);
+                      }}
+                      onFileClick={() => {
+                        if (fileInputRef.current) fileInputRef.current.click();
+                      }}
                       defaultTemplateId={settingsState.template}
                       onTemplateChange={handleDefaultTemplateChange}
                       error={transcriptionError}
@@ -731,7 +728,6 @@ function App() {
                   ) : (
                     <div className="beautified-view">{summaryText}</div>
                   )}
-
                 </div>
                 {audioTranscript.segments.length > 0 && (
                   <TranscriptView
@@ -741,17 +737,6 @@ function App() {
                   />
                 )}
               </div>
-              {(() => {
-                return (
-                  <SuggestionPanel
-                    suggestions={suggestions}
-                    settingsState={settingsState}
-                    loading={loadingSuggestions}
-                    className={showSuggestions ? '' : 'collapsed'}
-                    onInsert={handleInsertSuggestion}
-                  />
-                );
-              })()}
             </>
           )}
           {view === 'dashboard' && <Dashboard />}

@@ -24,8 +24,9 @@ function SuggestionPanel({
 }) {
   const { t } = useTranslation();
   const [showPublicHealth, setShowPublicHealth] = useState(true);
-  const [specialty, setSpecialty] = useState(settingsState?.specialty || '');
-  const [payer, setPayer] = useState(settingsState?.payer || '');
+  // Use specialty/payer provided by parent (do not render controls here)
+  const parentSpecialty = (settingsState && settingsState.specialty) || '';
+  const parentPayer = (settingsState && settingsState.payer) || '';
   // Debounce backend suggestion calls.  When `text` changes rapidly we clear
   // the previous timeout and only invoke `fetchSuggestions` once the user has
   // paused typing for 300ms.
@@ -34,10 +35,13 @@ function SuggestionPanel({
     if (!fetchSuggestions || typeof text !== 'string') return undefined;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      fetchSuggestions(text, { specialty, payer });
+      fetchSuggestions(text, {
+        specialty: parentSpecialty,
+        payer: parentPayer,
+      });
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [text, fetchSuggestions]);
+  }, [text, fetchSuggestions, parentSpecialty, parentPayer]);
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
 
   const cards = [];
@@ -287,38 +291,6 @@ function SuggestionPanel({
 
   return (
     <div className={`suggestion-panel ${className}`}>
-      <div style={{ marginBottom: '0.5rem' }}>
-        <label style={{ marginRight: '0.5rem' }}>
-          {t('settings.specialty')}
-          <select
-            value={specialty}
-            onChange={onSpecialtyChange}
-            style={{ marginLeft: '0.25rem' }}
-          >
-            <option value="">--</option>
-            {specialtyOptions.map((s) => (
-              <option key={s} value={s}>
-                {t(`settings.specialties.${s}`) || s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          {t('settings.payer')}
-          <select
-            value={payer}
-            onChange={onPayerChange}
-            style={{ marginLeft: '0.25rem' }}
-          >
-            <option value="">--</option>
-            {payerOptions.map((p) => (
-              <option key={p} value={p}>
-                {t(`settings.payers.${p}`) || p}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
       {cards.map(({ type, key, title, items }) => (
         <div key={type} className={`card ${type}`}>
           <div
