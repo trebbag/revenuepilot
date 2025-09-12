@@ -444,37 +444,8 @@ const NoteEditor = forwardRef(function NoteEditor(
       </div>
     ) : null;
 
-  const sidebar = (
-    <div style={{ width: '200px', marginLeft: '0.5rem' }}>
-      <div style={{ marginBottom: '0.5rem' }}>
-        <button
-          type="button"
-          onClick={() => setSideTab('templates')}
-          disabled={sideTab === 'templates'}
-        >
-          {t('app.templates')}
-        </button>
-        <button
-          type="button"
-          onClick={() => setSideTab('transcript')}
-          disabled={sideTab === 'transcript'}
-          style={{ marginLeft: '0.5rem' }}
-        >
-          {t('noteEditor.transcript')}
-        </button>
-      </div>
-      <div>
-        {sideTab === 'templates' ? (
-          templateList
-        ) : (
-          <div>
-            {segmentList}
-            {transcriptControls}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  // Templates dropdown visibility state (rendered above the editor)
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
 
   useEffect(() => {
     if (activeTab === 'beautified') {
