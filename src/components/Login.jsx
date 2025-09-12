@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect, useCallback } from 'react';
-import { login, resetPassword, register, pingBackend } from '../api.js';
+import { login, resetPassword, register, pingBackend, getLastBackendError } from '../api.js';
 
 // Detect Electron renderer context (simplistic)
 const isElectron = typeof window !== 'undefined' && !!window.require && !!window.process && window.process.type === 'renderer';
@@ -8,9 +8,10 @@ let ipcRenderer = null;
 try { if (isElectron) { ipcRenderer = window.require('electron').ipcRenderer; } } catch { /* ignore */ }
 
 /**
- * Unified authentication form with login, registration and password reset flows.
- * Adds basic password strength feedback, confirm password field for registration,
- * backend reachability checking with retry button, and improved inline validation.
+ * Unified authentication form for RevenuePilot with improved UX, styling and
+ * accessibility. Converts inline styles to CSS classes (see src/styles/app.css)
+ * and adds common best-practice features: show/hide password, remember username,
+ * inline validation, helpful error messages, and clear flows for register/reset.
  */
 function Login({ onLoggedIn }) {
   const { t, i18n } = useTranslation();
@@ -25,22 +26,30 @@ function Login({ onLoggedIn }) {
   const [backendUp, setBackendUp] = useState(true);
   const [checking, setChecking] = useState(true);
   const [lang, setLang] = useState('en');
-  const [diag, setDiag] = useState(null); // store backend diagnostics (log tail etc.)
+  const [diag, setDiag] = useState(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberUsername, setRememberUsername] = useState(true);
+
+  useEffect(() => {
+    // restore remembered username
+    if (typeof window !== 'undefined') {
+      const remembered = localStorage.getItem('rememberedUsername');
+      if (remembered) setUsername(remembered);
+    }
+  }, []);
 
   const checkBackend = useCallback(async () => {
     setChecking(true);
     const ok = await pingBackend();
     setBackendUp(ok);
     setChecking(false);
+    if (!ok) setDiag(getLastBackendError && getLastBackendError());
   }, []);
 
-  useEffect(() => {
-    checkBackend();
-  }, [checkBackend]);
+  useEffect(() => { checkBackend(); }, [checkBackend]);
 
-  // Listen for backend-ready / failed signals from main process to auto-retry
   useEffect(() => {
-    if (!ipcRenderer) return; // not in electron
+    if (!ipcRenderer) return;
     const handleReady = () => { checkBackend(); };
     const handleFailed = () => { setBackendUp(false); };
     const handleDiagnostics = (_event, payload) => { setDiag(payload); };
@@ -56,6 +65,7 @@ function Login({ onLoggedIn }) {
 
   const passwordScore = useCallback((pwd) => {
     let score = 0;
+    if (!pwd) return 0;
     if (pwd.length >= 8) score += 1;
     if (/[A-Z]/.test(pwd)) score += 1;
     if (/[a-z]/.test(pwd)) score += 1;
@@ -72,18 +82,45 @@ function Login({ onLoggedIn }) {
     return t('login.passwordVeryStrong') || 'Very strong';
   };
 
+  function validUsername(u) {
+    return typeof u === 'string' && u.trim().length >= 3;
+  }
+
+  function validNewPassword(p) {
+    return typeof p === 'string' && p.length >= 8;
+  }
+
   async function handleSubmit(e) {
     e.preventDefault();
-    setError(null);
-    setInfo(null);
+    setError(null); setInfo(null);
     if (!backendUp) {
       setError('Backend not reachable.');
       return;
     }
-    if (mode === 'register' && password !== confirmPassword) {
-      setError(t('login.passwordsDoNotMatch') || 'Passwords do not match');
+
+    if (!validUsername(username)) {
+      setError('Please enter a valid username (at least 3 characters).');
       return;
     }
+
+    if (mode === 'register') {
+      if (!validNewPassword(password)) {
+        setError('Choose a stronger password (at least 8 characters).');
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError(t('login.passwordsDoNotMatch') || 'Passwords do not match');
+        return;
+      }
+    }
+
+    if (mode === 'reset') {
+      if (!validNewPassword(newPassword)) {
+        setError('New password must be at least 8 characters.');
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       if (mode === 'login') {
@@ -91,6 +128,8 @@ function Login({ onLoggedIn }) {
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
+          if (rememberUsername) localStorage.setItem('rememberedUsername', username);
+          else localStorage.removeItem('rememberedUsername');
         }
         const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
         onLoggedIn(token, newSettings);
@@ -99,18 +138,18 @@ function Login({ onLoggedIn }) {
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
           localStorage.setItem('refreshToken', refreshToken);
+          if (rememberUsername) localStorage.setItem('rememberedUsername', username);
         }
         const newSettings = settings ? { ...settings, lang, summaryLang: settings.summaryLang || lang } : { lang, summaryLang: lang };
-        onLoggedIn(token, newSettings); // auto-login after registration
+        onLoggedIn(token, newSettings);
       } else if (mode === 'reset') {
         await resetPassword(username, password, newPassword);
         setInfo(t('login.resetSuccess') || 'Password updated. You can now log in.');
         setMode('login');
-        setPassword('');
-        setNewPassword('');
+        setPassword(''); setNewPassword('');
       }
     } catch (err) {
-      setError(err.message || 'Operation failed');
+      setError((err && err.message) ? err.message : 'Operation failed');
       if (typeof window !== 'undefined') {
         localStorage.removeItem('token');
         localStorage.removeItem('refreshToken');
@@ -121,161 +160,128 @@ function Login({ onLoggedIn }) {
   }
 
   return (
-    <div className="login-form" style={{ maxWidth: '26rem', margin: '2.5rem auto', fontFamily: 'system-ui, sans-serif' }}>
-      <h2 style={{ textAlign: 'center' }}>
-        {mode === 'login' ? t('login.title') : mode === 'register' ? t('login.register') : t('login.resetPassword')}
-      </h2>
-      {!backendUp && !checking && (
-        <div style={{ background: '#ffe9e9', padding: '0.75rem', borderRadius: 4, marginBottom: '1rem', color: '#900' }}>
-          <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
-          <div style={{ fontSize: 12, marginTop: 6 }}>
-            {/* Attempt to pull diagnostic detail if available */}
-            {(() => { try { const { getLastBackendError } = require('../api.js'); const d = getLastBackendError && getLastBackendError(); return d ? ` (${d})` : null; } catch { return null; } })()}
-            {diag && diag.message ? ` – ${diag.message}` : null}
-          </div>
-          {diag && diag.logTail && diag.logTail.length > 0 && (
-            <details style={{ marginTop: 6 }}>
-              <summary style={{ cursor: 'pointer' }}>Startup log (tail)</summary>
-              <pre style={{ maxHeight: 160, overflow: 'auto', background: '#fff', padding: 8, fontSize: 11, lineHeight: 1.2 }}>
-                {diag.logTail.join('\n')}
-              </pre>
-              {diag.logFile && <div style={{ fontSize: 11, marginTop: 4 }}>Full log: {diag.logFile}</div>}
-            </details>
-          )}
-          <div style={{ marginTop: 4 }}>
-            <button type="button" onClick={checkBackend} disabled={checking}>
-              {checking ? t('login.checking') || 'Checking...' : t('login.retry') || 'Retry'}
-            </button>
+    <div className="auth-root">
+      <div className="auth-viewport">
+        <div className="auth-brand">
+          <img src="/assets/icon.png" alt="RevenuePilot" className="auth-logo" />
+          <div className="auth-brand-text">
+            <h1 className="auth-app">RevenuePilot</h1>
+            <p className="auth-tagline">Clinical documentation that improves outcomes and revenue.</p>
           </div>
         </div>
-      )}
-      <form onSubmit={handleSubmit} style={{ opacity: checking ? 0.6 : 1 }}>
-        <div style={{ marginBottom: '0.5rem' }}>
-          <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-            {t('login.username')}
-            <input
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              autoComplete="username"
-              style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
-            />
-          </label>
-        </div>
-        <div style={{ marginBottom: '0.5rem' }}>
-          <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-            {mode === 'reset' ? t('login.currentPassword') || t('login.password') : t('login.password')}
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-              style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
-            />
-          </label>
-          {mode === 'register' && password && (
-            <div style={{ fontSize: 12, marginTop: 4 }}>
-              {strengthLabel(passwordScore(password))}
-              <div style={{ display: 'flex', gap: 2, marginTop: 2 }}>
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div key={i} style={{ flex: 1, height: 4, background: i < passwordScore(password) ? '#4caf50' : '#ddd', borderRadius: 2 }} />
-                ))}
+
+        <div className="auth-card">
+          <h2 className="auth-title">{mode === 'login' ? (t('login.title') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Reset password')}</h2>
+
+          {!backendUp && !checking && (
+            <div className="backend-warning" role="alert">
+              <strong>{t('login.backendUnavailable') || 'Backend not reachable.'}</strong>
+              <div className="backend-details">{diag || getLastBackendError && getLastBackendError()}</div>
+              <details className="backend-log">
+                <summary>Startup log (tail)</summary>
+                <pre className="backend-log-pre">{diag && diag.logTail ? diag.logTail.join('\n') : ''}</pre>
+              </details>
+              <div className="backend-actions">
+                <button type="button" className="auth-link-button" onClick={checkBackend} disabled={checking}>{checking ? (t('login.checking') || 'Checking...') : (t('login.retry') || 'Retry')}</button>
               </div>
             </div>
           )}
-        </div>
-        {mode === 'register' && (
-          <div style={{ marginBottom: '0.5rem' }}>
-            <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-              {t('login.confirmPassword') || 'Confirm password'}
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                autoComplete="new-password"
-                style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
-              />
+
+          <form onSubmit={handleSubmit} className="auth-form" aria-busy={loading || checking}>
+            <label className="auth-label">
+              <span> {t('login.username') || 'Email or username'}</span>
+              <input className="auth-input" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required autoComplete="username" aria-label="username" />
             </label>
-          </div>
-        )}
-        {mode === 'reset' && (
-          <div style={{ marginBottom: '0.5rem' }}>
-            <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-              {t('login.newPassword')}
-              <input
-                type="password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                required
-                autoComplete="new-password"
-                style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
-              />
+
+            {mode !== 'register' && (
+              <label className="auth-label">
+                <span>{mode === 'reset' ? (t('login.currentPassword') || 'Current password') : (t('login.password') || 'Password')}</span>
+                <div className="auth-password-row">
+                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete={mode === 'register' ? 'new-password' : 'current-password'} aria-label="password" />
+                  <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword} aria-label="Toggle password visibility">{showPassword ? 'Hide' : 'Show'}</button>
+                </div>
+              </label>
+            )}
+
+            {mode === 'register' && (
+              <>
+                <label className="auth-label">
+                  <span>{t('login.password') || 'Password'}</span>
+                  <div className="auth-password-row">
+                    <input className="auth-input" type={showPassword ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
+                    <button type="button" className="show-password" onClick={() => setShowPassword(s => !s)} aria-pressed={showPassword}>{showPassword ? 'Hide' : 'Show'}</button>
+                  </div>
+                  {password && (
+                    <div className="password-strength">
+                      <div className="strength-label">{strengthLabel(passwordScore(password))}</div>
+                      <div className="strength-bars">
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <div key={i} className={`strength-bar ${i < passwordScore(password) ? 'active' : ''}`} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </label>
+
+                <label className="auth-label">
+                  <span>{t('login.confirmPassword') || 'Confirm password'}</span>
+                  <input className="auth-input" type={showPassword ? 'text' : 'password'} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required autoComplete="new-password" aria-label="confirm-password" />
+                </label>
+              </>
+            )}
+
+            {mode === 'reset' && (
+              <label className="auth-label">
+                <span>{t('login.newPassword') || 'New password'}</span>
+                <input className="auth-input" type={showPassword ? 'text' : 'password'} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required autoComplete="new-password" aria-label="new-password" />
+              </label>
+            )}
+
+            <label className="auth-label compact">
+              <span>{t('settings.language') || 'Language'}</span>
+              <select className="auth-select" value={lang} onChange={(e) => { const l = e.target.value; setLang(l); i18n.changeLanguage(l); }}>
+                <option value="en">{t('settings.english') || 'English'}</option>
+                <option value="es">{t('settings.spanish') || 'Spanish'}</option>
+                <option value="fr">{t('settings.french') || 'French'}</option>
+                <option value="de">{t('settings.german') || 'German'}</option>
+              </select>
             </label>
+
+            <div className="auth-row">
+              <label className="remember">
+                <input type="checkbox" checked={rememberUsername} onChange={(e) => setRememberUsername(e.target.checked)} />
+                <span>Remember username</span>
+              </label>
+
+              {mode === 'login' && (
+                <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Forgot?</button>
+              )}
+            </div>
+
+            {error && (<div className="auth-error" role="alert" data-testid="login-error">{error}</div>)}
+            {info && (<div className="auth-info" role="status" data-testid="login-info">{info}</div>)}
+
+            <button type="submit" className="auth-button" disabled={loading || checking || !backendUp}>
+              {loading ? (t('login.pleaseWait') || 'Please wait…') : mode === 'login' ? (t('login.login') || 'Sign in') : mode === 'register' ? (t('login.register') || 'Create account') : (t('login.resetPassword') || 'Update password')}
+            </button>
+          </form>
+
+          <div className="auth-footer">
+            {mode !== 'login' ? (
+              <button type="button" className="auth-link-button" onClick={() => { setMode('login'); setError(null); setInfo(null); }}>Back to sign in</button>
+            ) : (
+              <>
+                <button type="button" className="auth-link-button" onClick={() => { setMode('register'); setError(null); setInfo(null); }}>Create account</button>
+                <button type="button" className="auth-link-button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }}>Reset password</button>
+              </>
+            )}
           </div>
-        )}
-        <div style={{ marginBottom: '0.75rem' }}>
-          <label style={{ display: 'block', fontSize: 14, fontWeight: 600 }}>
-            {t('settings.language')}
-            <select
-              value={lang}
-              onChange={(e) => {
-                const l = e.target.value;
-                setLang(l);
-                i18n.changeLanguage(l);
-              }}
-              style={{ width: '100%', padding: '0.5rem', marginTop: 4 }}
-            >
-              <option value="en">{t('settings.english')}</option>
-              <option value="es">{t('settings.spanish')}</option>
-              <option value="fr">{t('settings.french')}</option>
-              <option value="de">{t('settings.german')}</option>
-            </select>
-          </label>
         </div>
-        {error && (
-          <p style={{ color: 'red', fontSize: 13 }} data-testid="login-error">
-            {error}
-          </p>
-        )}
-        {info && (
-          <p style={{ color: 'green', fontSize: 13 }} data-testid="login-info">
-            {info}
-          </p>
-        )}
-        <button type="submit" disabled={loading || checking || !backendUp} style={{ width: '100%', padding: '0.75rem', marginTop: '0.25rem' }}>
-          {loading
-            ? t('login.pleaseWait') || 'Please wait…'
-            : mode === 'login'
-              ? t('login.login')
-              : mode === 'register'
-                ? t('login.register')
-                : t('login.resetPassword')}
-        </button>
-      </form>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-        {mode !== 'login' && (
-          <button type="button" onClick={() => { setMode('login'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
-            {t('login.backToLogin')}
-          </button>
-        )}
-        {mode === 'login' && (
-          <>
-            <button type="button" onClick={() => { setMode('register'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
-              {t('login.register')}
-            </button>
-            <button type="button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
-              {t('login.resetPassword')}
-            </button>
-          </>
-        )}
-        {mode === 'register' && (
-          <button type="button" onClick={() => { setMode('reset'); setError(null); setInfo(null); }} style={{ background: 'none', border: 'none', color: '#0366d6', cursor: 'pointer' }}>
-            {t('login.resetPassword')}
-          </button>
-        )}
+
+        <div className="auth-help">
+          <h3>Why RevenuePilot?</h3>
+          <p>Write notes faster with AI-assisted drafting, export to FHIR, and keep your documentation compliant.</p>
+        </div>
       </div>
     </div>
   );
