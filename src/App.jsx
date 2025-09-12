@@ -101,6 +101,18 @@ function App() {
   // Ref for the hidden chart file input
   const fileInputRef = useRef(null);
 
+  useEffect(() => {
+    if (
+      prevDraftRef.current.trim() === '' &&
+      draftText.trim() !== '' &&
+      patientID
+    ) {
+      // Log a note_started event when the user begins typing a new draft
+      logEvent('note_started', { patientID, length: draftText.length }).catch(() => {});
+    }
+    prevDraftRef.current = draftText;
+  }, [draftText, patientID]);
+
   // Track whether the sidebar is collapsed
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
