@@ -271,7 +271,21 @@ export async function getSettings(token) {
     return {};
   }
 
-  const data = await resp.json();
+  let data;
+  try {
+    data = await resp.json();
+  } catch (e) {
+    // Response was not valid JSON (e.g., an HTML error page). Record the
+    // response text for diagnostics and return empty settings so the
+    // frontend can proceed with defaults.
+    try {
+      const txt = await resp.text();
+      __lastBackendError = txt && txt.length > 0 ? txt.slice(0, 1024) : 'Invalid JSON in settings response';
+    } catch (ee) {
+      __lastBackendError = 'Invalid JSON in settings response';
+    }
+    return {};
+  }
   const categories = data.categories || {};
   return {
     theme: data.theme,
