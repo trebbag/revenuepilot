@@ -73,10 +73,14 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+
     ensure_patients_table,
     ensure_encounters_table,
     ensure_visit_sessions_table,
     ensure_note_auto_saves_table,
+
+    ensure_user_profile_table,
+
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -293,6 +297,22 @@ transcript_history: Dict[str, deque] = defaultdict(
     lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
 )
 
+# Simple in-memory notification tracking.
+notification_counts: Dict[str, int] = defaultdict(int)
+notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
+
+
+async def _broadcast_notification_count(username: str) -> None:
+    """Send updated notification count to all websocket subscribers."""
+    for ws in list(notification_subscribers.get(username, [])):
+        try:
+            await ws.send_json({"count": notification_counts[username]})
+        except Exception:
+            try:
+                notification_subscribers[username].remove(ws)
+            except Exception:
+                pass
+
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
 # persist outside the project folder.  A migration step moves any existing
@@ -370,6 +390,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     )
     ensure_settings_table(conn)
     ensure_templates_table(conn)
+    ensure_user_profile_table(conn)
     ensure_events_table(conn)
     ensure_patients_table(conn)
     ensure_encounters_table(conn)
@@ -407,6 +428,9 @@ ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
+
+# User profile details including current view and UI preferences.
+ensure_user_profile_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -890,6 +914,128 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
+
+
+class UserProfile(BaseModel):
+    currentView: Optional[str] = None
+    clinic: Optional[str] = None
+    preferences: Dict[str, Any] = Field(default_factory=dict)
+    uiPreferences: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UiPreferencesModel(BaseModel):
+    uiPreferences: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/api/user/profile")
+async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.current_view, up.clinic, up.preferences, up.ui_preferences "
+        "FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    if row:
+        return {
+            "currentView": row["current_view"],
+            "clinic": row["clinic"],
+            "preferences": json.loads(row["preferences"]) if row["preferences"] else {},
+            "uiPreferences": json.loads(row["ui_preferences"]) if row["ui_preferences"] else {},
+        }
+    return UserProfile().model_dump()
+
+
+@app.put("/api/user/profile")
+async def update_user_profile(
+    profile: UserProfile, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?", (user["sub"],)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    db_conn.execute(
+        "INSERT OR REPLACE INTO user_profile (user_id, current_view, clinic, preferences, ui_preferences) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            row["id"],
+            profile.currentView,
+            profile.clinic,
+            json.dumps(profile.preferences),
+            json.dumps(profile.uiPreferences),
+        ),
+    )
+    db_conn.commit()
+    return profile.model_dump()
+
+
+@app.get("/api/user/current-view")
+async def get_current_view(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.current_view FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    return {"currentView": row["current_view"] if row else None}
+
+
+@app.get("/api/user/ui-preferences")
+async def get_ui_preferences(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.ui_preferences FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    prefs = json.loads(row["ui_preferences"]) if row and row["ui_preferences"] else {}
+    return {"uiPreferences": prefs}
+
+
+@app.put("/api/user/ui-preferences")
+async def put_ui_preferences(
+    model: UiPreferencesModel, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?", (user["sub"],)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    updated = json.dumps(model.uiPreferences)
+    cur = db_conn.execute(
+        "UPDATE user_profile SET ui_preferences=? WHERE user_id=?",
+        (updated, row["id"]),
+    )
+    if cur.rowcount == 0:
+        db_conn.execute(
+            "INSERT INTO user_profile (user_id, ui_preferences) VALUES (?, ?)",
+            (row["id"], updated),
+        )
+    db_conn.commit()
+    return {"uiPreferences": model.uiPreferences}
+
+
+@app.get("/api/notifications/count")
+async def get_notification_count(
+    user=Depends(require_role("user"))
+) -> Dict[str, int]:
+    return {"count": notification_counts[user["sub"]]}
+
+
+@app.websocket("/ws/notifications")
+async def notifications_ws(websocket: WebSocket, token: str):
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username = data["sub"]
+    except jwt.PyJWTError:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    notification_subscribers[username].append(websocket)
+    try:
+        await websocket.send_json({"count": notification_counts[username]})
+        while True:
+            await asyncio.sleep(60)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in notification_subscribers[username]:
+            notification_subscribers[username].remove(websocket)
 
 
 class NoteRequest(BaseModel):
@@ -1846,6 +1992,9 @@ async def get_metrics(
         for k in keys
     }
 
+    top_compliance = [
+        k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)
+    ]
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
