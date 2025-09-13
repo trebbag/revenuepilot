@@ -20,8 +20,18 @@ import sys
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+from typing import List, Optional, Dict, Any, Set
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -73,6 +83,7 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_error_log_table,
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -160,6 +171,9 @@ app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
 
 # Record process start time for uptime calculations
 START_TIME = time.time()
+
+# Active WebSocket connections for system notifications.
+notification_clients: Set[WebSocket] = set()
 
 # Health/readiness endpoint used by the desktop app to know when the backend is up.
 # Returns basic process / db status without requiring auth.
@@ -363,6 +377,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_events_table(conn)
+    ensure_error_log_table(conn)
     conn.commit()
 
 
@@ -391,6 +406,9 @@ ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
 ensure_templates_table(db_conn)
+
+# Centralized error logging table.
+ensure_error_log_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -874,6 +892,81 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
+
+
+@app.get("/api/user/layout-preferences")
+async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT layout_prefs FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+        (user["sub"],),
+    ).fetchone()
+    if row and row["layout_prefs"]:
+        try:
+            return json.loads(row["layout_prefs"])
+        except Exception:
+            return {}
+    return {}
+
+
+@app.put("/api/user/layout-preferences")
+async def put_layout_preferences(
+    prefs: Dict[str, Any], user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    data = json.dumps(prefs)
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username= ?",
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    uid = row["id"]
+    db_conn.execute(
+        "INSERT OR IGNORE INTO settings (user_id, theme) VALUES (?, 'light')",
+        (uid,),
+    )
+    db_conn.execute(
+        "UPDATE settings SET layout_prefs=? WHERE user_id=?",
+        (data, uid),
+    )
+    db_conn.commit()
+    return prefs
+
+
+class ErrorLogModel(BaseModel):
+    message: str
+    stack: Optional[str] = None
+
+
+@app.post("/api/errors/log")
+async def log_client_error(model: ErrorLogModel, request: Request) -> Dict[str, str]:
+    username = None
+    auth = request.headers.get("Authorization")
+    if auth and auth.startswith("Bearer "):
+        token = auth.split()[1]
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            username = payload.get("sub")
+        except Exception:
+            pass
+    db_conn.execute(
+        "INSERT INTO error_log (timestamp, username, message, stack) VALUES (?, ?, ?, ?)",
+        (time.time(), username, model.message, model.stack),
+    )
+    db_conn.commit()
+    return {"status": "logged"}
+
+
+@app.websocket("/ws/notifications")
+async def notifications_ws(ws: WebSocket):
+    await ws.accept()
+    notification_clients.add(ws)
+    try:
+        while True:
+            await asyncio.sleep(60)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        notification_clients.discard(ws)
 
 
 class NoteRequest(BaseModel):
@@ -1660,8 +1753,8 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
@@ -1812,6 +1905,9 @@ async def get_metrics(
         for k in keys
     }
 
+    top_compliance = sorted(
+        compliance_counts, key=compliance_counts.get, reverse=True
+    )[:5]
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
@@ -1819,6 +1915,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {

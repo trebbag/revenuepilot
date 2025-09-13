@@ -24,6 +24,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "use_local_models INTEGER NOT NULL DEFAULT 0,"
         "agencies TEXT NOT NULL DEFAULT '[]',"
         "use_offline_mode INTEGER NOT NULL DEFAULT 0,"
+        "layout_prefs TEXT NOT NULL DEFAULT '{}',"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -74,6 +75,10 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     if "use_offline_mode" not in columns:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN use_offline_mode INTEGER NOT NULL DEFAULT 0"
+        )
+    if "layout_prefs" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN layout_prefs TEXT NOT NULL DEFAULT '{}'"
         )
 
 
@@ -138,4 +143,18 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
     if "satisfaction" not in columns:
         conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
 
+    conn.commit()
+
+
+def ensure_error_log_table(conn: sqlite3.Connection) -> None:
+    """Ensure the error_log table exists for centralized error capture."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS error_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "timestamp REAL NOT NULL,"
+        "username TEXT,"
+        "message TEXT NOT NULL,"
+        "stack TEXT"
+        ")"
+    )
     conn.commit()
