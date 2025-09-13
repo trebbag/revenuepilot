@@ -168,6 +168,19 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+def ensure_exports_table(conn: sqlite3.Connection) -> None:
+    """Ensure the exports table exists for tracking EHR exports."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS exports ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "timestamp REAL NOT NULL,"
+        "ehr TEXT,"
+        "note TEXT,"
+        "status TEXT,"
+        "detail TEXT"
+
 def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
     """Ensure the patients table exists."""
 
@@ -220,6 +233,7 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
         "note_id INTEGER,"
         "content TEXT,"
         "updated_at REAL"
+
         ")"
     )
     conn.commit()
