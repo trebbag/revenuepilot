@@ -99,6 +99,7 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
 )
+from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     authenticate_user,
     hash_password,
@@ -3274,3 +3275,97 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
 # ---------------------------------------------------------------------------
+
+# ------------------------- Coding & Billing APIs ---------------------------
+
+
+class CodesRequest(BaseModel):
+    codes: List[str]
+
+
+class BillingRequest(CodesRequest):
+    payerType: Optional[str] = None
+    location: Optional[str] = None
+
+
+@app.post("/api/codes/details/batch")
+async def code_details_batch(
+    req: CodesRequest, user=Depends(require_role("user"))
+) -> List[Dict[str, Any]]:
+    """Return metadata for a batch of billing/clinical codes."""
+
+    metadata = load_code_metadata()
+    details: List[Dict[str, Any]] = []
+    for code in req.codes:
+        info = metadata.get(code)
+        if info:
+            details.append(
+                {
+                    "code": code,
+                    "type": info["type"],
+                    "category": info["category"],
+                    "description": info["description"],
+                    "rationale": "Selected by user",
+                    "confidence": 100,
+                    "reimbursement": info.get("reimbursement"),
+                    "rvu": info.get("rvu"),
+                }
+            )
+        else:
+            details.append(
+                {
+                    "code": code,
+                    "type": "unknown",
+                    "category": "codes",
+                    "description": "Unknown code",
+                    "rationale": "Not found",
+                    "confidence": 0,
+                    "reimbursement": 0.0,
+                    "rvu": 0.0,
+                }
+            )
+    return details
+
+
+@app.post("/api/billing/calculate")
+async def billing_calculate(
+    req: BillingRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Calculate total reimbursement and RVUs for provided codes."""
+
+    metadata = load_code_metadata()
+    breakdown: List[Dict[str, Any]] = []
+    total_amount = 0.0
+    total_rvu = 0.0
+    for code in req.codes:
+        info = metadata.get(code)
+        amount = float(info.get("reimbursement", 0.0)) if info else 0.0
+        rvu = float(info.get("rvu", 0.0)) if info else 0.0
+        breakdown.append({"code": code, "amount": amount, "rvu": rvu})
+        total_amount += amount
+        total_rvu += rvu
+    return {
+        "totalEstimated": round(total_amount, 2),
+        "totalRvu": round(total_rvu, 2),
+        "breakdown": breakdown,
+    }
+
+
+@app.post("/api/codes/validate/combination")
+async def validate_code_combination(
+    req: CodesRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Check a set of codes for known conflicts."""
+
+    conflicts: List[Dict[str, str]] = []
+    conflict_defs = load_conflicts()
+    codes_set = set(req.codes)
+    for c1, c2, reason in conflict_defs:
+        if c1 in codes_set and c2 in codes_set:
+            conflicts.append({"code1": c1, "code2": c2, "reason": reason})
+    return {
+        "validCombinations": not conflicts,
+        "conflicts": conflicts,
+        "warnings": [],
+    }
+
