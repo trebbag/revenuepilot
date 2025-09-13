@@ -79,6 +79,33 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
+
+def ensure_user_profile_table(conn: sqlite3.Connection) -> None:
+    """Ensure the user_profile table exists for storing profile data."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_profile ("
+        "user_id INTEGER PRIMARY KEY,"
+        "current_view TEXT,"
+        "clinic TEXT,"
+        "preferences TEXT,"
+        "ui_preferences TEXT,"
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
+    if "current_view" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN current_view TEXT")
+    if "clinic" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN clinic TEXT")
+    if "preferences" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN preferences TEXT")
+    if "ui_preferences" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN ui_preferences TEXT")
+
+    conn.commit()
+
 def ensure_templates_table(conn: sqlite3.Connection) -> None:
     """Ensure the templates table exists for storing note templates."""
     conn.execute(
