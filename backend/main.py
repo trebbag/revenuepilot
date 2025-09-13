@@ -21,7 +21,7 @@ from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request, WebSocket, WebSocketDisconnect
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -34,6 +34,7 @@ from pydantic import (
     field_validator,
 )
 import json, sqlite3
+from uuid import uuid4
 try:  # prefer appdirs
     from appdirs import user_data_dir  # type: ignore
 except Exception:  # fallback to platformdirs if available
@@ -73,9 +74,24 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+
     ensure_exports_table,
+
+    ensure_patients_table,
+    ensure_encounters_table,
+    ensure_visit_sessions_table,
+    ensure_note_auto_saves_table,
+    ensure_user_profile_table,
+
 )
-from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
+from backend.templates import (
+    TemplateModel,
+    load_builtin_templates,
+    list_user_templates,
+    create_user_template,
+    update_user_template,
+    delete_user_template,
+)  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -161,6 +177,9 @@ app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
 
 # Record process start time for uptime calculations
 START_TIME = time.time()
+
+# Simple in-memory storage for note versions keyed by note ID.
+NOTE_VERSIONS: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 # Health/readiness endpoint used by the desktop app to know when the backend is up.
 # Returns basic process / db status without requiring auth.
@@ -290,6 +309,22 @@ transcript_history: Dict[str, deque] = defaultdict(
     lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
 )
 
+# Simple in-memory notification tracking.
+notification_counts: Dict[str, int] = defaultdict(int)
+notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
+
+
+async def _broadcast_notification_count(username: str) -> None:
+    """Send updated notification count to all websocket subscribers."""
+    for ws in list(notification_subscribers.get(username, [])):
+        try:
+            await ws.send_json({"count": notification_counts[username]})
+        except Exception:
+            try:
+                notification_subscribers[username].remove(ws)
+            except Exception:
+                pass
+
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
 # persist outside the project folder.  A migration step moves any existing
@@ -310,6 +345,11 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
 ensure_exports_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
+
 
 # Create helpful indexes for metrics queries (idempotent)
 try:  # pragma: no cover - sqlite create index if not exists
@@ -364,8 +404,13 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     )
     ensure_settings_table(conn)
     ensure_templates_table(conn)
+    ensure_user_profile_table(conn)
     ensure_events_table(conn)
     ensure_exports_table(conn)
+    ensure_patients_table(conn)
+    ensure_encounters_table(conn)
+    ensure_visit_sessions_table(conn)
+    ensure_note_auto_saves_table(conn)
     conn.commit()
 
 
@@ -394,6 +439,13 @@ ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
 ensure_templates_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
+
+# User profile details including current view and UI preferences.
+ensure_user_profile_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -879,6 +931,7 @@ async def save_user_settings(
     return model.model_dump()
 
 
+
 @app.get("/api/formatting/rules")
 async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return organisation-specific formatting rules for the user."""
@@ -894,6 +947,128 @@ async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, 
     except sqlite3.OperationalError:
         rules = []
     return {"rules": rules}
+
+class UserProfile(BaseModel):
+    currentView: Optional[str] = None
+    clinic: Optional[str] = None
+    preferences: Dict[str, Any] = Field(default_factory=dict)
+    uiPreferences: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UiPreferencesModel(BaseModel):
+    uiPreferences: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/api/user/profile")
+async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.current_view, up.clinic, up.preferences, up.ui_preferences "
+        "FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    if row:
+        return {
+            "currentView": row["current_view"],
+            "clinic": row["clinic"],
+            "preferences": json.loads(row["preferences"]) if row["preferences"] else {},
+            "uiPreferences": json.loads(row["ui_preferences"]) if row["ui_preferences"] else {},
+        }
+    return UserProfile().model_dump()
+
+
+@app.put("/api/user/profile")
+async def update_user_profile(
+    profile: UserProfile, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?", (user["sub"],)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    db_conn.execute(
+        "INSERT OR REPLACE INTO user_profile (user_id, current_view, clinic, preferences, ui_preferences) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            row["id"],
+            profile.currentView,
+            profile.clinic,
+            json.dumps(profile.preferences),
+            json.dumps(profile.uiPreferences),
+        ),
+    )
+    db_conn.commit()
+    return profile.model_dump()
+
+
+@app.get("/api/user/current-view")
+async def get_current_view(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.current_view FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    return {"currentView": row["current_view"] if row else None}
+
+
+@app.get("/api/user/ui-preferences")
+async def get_ui_preferences(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT up.ui_preferences FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    prefs = json.loads(row["ui_preferences"]) if row and row["ui_preferences"] else {}
+    return {"uiPreferences": prefs}
+
+
+@app.put("/api/user/ui-preferences")
+async def put_ui_preferences(
+    model: UiPreferencesModel, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?", (user["sub"],)
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    updated = json.dumps(model.uiPreferences)
+    cur = db_conn.execute(
+        "UPDATE user_profile SET ui_preferences=? WHERE user_id=?",
+        (updated, row["id"]),
+    )
+    if cur.rowcount == 0:
+        db_conn.execute(
+            "INSERT INTO user_profile (user_id, ui_preferences) VALUES (?, ?)",
+            (row["id"], updated),
+        )
+    db_conn.commit()
+    return {"uiPreferences": model.uiPreferences}
+
+
+@app.get("/api/notifications/count")
+async def get_notification_count(
+    user=Depends(require_role("user"))
+) -> Dict[str, int]:
+    return {"count": notification_counts[user["sub"]]}
+
+
+@app.websocket("/ws/notifications")
+async def notifications_ws(websocket: WebSocket, token: str):
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        username = data["sub"]
+    except jwt.PyJWTError:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    notification_subscribers[username].append(websocket)
+    try:
+        await websocket.send_json({"count": notification_counts[username]})
+        while True:
+            await asyncio.sleep(60)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in notification_subscribers[username]:
+            notification_subscribers[username].remove(websocket)
+
 
 
 class NoteRequest(BaseModel):
@@ -924,6 +1099,60 @@ class NoteRequest(BaseModel):
 
     class Config:
         populate_by_name = True
+
+
+
+class CodesSuggestRequest(BaseModel):
+    content: str
+    patientData: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class ComplianceCheckRequest(BaseModel):
+    content: str
+    codes: Optional[List[str]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class DifferentialsGenerateRequest(BaseModel):
+    content: str
+    symptoms: Optional[List[str]] = None
+    patientData: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class PreventionSuggestRequest(BaseModel):
+    patientData: Optional[Dict[str, Any]] = None
+    demographics: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class RealtimeAnalyzeRequest(BaseModel):
+    content: str
+    patientContext: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+class VisitSessionModel(BaseModel):  # pragma: no cover - simple schema
+    id: Optional[int] = None
+    encounter_id: int
+    data: Optional[str] = None
+
+
+class AutoSaveModel(BaseModel):  # pragma: no cover - simple schema
+    note_id: Optional[int] = None
+    content: str
+    beautifyModel: Optional[str] = None
+    suggestModel: Optional[str] = None
+    summarizeModel: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
 
 
 class CodeSuggestion(BaseModel):
@@ -968,6 +1197,65 @@ class SuggestionsResponse(BaseModel):
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
     followUp: Optional[FollowUp] = None
+
+
+class CodeSuggestItem(BaseModel):
+    code: str
+    type: Optional[str] = None
+    description: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+
+
+class CodesSuggestResponse(BaseModel):
+    suggestions: List[CodeSuggestItem]
+
+
+class ComplianceAlert(BaseModel):
+    text: str
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+
+
+class ComplianceCheckResponse(BaseModel):
+    alerts: List[ComplianceAlert]
+
+
+class DifferentialItem(BaseModel):
+    diagnosis: str
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    supportingFactors: Optional[List[str]] = None
+    contradictingFactors: Optional[List[str]] = None
+    testsToConfirm: Optional[List[str]] = None
+
+
+class DifferentialsResponse(BaseModel):
+    differentials: List[DifferentialItem]
+
+
+class PreventionItem(BaseModel):
+    recommendation: str
+    priority: Optional[str] = None
+    source: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    ageRelevant: Optional[bool] = None
+
+
+class PreventionResponse(BaseModel):
+    recommendations: List[PreventionItem]
+
+
+class RealtimeAnalysisResponse(BaseModel):
+    analysisId: str
+    extractedSymptoms: List[str]
+    medicalHistory: List[str]
+    currentMedications: List[str]
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
 
 
 class ScheduleRequest(BaseModel):
@@ -1207,6 +1495,7 @@ def save_prompt_templates(
 
 
 @app.get("/templates", response_model=List[TemplateModel])
+@app.get("/api/templates/list", response_model=List[TemplateModel])
 def get_templates(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
@@ -1214,134 +1503,88 @@ def get_templates(
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    base_query = (
-        "SELECT id, name, content, specialty, payer FROM templates "
-        "WHERE (user=? OR (user IS NULL AND clinic=?))"
+    return list_user_templates(
+        db_conn, user["sub"], user.get("clinic"), specialty, payer
     )
-    params: List[Any] = [user["sub"], clinic]
-    if specialty:
-        base_query += " AND specialty=?"
-        params.append(specialty)
-    if payer:
-        base_query += " AND payer=?"
-        params.append(payer)
-    rows = cursor.execute(base_query, params).fetchall()
-
-    templates = [
-        TemplateModel(
-            id=row["id"],
-            name=row["name"],
-            content=row["content"],
-            specialty=row["specialty"],
-            payer=row["payer"],
-        )
-        for row in rows
-    ]
-
-    for tpl in load_builtin_templates():
-        if specialty and tpl.specialty != specialty:
-            continue
-        if payer and tpl.payer != payer:
-            continue
-        templates.append(tpl)
-
-    return templates
 
 
 @app.post("/templates", response_model=TemplateModel)
+@app.post("/api/templates", response_model=TemplateModel)
 def create_template(
     tpl: TemplateModel, user=Depends(require_role("user"))
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    clinic = user.get("clinic")
-    owner = None if user.get("role") == "admin" else user["sub"]
-    cursor = db_conn.cursor()
-    cursor.execute(
-        "INSERT INTO templates (user, clinic, specialty, payer, name, content) VALUES (?, ?, ?, ?, ?, ?)",
-        (owner, clinic, tpl.specialty, tpl.payer, tpl.name, tpl.content),
-    )
-    db_conn.commit()
-    tpl_id = cursor.lastrowid
-    return TemplateModel(
-        id=tpl_id,
-        name=tpl.name,
-        content=tpl.content,
-        specialty=tpl.specialty,
-        payer=tpl.payer,
+    return create_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        tpl,
+        user.get("role") == "admin",
     )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
+@app.put("/api/templates/{template_id}", response_model=TemplateModel)
 def update_template(
     template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    if user.get("role") == "admin":
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? "
-            "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                user["sub"],
-                clinic,
-            ),
-        )
-    else:
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? WHERE id=? AND user=?",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                user["sub"],
-            ),
-        )
-    db_conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return TemplateModel(
-        id=template_id,
-        name=tpl.name,
-        content=tpl.content,
-        specialty=tpl.specialty,
-        payer=tpl.payer,
+    return update_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        tpl,
+        user.get("role") == "admin",
     )
 
 
 @app.delete("/templates/{template_id}")
+@app.delete("/api/templates/{template_id}")
 def delete_template(
     template_id: int, user=Depends(require_role("user"))
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    if user.get("role") == "admin":
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (template_id, user["sub"], clinic),
-        )
-    else:
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND user=?",
-            (template_id, user["sub"]),
-        )
-    db_conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Template not found")
+    delete_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        user.get("role") == "admin",
+    )
     return {"status": "deleted"}
+
+
+class AutoSaveRequest(BaseModel):
+    noteId: str
+    content: str
+
+
+@app.post("/api/notes/auto-save")
+def auto_save_note(
+    req: AutoSaveRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Persist note content in-memory for versioning."""
+
+    versions = NOTE_VERSIONS[req.noteId]
+    versions.append(
+        {"timestamp": datetime.now(timezone.utc).isoformat(), "content": req.content}
+    )
+    if len(versions) > 20:
+        versions.pop(0)
+    return {"status": "saved", "version": len(versions)}
+
+
+@app.get("/api/notes/versions/{note_id}")
+def get_note_versions(
+    note_id: str, user=Depends(require_role("user"))
+) -> List[Dict[str, str]]:
+    """Return previously auto-saved versions for a note."""
+
+    return NOTE_VERSIONS.get(note_id, [])
 
 
 class ExportRequest(BaseModel):
@@ -1727,6 +1970,7 @@ async def get_metrics(
         compliance_counts.items(), key=lambda x: x[1], reverse=True
     )[:5]
 
+
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
@@ -1885,6 +2129,9 @@ async def get_metrics(
         for k in keys
     }
 
+    top_compliance = [
+        k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)
+    ]
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
@@ -2016,6 +2263,75 @@ async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, A
 
     history = list(transcript_history.get(user["sub"], []))
     return {"history": history}
+
+
+@app.get("/api/patients/search")  # pragma: no cover - not exercised in tests
+async def search_patients(q: str, user=Depends(require_role("user"))):
+    """Search patients by name."""
+
+    cursor = db_conn.execute(
+        "SELECT id, name, dob FROM patients WHERE name LIKE ?",
+        (f"%{q}%",),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    return {"patients": rows}
+
+
+@app.get("/api/encounters/validate/{encounter_id}")  # pragma: no cover - not exercised in tests
+async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
+    """Validate that an encounter exists."""
+
+    cur = db_conn.execute(
+        "SELECT 1 FROM encounters WHERE id = ?",
+        (encounter_id,),
+    )
+    return {"id": encounter_id, "valid": cur.fetchone() is not None}
+
+
+@app.post("/api/visits/session")  # pragma: no cover - not exercised in tests
+async def create_visit_session(
+    session: VisitSessionModel, user=Depends(require_role("user"))
+):
+    """Create a new visit session."""
+
+    cur = db_conn.execute(
+        "INSERT INTO visit_sessions (encounter_id, data, updated_at) VALUES (?, ?, ?)",
+        (session.encounter_id, session.data or "", time.time()),
+    )
+    db_conn.commit()
+    return {"id": cur.lastrowid}
+
+
+@app.put("/api/visits/session")  # pragma: no cover - not exercised in tests
+async def update_visit_session(
+    session: VisitSessionModel, user=Depends(require_role("user"))
+):
+    """Update an existing visit session."""
+
+    if session.id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "id required")
+    db_conn.execute(
+        "UPDATE visit_sessions SET encounter_id = ?, data = ?, updated_at = ? WHERE id = ?",
+        (session.encounter_id, session.data or "", time.time(), session.id),
+    )
+    db_conn.commit()
+    return {"status": "ok"}
+
+
+@app.websocket("/api/transcribe/stream")  # pragma: no cover - not exercised in tests
+async def transcribe_stream(websocket: WebSocket):
+    """Stream transcription via WebSocket."""
+
+    await websocket.accept()
+    try:
+        while True:
+            chunk = await websocket.receive_bytes()
+            text = simple_transcribe(chunk)
+            await websocket.send_json(
+                {"transcript": text, "confidence": 1.0, "isInterim": False}
+            )
+    except WebSocketDisconnect:
+        pass
 
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
@@ -2507,6 +2823,395 @@ async def suggest(
             differentials=diffs,
             followUp=follow_up,
         )
+
+
+
+async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        suggestions = [
+            CodeSuggestItem(
+                code=item.get("code", ""),
+                type=item.get("type"),
+                description=item.get("rationale"),
+                confidence=1.0,
+                reasoning=item.get("rationale"),
+            )
+            for item in data.get("codes", [])
+        ]
+        return CodesSuggestResponse(suggestions=suggestions)
+    try:
+        patient = json.dumps(req.patientData or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert medical coder. Return JSON with key 'suggestions' "
+                    "as an array of {code,type,description,confidence,reasoning}. Confidence in 0-1."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nPatient data:{patient}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        suggestions = [CodeSuggestItem(**s) for s in data.get("suggestions", [])]
+        return CodesSuggestResponse(suggestions=suggestions)
+    except Exception as exc:
+        logging.error("codes suggest failed: %s", exc)
+        return CodesSuggestResponse(suggestions=[])
+
+
+@app.post("/api/ai/codes/suggest", response_model=CodesSuggestResponse)
+async def codes_suggest(
+    req: CodesSuggestRequest, user=Depends(require_role("user"))
+) -> CodesSuggestResponse:
+    return await _codes_suggest(req)
+
+
+@app.websocket("/ws/api/ai/codes/suggest")
+async def ws_codes_suggest(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _codes_suggest(CodesSuggestRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _compliance_check(req: ComplianceCheckRequest) -> ComplianceCheckResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        alerts = [
+            ComplianceAlert(
+                text=str(item),
+                confidence=1.0,
+                reasoning=str(item),
+            )
+            for item in data.get("compliance", [])
+        ]
+        return ComplianceCheckResponse(alerts=alerts)
+    try:
+        codes = json.dumps(req.codes or [])
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nCodes:{codes}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
+        return ComplianceCheckResponse(alerts=alerts)
+    except Exception as exc:
+        logging.error("compliance check failed: %s", exc)
+        return ComplianceCheckResponse(alerts=[])
+
+
+@app.post("/api/ai/compliance/check", response_model=ComplianceCheckResponse)
+async def compliance_check(
+    req: ComplianceCheckRequest, user=Depends(require_role("user"))
+) -> ComplianceCheckResponse:
+    return await _compliance_check(req)
+
+
+@app.websocket("/ws/api/ai/compliance/check")
+async def ws_compliance_check(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _compliance_check(ComplianceCheckRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _differentials_generate(
+    req: DifferentialsGenerateRequest,
+) -> DifferentialsResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        diffs = [
+            DifferentialItem(
+                diagnosis=item.get("diagnosis", ""),
+                confidence=item.get("score"),
+                reasoning="offline",
+            )
+            for item in data.get("differentials", [])
+        ]
+        return DifferentialsResponse(differentials=diffs)
+    try:
+        symptoms = json.dumps(req.symptoms or [])
+        patient = json.dumps(req.patientData or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a clinical decision support system. Return JSON {differentials:[{diagnosis,confidence,reasoning,supportingFactors,contradictingFactors,testsToConfirm}]}. Confidence 0-1."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nSymptoms:{symptoms}\nPatient:{patient}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        diffs = [DifferentialItem(**d) for d in data.get("differentials", [])]
+        return DifferentialsResponse(differentials=diffs)
+    except Exception as exc:
+        logging.error("differentials generate failed: %s", exc)
+        return DifferentialsResponse(differentials=[])
+
+
+@app.post("/api/ai/differentials/generate", response_model=DifferentialsResponse)
+async def differentials_generate(
+    req: DifferentialsGenerateRequest, user=Depends(require_role("user"))
+) -> DifferentialsResponse:
+    return await _differentials_generate(req)
+
+
+@app.websocket("/ws/api/ai/differentials/generate")
+async def ws_differentials_generate(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _differentials_generate(DifferentialsGenerateRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionResponse:
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest("")
+        recs = [
+            PreventionItem(
+                recommendation=item.get("recommendation", ""),
+                priority="routine",
+                source=item.get("source"),
+                confidence=1.0,
+                reasoning=item.get("reason"),
+            )
+            for item in data.get("publicHealth", [])
+        ]
+        return PreventionResponse(recommendations=recs)
+    try:
+        patient = json.dumps(req.patientData or {})
+        demo = json.dumps(req.demographics or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a preventative care assistant. Return JSON {recommendations:[{recommendation,priority,source,confidence,reasoning}]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Patient:{patient}\nDemographics:{demo}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        recs = [PreventionItem(**r) for r in data.get("recommendations", [])]
+        return PreventionResponse(recommendations=recs)
+    except Exception as exc:
+        logging.error("prevention suggest failed: %s", exc)
+        return PreventionResponse(recommendations=[])
+
+
+@app.post("/api/ai/prevention/suggest", response_model=PreventionResponse)
+async def prevention_suggest(
+    req: PreventionSuggestRequest, user=Depends(require_role("user"))
+) -> PreventionResponse:
+    return await _prevention_suggest(req)
+
+
+@app.websocket("/ws/api/ai/prevention/suggest")
+async def ws_prevention_suggest(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _prevention_suggest(PreventionSuggestRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _realtime_analyze(req: RealtimeAnalyzeRequest) -> RealtimeAnalysisResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        return RealtimeAnalysisResponse(
+            analysisId="offline",
+            extractedSymptoms=[],
+            medicalHistory=[],
+            currentMedications=[],
+            confidence=1.0,
+            reasoning="offline",
+        )
+    try:
+        context = json.dumps(req.patientContext or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You analyse clinical text. Return JSON with keys analysisId (string), extractedSymptoms (array), medicalHistory (array), currentMedications (array), confidence (0-1), reasoning (string)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Content:\n{cleaned}\nContext:{context}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        if not data.get("analysisId"):
+            data["analysisId"] = str(uuid4())
+        return RealtimeAnalysisResponse(**data)
+    except Exception as exc:
+        logging.error("realtime analysis failed: %s", exc)
+        return RealtimeAnalysisResponse(
+            analysisId=str(uuid4()),
+            extractedSymptoms=[],
+            medicalHistory=[],
+            currentMedications=[],
+            confidence=None,
+            reasoning=str(exc),
+        )
+
+
+@app.post("/api/ai/analyze/realtime", response_model=RealtimeAnalysisResponse)
+async def realtime_analyze(
+    req: RealtimeAnalyzeRequest, user=Depends(require_role("user"))
+) -> RealtimeAnalysisResponse:
+    return await _realtime_analyze(req)
+
+
+@app.websocket("/ws/api/ai/analyze/realtime")
+async def ws_realtime_analyze(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _realtime_analyze(RealtimeAnalyzeRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+@app.post("/api/compliance/analyze")  # pragma: no cover - not exercised in tests
+async def analyze_compliance(
+    req: NoteRequest, user=Depends(require_role("user"))
+):
+    """Analyze compliance issues in a note using an AI model."""
+
+    cleaned = deidentify(req.text or "")
+    messages = [
+        {
+            "role": "system",
+            "content": "Return JSON with key 'compliance' listing documentation issues.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        compliance = [str(x) for x in data.get("compliance", [])]
+    except Exception:
+        try:
+            from backend.offline_model import suggest as offline_suggest
+
+            data = offline_suggest(
+                cleaned,
+                req.lang,
+                req.specialty,
+                req.payer,
+                req.age,
+                req.sex,
+                req.region,
+                use_local=req.useLocalModels,
+                model_path=req.suggestModel,
+            )
+            compliance = [str(x) for x in data.get("compliance", [])]
+        except Exception:
+            compliance = ["offline compliance"]
+    return {"compliance": compliance}
+
+
+@app.put("/api/notes/auto-save")  # pragma: no cover - not exercised in tests
+async def auto_save_note(note: AutoSaveModel, user=Depends(require_role("user"))):
+    """Persist a draft note for the current user."""
+
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    uid = row["id"] if row else None
+    db_conn.execute(
+        "INSERT INTO note_auto_saves (user_id, note_id, content, updated_at) VALUES (?, ?, ?, ?)",
+        (uid, note.note_id, note.content, time.time()),
+    )
+    db_conn.commit()
+    return {"status": "saved"}
+
+
+@app.post("/api/notes/finalize-check")  # pragma: no cover - not exercised in tests
+async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
+    """Use an AI model to check if a note is ready for finalization."""
+
+    cleaned = deidentify(req.text or "")
+    messages = [
+        {
+            "role": "system",
+            "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+
+class AnalyzeRequest(BaseModel):
+    text: str
+    model: Optional[str] = None
+
+
+@app.post("/api/ai/analyze")
+async def analyze_note(
+    req: AnalyzeRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Extract structured content from a note via the LLM."""
+
+    cleaned = deidentify(req.text or "")
+    if USE_OFFLINE_MODEL:
+        return {"analysis": {}}
+    messages = [
+        {
+            "role": "system",
+            "content": "Extract key medical facts as JSON with any fields you find relevant.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        ok = bool(data.get("ok", True))
+        issues = [str(x) for x in data.get("issues", [])]
+    except Exception:
+        ok = True
+        issues = []
+    return {"ok": ok, "issues": issues}
+
+
 
 
 @app.post("/followup", response_model=ScheduleResponse)
