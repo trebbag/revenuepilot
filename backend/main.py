@@ -34,6 +34,7 @@ from pydantic import (
     field_validator,
 )
 import json, sqlite3
+from uuid import uuid4
 try:  # prefer appdirs
     from appdirs import user_data_dir  # type: ignore
 except Exception:  # fallback to platformdirs if available
@@ -1078,6 +1079,42 @@ class NoteRequest(BaseModel):
         populate_by_name = True
 
 
+
+class CodesSuggestRequest(BaseModel):
+    content: str
+    patientData: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class ComplianceCheckRequest(BaseModel):
+    content: str
+    codes: Optional[List[str]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class DifferentialsGenerateRequest(BaseModel):
+    content: str
+    symptoms: Optional[List[str]] = None
+    patientData: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class PreventionSuggestRequest(BaseModel):
+    patientData: Optional[Dict[str, Any]] = None
+    demographics: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
+
+class RealtimeAnalyzeRequest(BaseModel):
+    content: str
+    patientContext: Optional[Dict[str, Any]] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+
 class VisitSessionModel(BaseModel):  # pragma: no cover - simple schema
     id: Optional[int] = None
     encounter_id: int
@@ -1093,6 +1130,7 @@ class AutoSaveModel(BaseModel):  # pragma: no cover - simple schema
 
     class Config:
         populate_by_name = True
+
 
 
 class CodeSuggestion(BaseModel):
@@ -1137,6 +1175,65 @@ class SuggestionsResponse(BaseModel):
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
     followUp: Optional[FollowUp] = None
+
+
+class CodeSuggestItem(BaseModel):
+    code: str
+    type: Optional[str] = None
+    description: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+
+
+class CodesSuggestResponse(BaseModel):
+    suggestions: List[CodeSuggestItem]
+
+
+class ComplianceAlert(BaseModel):
+    text: str
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+
+
+class ComplianceCheckResponse(BaseModel):
+    alerts: List[ComplianceAlert]
+
+
+class DifferentialItem(BaseModel):
+    diagnosis: str
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    supportingFactors: Optional[List[str]] = None
+    contradictingFactors: Optional[List[str]] = None
+    testsToConfirm: Optional[List[str]] = None
+
+
+class DifferentialsResponse(BaseModel):
+    differentials: List[DifferentialItem]
+
+
+class PreventionItem(BaseModel):
+    recommendation: str
+    priority: Optional[str] = None
+    source: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
+    ageRelevant: Optional[bool] = None
+
+
+class PreventionResponse(BaseModel):
+    recommendations: List[PreventionItem]
+
+
+class RealtimeAnalysisResponse(BaseModel):
+    analysisId: str
+    extractedSymptoms: List[str]
+    medicalHistory: List[str]
+    currentMedications: List[str]
+    confidence: Optional[float] = None
+    reasoning: Optional[str] = None
 
 
 class ScheduleRequest(BaseModel):
@@ -2648,6 +2745,293 @@ async def suggest(
 
 
 
+async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        suggestions = [
+            CodeSuggestItem(
+                code=item.get("code", ""),
+                type=item.get("type"),
+                description=item.get("rationale"),
+                confidence=1.0,
+                reasoning=item.get("rationale"),
+            )
+            for item in data.get("codes", [])
+        ]
+        return CodesSuggestResponse(suggestions=suggestions)
+    try:
+        patient = json.dumps(req.patientData or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert medical coder. Return JSON with key 'suggestions' "
+                    "as an array of {code,type,description,confidence,reasoning}. Confidence in 0-1."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nPatient data:{patient}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        suggestions = [CodeSuggestItem(**s) for s in data.get("suggestions", [])]
+        return CodesSuggestResponse(suggestions=suggestions)
+    except Exception as exc:
+        logging.error("codes suggest failed: %s", exc)
+        return CodesSuggestResponse(suggestions=[])
+
+
+@app.post("/api/ai/codes/suggest", response_model=CodesSuggestResponse)
+async def codes_suggest(
+    req: CodesSuggestRequest, user=Depends(require_role("user"))
+) -> CodesSuggestResponse:
+    return await _codes_suggest(req)
+
+
+@app.websocket("/ws/api/ai/codes/suggest")
+async def ws_codes_suggest(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _codes_suggest(CodesSuggestRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _compliance_check(req: ComplianceCheckRequest) -> ComplianceCheckResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        alerts = [
+            ComplianceAlert(
+                text=str(item),
+                confidence=1.0,
+                reasoning=str(item),
+            )
+            for item in data.get("compliance", [])
+        ]
+        return ComplianceCheckResponse(alerts=alerts)
+    try:
+        codes = json.dumps(req.codes or [])
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nCodes:{codes}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
+        return ComplianceCheckResponse(alerts=alerts)
+    except Exception as exc:
+        logging.error("compliance check failed: %s", exc)
+        return ComplianceCheckResponse(alerts=[])
+
+
+@app.post("/api/ai/compliance/check", response_model=ComplianceCheckResponse)
+async def compliance_check(
+    req: ComplianceCheckRequest, user=Depends(require_role("user"))
+) -> ComplianceCheckResponse:
+    return await _compliance_check(req)
+
+
+@app.websocket("/ws/api/ai/compliance/check")
+async def ws_compliance_check(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _compliance_check(ComplianceCheckRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _differentials_generate(
+    req: DifferentialsGenerateRequest,
+) -> DifferentialsResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest(cleaned)
+        diffs = [
+            DifferentialItem(
+                diagnosis=item.get("diagnosis", ""),
+                confidence=item.get("score"),
+                reasoning="offline",
+            )
+            for item in data.get("differentials", [])
+        ]
+        return DifferentialsResponse(differentials=diffs)
+    try:
+        symptoms = json.dumps(req.symptoms or [])
+        patient = json.dumps(req.patientData or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a clinical decision support system. Return JSON {differentials:[{diagnosis,confidence,reasoning,supportingFactors,contradictingFactors,testsToConfirm}]}. Confidence 0-1."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Note:\n{cleaned}\nSymptoms:{symptoms}\nPatient:{patient}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        diffs = [DifferentialItem(**d) for d in data.get("differentials", [])]
+        return DifferentialsResponse(differentials=diffs)
+    except Exception as exc:
+        logging.error("differentials generate failed: %s", exc)
+        return DifferentialsResponse(differentials=[])
+
+
+@app.post("/api/ai/differentials/generate", response_model=DifferentialsResponse)
+async def differentials_generate(
+    req: DifferentialsGenerateRequest, user=Depends(require_role("user"))
+) -> DifferentialsResponse:
+    return await _differentials_generate(req)
+
+
+@app.websocket("/ws/api/ai/differentials/generate")
+async def ws_differentials_generate(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _differentials_generate(DifferentialsGenerateRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionResponse:
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        from backend.offline_model import suggest as offline_suggest
+
+        data = offline_suggest("")
+        recs = [
+            PreventionItem(
+                recommendation=item.get("recommendation", ""),
+                priority="routine",
+                source=item.get("source"),
+                confidence=1.0,
+                reasoning=item.get("reason"),
+            )
+            for item in data.get("publicHealth", [])
+        ]
+        return PreventionResponse(recommendations=recs)
+    try:
+        patient = json.dumps(req.patientData or {})
+        demo = json.dumps(req.demographics or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a preventative care assistant. Return JSON {recommendations:[{recommendation,priority,source,confidence,reasoning}]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Patient:{patient}\nDemographics:{demo}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        recs = [PreventionItem(**r) for r in data.get("recommendations", [])]
+        return PreventionResponse(recommendations=recs)
+    except Exception as exc:
+        logging.error("prevention suggest failed: %s", exc)
+        return PreventionResponse(recommendations=[])
+
+
+@app.post("/api/ai/prevention/suggest", response_model=PreventionResponse)
+async def prevention_suggest(
+    req: PreventionSuggestRequest, user=Depends(require_role("user"))
+) -> PreventionResponse:
+    return await _prevention_suggest(req)
+
+
+@app.websocket("/ws/api/ai/prevention/suggest")
+async def ws_prevention_suggest(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _prevention_suggest(PreventionSuggestRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
+async def _realtime_analyze(req: RealtimeAnalyzeRequest) -> RealtimeAnalysisResponse:
+    cleaned = deidentify(req.content or "")
+    offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    if offline:
+        return RealtimeAnalysisResponse(
+            analysisId="offline",
+            extractedSymptoms=[],
+            medicalHistory=[],
+            currentMedications=[],
+            confidence=1.0,
+            reasoning="offline",
+        )
+    try:
+        context = json.dumps(req.patientContext or {})
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You analyse clinical text. Return JSON with keys analysisId (string), extractedSymptoms (array), medicalHistory (array), currentMedications (array), confidence (0-1), reasoning (string)."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Content:\n{cleaned}\nContext:{context}",
+            },
+        ]
+        resp = call_openai(messages)
+        data = json.loads(resp)
+        if not data.get("analysisId"):
+            data["analysisId"] = str(uuid4())
+        return RealtimeAnalysisResponse(**data)
+    except Exception as exc:
+        logging.error("realtime analysis failed: %s", exc)
+        return RealtimeAnalysisResponse(
+            analysisId=str(uuid4()),
+            extractedSymptoms=[],
+            medicalHistory=[],
+            currentMedications=[],
+            confidence=None,
+            reasoning=str(exc),
+        )
+
+
+@app.post("/api/ai/analyze/realtime", response_model=RealtimeAnalysisResponse)
+async def realtime_analyze(
+    req: RealtimeAnalyzeRequest, user=Depends(require_role("user"))
+) -> RealtimeAnalysisResponse:
+    return await _realtime_analyze(req)
+
+
+@app.websocket("/ws/api/ai/analyze/realtime")
+async def ws_realtime_analyze(websocket: WebSocket):
+    await websocket.accept()
+    data = await websocket.receive_json()
+    resp = await _realtime_analyze(RealtimeAnalyzeRequest(**data))
+    await websocket.send_json(resp.model_dump())
+    await websocket.close()
+
+
 @app.post("/api/compliance/analyze")  # pragma: no cover - not exercised in tests
 async def analyze_compliance(
     req: NoteRequest, user=Depends(require_role("user"))
@@ -2745,6 +3129,7 @@ async def analyze_note(
         ok = True
         issues = []
     return {"ok": ok, "issues": issues}
+
 
 
 
