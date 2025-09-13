@@ -82,7 +82,14 @@ from backend.migrations import (  # type: ignore
     ensure_user_profile_table,
 
 )
-from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
+from backend.templates import (
+    TemplateModel,
+    load_builtin_templates,
+    list_user_templates,
+    create_user_template,
+    update_user_template,
+    delete_user_template,
+)  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -168,6 +175,9 @@ app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
 
 # Record process start time for uptime calculations
 START_TIME = time.time()
+
+# Simple in-memory storage for note versions keyed by note ID.
+NOTE_VERSIONS: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
 # Health/readiness endpoint used by the desktop app to know when the backend is up.
 # Returns basic process / db status without requiring auth.
@@ -1366,6 +1376,7 @@ def save_prompt_templates(
 
 
 @app.get("/templates", response_model=List[TemplateModel])
+@app.get("/api/templates/list", response_model=List[TemplateModel])
 def get_templates(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
@@ -1373,134 +1384,88 @@ def get_templates(
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    base_query = (
-        "SELECT id, name, content, specialty, payer FROM templates "
-        "WHERE (user=? OR (user IS NULL AND clinic=?))"
+    return list_user_templates(
+        db_conn, user["sub"], user.get("clinic"), specialty, payer
     )
-    params: List[Any] = [user["sub"], clinic]
-    if specialty:
-        base_query += " AND specialty=?"
-        params.append(specialty)
-    if payer:
-        base_query += " AND payer=?"
-        params.append(payer)
-    rows = cursor.execute(base_query, params).fetchall()
-
-    templates = [
-        TemplateModel(
-            id=row["id"],
-            name=row["name"],
-            content=row["content"],
-            specialty=row["specialty"],
-            payer=row["payer"],
-        )
-        for row in rows
-    ]
-
-    for tpl in load_builtin_templates():
-        if specialty and tpl.specialty != specialty:
-            continue
-        if payer and tpl.payer != payer:
-            continue
-        templates.append(tpl)
-
-    return templates
 
 
 @app.post("/templates", response_model=TemplateModel)
+@app.post("/api/templates", response_model=TemplateModel)
 def create_template(
     tpl: TemplateModel, user=Depends(require_role("user"))
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    clinic = user.get("clinic")
-    owner = None if user.get("role") == "admin" else user["sub"]
-    cursor = db_conn.cursor()
-    cursor.execute(
-        "INSERT INTO templates (user, clinic, specialty, payer, name, content) VALUES (?, ?, ?, ?, ?, ?)",
-        (owner, clinic, tpl.specialty, tpl.payer, tpl.name, tpl.content),
-    )
-    db_conn.commit()
-    tpl_id = cursor.lastrowid
-    return TemplateModel(
-        id=tpl_id,
-        name=tpl.name,
-        content=tpl.content,
-        specialty=tpl.specialty,
-        payer=tpl.payer,
+    return create_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        tpl,
+        user.get("role") == "admin",
     )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
+@app.put("/api/templates/{template_id}", response_model=TemplateModel)
 def update_template(
     template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    if user.get("role") == "admin":
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? "
-            "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                user["sub"],
-                clinic,
-            ),
-        )
-    else:
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? WHERE id=? AND user=?",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                user["sub"],
-            ),
-        )
-    db_conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return TemplateModel(
-        id=template_id,
-        name=tpl.name,
-        content=tpl.content,
-        specialty=tpl.specialty,
-        payer=tpl.payer,
+    return update_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        tpl,
+        user.get("role") == "admin",
     )
 
 
 @app.delete("/templates/{template_id}")
+@app.delete("/api/templates/{template_id}")
 def delete_template(
     template_id: int, user=Depends(require_role("user"))
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    clinic = user.get("clinic")
-    cursor = db_conn.cursor()
-    if user.get("role") == "admin":
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (template_id, user["sub"], clinic),
-        )
-    else:
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND user=?",
-            (template_id, user["sub"]),
-        )
-    db_conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Template not found")
+    delete_user_template(
+        db_conn,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        user.get("role") == "admin",
+    )
     return {"status": "deleted"}
+
+
+class AutoSaveRequest(BaseModel):
+    noteId: str
+    content: str
+
+
+@app.post("/api/notes/auto-save")
+def auto_save_note(
+    req: AutoSaveRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Persist note content in-memory for versioning."""
+
+    versions = NOTE_VERSIONS[req.noteId]
+    versions.append(
+        {"timestamp": datetime.now(timezone.utc).isoformat(), "content": req.content}
+    )
+    if len(versions) > 20:
+        versions.pop(0)
+    return {"status": "saved", "version": len(versions)}
+
+
+@app.get("/api/notes/versions/{note_id}")
+def get_note_versions(
+    note_id: str, user=Depends(require_role("user"))
+) -> List[Dict[str, str]]:
+    """Return previously auto-saved versions for a note."""
+
+    return NOTE_VERSIONS.get(note_id, [])
 
 
 class ExportRequest(BaseModel):
@@ -2682,6 +2647,7 @@ async def suggest(
         )
 
 
+
 @app.post("/api/compliance/analyze")  # pragma: no cover - not exercised in tests
 async def analyze_compliance(
     req: NoteRequest, user=Depends(require_role("user"))
@@ -2747,10 +2713,30 @@ async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
         {
             "role": "system",
             "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+
+class AnalyzeRequest(BaseModel):
+    text: str
+    model: Optional[str] = None
+
+
+@app.post("/api/ai/analyze")
+async def analyze_note(
+    req: AnalyzeRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Extract structured content from a note via the LLM."""
+
+    cleaned = deidentify(req.text or "")
+    if USE_OFFLINE_MODEL:
+        return {"analysis": {}}
+    messages = [
+        {
+            "role": "system",
+            "content": "Extract key medical facts as JSON with any fields you find relevant.",
         },
         {"role": "user", "content": cleaned},
     ]
     try:
+
         response_content = call_openai(messages)
         data = json.loads(response_content)
         ok = bool(data.get("ok", True))
@@ -2759,6 +2745,7 @@ async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
         ok = True
         issues = []
     return {"ok": ok, "issues": issues}
+
 
 
 @app.post("/followup", response_model=ScheduleResponse)
