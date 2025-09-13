@@ -73,6 +73,7 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_exports_table,
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -308,6 +309,7 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
+ensure_exports_table(db_conn)
 
 # Create helpful indexes for metrics queries (idempotent)
 try:  # pragma: no cover - sqlite create index if not exists
@@ -363,6 +365,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_events_table(conn)
+    ensure_exports_table(conn)
     conn.commit()
 
 
@@ -876,6 +879,23 @@ async def save_user_settings(
     return model.model_dump()
 
 
+@app.get("/api/formatting/rules")
+async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Return organisation-specific formatting rules for the user."""
+    try:
+        row = db_conn.execute(
+            "SELECT s.rules FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
+            (user["sub"],),
+        ).fetchone()
+        if row and row["rules"]:
+            rules = json.loads(row["rules"])
+        else:
+            rules = []
+    except sqlite3.OperationalError:
+        rules = []
+    return {"rules": rules}
+
+
 class NoteRequest(BaseModel):
     """
     Schema for a note submitted by the frontend.  The primary field is
@@ -1345,17 +1365,10 @@ class ExportRequest(BaseModel):
     medications: List[str] = Field(default_factory=list)
     patientID: Optional[str] = None
     encounterID: Optional[str] = None
+    ehrSystem: Optional[str] = None
 
-
-@app.post("/export")
-async def export_to_ehr(
-    req: ExportRequest, user=Depends(require_role("user"))
-) -> Dict[str, Any]:
-    """Post (or generate) a FHIR bundle for the supplied clinical note.
-
-    Returns the server response plus the constructed bundle when posted, or a
-    status of ``bundle`` with the bundle when no server is configured.
-    """
+async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
+    """Internal helper to post (or generate) a FHIR bundle."""
     try:
         from backend import ehr_integration  # absolute import for packaged mode
         result = ehr_integration.post_note_and_codes(
@@ -1375,6 +1388,63 @@ async def export_to_ehr(
     except Exception as exc:  # pragma: no cover - unexpected failures
         logger.exception("Unexpected error during EHR export")
         return {"status": "error", "detail": str(exc)}
+
+
+@app.post("/export")
+async def export_to_ehr(
+    req: ExportRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Legacy endpoint for exporting a note to an external EHR."""
+    return await _perform_ehr_export(req)
+
+
+@app.post("/api/export/ehr")
+async def export_to_ehr_api(
+    req: ExportRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Export a note to an EHR system and track the result."""
+    result = await _perform_ehr_export(req)
+    try:
+        cur = db_conn.cursor()
+        cur.execute(
+            "INSERT INTO exports (timestamp, ehr, note, status, detail) VALUES (?, ?, ?, ?, ?)",
+            (
+                time.time(),
+                req.ehrSystem or "",
+                req.note,
+                result.get("status"),
+                json.dumps(result),
+            ),
+        )
+        db_conn.commit()
+        export_id = cur.lastrowid
+    except Exception:
+        export_id = None
+    progress = 1.0 if result.get("status") in {"exported", "bundle"} else 0.0
+    resp: Dict[str, Any] = {"status": result.get("status"), "progress": progress}
+    if export_id is not None:
+        resp["exportId"] = export_id
+    return resp
+
+
+@app.get("/api/export/ehr/{export_id}")
+async def get_export_status(
+    export_id: int, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id, status, ehr, timestamp, detail FROM exports WHERE id=?",
+        (export_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Export not found")
+    detail = json.loads(row["detail"]) if row["detail"] else None
+    return {
+        "exportId": row["id"],
+        "status": row["status"],
+        "ehrSystem": row["ehr"],
+        "timestamp": row["timestamp"],
+        "detail": detail,
+    }
 
 
 # Endpoint: aggregate metrics from the logged events.  Returns counts of
@@ -1653,6 +1723,9 @@ async def get_metrics(
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
     template_counts = current_metrics.pop("template_counts")
     baseline_template_counts = baseline_metrics.pop("template_counts")
+    top_compliance = sorted(
+        compliance_counts.items(), key=lambda x: x[1], reverse=True
+    )[:5]
 
     daily_list: List[Dict[str, Any]] = []
     if daily:
@@ -1660,11 +1733,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1819,6 +1892,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": [c for c, _ in top_compliance],
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -2042,6 +2116,12 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
         beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
         return {"beautified": beautified, "error": str(exc)}
+
+
+@app.post("/api/ai/beautify")
+async def beautify_note_api(req: NoteRequest, user=Depends(require_role("user"))) -> dict:
+    """Alias for ``/beautify`` to support ``/api/ai/beautify`` path."""
+    return await beautify_note(req, user)
 
 
 @app.post("/suggest", response_model=SuggestionsResponse, response_model_exclude_none=True)

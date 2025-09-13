@@ -139,3 +139,19 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
 
     conn.commit()
+
+
+def ensure_exports_table(conn: sqlite3.Connection) -> None:
+    """Ensure the exports table exists for tracking EHR exports."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS exports ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "timestamp REAL NOT NULL,"
+        "ehr TEXT,"
+        "note TEXT,"
+        "status TEXT,"
+        "detail TEXT"
+        ")"
+    )
+    conn.commit()
