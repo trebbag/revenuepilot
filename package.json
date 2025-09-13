@@ -101,7 +101,6 @@
         "deb"
       ],
       "category": "Utility",
-
       "cscLink": "${env.LINUX_CSC_LINK}",
       "cscKeyPassword": "${env.LINUX_CSC_KEY_PASSWORD}"
 
