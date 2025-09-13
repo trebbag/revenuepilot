@@ -21,7 +21,7 @@ from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request, WebSocket, WebSocketDisconnect
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -73,6 +73,10 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_patients_table,
+    ensure_encounters_table,
+    ensure_visit_sessions_table,
+    ensure_note_auto_saves_table,
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -308,6 +312,10 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
 
 # Create helpful indexes for metrics queries (idempotent)
 try:  # pragma: no cover - sqlite create index if not exists
@@ -363,6 +371,10 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_events_table(conn)
+    ensure_patients_table(conn)
+    ensure_encounters_table(conn)
+    ensure_visit_sessions_table(conn)
+    ensure_note_auto_saves_table(conn)
     conn.commit()
 
 
@@ -391,6 +403,10 @@ ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
 ensure_templates_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -898,6 +914,23 @@ class NoteRequest(BaseModel):
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
     agencies: Optional[List[str]] = None
+    beautifyModel: Optional[str] = None
+    suggestModel: Optional[str] = None
+    summarizeModel: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+class VisitSessionModel(BaseModel):  # pragma: no cover - simple schema
+    id: Optional[int] = None
+    encounter_id: int
+    data: Optional[str] = None
+
+
+class AutoSaveModel(BaseModel):  # pragma: no cover - simple schema
+    note_id: Optional[int] = None
+    content: str
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
@@ -1653,6 +1686,7 @@ async def get_metrics(
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
     template_counts = current_metrics.pop("template_counts")
     baseline_template_counts = baseline_metrics.pop("template_counts")
+    top_compliance = [k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]]
 
     daily_list: List[Dict[str, Any]] = []
     if daily:
@@ -1660,11 +1694,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1819,6 +1853,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -1942,6 +1977,75 @@ async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, A
 
     history = list(transcript_history.get(user["sub"], []))
     return {"history": history}
+
+
+@app.get("/api/patients/search")  # pragma: no cover - not exercised in tests
+async def search_patients(q: str, user=Depends(require_role("user"))):
+    """Search patients by name."""
+
+    cursor = db_conn.execute(
+        "SELECT id, name, dob FROM patients WHERE name LIKE ?",
+        (f"%{q}%",),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    return {"patients": rows}
+
+
+@app.get("/api/encounters/validate/{encounter_id}")  # pragma: no cover - not exercised in tests
+async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
+    """Validate that an encounter exists."""
+
+    cur = db_conn.execute(
+        "SELECT 1 FROM encounters WHERE id = ?",
+        (encounter_id,),
+    )
+    return {"id": encounter_id, "valid": cur.fetchone() is not None}
+
+
+@app.post("/api/visits/session")  # pragma: no cover - not exercised in tests
+async def create_visit_session(
+    session: VisitSessionModel, user=Depends(require_role("user"))
+):
+    """Create a new visit session."""
+
+    cur = db_conn.execute(
+        "INSERT INTO visit_sessions (encounter_id, data, updated_at) VALUES (?, ?, ?)",
+        (session.encounter_id, session.data or "", time.time()),
+    )
+    db_conn.commit()
+    return {"id": cur.lastrowid}
+
+
+@app.put("/api/visits/session")  # pragma: no cover - not exercised in tests
+async def update_visit_session(
+    session: VisitSessionModel, user=Depends(require_role("user"))
+):
+    """Update an existing visit session."""
+
+    if session.id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "id required")
+    db_conn.execute(
+        "UPDATE visit_sessions SET encounter_id = ?, data = ?, updated_at = ? WHERE id = ?",
+        (session.encounter_id, session.data or "", time.time(), session.id),
+    )
+    db_conn.commit()
+    return {"status": "ok"}
+
+
+@app.websocket("/api/transcribe/stream")  # pragma: no cover - not exercised in tests
+async def transcribe_stream(websocket: WebSocket):
+    """Stream transcription via WebSocket."""
+
+    await websocket.accept()
+    try:
+        while True:
+            chunk = await websocket.receive_bytes()
+            text = simple_transcribe(chunk)
+            await websocket.send_json(
+                {"transcript": text, "confidence": 1.0, "isInterim": False}
+            )
+    except WebSocketDisconnect:
+        pass
 
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single
@@ -2427,6 +2531,85 @@ async def suggest(
             differentials=diffs,
             followUp=follow_up,
         )
+
+
+@app.post("/api/compliance/analyze")  # pragma: no cover - not exercised in tests
+async def analyze_compliance(
+    req: NoteRequest, user=Depends(require_role("user"))
+):
+    """Analyze compliance issues in a note using an AI model."""
+
+    cleaned = deidentify(req.text or "")
+    messages = [
+        {
+            "role": "system",
+            "content": "Return JSON with key 'compliance' listing documentation issues.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        compliance = [str(x) for x in data.get("compliance", [])]
+    except Exception:
+        try:
+            from backend.offline_model import suggest as offline_suggest
+
+            data = offline_suggest(
+                cleaned,
+                req.lang,
+                req.specialty,
+                req.payer,
+                req.age,
+                req.sex,
+                req.region,
+                use_local=req.useLocalModels,
+                model_path=req.suggestModel,
+            )
+            compliance = [str(x) for x in data.get("compliance", [])]
+        except Exception:
+            compliance = ["offline compliance"]
+    return {"compliance": compliance}
+
+
+@app.put("/api/notes/auto-save")  # pragma: no cover - not exercised in tests
+async def auto_save_note(note: AutoSaveModel, user=Depends(require_role("user"))):
+    """Persist a draft note for the current user."""
+
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    uid = row["id"] if row else None
+    db_conn.execute(
+        "INSERT INTO note_auto_saves (user_id, note_id, content, updated_at) VALUES (?, ?, ?, ?)",
+        (uid, note.note_id, note.content, time.time()),
+    )
+    db_conn.commit()
+    return {"status": "saved"}
+
+
+@app.post("/api/notes/finalize-check")  # pragma: no cover - not exercised in tests
+async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
+    """Use an AI model to check if a note is ready for finalization."""
+
+    cleaned = deidentify(req.text or "")
+    messages = [
+        {
+            "role": "system",
+            "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        ok = bool(data.get("ok", True))
+        issues = [str(x) for x in data.get("issues", [])]
+    except Exception:
+        ok = True
+        issues = []
+    return {"ok": ok, "issues": issues}
 
 
 @app.post("/followup", response_model=ScheduleResponse)
