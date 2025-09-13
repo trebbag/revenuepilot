@@ -166,3 +166,60 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
 
     conn.commit()
+
+
+def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the patients table exists."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS patients ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "name TEXT NOT NULL,"
+        "dob TEXT"
+        ")"
+    )
+    conn.commit()
+
+
+def ensure_encounters_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the encounters table exists."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS encounters ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "patient_id INTEGER NOT NULL,"
+        "description TEXT,"
+        "FOREIGN KEY(patient_id) REFERENCES patients(id)"
+        ")"
+    )
+    conn.commit()
+
+
+def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the visit_sessions table exists."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS visit_sessions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "encounter_id INTEGER NOT NULL,"
+        "data TEXT,"
+        "updated_at REAL,"
+        "FOREIGN KEY(encounter_id) REFERENCES encounters(id)"
+        ")"
+    )
+    conn.commit()
+
+
+def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the note_auto_saves table exists."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_auto_saves ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "user_id INTEGER,"
+        "note_id INTEGER,"
+        "content TEXT,"
+        "updated_at REAL"
+        ")"
+    )
+    conn.commit()
