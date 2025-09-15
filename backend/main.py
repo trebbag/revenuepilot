@@ -404,6 +404,13 @@ async def wrap_api_response(request: Request, call_next):
         error_payload = _build_error_response(str(exc), status_code=500)
         return JSONResponse(status_code=500, content=error_payload.model_dump())
 
+    if response.headers.get("X-Bypass-Envelope") == "1":
+        try:
+            del response.headers["X-Bypass-Envelope"]
+        except KeyError:  # pragma: no cover - header may already be absent
+            pass
+        return response
+
     content_type = response.headers.get("content-type", "")
     if "json" in content_type.lower():
         body_bytes = await _collect_body_bytes(response)
@@ -2846,6 +2853,79 @@ class AuditLogEntryModel(BaseModel):
     action: str
     details: Optional[Any] = None
 
+
+class UsageTrendPoint(BaseModel):
+    day: date
+    total_notes: int
+    beautify: int
+    suggest: int
+    summary: int
+    chart_upload: int
+    audio: int
+
+
+class UsageAnalytics(BaseModel):
+    total_notes: int
+    beautify: int
+    suggest: int
+    summary: int
+    chart_upload: int
+    audio: int
+    avg_note_length: float
+    daily_trends: List[UsageTrendPoint] = Field(default_factory=list)
+    projected_totals: Dict[str, float] = Field(default_factory=dict)
+    event_distribution: Dict[str, float] = Field(default_factory=dict)
+
+
+class CodingAccuracyTrendPoint(BaseModel):
+    day: date
+    total_notes: int
+    denials: int
+    deficiencies: int
+    accuracy: float
+
+
+class CodingAccuracyAnalytics(BaseModel):
+    total_notes: int
+    denials: int
+    deficiencies: int
+    accuracy: float
+    coding_distribution: Dict[str, int] = Field(default_factory=dict)
+    outcome_distribution: Dict[str, float] = Field(default_factory=dict)
+    accuracy_trend: List[CodingAccuracyTrendPoint] = Field(default_factory=list)
+    projections: Dict[str, float] = Field(default_factory=dict)
+
+
+class RevenueTrendPoint(BaseModel):
+    day: date
+    total_revenue: float
+    average_revenue: float
+
+
+class RevenueAnalytics(BaseModel):
+    total_revenue: float
+    average_revenue: float
+    revenue_by_code: Dict[str, float] = Field(default_factory=dict)
+    revenue_trend: List[RevenueTrendPoint] = Field(default_factory=list)
+    projections: Dict[str, float] = Field(default_factory=dict)
+    revenue_distribution: Dict[str, float] = Field(default_factory=dict)
+
+
+class ComplianceTrendPoint(BaseModel):
+    day: date
+    notes_with_flags: int
+    total_flags: int
+
+
+class ComplianceAnalytics(BaseModel):
+    compliance_counts: Dict[str, int] = Field(default_factory=dict)
+    notes_with_flags: int = 0
+    total_flags: int = 0
+    flagged_rate: float = 0.0
+    compliance_trend: List[ComplianceTrendPoint] = Field(default_factory=list)
+    projections: Dict[str, float] = Field(default_factory=dict)
+    compliance_distribution: Dict[str, float] = Field(default_factory=dict)
+
 # ------------------------- Dashboard endpoints ---------------------------
 
 
@@ -4162,6 +4242,7 @@ async def get_activity_log(
 async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
         f"""
@@ -4173,43 +4254,190 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length
-        FROM events {where}
+        FROM events {base_where}
         """,
         params,
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+
+    total_notes = int(data.get("total_notes") or 0)
+    beautify = int(data.get("beautify") or 0)
+    suggest = int(data.get("suggest") or 0)
+    summary = int(data.get("summary") or 0)
+    chart_upload = int(data.get("chart_upload") or 0)
+    audio = int(data.get("audio") or 0)
+    avg_note_length_raw = data.get("avg_note_length")
+    avg_note_length = float(avg_note_length_raw) if avg_note_length_raw is not None else 0.0
+
     cursor.execute(
         f"""
         SELECT
-            date(datetime(timestamp, 'unixepoch')) AS day,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS notes
-        FROM events {where}
+            DATE(timestamp, 'unixepoch') AS day,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END) AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END) AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END) AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio
+        FROM events
+        {where}
         GROUP BY day
-        ORDER BY day
+        ORDER BY day DESC
+        LIMIT 14
         """,
         params,
     )
+    trend_rows = cursor.fetchall()
+    daily_trends: List[UsageTrendPoint] = []
+    for trend_row in reversed(trend_rows):
+        day_value = trend_row["day"]
+        if not day_value:
+            continue
+        try:
+            trend_day = datetime.strptime(day_value, "%Y-%m-%d").date()
+        except ValueError:  # pragma: no cover - defensive for unexpected formats
+            continue
+        daily_trends.append(
+            UsageTrendPoint(
+                day=trend_day,
+                total_notes=int(trend_row["total_notes"] or 0),
+                beautify=int(trend_row["beautify"] or 0),
+                suggest=int(trend_row["suggest"] or 0),
+                summary=int(trend_row["summary"] or 0),
+                chart_upload=int(trend_row["chart_upload"] or 0),
+                audio=int(trend_row["audio"] or 0),
+            )
+        )
+
+    if daily_trends:
+        days_count = len(daily_trends)
+        averages = {
+            "total_notes": sum(point.total_notes for point in daily_trends) / days_count,
+            "beautify": sum(point.beautify for point in daily_trends) / days_count,
+            "suggest": sum(point.suggest for point in daily_trends) / days_count,
+            "summary": sum(point.summary for point in daily_trends) / days_count,
+            "chart_upload": sum(point.chart_upload for point in daily_trends) / days_count,
+            "audio": sum(point.audio for point in daily_trends) / days_count,
+        }
+        projected_totals = {
+            f"next_7_days_{key}": round(value * 7, 2) for key, value in averages.items()
+        }
+        projected_totals["expected_avg_note_length"] = round(avg_note_length, 2)
+    else:
+        projected_totals = {
+            "next_7_days_total_notes": 0.0,
+            "next_7_days_beautify": 0.0,
+            "next_7_days_suggest": 0.0,
+            "next_7_days_summary": 0.0,
+            "next_7_days_chart_upload": 0.0,
+            "next_7_days_audio": 0.0,
+            "expected_avg_note_length": 0.0,
+        }
+
+    distribution_total = total_notes + beautify + suggest + summary + chart_upload + audio
+    if distribution_total:
+        event_distribution = {
+            "notes": round(total_notes / distribution_total, 4),
+            "beautify": round(beautify / distribution_total, 4),
+            "suggest": round(suggest / distribution_total, 4),
+            "summary": round(summary / distribution_total, 4),
+            "chart_upload": round(chart_upload / distribution_total, 4),
+            "audio": round(audio / distribution_total, 4),
+        }
+    else:
+        event_distribution = {
+            "notes": 0.0,
+            "beautify": 0.0,
+            "suggest": 0.0,
+            "summary": 0.0,
+            "chart_upload": 0.0,
+            "audio": 0.0,
+        }
+
+    analytics = UsageAnalytics(
+        total_notes=total_notes,
+        beautify=beautify,
+        suggest=suggest,
+        summary=summary,
+        chart_upload=chart_upload,
+        audio=audio,
+        avg_note_length=avg_note_length,
+        daily_trends=daily_trends,
+        projected_totals=projected_totals,
+        event_distribution=event_distribution,
+    )
+    return analytics.model_dump()
+
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m-%d', timestamp, 'unixepoch') AS day,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 7
+        """,
+        params,
+    )
+    daily_rows = cursor.fetchall()
     daily_usage = [
-        {"date": r["day"], "count": int(r["notes"] or 0)}
-        for r in cursor.fetchall()
-        if r["day"] and (r["notes"] or 0)
+        {
+            "date": row["day"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(daily_rows)
+        if row["day"] is not None
     ]
     cursor.execute(
         f"""
         SELECT
-            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS notes
-        FROM events {where}
+            strftime('%Y-%W', timestamp, 'unixepoch') AS week,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
         GROUP BY week
-        ORDER BY week
+        ORDER BY week DESC
+        LIMIT 8
         """,
         params,
     )
+    weekly_rows = cursor.fetchall()
     weekly_trend = [
-        {"week": r["week"], "count": int(r["notes"] or 0)}
-        for r in cursor.fetchall()
-        if r["week"] and (r["notes"] or 0)
+        {
+            "week": row["week"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(weekly_rows)
+        if row["week"] is not None
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m', timestamp, 'unixepoch') AS month,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY month
+        ORDER BY month DESC
+        LIMIT 12
+        """,
+        params,
+    )
+    monthly_rows = cursor.fetchall()
+    monthly_trend = [
+        {
+            "month": row["month"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(monthly_rows)
+        if row["month"] is not None
+
     ]
     return {
         "total_notes": data.get("total_notes", 0) or 0,
@@ -4221,7 +4449,9 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         "avg_note_length": data.get("avg_note_length", 0) or 0,
         "dailyUsage": daily_usage,
         "weeklyTrend": weekly_trend,
+        "monthlyTrend": monthly_trend,
     }
+
 
 
 @app.get("/api/analytics/coding-accuracy")
@@ -4241,10 +4471,10 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
-    total = data.get("total_notes", 0) or 0
-    denials = data.get("denials", 0) or 0
-    deficiencies = data.get("deficiencies", 0) or 0
-    accuracy = (total - denials - deficiencies) / total if total else 0
+    total = int(data.get("total_notes") or 0)
+    denials = int(data.get("denials") or 0)
+    deficiencies = int(data.get("deficiencies") or 0)
+    accuracy = (total - denials - deficiencies) / total if total else 0.0
     cursor.execute(
         "SELECT json_each.value AS code, COUNT(*) AS count FROM events "
         "JOIN json_each(COALESCE(events.codes, '[]')) "
@@ -4252,22 +4482,100 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"
         params,
     )
     distribution = {r["code"]: r["count"] for r in cursor.fetchall()}
-    return {
-        "total_notes": total,
-        "denials": denials,
-        "deficiencies": deficiencies,
-        "accuracy": accuracy,
-        "coding_distribution": distribution,
-    }
+
+    cursor.execute(
+        f"""
+        SELECT
+            DATE(timestamp, 'unixepoch') AS day,
+            SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+        FROM events
+        {where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 14
+        """,
+        params,
+    )
+    trend_rows = cursor.fetchall()
+    accuracy_trend: List[CodingAccuracyTrendPoint] = []
+    for trend_row in reversed(trend_rows):
+        day_value = trend_row["day"]
+        if not day_value:
+            continue
+        try:
+            trend_day = datetime.strptime(day_value, "%Y-%m-%d").date()
+        except ValueError:  # pragma: no cover - defensive for unexpected formats
+            continue
+        day_total = int(trend_row["total_notes"] or 0)
+        day_denials = int(trend_row["denials"] or 0)
+        day_deficiencies = int(trend_row["deficiencies"] or 0)
+        day_accuracy = (
+            (day_total - day_denials - day_deficiencies) / day_total if day_total else 0.0
+        )
+        accuracy_trend.append(
+            CodingAccuracyTrendPoint(
+                day=trend_day,
+                total_notes=day_total,
+                denials=day_denials,
+                deficiencies=day_deficiencies,
+                accuracy=day_accuracy,
+            )
+        )
+
+    if accuracy_trend:
+        days_count = len(accuracy_trend)
+        avg_accuracy = sum(point.accuracy for point in accuracy_trend) / days_count
+        avg_denials = sum(point.denials for point in accuracy_trend) / days_count
+        avg_deficiencies = sum(point.deficiencies for point in accuracy_trend) / days_count
+        projections = {
+            "expected_accuracy_next_7_days": round(avg_accuracy, 4),
+            "projected_denials_next_7_days": round(avg_denials * 7, 2),
+            "projected_deficiencies_next_7_days": round(avg_deficiencies * 7, 2),
+        }
+    else:
+        projections = {
+            "expected_accuracy_next_7_days": 0.0,
+            "projected_denials_next_7_days": 0.0,
+            "projected_deficiencies_next_7_days": 0.0,
+        }
+
+    accurate_count = max(total - denials - deficiencies, 0)
+    if total:
+        outcome_distribution = {
+            "accurate": round(accurate_count / total, 4),
+            "denials": round(denials / total, 4),
+            "deficiencies": round(deficiencies / total, 4),
+        }
+    else:
+        outcome_distribution = {
+            "accurate": 0.0,
+            "denials": 0.0,
+            "deficiencies": 0.0,
+        }
+
+    analytics = CodingAccuracyAnalytics(
+        total_notes=total,
+        denials=denials,
+        deficiencies=deficiencies,
+        accuracy=accuracy,
+        coding_distribution=distribution,
+        outcome_distribution=outcome_distribution,
+        accuracy_trend=accuracy_trend,
+        projections=projections,
+    )
+    return analytics.model_dump()
 
 
 @app.get("/api/analytics/revenue")
 async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
-        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {where}",
+        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {base_where}",
         params,
     )
     row = cursor.fetchone()
@@ -4308,28 +4616,87 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
         f"{where} GROUP BY code",
         params,
     )
-    distribution_rows = cursor.fetchall()
-    by_code = {
-        row["code"]: float(row["revenue"] or 0.0)
-        for row in distribution_rows
-        if row["code"] is not None
-    }
-    code_distribution = {
-        row["code"]: {
-            "count": int(row["count"] or 0),
-            "revenue": float(row["revenue"] or 0.0),
+
+
+    by_code = {r["code"]: float(r["revenue"] or 0.0) for r in cursor.fetchall()}
+
+    cursor.execute(
+        f"""
+        SELECT
+            DATE(timestamp, 'unixepoch') AS day,
+            SUM(COALESCE(revenue, 0)) AS total_revenue,
+            AVG(CASE WHEN revenue IS NOT NULL THEN revenue END) AS average_revenue
+        FROM events
+        {where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 14
+        """,
+        params,
+    )
+    trend_rows = cursor.fetchall()
+    revenue_trend: List[RevenueTrendPoint] = []
+    for trend_row in reversed(trend_rows):
+        day_value = trend_row["day"]
+        if not day_value:
+            continue
+        try:
+            trend_day = datetime.strptime(day_value, "%Y-%m-%d").date()
+        except ValueError:  # pragma: no cover - defensive for unexpected formats
+            continue
+        total_revenue_day = float(trend_row["total_revenue"] or 0.0)
+        average_revenue_day = (
+            float(trend_row["average_revenue"])
+            if trend_row["average_revenue"] is not None
+            else 0.0
+        )
+        revenue_trend.append(
+            RevenueTrendPoint(
+                day=trend_day,
+                total_revenue=total_revenue_day,
+                average_revenue=average_revenue_day,
+            )
+        )
+
+    total_revenue = float(data.get("total") or 0.0)
+    average_revenue = float(data.get("average") or 0.0)
+
+    if revenue_trend:
+        days_count = len(revenue_trend)
+        avg_daily_revenue = (
+            sum(point.total_revenue for point in revenue_trend) / days_count
+        )
+        avg_daily_avg_revenue = (
+            sum(point.average_revenue for point in revenue_trend) / days_count
+        )
+        projections = {
+            "projected_revenue_next_7_days": round(avg_daily_revenue * 7, 2),
+            "expected_average_revenue_next_7_days": round(avg_daily_avg_revenue, 2),
         }
-        for row in distribution_rows
-        if row["code"] is not None
-    }
-    return {
-        "total_revenue": total_revenue,
-        "average_revenue": average_revenue,
-        "projectedRevenue": projected_revenue,
-        "revenue_by_code": by_code,
-        "code_distribution": code_distribution,
-        "monthlyTrend": monthly_trend,
-    }
+    else:
+        projections = {
+            "projected_revenue_next_7_days": 0.0,
+            "expected_average_revenue_next_7_days": 0.0,
+        }
+
+    if total_revenue:
+        revenue_distribution = {
+            code: round(amount / total_revenue, 4) if total_revenue else 0.0
+            for code, amount in by_code.items()
+        }
+    else:
+        revenue_distribution = {code: 0.0 for code in by_code.keys()}
+
+    analytics = RevenueAnalytics(
+        total_revenue=total_revenue,
+        average_revenue=average_revenue,
+        revenue_by_code=by_code,
+        revenue_trend=revenue_trend,
+        projections=projections,
+        revenue_distribution=revenue_distribution,
+    )
+    return analytics.model_dump()
+
 
 
 @app.get("/api/analytics/compliance")
@@ -4345,20 +4712,90 @@ async def analytics_compliance(user=Depends(require_roles("analyst", "user"))) -
     )
     flags = {r["flag"]: r["count"] for r in cursor.fetchall()}
     cursor.execute(
-        f"SELECT SUM(CASE WHEN compliance_flags IS NOT NULL AND compliance_flags != '[]' THEN 1 ELSE 0 END) AS notes_with_flags FROM events {where}",
+        f"""
+        SELECT
+            SUM(CASE WHEN compliance_flags IS NOT NULL AND compliance_flags != '[]' THEN 1 ELSE 0 END) AS notes_with_flags,
+            SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS total_flags,
+            SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS total_notes
+        FROM events
+        {where}
+        """,
         params,
     )
-    notes_row = cursor.fetchone()
+    stats_row = cursor.fetchone()
+    stats = dict(stats_row) if stats_row else {}
+    notes_with_flags = int(stats.get("notes_with_flags") or 0)
+    total_flags = int(stats.get("total_flags") or 0)
+    total_notes = int(stats.get("total_notes") or 0)
+    flagged_rate = notes_with_flags / total_notes if total_notes else 0.0
+
     cursor.execute(
-        f"SELECT SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS total_flags FROM events {where}",
+        f"""
+        SELECT
+            DATE(timestamp, 'unixepoch') AS day,
+            SUM(CASE WHEN compliance_flags IS NOT NULL AND compliance_flags != '[]' THEN 1 ELSE 0 END) AS notes_with_flags,
+            SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS total_flags
+        FROM events
+        {where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 14
+        """,
         params,
     )
-    flags_row = cursor.fetchone()
-    return {
-        "compliance_counts": flags,
-        "notes_with_flags": (dict(notes_row).get("notes_with_flags", 0) if notes_row else 0),
-        "total_flags": (dict(flags_row).get("total_flags", 0) if flags_row else 0),
-    }
+    trend_rows = cursor.fetchall()
+    compliance_trend: List[ComplianceTrendPoint] = []
+    for trend_row in reversed(trend_rows):
+        day_value = trend_row["day"]
+        if not day_value:
+            continue
+        try:
+            trend_day = datetime.strptime(day_value, "%Y-%m-%d").date()
+        except ValueError:  # pragma: no cover - defensive for unexpected formats
+            continue
+        compliance_trend.append(
+            ComplianceTrendPoint(
+                day=trend_day,
+                notes_with_flags=int(trend_row["notes_with_flags"] or 0),
+                total_flags=int(trend_row["total_flags"] or 0),
+            )
+        )
+
+    if compliance_trend:
+        days_count = len(compliance_trend)
+        avg_notes_with_flags = (
+            sum(point.notes_with_flags for point in compliance_trend) / days_count
+        )
+        avg_total_flags = (
+            sum(point.total_flags for point in compliance_trend) / days_count
+        )
+        projections = {
+            "projected_flagged_notes_next_7_days": round(avg_notes_with_flags * 7, 2),
+            "projected_flags_next_7_days": round(avg_total_flags * 7, 2),
+        }
+    else:
+        projections = {
+            "projected_flagged_notes_next_7_days": 0.0,
+            "projected_flags_next_7_days": 0.0,
+        }
+
+    if total_flags:
+        compliance_distribution = {
+            flag: round(count / total_flags, 4) for flag, count in flags.items()
+        }
+    else:
+        compliance_distribution = {flag: 0.0 for flag in flags.keys()}
+
+    analytics = ComplianceAnalytics(
+        compliance_counts=flags,
+        notes_with_flags=notes_with_flags,
+        total_flags=total_flags,
+        flagged_rate=flagged_rate,
+        compliance_trend=compliance_trend,
+        projections=projections,
+        compliance_distribution=compliance_distribution,
+    )
+    return analytics.model_dump()
 
 
 @app.get("/api/analytics/confidence")
@@ -4430,9 +4867,12 @@ async def analytics_confidence(user=Depends(require_roles("analyst"))) -> Dict[s
 
 
 @app.get("/api/user/permissions")
-async def get_user_permissions(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def get_user_permissions(user=Depends(require_role("user"))) -> JSONResponse:
     """Return the current user's role."""
-    return {"role": user["role"]}
+    return JSONResponse(
+        content={"role": user["role"]},
+        headers={"X-Bypass-Envelope": "1"},
+    )
 
 
 @app.post("/summarize")
