@@ -32,6 +32,7 @@ from fastapi import (
     File,
     Request,
     BackgroundTasks,
+    Query,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -5385,6 +5386,10 @@ async def upload_chart(
 class CombinationRequest(BaseModel):
     cpt: List[str] = Field(default_factory=list)
     icd10: List[str] = Field(default_factory=list)
+    age: Optional[int] = Field(default=None, ge=0, le=130)
+    gender: Optional[str] = None
+    encounterType: Optional[str] = None
+    providerSpecialty: Optional[str] = None
 
 
 @app.get("/api/codes/categorization/rules")
@@ -5397,15 +5402,43 @@ async def get_code_categorization_rules(
 
 
 @app.get("/api/codes/validate/cpt/{code}")
-async def validate_cpt_code(code: str, user=Depends(require_role("user"))):
+async def validate_cpt_code(
+    code: str,
+    age: int | None = Query(None, ge=0, le=130),
+    gender: str | None = Query(None),
+    encounter_type: str | None = Query(None, alias="encounterType"),
+    provider_specialty: str | None = Query(None, alias="providerSpecialty"),
+    user=Depends(require_role("user")),
+):
     """Validate a CPT code."""
-    return code_tables.validate_cpt(code)
+
+    return code_tables.validate_cpt(
+        code,
+        age=age,
+        gender=gender.strip() if gender else None,
+        encounter_type=encounter_type.strip() if encounter_type else None,
+        specialty=provider_specialty.strip() if provider_specialty else None,
+    )
 
 
 @app.get("/api/codes/validate/icd10/{code}")
-async def validate_icd10_code(code: str, user=Depends(require_role("user"))):
+async def validate_icd10_code(
+    code: str,
+    age: int | None = Query(None, ge=0, le=130),
+    gender: str | None = Query(None),
+    encounter_type: str | None = Query(None, alias="encounterType"),
+    provider_specialty: str | None = Query(None, alias="providerSpecialty"),
+    user=Depends(require_role("user")),
+):
     """Validate an ICD-10 code."""
-    return code_tables.validate_icd10(code)
+
+    return code_tables.validate_icd10(
+        code,
+        age=age,
+        gender=gender.strip() if gender else None,
+        encounter_type=encounter_type.strip() if encounter_type else None,
+        specialty=provider_specialty.strip() if provider_specialty else None,
+    )
 
 
 @app.post("/api/codes/validate/combination")
@@ -5415,7 +5448,17 @@ async def validate_code_combination(
     """Validate CPT/ICD-10 code combinations for medical necessity."""
     cpt_codes = [c.upper() for c in req.cpt]
     icd10_codes = [c.upper() for c in req.icd10]
-    return code_tables.validate_combination(cpt_codes, icd10_codes)
+    gender = req.gender.strip() if req.gender else None
+    encounter_type = req.encounterType.strip() if req.encounterType else None
+    specialty = req.providerSpecialty.strip() if req.providerSpecialty else None
+    return code_tables.validate_combination(
+        cpt_codes,
+        icd10_codes,
+        age=req.age,
+        gender=gender,
+        encounter_type=encounter_type,
+        specialty=specialty,
+    )
 
 
 class BillingRequest(BaseModel):
@@ -5731,6 +5774,10 @@ async def notes_bulk_operations(
 
 class CodesRequest(BaseModel):
     codes: List[str]
+    age: Optional[int] = Field(default=None, ge=0, le=130)
+    gender: Optional[str] = None
+    encounterType: Optional[str] = None
+    providerSpecialty: Optional[str] = None
 
 
 class BillingRequest(CodesRequest):
@@ -5784,21 +5831,24 @@ async def billing_calculate(
     """Calculate total reimbursement and RVUs for provided codes."""
 
     metadata = load_code_metadata()
-    breakdown: List[Dict[str, Any]] = []
-    total_amount = 0.0
+    codes_upper = [code.upper() for code in req.codes]
+    cpt_codes = [code for code in codes_upper if code and code[0].isdigit()]
+    payer_type = req.payerType or "commercial"
+
+    billing = code_tables.calculate_billing(cpt_codes, payer_type, req.location)
+
     total_rvu = 0.0
-    for code in req.codes:
-        info = metadata.get(code)
-        amount = float(info.get("reimbursement", 0.0)) if info else 0.0
-        rvu = float(info.get("rvu", 0.0)) if info else 0.0
-        breakdown.append({"code": code, "amount": amount, "rvu": rvu})
-        total_amount += amount
+    breakdown = billing.get("breakdown", {})
+    for code in cpt_codes:
+        info = metadata.get(code, {})
+        rvu = float(info.get("rvu", 0.0) or 0.0)
         total_rvu += rvu
-    return {
-        "totalEstimated": round(total_amount, 2),
-        "totalRvu": round(total_rvu, 2),
-        "breakdown": breakdown,
-    }
+        entry = breakdown.setdefault(code, {"amount": 0.0, "amountFormatted": None})
+        entry["rvu"] = round(rvu, 2)
+
+    billing["totalRvu"] = round(total_rvu, 2)
+    billing["breakdown"] = breakdown
+    return billing
 
 
 @app.post("/api/codes/validate/combination")
@@ -5807,14 +5857,33 @@ async def validate_code_combination(
 ) -> Dict[str, Any]:
     """Check a set of codes for known conflicts."""
 
-    conflicts: List[Dict[str, str]] = []
-    conflict_defs = load_conflicts()
-    codes_set = set(req.codes)
-    for c1, c2, reason in conflict_defs:
+    codes_upper = [code.upper() for code in req.codes]
+    cpt_codes = [code for code in codes_upper if code and code[0].isdigit()]
+    icd10_codes = [code for code in codes_upper if code and code[0].isalpha()]
+    gender = req.gender.strip() if req.gender else None
+    encounter_type = req.encounterType.strip() if req.encounterType else None
+    specialty = req.providerSpecialty.strip() if req.providerSpecialty else None
+
+    result = code_tables.validate_combination(
+        cpt_codes,
+        icd10_codes,
+        age=req.age,
+        gender=gender,
+        encounter_type=encounter_type,
+        specialty=specialty,
+    )
+
+    conflicts: List[Dict[str, str]] = list(result.get("conflicts", []))
+    codes_set = set(codes_upper)
+    for c1, c2, reason in load_conflicts():
         if c1 in codes_set and c2 in codes_set:
-            conflicts.append({"code1": c1, "code2": c2, "reason": reason})
+            entry = {"code1": c1, "code2": c2, "reason": reason}
+            if entry not in conflicts:
+                conflicts.append(entry)
+
+    valid = not conflicts and not result.get("contextIssues")
     return {
-        "validCombinations": not conflicts,
+        **result,
+        "validCombinations": valid,
         "conflicts": conflicts,
-        "warnings": [],
     }
