@@ -22,5 +22,6 @@ def test_ensure_settings_table_adds_columns():
         "region",
         "use_local_models",
         "agencies",
+        "layout_prefs",
     } <= cols
     conn.close()
