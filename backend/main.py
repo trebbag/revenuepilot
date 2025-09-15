@@ -132,7 +132,9 @@ from backend.auth import (  # type: ignore
     verify_password,
 )
 from backend import deid as deid_module  # type: ignore
+from backend.sanitizer import sanitize_text
 from backend import worker  # type: ignore
+
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -712,6 +714,22 @@ def require_role(role: str):
         return data
 
     return checker
+
+
+async def ws_require_role(websocket: WebSocket, role: str) -> Dict[str, Any]:
+    """Authenticate a websocket connection against a required role."""
+
+    auth = websocket.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect()
+    token = auth.split()[1]
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    try:
+        return get_current_user(credentials, required_role=role)
+    except HTTPException:
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect()
 
 
 # Model for setting API key via API endpoint
@@ -1426,6 +1444,8 @@ async def log_client_error(model: ErrorLogModel, request: Request) -> Dict[str, 
     db_conn.commit()
     return {"status": "logged"}
 
+# Removed obsolete websocket handler
+
 @app.get("/api/formatting/rules")
 async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return organisation-specific formatting rules for the user."""
@@ -1592,13 +1612,9 @@ async def get_notification_count(
 
 
 @app.websocket("/ws/notifications")
-async def notifications_ws(websocket: WebSocket, token: str):
-    try:
-        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        username = data["sub"]
-    except jwt.PyJWTError:
-        await websocket.close(code=1008)
-        return
+async def notifications_ws(websocket: WebSocket):
+    user = await ws_require_role(websocket, "user")
+    username = user["sub"]
     await websocket.accept()
     notification_clients.add(websocket)
     notification_subscribers[username].append(websocket)
@@ -1623,7 +1639,7 @@ class NoteRequest(BaseModel):
     fields are appended to the note before sending to the AI model.
     """
 
-    text: str
+    text: str = Field(..., max_length=10000)
     chart: Optional[str] = None
     rules: Optional[List[str]] = None
     audio: Optional[str] = None
@@ -1643,28 +1659,48 @@ class NoteRequest(BaseModel):
     class Config:
         populate_by_name = True
 
+    @field_validator("text")
+    @classmethod
+    def sanitize_text_field(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
+
 
 
 class CodesSuggestRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=10000)
     patientData: Optional[Dict[str, Any]] = None
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
 
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
+
 
 class ComplianceCheckRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=10000)
     codes: Optional[List[str]] = None
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
 
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
+
 
 class DifferentialsGenerateRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=10000)
     symptoms: Optional[List[str]] = None
     patientData: Optional[Dict[str, Any]] = None
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
 
 
 class PreventionSuggestRequest(BaseModel):
@@ -1675,10 +1711,15 @@ class PreventionSuggestRequest(BaseModel):
 
 
 class RealtimeAnalyzeRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=10000)
     patientContext: Optional[Dict[str, Any]] = None
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
 
 class VisitSessionModel(BaseModel):  # pragma: no cover - simple schema
     id: Optional[int] = None
@@ -1688,13 +1729,31 @@ class VisitSessionModel(BaseModel):  # pragma: no cover - simple schema
 
 class AutoSaveModel(BaseModel):  # pragma: no cover - simple schema
     note_id: Optional[int] = None
-    content: str
+    content: str = Field(..., max_length=10000)
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
 
     class Config:
         populate_by_name = True
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
+
+
+# Regular expressions for validating medical code formats
+CPT_CODE_RE = re.compile(r"^\d{5}$")
+ICD10_CODE_RE = re.compile(r"^[A-TV-Z][0-9][A-Z0-9](?:\.[A-Z0-9]{1,4})?$")
+HCPCS_CODE_RE = re.compile(r"^[A-Z]\d{4}$")
+
+
+def _validate_code(value: str) -> str:
+    """Validate that *value* matches a CPT, ICD-10 or HCPCS pattern."""
+    if any(r.match(value) for r in (CPT_CODE_RE, ICD10_CODE_RE, HCPCS_CODE_RE)):
+        return value
+    raise ValueError("invalid code format")
 
 
 
@@ -1705,6 +1764,11 @@ class CodeSuggestion(BaseModel):
     rationale: Optional[str] = None
     upgrade_to: Optional[str] = None
     upgradePath: Optional[str] = Field(None, alias="upgrade_path")
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:  # noqa: D401,N805
+        return _validate_code(v)
 
 
 class PublicHealthSuggestion(BaseModel):
@@ -1762,8 +1826,13 @@ class CodeSuggestItem(BaseModel):
     code: str
     type: Optional[str] = None
     description: Optional[str] = None
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:  # noqa: D401,N805
+        return _validate_code(v)
 
 
 class CodesSuggestResponse(BaseModel):
@@ -1774,7 +1843,7 @@ class ComplianceAlert(BaseModel):
     text: str
     category: Optional[str] = None
     priority: Optional[str] = None
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
 
@@ -1784,7 +1853,7 @@ class ComplianceCheckResponse(BaseModel):
 
 class DifferentialItem(BaseModel):
     diagnosis: str
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
     supportingFactors: Optional[List[str]] = None
     contradictingFactors: Optional[List[str]] = None
@@ -1799,7 +1868,7 @@ class PreventionItem(BaseModel):
     recommendation: str
     priority: Optional[str] = None
     source: Optional[str] = None
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
     ageRelevant: Optional[bool] = None
 
@@ -1813,7 +1882,7 @@ class RealtimeAnalysisResponse(BaseModel):
     extractedSymptoms: List[str]
     medicalHistory: List[str]
     currentMedications: List[str]
-    confidence: Optional[float] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
 
@@ -2287,7 +2356,12 @@ def delete_template(
 
 class AutoSaveRequest(BaseModel):
     noteId: str
-    content: str
+    content: str = Field(..., max_length=10000)
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
 
 
 @app.post("/api/notes/auto-save")
@@ -2348,12 +2422,22 @@ class ExportRequest(BaseModel):
     When the FHIR server is not configured the generated bundle is returned
     directly instead of being posted so the client can download it manually.
     """
-    note: str
+    note: str = Field(..., max_length=10000)
     codes: List[str] = Field(default_factory=list)
     procedures: List[str] = Field(default_factory=list)
     medications: List[str] = Field(default_factory=list)
     patientID: Optional[str] = None
     encounterID: Optional[str] = None
+
+    @field_validator("note")
+    @classmethod
+    def sanitize_note(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
+
+    @field_validator("codes", "procedures", "medications")
+    @classmethod
+    def validate_codes(cls, v: List[str]) -> List[str]:  # noqa: D401,N805
+        return [_validate_code(c) for c in v]
     ehrSystem: Optional[str] = None
 
 async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
@@ -3261,6 +3345,7 @@ async def update_visit_session(
 async def transcribe_stream(websocket: WebSocket):
     """Stream transcription via WebSocket."""
 
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     try:
         while True:
@@ -3892,6 +3977,7 @@ async def codes_suggest(
 
 @app.websocket("/ws/api/ai/codes/suggest")
 async def ws_codes_suggest(websocket: WebSocket):
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
     resp = await _codes_suggest(CodesSuggestRequest(**data))
@@ -3947,6 +4033,7 @@ async def compliance_check(
 
 @app.websocket("/ws/api/ai/compliance/check")
 async def ws_compliance_check(websocket: WebSocket):
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
     resp = await _compliance_check(ComplianceCheckRequest(**data))
@@ -4005,6 +4092,7 @@ async def differentials_generate(
 
 @app.websocket("/ws/api/ai/differentials/generate")
 async def ws_differentials_generate(websocket: WebSocket):
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
     resp = await _differentials_generate(DifferentialsGenerateRequest(**data))
@@ -4062,6 +4150,7 @@ async def prevention_suggest(
 
 @app.websocket("/ws/api/ai/prevention/suggest")
 async def ws_prevention_suggest(websocket: WebSocket):
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
     resp = await _prevention_suggest(PreventionSuggestRequest(**data))
@@ -4121,6 +4210,7 @@ async def realtime_analyze(
 
 @app.websocket("/ws/api/ai/analyze/realtime")
 async def ws_realtime_analyze(websocket: WebSocket):
+    await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
     resp = await _realtime_analyze(RealtimeAnalyzeRequest(**data))
@@ -4231,15 +4321,11 @@ async def analyze_note(
         {"role": "user", "content": cleaned},
     ]
     try:
-
         response_content = call_openai(messages)
         data = json.loads(response_content)
-        ok = bool(data.get("ok", True))
-        issues = [str(x) for x in data.get("issues", [])]
     except Exception:
-        ok = True
-        issues = []
-    return {"ok": ok, "issues": issues}
+        data = {}
+    return {"analysis": data}
 
 
 

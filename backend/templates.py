@@ -1,19 +1,26 @@
 from typing import Optional, List, Any
-from pydantic import BaseModel
 import sqlite3
+
 from fastapi import HTTPException
+from pydantic import BaseModel, Field, field_validator
 
 from backend import prompts as prompt_utils
+from backend.sanitizer import sanitize_text
 
 
 class TemplateModel(BaseModel):
     """Schema for note templates that can be filtered by specialty or payer."""
 
     id: Optional[int] = None
-    name: str
-    content: str
+    name: str = Field(..., max_length=100)
+    content: str = Field(..., max_length=5000)
     specialty: Optional[str] = None
     payer: Optional[str] = None
+
+    @field_validator("name", "content")
+    @classmethod
+    def sanitize_fields(cls, v: str) -> str:  # noqa: D401,N805
+        return sanitize_text(v)
 
 
 # Built-in templates shipped with the application.  Negative identifiers are
