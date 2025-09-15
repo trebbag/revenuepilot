@@ -84,7 +84,7 @@ from backend.key_manager import (
     get_api_key,
     save_api_key,
     APP_NAME,
-    get_all_keys,
+    list_key_metadata,
     store_key,
 )  # type: ignore
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
@@ -1036,9 +1036,9 @@ class ApiKeyModel(BaseModel):
     key: str
 
 
-class NamedKeyModel(BaseModel):
-    name: str
-    value: str
+class ServiceKeyModel(BaseModel):
+    service: str
+    key: str
 
 
 class RegisterModel(BaseModel):
@@ -1889,14 +1889,14 @@ async def put_security_config(
 
 @app.get("/api/keys")
 async def get_keys_endpoint(user=Depends(require_role("admin"))):
-    return {"keys": get_all_keys()}
+    return {"keys": list_key_metadata()}
 
 
 @app.post("/api/keys")
 async def post_keys_endpoint(
-    model: NamedKeyModel, user=Depends(require_role("admin"))
+    model: ServiceKeyModel, user=Depends(require_role("admin"))
 ):
-    store_key(model.name, model.value)
+    store_key(model.service, model.key)
     return {"status": "saved"}
 
 
