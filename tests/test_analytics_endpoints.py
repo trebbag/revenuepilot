@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 import backend.main as main
@@ -22,10 +23,13 @@ def setup_module(module):
     migrations.ensure_confidence_scores_table(main.db_conn)
     client = TestClient(main.app)
     token = main.create_token('logger', 'user')
+    def ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> float:
+        return datetime(year, month, day, hour, minute, tzinfo=timezone.utc).timestamp()
+
     events = [
         {
             "eventType": "note_closed",
-            "timestamp": 1000,
+            "timestamp": ts(2024, 1, 10, 10),
             "clinician": "alice",
             "codes": ["99213"],
             "revenue": 100.0,
@@ -34,23 +38,23 @@ def setup_module(module):
         },
         {
             "eventType": "note_closed",
-            "timestamp": 2000,
+            "timestamp": ts(2024, 2, 15, 16),
             "clinician": "bob",
             "codes": ["99214"],
             "revenue": 150.0,
             "denial": True,
             "deficiency": True,
         },
-        {"eventType": "beautify", "timestamp": 1100, "clinician": "alice"},
+        {"eventType": "beautify", "timestamp": ts(2024, 1, 11, 11), "clinician": "alice"},
         {
             "eventType": "suggest",
-            "timestamp": 1200,
+            "timestamp": ts(2024, 1, 20, 9),
             "clinician": "alice",
             "compliance": ["Missing ROS"],
         },
         {
             "eventType": "suggest",
-            "timestamp": 2100,
+            "timestamp": ts(2024, 3, 5, 8, 30),
             "clinician": "bob",
             "compliance": ["Incomplete history"],
         },
@@ -69,11 +73,21 @@ def test_usage_and_permissions():
     assert data['total_notes'] == 2
     assert data['beautify'] == 1
     assert data['suggest'] == 2
+    assert data['dailyUsage'] == [
+        {'date': '2024-01-10', 'count': 1},
+        {'date': '2024-02-15', 'count': 1},
+    ]
+    assert data['weeklyTrend'] == [
+        {'week': '2024-02', 'count': 1},
+        {'week': '2024-07', 'count': 1},
+    ]
     alice_token = main.create_token('alice', 'user')
     resp = client.get('/api/analytics/usage', headers={'Authorization': f'Bearer {alice_token}'})
     data = resp.json()
     assert data['total_notes'] == 1
     assert data['suggest'] == 1
+    assert data['dailyUsage'] == [{'date': '2024-01-10', 'count': 1}]
+    assert data['weeklyTrend'] == [{'week': '2024-02', 'count': 1}]
 
 
 def test_coding_revenue_compliance():
@@ -92,6 +106,15 @@ def test_coding_revenue_compliance():
     data = resp.json()
     assert data['total_revenue'] == 250.0
     assert data['revenue_by_code'] == {'99213': 100.0, '99214': 150.0}
+    assert data['projectedRevenue'] == pytest.approx(3750.0)
+    assert data['monthlyTrend'] == [
+        {'month': '2024-01', 'revenue': 100.0},
+        {'month': '2024-02', 'revenue': 150.0},
+    ]
+    assert data['code_distribution'] == {
+        '99213': {'count': 1, 'revenue': 100.0},
+        '99214': {'count': 1, 'revenue': 150.0},
+    }
     resp = client.get('/api/analytics/compliance', headers={'Authorization': f'Bearer {admin_token}'})
     data = resp.json()
     assert data['compliance_counts'] == {'Missing ROS': 1, 'Incomplete history': 1}
@@ -143,4 +166,5 @@ def test_user_permissions_endpoint():
     client = TestClient(main.app)
     token = main.create_token('alice', 'user')
     resp = client.get('/api/user/permissions', headers={'Authorization': f'Bearer {token}'})
-    assert resp.json() == {'role': 'user'}
+    data = resp.json()
+    assert data['role'] == 'user'

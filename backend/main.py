@@ -4260,6 +4260,7 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+
     total_notes = int(data.get("total_notes") or 0)
     beautify = int(data.get("beautify") or 0)
     suggest = int(data.get("suggest") or 0)
@@ -4436,6 +4437,7 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         }
         for row in reversed(monthly_rows)
         if row["month"] is not None
+
     ]
     return {
         "total_notes": data.get("total_notes", 0) or 0,
@@ -4578,12 +4580,43 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+    total_revenue = float(data.get("total", 0) or 0)
+    average_revenue = float(data.get("average", 0) or 0)
     cursor.execute(
-        "SELECT json_each.value AS code, SUM(events.revenue) AS revenue FROM events "
+        f"""
+        SELECT
+            strftime('%Y-%m', datetime(timestamp, 'unixepoch')) AS month,
+            SUM(COALESCE(revenue, 0)) AS revenue
+        FROM events {where}
+        GROUP BY month
+        ORDER BY month
+        """,
+        params,
+    )
+    monthly_trend = [
+        {"month": r["month"], "revenue": float(r["revenue"] or 0.0)}
+        for r in cursor.fetchall()
+        if r["month"] and (r["revenue"] or 0)
+    ]
+    revenue_where = f"{where} AND revenue IS NOT NULL" if where else "WHERE revenue IS NOT NULL"
+    cursor.execute(
+        f"SELECT COUNT(DISTINCT date(datetime(timestamp, 'unixepoch'))) AS days FROM events {revenue_where}",
+        params,
+    )
+    span_row = cursor.fetchone()
+    distinct_days = int(span_row["days"]) if span_row and span_row["days"] else 0
+    if distinct_days <= 0:
+        distinct_days = 1 if total_revenue else 0
+    projected_revenue = (
+        total_revenue / distinct_days * 30 if distinct_days else 0.0
+    )
+    cursor.execute(
+        "SELECT json_each.value AS code, COUNT(*) AS count, SUM(events.revenue) AS revenue FROM events "
         "JOIN json_each(COALESCE(events.codes, '[]')) "
         f"{where} GROUP BY code",
         params,
     )
+
 
     by_code = {r["code"]: float(r["revenue"] or 0.0) for r in cursor.fetchall()}
 
@@ -4663,6 +4696,7 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
         revenue_distribution=revenue_distribution,
     )
     return analytics.model_dump()
+
 
 
 @app.get("/api/analytics/compliance")
