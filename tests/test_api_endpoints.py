@@ -57,6 +57,14 @@ def test_endpoints_require_auth(client):
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
     assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export', json={'note': 'hi'}).status_code in {401, 403}
+    assert (
+        client.post('/api/notes/pre-finalize-check', json={'content': 'hi'}).status_code
+        in {401, 403}
+    )
+    assert (
+        client.post('/api/notes/finalize', json={'content': 'hi'}).status_code
+        in {401, 403}
+    )
 
 
 def test_get_transcribe_requires_auth(client):
@@ -626,3 +634,66 @@ def test_suggest_parses_public_health_reason(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["publicHealth"][0]["reason"] == "Prevents influenza"
+
+
+def test_pre_finalize_and_finalize(client):
+    token = main.create_token("u", "user")
+    payload = {
+        "content": "Patient is stable with follow up plan.",
+        "codes": ["99213"],
+        "prevention": ["flu shot"],
+        "diagnoses": ["J10.1"],
+        "differentials": ["J00"],
+        "compliance": ["HIPAA"],
+    }
+    resp = client.post(
+        "/api/notes/pre-finalize-check",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canFinalize"] is True
+    assert data["estimatedReimbursement"] == 75.0
+
+    resp2 = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["exportReady"] is True
+    assert data2["reimbursementSummary"]["total"] == 75.0
+
+
+def test_pre_finalize_detects_issues(client):
+    token = main.create_token("u", "user")
+    payload = {
+        "content": "",
+        "codes": ["99999"],
+        "prevention": [],
+        "diagnoses": [],
+        "differentials": [],
+        "compliance": [],
+    }
+    resp = client.post(
+        "/api/notes/pre-finalize-check",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canFinalize"] is False
+    assert data["issues"]["content"]
+    assert data["issues"]["codes"]
+
+    resp2 = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["exportReady"] is False
+    assert data2["issues"]["codes"]

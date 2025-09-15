@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 import requests
 from fastapi.middleware.cors import CORSMiddleware
@@ -950,6 +950,22 @@ class SuggestionsResponse(BaseModel):
     followUp: Optional[FollowUp] = None
 
 
+class PreFinalizeCheckRequest(BaseModel):
+    """Payload for validating a note before finalization."""
+
+    content: str
+    codes: List[str] = Field(default_factory=list)
+    prevention: List[str] = Field(default_factory=list)
+    diagnoses: List[str] = Field(default_factory=list)
+    differentials: List[str] = Field(default_factory=list)
+    compliance: List[str] = Field(default_factory=list)
+
+
+class FinalizeNoteRequest(PreFinalizeCheckRequest):
+    """Request payload for completing note finalization."""
+    pass
+
+
 class ScheduleRequest(BaseModel):
     """Request payload for the /schedule endpoint."""
     text: str
@@ -1654,17 +1670,24 @@ async def get_metrics(
     template_counts = current_metrics.pop("template_counts")
     baseline_template_counts = baseline_metrics.pop("template_counts")
 
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+    ]
+
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1819,6 +1842,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -2427,6 +2451,82 @@ async def suggest(
             differentials=diffs,
             followUp=follow_up,
         )
+
+
+def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], List[Dict[str, float]], float]:
+    """Perform simple validation on a draft note and its metadata."""
+
+    issues: Dict[str, List[str]] = {
+        "content": [],
+        "codes": [],
+        "prevention": [],
+        "diagnoses": [],
+        "differentials": [],
+        "compliance": [],
+    }
+
+    content = req.content or ""
+    if not content.strip():
+        issues["content"].append("Content is empty")
+    if len(content.strip()) < 20:
+        issues["content"].append("Content too short")
+
+    details: List[Dict[str, float]] = []
+    total = 0.0
+    for code in req.codes:
+        if not re.fullmatch(r"\d{4,5}", code):
+            issues["codes"].append(f"Invalid code {code}")
+            continue
+        amt = CPT_REVENUE.get(code)
+        if amt is None:
+            issues["codes"].append(f"Unknown code {code}")
+        else:
+            details.append({"code": code, "amount": amt})
+            total += amt
+
+    if not req.prevention:
+        issues["prevention"].append("No prevention documented")
+    if not req.diagnoses:
+        issues["diagnoses"].append("No diagnoses provided")
+    if not req.differentials:
+        issues["differentials"].append("No differentials provided")
+    if not req.compliance:
+        issues["compliance"].append("No compliance checks provided")
+
+    return issues, details, total
+
+
+@app.post("/api/notes/pre-finalize-check")
+async def pre_finalize_check(
+    req: PreFinalizeCheckRequest, user=Depends(require_role("user"))
+):
+    """Validate a draft note before allowing finalization."""
+
+    issues, details, total = _validate_note(req)
+    can_finalize = all(len(v) == 0 for v in issues.values())
+    return {
+        "canFinalize": can_finalize,
+        "issues": issues,
+        "estimatedReimbursement": total,
+        "reimbursementSummary": {"total": total, "codes": details},
+    }
+
+
+@app.post("/api/notes/finalize")
+async def finalize_note(
+    req: FinalizeNoteRequest, user=Depends(require_role("user"))
+):
+    """Finalize a note and report export readiness and reimbursement."""
+
+    issues, details, total = _validate_note(req)
+    export_ready = all(len(v) == 0 for v in issues.values())
+    return {
+        "finalizedContent": req.content.strip(),
+        "codesSummary": details,
+        "reimbursementSummary": {"total": total, "codes": details},
+        "exportReady": export_ready,
+        "issues": issues,
+    }
 
 
 @app.post("/followup", response_model=ScheduleResponse)
