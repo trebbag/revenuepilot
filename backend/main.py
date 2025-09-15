@@ -66,7 +66,13 @@ if parent_dir not in sys.path:
 from backend import prompts as prompt_utils  # type: ignore
 from backend.prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt  # type: ignore
 from backend.openai_client import call_openai  # type: ignore
-from backend.key_manager import get_api_key, save_api_key, APP_NAME  # type: ignore
+from backend.key_manager import (
+    get_api_key,
+    save_api_key,
+    APP_NAME,
+    get_all_keys,
+    store_key,
+)  # type: ignore
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 from backend.migrations import (  # type: ignore
@@ -400,6 +406,34 @@ db_conn.row_factory = sqlite3.Row
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
 
+
+# ---------------------------------------------------------------------------
+# Simple JSON configuration helpers for miscellaneous settings
+# ---------------------------------------------------------------------------
+
+config_dir = Path(data_dir)
+
+
+def _config_path(name: str) -> Path:
+    return config_dir / f"{name}.json"
+
+
+def load_json_config(name: str) -> Dict[str, Any]:  # pragma: no cover - thin helper
+    path = _config_path(name)
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_json_config(name: str, data: Dict[str, Any]) -> None:  # pragma: no cover - thin helper
+    path = _config_path(name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
 # Attempt to use rich PHI scrubbers by default.  When Presidio or Philter is
 # installed they will be used automatically.  No environment variable is
 # required to enable them, keeping the behaviour simple out of the box.  Tests
@@ -519,6 +553,11 @@ def require_role(role: str):
 # Model for setting API key via API endpoint
 class ApiKeyModel(BaseModel):
     key: str
+
+
+class NamedKeyModel(BaseModel):
+    name: str
+    value: str
 
 
 class RegisterModel(BaseModel):
@@ -874,6 +913,75 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# Additional configuration endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/user/preferences")
+async def api_get_user_preferences(user=Depends(require_role("user"))):
+    return await get_user_settings(user)
+
+
+@app.put("/api/user/preferences")
+async def api_put_user_preferences(
+    model: UserSettings, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    return await save_user_settings(model, user)
+
+
+@app.get("/api/integrations/ehr/config")
+async def get_ehr_integration_config(user=Depends(require_role("admin"))):
+    return load_json_config("ehr_config")
+
+
+@app.put("/api/integrations/ehr/config")
+async def put_ehr_integration_config(
+    config: Dict[str, Any], user=Depends(require_role("admin"))
+) -> Dict[str, Any]:
+    save_json_config("ehr_config", config)
+    return config
+
+
+@app.get("/api/organization/settings")
+async def get_org_settings(user=Depends(require_role("admin"))):
+    return load_json_config("organization_settings")
+
+
+@app.put("/api/organization/settings")
+async def put_org_settings(
+    config: Dict[str, Any], user=Depends(require_role("admin"))
+) -> Dict[str, Any]:
+    save_json_config("organization_settings", config)
+    return config
+
+
+@app.get("/api/security/config")
+async def get_security_config(user=Depends(require_role("admin"))):
+    return load_json_config("security_config")
+
+
+@app.put("/api/security/config")
+async def put_security_config(
+    config: Dict[str, Any], user=Depends(require_role("admin"))
+) -> Dict[str, Any]:
+    save_json_config("security_config", config)
+    return config
+
+
+@app.get("/api/keys")
+async def get_keys_endpoint(user=Depends(require_role("admin"))):
+    return {"keys": get_all_keys()}
+
+
+@app.post("/api/keys")
+async def post_keys_endpoint(
+    model: NamedKeyModel, user=Depends(require_role("admin"))
+):
+    store_key(model.name, model.value)
+    return {"status": "saved"}
 
 
 class NoteRequest(BaseModel):
@@ -1654,17 +1762,21 @@ async def get_metrics(
     template_counts = current_metrics.pop("template_counts")
     baseline_template_counts = baseline_metrics.pop("template_counts")
 
+    top_compliance = [
+        k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    ]
+
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1819,6 +1931,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
