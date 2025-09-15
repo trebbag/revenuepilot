@@ -621,6 +621,42 @@ def test_suggest_and_fallback(client, monkeypatch):
     assert data["differentials"][0]["diagnosis"] == "d"
 
 
+def test_suggest_logs_confidence_scores(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "call_openai",
+        lambda msgs: json.dumps(
+            {
+                "codes": [{"code": "X1", "confidence": 0.8}],
+                "compliance": [],
+                "publicHealth": [],
+                "differentials": [],
+            }
+        ),
+    )
+    token = main.create_token("user", "user")
+    resp = client.post(
+        "/suggest",
+        json={"text": "note", "noteId": "note-123"},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    rows = main.db_conn.execute(
+        "SELECT user_id, note_id, code, confidence, accepted FROM confidence_scores"
+    ).fetchall()
+    assert len(rows) == 1
+    stored = rows[0]
+    user_row = main.db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        ("user",),
+    ).fetchone()
+    assert stored["user_id"] == user_row["id"]
+    assert stored["note_id"] == "note-123"
+    assert stored["code"] == "X1"
+    assert stored["accepted"] == 0
+    assert stored["confidence"] == pytest.approx(0.8)
+
+
 def test_suggest_returns_follow_up(client, monkeypatch):
     monkeypatch.setattr(
         main,

@@ -1,6 +1,9 @@
 import sqlite3
+
+import pytest
 import backend.main as main
 from fastapi.testclient import TestClient
+from backend import migrations
 
 
 def setup_module(module):
@@ -16,6 +19,7 @@ def setup_module(module):
         "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)"
     )
     main.db_conn.commit()
+    migrations.ensure_confidence_scores_table(main.db_conn)
     client = TestClient(main.app)
     token = main.create_token('logger', 'user')
     events = [
@@ -92,6 +96,47 @@ def test_coding_revenue_compliance():
     data = resp.json()
     assert data['compliance_counts'] == {'Missing ROS': 1, 'Incomplete history': 1}
     assert data['total_flags'] == 2
+
+
+def test_confidence_analytics_endpoint():
+    client = TestClient(main.app)
+    admin_token = main.create_token('admin', 'admin')
+    pwd = main.hash_password('pw')
+    main.db_conn.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ('coder', pwd, 'user'),
+    )
+    user_id = main.db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        ('coder',),
+    ).fetchone()[0]
+    base = 1_700_000_000
+    main.db_conn.executemany(
+        "INSERT INTO confidence_scores (user_id, note_id, code, confidence, accepted, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (user_id, 'note-1', 'A1', 0.9, 1, base),
+            (user_id, 'note-2', 'B2', 0.6, 0, base),
+            (user_id, 'note-3', 'C3', 0.5, 1, base + 86400),
+        ],
+    )
+    main.db_conn.commit()
+    resp = client.get(
+        '/api/analytics/confidence',
+        headers={'Authorization': f'Bearer {admin_token}'},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['overall']['total'] == 3
+    assert data['overall']['accepted'] == 2
+    assert data['overall']['accuracy'] == pytest.approx(2 / 3)
+    assert data['overall']['avg_confidence'] == pytest.approx((0.9 + 0.6 + 0.5) / 3)
+    assert data['overall']['calibration_gap'] == pytest.approx(0.0, abs=1e-6)
+    assert len(data['timeseries']) == 2
+    day_one = data['timeseries'][0]
+    assert day_one['total'] == 2
+    assert day_one['accepted'] == 1
+    assert day_one['accuracy'] == pytest.approx(0.5)
+    assert day_one['avg_confidence'] == pytest.approx((0.9 + 0.6) / 2)
 
 
 def test_user_permissions_endpoint():
