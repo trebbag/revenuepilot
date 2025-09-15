@@ -376,6 +376,15 @@ def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
         "medications TEXT"
         ")"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_last_first ON patients(last_name, first_name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients(mrn)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_dob ON patients(dob)"
+    )
     conn.commit()
 
 
@@ -394,6 +403,12 @@ def ensure_encounters_table(conn: sqlite3.Connection) -> None:
         "description TEXT,"
         "FOREIGN KEY(patient_id) REFERENCES patients(id)"
         ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_encounters_date ON encounters(date)"
     )
     conn.commit()
 
@@ -446,6 +461,7 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
     conn.commit()
 
 
+
 def ensure_notification_counters_table(conn: sqlite3.Connection) -> None:
     """Ensure the notification_counters table exists for unread counts."""
 
@@ -469,6 +485,37 @@ def ensure_notification_counters_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE notification_counters ADD COLUMN updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
         )
+
+    conn.commit()
+
+
+
+def ensure_note_versions_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the note_versions table exists for tracking version history."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_versions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "note_id TEXT NOT NULL,"
+        "user_id INTEGER,"
+        "content TEXT,"
+        "created_at REAL"
+        ")"
+    )
+
+    conn.commit()
+
+
+def ensure_notifications_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the notifications table exists for per-user counts."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notifications ("
+        "username TEXT PRIMARY KEY,"
+        "count INTEGER NOT NULL DEFAULT 0,"
+        "updated_at REAL"
+        ")"
+    )
 
     conn.commit()
 
