@@ -682,6 +682,9 @@ if not JWT_SECRET:
     JWT_SECRET = "dev-secret"
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
+# Allow optional bearer credentials for endpoints that should respond with a
+# graceful unauthenticated payload rather than an HTTP error.
+optional_security = HTTPBearer(auto_error=False)
 
 # Short-lived access tokens (minutes) and longer lived refresh tokens (days)
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
@@ -1165,6 +1168,87 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
 @app.post("/api/auth/login")
 async def auth_login(model: LoginModel, request: Request):
     return await login(model, request)
+
+
+@app.get("/auth/status")
+@app.get("/api/auth/status")
+async def auth_status(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+) -> Dict[str, Any]:
+    """Return authentication state for the provided bearer token."""
+
+    if not credentials:
+        return {"authenticated": False}
+
+    try:
+        token_data = get_current_user(credentials)
+    except HTTPException:
+        return {"authenticated": False}
+
+    if token_data.get("type") not in (None, "access"):
+        return {"authenticated": False}
+
+    username = token_data.get("sub")
+    if not username:
+        return {"authenticated": False}
+
+    row = db_conn.execute(
+        "SELECT id, role FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
+    if not row:
+        return {"authenticated": False}
+
+    user_id, role = row["id"], row["role"]
+
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        sr = dict(settings_row)
+        preferences = {
+            "theme": sr["theme"],
+            "categories": json.loads(sr["categories"]),
+            "rules": json.loads(sr["rules"]),
+            "lang": sr["lang"],
+            "summaryLang": sr["summary_lang"] or sr["lang"],
+            "specialty": sr["specialty"],
+            "payer": sr["payer"],
+            "region": sr["region"] or "",
+            "template": sr["template"],
+            "useLocalModels": bool(sr["use_local_models"]),
+            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
+            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
+            "beautifyModel": sr["beautify_model"],
+            "suggestModel": sr["suggest_model"],
+            "summarizeModel": sr["summarize_model"],
+            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+        }
+    else:
+        preferences = UserSettings().model_dump()
+
+    user_payload = {
+        "id": user_id,
+        "name": username,
+        "role": role,
+        "specialty": preferences.get("specialty"),
+        "permissions": [role],
+        "preferences": preferences,
+    }
+
+    if token_data.get("role") != role:
+        token_data = dict(token_data)
+        token_data["role"] = role
+
+    _log_action_for_user(
+        token_data,
+        "auth_status",
+        _audit_details_from_request(request),
+    )
+
+    return {"authenticated": True, "user": user_payload}
 
 
 @app.post("/refresh")
