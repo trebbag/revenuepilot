@@ -4159,7 +4159,7 @@ async def get_activity_log(
 
 
 @app.get("/api/analytics/usage")
-async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -4179,6 +4179,38 @@ async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, A
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+    cursor.execute(
+        f"""
+        SELECT
+            date(datetime(timestamp, 'unixepoch')) AS day,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS notes
+        FROM events {where}
+        GROUP BY day
+        ORDER BY day
+        """,
+        params,
+    )
+    daily_usage = [
+        {"date": r["day"], "count": int(r["notes"] or 0)}
+        for r in cursor.fetchall()
+        if r["day"] and (r["notes"] or 0)
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%W', datetime(timestamp, 'unixepoch')) AS week,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS notes
+        FROM events {where}
+        GROUP BY week
+        ORDER BY week
+        """,
+        params,
+    )
+    weekly_trend = [
+        {"week": r["week"], "count": int(r["notes"] or 0)}
+        for r in cursor.fetchall()
+        if r["week"] and (r["notes"] or 0)
+    ]
     return {
         "total_notes": data.get("total_notes", 0) or 0,
         "beautify": data.get("beautify", 0) or 0,
@@ -4187,11 +4219,13 @@ async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, A
         "chart_upload": data.get("chart_upload", 0) or 0,
         "audio": data.get("audio", 0) or 0,
         "avg_note_length": data.get("avg_note_length", 0) or 0,
+        "dailyUsage": daily_usage,
+        "weeklyTrend": weekly_trend,
     }
 
 
 @app.get("/api/analytics/coding-accuracy")
-async def analytics_coding_accuracy(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Coding accuracy metrics derived from events and billing codes."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -4228,7 +4262,7 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst"))) -> D
 
 
 @app.get("/api/analytics/revenue")
-async def analytics_revenue(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -4238,22 +4272,68 @@ async def analytics_revenue(user=Depends(require_roles("analyst"))) -> Dict[str,
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+    total_revenue = float(data.get("total", 0) or 0)
+    average_revenue = float(data.get("average", 0) or 0)
     cursor.execute(
-        "SELECT json_each.value AS code, SUM(events.revenue) AS revenue FROM events "
+        f"""
+        SELECT
+            strftime('%Y-%m', datetime(timestamp, 'unixepoch')) AS month,
+            SUM(COALESCE(revenue, 0)) AS revenue
+        FROM events {where}
+        GROUP BY month
+        ORDER BY month
+        """,
+        params,
+    )
+    monthly_trend = [
+        {"month": r["month"], "revenue": float(r["revenue"] or 0.0)}
+        for r in cursor.fetchall()
+        if r["month"] and (r["revenue"] or 0)
+    ]
+    revenue_where = f"{where} AND revenue IS NOT NULL" if where else "WHERE revenue IS NOT NULL"
+    cursor.execute(
+        f"SELECT COUNT(DISTINCT date(datetime(timestamp, 'unixepoch'))) AS days FROM events {revenue_where}",
+        params,
+    )
+    span_row = cursor.fetchone()
+    distinct_days = int(span_row["days"]) if span_row and span_row["days"] else 0
+    if distinct_days <= 0:
+        distinct_days = 1 if total_revenue else 0
+    projected_revenue = (
+        total_revenue / distinct_days * 30 if distinct_days else 0.0
+    )
+    cursor.execute(
+        "SELECT json_each.value AS code, COUNT(*) AS count, SUM(events.revenue) AS revenue FROM events "
         "JOIN json_each(COALESCE(events.codes, '[]')) "
         f"{where} GROUP BY code",
         params,
     )
-    by_code = {r["code"]: r["revenue"] for r in cursor.fetchall()}
+    distribution_rows = cursor.fetchall()
+    by_code = {
+        row["code"]: float(row["revenue"] or 0.0)
+        for row in distribution_rows
+        if row["code"] is not None
+    }
+    code_distribution = {
+        row["code"]: {
+            "count": int(row["count"] or 0),
+            "revenue": float(row["revenue"] or 0.0),
+        }
+        for row in distribution_rows
+        if row["code"] is not None
+    }
     return {
-        "total_revenue": data.get("total", 0) or 0,
-        "average_revenue": data.get("average", 0) or 0,
+        "total_revenue": total_revenue,
+        "average_revenue": average_revenue,
+        "projectedRevenue": projected_revenue,
         "revenue_by_code": by_code,
+        "code_distribution": code_distribution,
+        "monthlyTrend": monthly_trend,
     }
 
 
 @app.get("/api/analytics/compliance")
-async def analytics_compliance(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_compliance(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Compliance analytics derived from logged events."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
