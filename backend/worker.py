@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Awaitable, Callable, List
+from typing import Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -8,6 +8,9 @@ logger = logging.getLogger(__name__)
 _task_queue: asyncio.Queue[Callable[[], Awaitable[None]]] = asyncio.Queue()
 # Track running background tasks so they can be cancelled on shutdown
 _background_tasks: List[asyncio.Task] = []
+
+# Optional callback provided by the API to perform analytics aggregation
+_aggregate_callback: Optional[Callable[[], Awaitable[None]]] = None
 
 
 async def update_code_databases() -> None:
@@ -21,8 +24,17 @@ async def check_compliance_rules() -> None:
 
 
 async def aggregate_analytics_and_backup() -> None:
-    """Placeholder task to aggregate analytics and backup data."""
-    logger.info("Aggregating analytics and backing up data")
+    """Run the configured analytics aggregation task if available."""
+
+    if _aggregate_callback is None:
+        logger.debug("No analytics aggregator configured; skipping job")
+        return
+
+    try:
+        await _aggregate_callback()
+        logger.info("Completed nightly analytics aggregation")
+    except Exception:
+        logger.exception("Analytics aggregation job failed")
 
 
 async def retrain_model() -> None:
@@ -87,3 +99,11 @@ async def stop_scheduler() -> None:
         task.cancel()
     await asyncio.gather(*_background_tasks, return_exceptions=True)
     _background_tasks.clear()
+
+
+def register_analytics_aggregator(callback: Callable[[], Awaitable[None]]) -> None:
+    """Register the coroutine used for nightly analytics aggregation."""
+
+    global _aggregate_callback
+    _aggregate_callback = callback
+
