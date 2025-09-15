@@ -90,6 +90,7 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_notes_table,
     ensure_error_log_table,
     ensure_exports_table,
     ensure_patients_table,
@@ -427,6 +428,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_templates_table(conn)
     ensure_user_profile_table(conn)
     ensure_events_table(conn)
+    ensure_notes_table(conn)
     ensure_error_log_table(conn)
     ensure_exports_table(conn)
     ensure_patients_table(conn)
@@ -471,6 +473,9 @@ ensure_user_profile_table(db_conn)
 
 # Centralized error logging table.
 ensure_error_log_table(db_conn)
+
+# Table storing notes and drafts with status metadata.
+ensure_notes_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -2136,6 +2141,9 @@ async def get_metrics(
             satisfaction_sum / satisfaction_count if satisfaction_count else 0
         )
 
+        sorted_compliance = sorted(
+            compliance_counts.items(), key=lambda x: x[1], reverse=True
+        )
         metrics.update(
             {
                 "avg_beautify_time": avg_beautify_time,
@@ -2144,6 +2152,9 @@ async def get_metrics(
                 "denial_rates": denial_rates,
                 "deficiency_rate": deficiency_rate,
                 "compliance_counts": compliance_counts,
+                "top_compliance": [
+                    {"flag": f, "count": c} for f, c in sorted_compliance[:5]
+                ],
                 "public_health_rate": public_health_rate,
                 "avg_satisfaction": avg_satisfaction,
                 "template_counts": template_counts,
@@ -2162,6 +2173,7 @@ async def get_metrics(
     coding_distribution = current_metrics.pop("coding_distribution")
     denial_rates = current_metrics.pop("denial_rates")
     compliance_counts = current_metrics.pop("compliance_counts")
+    top_compliance = current_metrics.pop("top_compliance")
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
     template_counts = current_metrics.pop("template_counts")
@@ -3481,6 +3493,68 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
     return {"ics": export_appointment_ics(appt)}
 # ---------------------------------------------------------------------------
 
+
+# Notes and drafts management
+
+class BulkNotesRequest(BaseModel):
+    ids: List[int]
+    status: Optional[str] = None
+    delete: StrictBool = False
+
+
+@app.get("/api/notes/drafts")
+async def list_draft_notes(user=Depends(require_role("user"))):
+    cur = db_conn.execute(
+        "SELECT id, content, status, created_at, updated_at FROM notes WHERE status = 'draft' ORDER BY id"
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+@app.get("/api/notes/search")
+async def search_notes(
+    q: str,
+    status: Optional[str] = None,
+    user=Depends(require_role("user")),
+):
+    params: List[Any] = [f"%{q}%"]
+    query = "SELECT id, content, status, created_at, updated_at FROM notes WHERE content LIKE ?"
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    cur = db_conn.execute(query, params)
+    return [dict(row) for row in cur.fetchall()]
+
+
+@app.get("/api/analytics/drafts")
+async def draft_analytics(user=Depends(require_role("user"))):
+    total = db_conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE status='draft'"
+    ).fetchone()[0]
+    return {"drafts": total}
+
+
+@app.post("/api/notes/bulk-operations")
+async def notes_bulk_operations(
+    req: BulkNotesRequest, user=Depends(require_role("user"))
+):
+    if not req.ids:
+        return {"updated": 0}
+    placeholders = ",".join("?" for _ in req.ids)
+    cur = db_conn.cursor()
+    if req.delete:
+        cur.execute(f"DELETE FROM notes WHERE id IN ({placeholders})", req.ids)
+        db_conn.commit()
+        return {"deleted": cur.rowcount}
+    if req.status is not None:
+        params: List[Any] = [req.status, time.time()] + list(req.ids)
+        cur.execute(
+            f"UPDATE notes SET status=?, updated_at=? WHERE id IN ({placeholders})",
+            params,
+        )
+        db_conn.commit()
+        return {"updated": cur.rowcount}
+    return {"updated": 0}
+
 # ------------------------- Coding & Billing APIs ---------------------------
 
 
@@ -3573,4 +3647,5 @@ async def validate_code_combination(
         "conflicts": conflicts,
         "warnings": [],
     }
+
 

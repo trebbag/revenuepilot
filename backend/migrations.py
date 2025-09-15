@@ -173,6 +173,36 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
+def ensure_notes_table(conn: sqlite3.Connection) -> None:
+    """Ensure the notes table exists for storing draft and finalized notes.
+
+    Notes are stored with a ``status`` column so that drafts can be
+    distinguished from finalized notes. The table also tracks creation and
+    update timestamps to support future analytics.
+    """
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "content TEXT,"
+        "status TEXT NOT NULL,"
+        "created_at REAL,"
+        "updated_at REAL"
+        ")"
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
+    if "status" not in columns:
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'"
+        )
+    if "created_at" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN created_at REAL")
+    if "updated_at" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN updated_at REAL")
+
+
 def ensure_error_log_table(conn: sqlite3.Connection) -> None:
     """Ensure the error_log table exists for centralized error capture."""
     conn.execute(
@@ -250,4 +280,5 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
 
         ")"
     )
+
     conn.commit()
