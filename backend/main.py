@@ -20,9 +20,7 @@ import sys
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-
-from typing import List, Optional, Dict, Any, Literal, Set
-
+from typing import List, Optional, Dict, Any, Literal, Set, Tuple
 from fastapi import (
     FastAPI,
     Depends,
@@ -1412,6 +1410,22 @@ class SuggestionsResponse(BaseModel):
     followUp: Optional[FollowUp] = None
 
 
+
+class PreFinalizeCheckRequest(BaseModel):
+    """Payload for validating a note before finalization."""
+
+    content: str
+    codes: List[str] = Field(default_factory=list)
+    prevention: List[str] = Field(default_factory=list)
+    diagnoses: List[str] = Field(default_factory=list)
+    differentials: List[str] = Field(default_factory=list)
+    compliance: List[str] = Field(default_factory=list)
+
+
+class FinalizeNoteRequest(PreFinalizeCheckRequest):
+    """Request payload for completing note finalization."""
+    pass
+
 class CodeSuggestItem(BaseModel):
     code: str
     type: Optional[str] = None
@@ -2199,6 +2213,13 @@ async def get_metrics(
         k
         for k, _ in sorted(
             compliance_counts.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+    ]
+
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda kv: kv[1], reverse=True
         )[:5]
     ]
 
@@ -3198,6 +3219,82 @@ async def suggest(
 
 
 
+def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], List[Dict[str, float]], float]:
+    """Perform simple validation on a draft note and its metadata."""
+
+    issues: Dict[str, List[str]] = {
+        "content": [],
+        "codes": [],
+        "prevention": [],
+        "diagnoses": [],
+        "differentials": [],
+        "compliance": [],
+    }
+
+    content = req.content or ""
+    if not content.strip():
+        issues["content"].append("Content is empty")
+    if len(content.strip()) < 20:
+        issues["content"].append("Content too short")
+
+    details: List[Dict[str, float]] = []
+    total = 0.0
+    for code in req.codes:
+        if not re.fullmatch(r"\d{4,5}", code):
+            issues["codes"].append(f"Invalid code {code}")
+            continue
+        amt = CPT_REVENUE.get(code)
+        if amt is None:
+            issues["codes"].append(f"Unknown code {code}")
+        else:
+            details.append({"code": code, "amount": amt})
+            total += amt
+
+    if not req.prevention:
+        issues["prevention"].append("No prevention documented")
+    if not req.diagnoses:
+        issues["diagnoses"].append("No diagnoses provided")
+    if not req.differentials:
+        issues["differentials"].append("No differentials provided")
+    if not req.compliance:
+        issues["compliance"].append("No compliance checks provided")
+
+    return issues, details, total
+
+
+@app.post("/api/notes/pre-finalize-check")
+async def pre_finalize_check(
+    req: PreFinalizeCheckRequest, user=Depends(require_role("user"))
+):
+    """Validate a draft note before allowing finalization."""
+
+    issues, details, total = _validate_note(req)
+    can_finalize = all(len(v) == 0 for v in issues.values())
+    return {
+        "canFinalize": can_finalize,
+        "issues": issues,
+        "estimatedReimbursement": total,
+        "reimbursementSummary": {"total": total, "codes": details},
+    }
+
+
+@app.post("/api/notes/finalize")
+async def finalize_note(
+    req: FinalizeNoteRequest, user=Depends(require_role("user"))
+):
+    """Finalize a note and report export readiness and reimbursement."""
+
+    issues, details, total = _validate_note(req)
+    export_ready = all(len(v) == 0 for v in issues.values())
+    return {
+        "finalizedContent": req.content.strip(),
+        "codesSummary": details,
+        "reimbursementSummary": {"total": total, "codes": details},
+        "exportReady": export_ready,
+        "issues": issues,
+    }
+
+
 async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
@@ -3582,7 +3679,6 @@ async def analyze_note(
         ok = True
         issues = []
     return {"ok": ok, "issues": issues}
-
 
 
 

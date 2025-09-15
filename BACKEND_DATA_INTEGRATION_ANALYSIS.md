@@ -27,7 +27,7 @@ This document identifies every UI element in the RevenuePilot application that r
 | **Speech-to-Text Transcription** | `{ transcript: string, confidence: number, isInterim: boolean, timestamp: number, speakerLabel?: "doctor" \| "patient" }` (streaming) | `/api/transcribe/stream` | While recording active | ⚠️ **NEEDS IMPLEMENTATION** - Mock data simulation |
 | **Real-time Compliance Analysis** | `Array<ComplianceIssue>` (see ComplianceIssue interface) | `/api/compliance/analyze` | Note content change, real-time analysis | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
 | **Note Auto-save** | `{ noteId: string, content: string, lastSaved: string, version: number, conflicts?: boolean }` | `/api/notes/auto-save` | Every 30 seconds during active session | ⚠️ **NEEDS IMPLEMENTATION** - No persistence |
-| **Finalization Workflow** | `{ canFinalize: boolean, requiredFields: Array<string>, missingDocumentation: Array<string>, estimatedReimbursement: number }` | `/api/notes/finalize-check` | Before finalization | ⚠️ **NEEDS IMPLEMENTATION** - Basic client validation only |
+| **Finalization Workflow** | `{ canFinalize: boolean, requiredFields: Array<string>, missingDocumentation: Array<string>, estimatedReimbursement: number }` | `/api/notes/pre-finalize-check` | Before finalization | ✅ **IMPLEMENTED** - Server-side validation available |
 
 ---
 
