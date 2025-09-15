@@ -7,9 +7,9 @@ from decimal import Decimal, ROUND_HALF_UP
 import re
 from typing import Dict, Iterable, List, Optional, Tuple
 
-# Example CPT and ICD-10 tables. In a production system these would be loaded
-# from an external database and kept up to date via scheduled jobs. The small
-# subset here is sufficient for unit tests and demo purposes.
+# Example CPT, HCPCS and ICD-10 tables. In a production system these would be
+# loaded from an external database and kept up to date via scheduled jobs. The
+# small subset here is sufficient for unit tests and demo purposes.
 
 CPT_CODES: Dict[str, dict] = {
     "99213": {
@@ -112,6 +112,46 @@ ICD10_CODES: Dict[str, dict] = {
         "demographics": {"minAge": 12, "maxAge": 55, "allowedGenders": ["female"]},
         "encounterTypes": ["outpatient", "inpatient"],
         "specialties": ["obstetrics", "maternal-fetal medicine"],
+    },
+}
+
+HCPCS_CODES: Dict[str, dict] = {
+    "J3490": {
+        "description": "Unclassified drugs",
+        "reimbursement": 10.0,
+        "coverage": {
+            "status": "requires documentation",
+            "notes": "Submit invoice and drug details with claim.",
+        },
+        "documentation": {
+            "required": ["drug name", "dosage administered", "route"],
+            "recommended": ["NDC number", "invoice attached"],
+            "examples": ["Use when no specific HCPCS code exists for drug"],
+        },
+        "demographics": {"allowedGenders": ["any"]},
+        "encounterTypes": ["outpatient", "office", "infusion center"],
+        "specialties": ["any"],
+    },
+    "G0008": {
+        "description": "Administration of influenza virus vaccine",
+        "reimbursement": 25.0,
+        "coverage": {
+            "status": "covered",
+            "notes": "Medicare covers one influenza vaccine per season.",
+        },
+        "documentation": {
+            "required": ["vaccine lot", "site administered"],
+            "recommended": ["vaccine manufacturer", "informed consent"],
+            "examples": ["Annual influenza immunization"]
+        },
+        "demographics": {"minAge": 5, "allowedGenders": ["any"]},
+        "encounterTypes": ["outpatient", "office", "home health"],
+        "specialties": [
+            "primary care",
+            "internal medicine",
+            "family medicine",
+            "geriatrics",
+        ],
     },
 }
 
@@ -218,13 +258,16 @@ def _format_currency(value: Decimal) -> str:
     return f"${value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
 
 # Update schedule metadata; a real implementation would dynamically update these.
+CACHE_DATE = date(2024, 1, 1)
 CODE_UPDATE_SCHEDULE = {
-    "cpt": {"updated": date(2024, 1, 1), "next_update": date(2025, 1, 1)},
+    "cpt": {"updated": CACHE_DATE, "next_update": date(2025, 1, 1)},
+    "hcpcs": {"updated": CACHE_DATE, "next_update": date(2025, 1, 1)},
     "icd10": {"updated": date(2023, 10, 1), "next_update": date(2024, 10, 1)},
 }
 
 CPT_PATTERN = re.compile(r"^\d{5}$")
 ICD10_PATTERN = re.compile(r"^[A-Z]\d{2}(?:\.\d{1,3})?$")
+HCPCS_PATTERN = re.compile(r"^[A-Z]\d{4}$")
 
 
 def validate_cpt(
@@ -314,6 +357,54 @@ def validate_icd10(
         "description": info["description"],
         "clinicalContext": info["clinicalContext"],
         "contraindications": info["contraindications"],
+        "issues": context_issues,
+    }
+    if context_issues:
+        result["reason"] = "context"
+    return result
+
+
+def validate_hcpcs(
+    code: str,
+    *,
+    age: Optional[int] = None,
+    gender: Optional[str] = None,
+    encounter_type: Optional[str] = None,
+    specialty: Optional[str] = None,
+) -> dict:
+    """Validate an HCPCS code including coverage metadata."""
+
+    normalized = code.strip().upper()
+    if not HCPCS_PATTERN.fullmatch(normalized):
+        return {
+            "valid": False,
+            "reason": "pattern",
+            "issues": ["HCPCS codes must match the pattern A0000."],
+        }
+
+    info = HCPCS_CODES.get(normalized)
+    if not info:
+        return {
+            "valid": False,
+            "reason": "unknown",
+            "issues": ["HCPCS code not found in reference table."],
+        }
+
+    context_issues = _collect_context_issues(
+        info,
+        normalized,
+        age=age,
+        gender=gender,
+        encounter_type=encounter_type,
+        specialty=specialty,
+    )
+
+    result = {
+        "valid": not context_issues,
+        "description": info["description"],
+        "reimbursement": info.get("reimbursement"),
+        "coverage": info.get("coverage", {}),
+        "documentation": info.get("documentation", {}),
         "issues": context_issues,
     }
     if context_issues:
@@ -442,7 +533,7 @@ def calculate_billing(
 def get_documentation(code: str) -> dict:
     """Return documentation requirements for a code."""
     code = code.strip().upper()
-    info = CPT_CODES.get(code) or ICD10_CODES.get(code)
+    info = CPT_CODES.get(code) or ICD10_CODES.get(code) or HCPCS_CODES.get(code)
     if not info:
         return {"code": code, "required": [], "recommended": [], "examples": []}
     doc = info.get("documentation", {})

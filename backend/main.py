@@ -5605,6 +5605,26 @@ async def validate_icd10_code(
     )
 
 
+@app.get("/api/codes/validate/hcpcs/{code}")
+async def validate_hcpcs_code(
+    code: str,
+    age: int | None = Query(None, ge=0, le=130),
+    gender: str | None = Query(None),
+    encounter_type: str | None = Query(None, alias="encounterType"),
+    provider_specialty: str | None = Query(None, alias="providerSpecialty"),
+    user=Depends(require_role("user")),
+):
+    """Validate an HCPCS code."""
+
+    return code_tables.validate_hcpcs(
+        code,
+        age=age,
+        gender=gender.strip() if gender else None,
+        encounter_type=encounter_type.strip() if encounter_type else None,
+        specialty=provider_specialty.strip() if provider_specialty else None,
+    )
+
+
 @app.post("/api/codes/validate/combination")
 async def validate_code_combination(
     req: CombinationRequest, user=Depends(require_role("user"))
