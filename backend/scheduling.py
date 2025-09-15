@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 import json
 import os
 
@@ -225,8 +225,29 @@ _APPOINTMENTS: list[dict] = []
 _APPT_LOCK = Lock()
 _NEXT_ID = 1
 
+_DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
 
-def create_appointment(patient: str, reason: str, start: datetime, end: Optional[datetime] = None) -> dict:
+_STATUS_ACTION_MAP = {
+    "check-in": "in-progress",
+    "checkin": "in-progress",
+    "start": "in-progress",
+    "begin": "in-progress",
+    "complete": "completed",
+    "completed": "completed",
+    "cancel": "cancelled",
+    "cancelled": "cancelled",
+}
+
+_ALLOWED_STATUSES = {"scheduled", "in-progress", "completed", "cancelled"}
+
+
+def create_appointment(
+    patient: str,
+    reason: str,
+    start: datetime,
+    end: Optional[datetime] = None,
+    provider: Optional[str] = None,
+) -> dict:
     """Create an appointment record and return it.
 
     A minimal in-memory implementation. ``end`` defaults to 30 minutes after
@@ -235,7 +256,7 @@ def create_appointment(patient: str, reason: str, start: datetime, end: Optional
     """
     global _NEXT_ID
     if end is None:
-        end = start + timedelta(minutes=30)
+        end = start + _DEFAULT_APPOINTMENT_DURATION
     if end < start:
         # Normalise invalid ranges by swapping; keeps function total.
         start, end = end, start
@@ -245,6 +266,8 @@ def create_appointment(patient: str, reason: str, start: datetime, end: Optional
         "reason": reason,
         "start": start.replace(microsecond=0).isoformat(),
         "end": end.replace(microsecond=0).isoformat(),
+        "provider": provider,
+        "status": "scheduled",
     }
     with _APPT_LOCK:
         _APPOINTMENTS.append(rec)
@@ -296,6 +319,141 @@ def export_appointment_ics(appt: Mapping[str, Any]) -> Optional[str]:  # type: i
     ]
     return "\n".join(lines)
 
+
+def _normalise_provider(provider: Optional[str]) -> Optional[str]:
+    if not provider:
+        return None
+    provider = provider.strip()
+    return provider or None
+
+
+def _find_appointment_locked(appt_id: int) -> Optional[dict]:
+    for rec in _APPOINTMENTS:
+        if rec.get("id") == appt_id:
+            return rec
+    return None
+
+
+def _reschedule_locked(rec: dict, new_start: datetime) -> bool:
+    try:
+        old_start = datetime.fromisoformat(rec["start"])
+        old_end = datetime.fromisoformat(rec["end"])
+        duration = old_end - old_start
+    except Exception:
+        duration = _DEFAULT_APPOINTMENT_DURATION
+
+    if duration.total_seconds() <= 0:
+        duration = _DEFAULT_APPOINTMENT_DURATION
+
+    rec["start"] = new_start.replace(microsecond=0).isoformat()
+    rec["end"] = (new_start + duration).replace(microsecond=0).isoformat()
+    rec["status"] = "scheduled"
+    return True
+
+
+def apply_bulk_operations(
+    updates: Sequence[Mapping[str, Any]],
+    provider: Optional[str] = None,
+) -> Tuple[int, int]:
+    """Apply a series of bulk schedule operations.
+
+    Parameters
+    ----------
+    updates:
+        Sequence of mappings containing ``id``, ``action`` and optional ``time``.
+    provider:
+        Provider identifier to scope updates to. When provided, appointments with
+        an existing provider mismatch are ignored. Appointments without a
+        provider will adopt the supplied value.
+
+    Returns
+    -------
+    Tuple[int, int]
+        ``(succeeded, failed)`` counts for reporting back to the API caller.
+    """
+
+    succeeded = 0
+    failed = 0
+    provider_normalised = _normalise_provider(provider)
+
+    for update in updates:
+        if not isinstance(update, Mapping):
+            failed += 1
+            continue
+
+        try:
+            appt_id = int(update["id"])
+        except Exception:
+            failed += 1
+            continue
+
+        action_raw = update.get("action")
+        if not action_raw:
+            failed += 1
+            continue
+        action = str(action_raw).strip()
+        if not action:
+            failed += 1
+            continue
+
+        time_value = update.get("time")
+        new_start: Optional[datetime]
+        if time_value is None:
+            new_start = None
+        elif isinstance(time_value, datetime):
+            new_start = time_value
+        elif isinstance(time_value, str):
+            try:
+                new_start = datetime.fromisoformat(time_value)
+            except ValueError:
+                failed += 1
+                continue
+        else:
+            failed += 1
+            continue
+
+        with _APPT_LOCK:
+            rec = _find_appointment_locked(appt_id)
+            if rec is None:
+                failed += 1
+                continue
+
+            existing_provider = _normalise_provider(rec.get("provider"))
+            if provider_normalised:
+                if existing_provider and existing_provider.casefold() != provider_normalised.casefold():
+                    failed += 1
+                    continue
+                if not existing_provider:
+                    rec["provider"] = provider_normalised
+
+            if not rec.get("status"):
+                rec["status"] = "scheduled"
+
+            if action.lower() == "reschedule":
+                if new_start is None:
+                    failed += 1
+                    continue
+                if _reschedule_locked(rec, new_start):
+                    succeeded += 1
+                else:
+                    failed += 1
+                continue
+
+            status = _STATUS_ACTION_MAP.get(action.lower())
+            if status:
+                rec["status"] = status
+                succeeded += 1
+                continue
+
+            if action.lower() in _ALLOWED_STATUSES:
+                rec["status"] = action.lower()
+                succeeded += 1
+                continue
+
+            failed += 1
+
+    return succeeded, failed
+
 # Re-export public API surface for explicit imports elsewhere.
 __all__ = [
     "recommend_follow_up",
@@ -304,6 +462,7 @@ __all__ = [
     "list_appointments",
     "get_appointment",
     "export_appointment_ics",
+    "apply_bulk_operations",
     "DEFAULT_EVENT_SUMMARY",
     "DEFAULT_CHRONIC_INTERVAL",
     "DEFAULT_ACUTE_INTERVAL",

@@ -123,6 +123,7 @@ from backend.scheduling import (  # type: ignore
     list_appointments,
     export_appointment_ics,
     get_appointment,
+    apply_bulk_operations,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -5438,6 +5439,8 @@ class Appointment(BaseModel):
     reason: str
     start: datetime
     end: datetime
+    provider: Optional[str] = None
+    status: str = "scheduled"
 
 class AppointmentList(BaseModel):
     appointments: List[Appointment]
@@ -5445,7 +5448,13 @@ class AppointmentList(BaseModel):
 @app.post("/schedule", response_model=Appointment)
 async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(require_role("user"))):
     rec = create_appointment(appt.patient, appt.reason, appt.start, appt.end)
-    return Appointment(**{**rec, "start": rec["start"], "end": rec["end"]})
+    return Appointment(
+        **{
+            **rec,
+            "start": datetime.fromisoformat(rec["start"]),
+            "end": datetime.fromisoformat(rec["end"]),
+        }
+    )
 
 @app.get("/schedule", response_model=AppointmentList)
 async def list_schedule_appointments(user=Depends(require_role("user"))):
@@ -5463,6 +5472,22 @@ async def list_schedule_appointments(user=Depends(require_role("user"))):
         )
     return AppointmentList(appointments=parsed)
 
+
+class ScheduleBulkOperation(BaseModel):
+    id: int
+    action: str
+    time: Optional[datetime] = None
+
+
+class ScheduleBulkRequest(BaseModel):
+    updates: List[ScheduleBulkOperation]
+    provider: Optional[str] = None
+
+
+class ScheduleBulkSummary(BaseModel):
+    succeeded: int = 0
+    failed: int = 0
+
 class ScheduleExportRequest(BaseModel):
     id: int
 
@@ -5472,6 +5497,19 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
     if not appt:
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
+
+
+@app.post("/api/schedule/bulk-operations", response_model=ScheduleBulkSummary)
+async def schedule_bulk_operations(
+    req: ScheduleBulkRequest, user=Depends(require_role("user"))
+) -> ScheduleBulkSummary:
+    if not req.updates:
+        return ScheduleBulkSummary(succeeded=0, failed=0)
+    succeeded, failed = apply_bulk_operations(
+        [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
+        req.provider,
+    )
+    return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
 
 
