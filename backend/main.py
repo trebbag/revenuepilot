@@ -119,7 +119,7 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
 )
-
+from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
 from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
@@ -4183,6 +4183,56 @@ async def upload_chart(
     background_tasks.add_task(process_chart, file.filename, data)
     return {"status": "processing"}
 # ---------------------------------------------------------------------------
+# ---------------------- Code validation & billing -------------------------
+          
+class CombinationRequest(BaseModel):
+    cpt: List[str] = Field(default_factory=list)
+    icd10: List[str] = Field(default_factory=list)
+
+
+@app.get("/api/codes/validate/cpt/{code}")
+async def validate_cpt_code(code: str, user=Depends(require_role("user"))):
+    """Validate a CPT code."""
+    return code_tables.validate_cpt(code)
+
+
+@app.get("/api/codes/validate/icd10/{code}")
+async def validate_icd10_code(code: str, user=Depends(require_role("user"))):
+    """Validate an ICD-10 code."""
+    return code_tables.validate_icd10(code)
+
+
+@app.post("/api/codes/validate/combination")
+async def validate_code_combination(
+    req: CombinationRequest, user=Depends(require_role("user"))
+):
+    """Validate CPT/ICD-10 code combinations for medical necessity."""
+    cpt_codes = [c.upper() for c in req.cpt]
+    icd10_codes = [c.upper() for c in req.icd10]
+    return code_tables.validate_combination(cpt_codes, icd10_codes)
+
+
+class BillingRequest(BaseModel):
+    cpt: List[str]
+    payerType: str = "commercial"
+    location: Optional[str] = None
+
+
+@app.post("/api/billing/calculate")
+async def billing_calculate(
+    req: BillingRequest, user=Depends(require_role("user"))
+):
+    """Return estimated reimbursement for CPT codes."""
+    cpt_codes = [c.upper() for c in req.cpt]
+    return code_tables.calculate_billing(cpt_codes, req.payerType, req.location)
+
+
+@app.get("/api/codes/documentation/{code}")
+async def get_code_documentation(code: str, user=Depends(require_role("user"))):
+    """Return documentation requirements for a CPT or ICD-10 code."""
+    return code_tables.get_documentation(code)
+
+# ---------------------------------------------------------------------------
 # WebSocket endpoints
 # ---------------------------------------------------------------------------
 
@@ -4562,7 +4612,3 @@ async def validate_code_combination(
         "conflicts": conflicts,
         "warnings": [],
     }
-
-
-
-
