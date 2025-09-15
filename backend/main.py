@@ -73,6 +73,8 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_refresh_table,
+    ensure_session_table,
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -363,6 +365,8 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_events_table(conn)
+    ensure_refresh_table(conn)
+    ensure_session_table(conn)
     conn.commit()
 
 
@@ -391,6 +395,10 @@ ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
 ensure_templates_table(db_conn)
+
+# Tables for refresh tokens and user session state
+ensure_refresh_table(db_conn)
+ensure_session_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -534,6 +542,14 @@ class LoginModel(BaseModel):
 
 class RefreshModel(BaseModel):
     refresh_token: str
+
+
+class LogoutModel(BaseModel):
+    token: str
+
+
+class SessionModel(BaseModel):
+    data: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ResetPasswordModel(BaseModel):
@@ -693,6 +709,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
+    ensure_refresh_table(db_conn)
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
@@ -717,6 +734,16 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     user_id, role = auth
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
+
+    # Persist hashed refresh token for later verification
+    expires_at = (datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).timestamp()
+    db_conn.execute("DELETE FROM refresh_tokens WHERE user_id=?", (user_id,))
+    db_conn.execute(
+        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        (user_id, hash_password(refresh_token), expires_at),
+    )
+    db_conn.commit()
+
     settings_row = db_conn.execute(
         "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
         (user_id,),
@@ -743,7 +770,23 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         }
     else:
         settings = UserSettings().model_dump()
+    user_obj = {
+        "id": user_id,
+        "name": model.username,
+        "role": role,
+        "specialty": settings.get("specialty"),
+        "permissions": [role],
+        "preferences": settings,
+    }
+    expires_at_iso = (
+        datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).isoformat() + "Z"
     return {
+        "token": access_token,
+        "refreshToken": refresh_token,
+        "user": user_obj,
+        "expiresAt": expires_at_iso,
+        # Backwards compatible fields
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -752,13 +795,16 @@ async def login(model: LoginModel) -> Dict[str, Any]:
 
 
 @app.post("/auth/login")
+@app.post("/api/auth/login")
 async def auth_login(model: LoginModel):
     return await login(model)
 
 
 @app.post("/refresh")
+@app.post("/api/auth/refresh")
 async def refresh(model: RefreshModel) -> Dict[str, Any]:
     """Issue a new access token given a valid refresh token."""
+    ensure_refresh_table(db_conn)
     try:
         data = jwt.decode(model.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if data.get("type") != "refresh":
@@ -767,11 +813,71 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (data["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    user_id = row["id"]
+    rows = db_conn.execute(
+        "SELECT token_hash, expires_at FROM refresh_tokens WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    valid = False
+    for r in rows:
+        if r["expires_at"] < time.time():
+            continue
+        if verify_password(model.refresh_token, r["token_hash"]):
+            valid = True
+            break
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
     access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
+    expires_at_iso = (
+        datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).isoformat() + "Z"
     return {
+        "token": access_token,
+        "expiresAt": expires_at_iso,
+        # Backwards compatible fields
         "access_token": access_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
+
+
+@app.post("/auth/logout")
+@app.post("/api/auth/logout")
+async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cover - simple DB op
+    """Revoke a refresh token by removing it from storage."""
+    ensure_refresh_table(db_conn)
+    try:
+        data = jwt.decode(model.token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("type") != "refresh":
+            raise jwt.PyJWTError()
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (data["sub"],),
+    ).fetchone()
+    if not row:
+        return {"success": False}
+    user_id = row["id"]
+    rows = db_conn.execute(
+        "SELECT id, token_hash FROM refresh_tokens WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    success = False
+    for r in rows:
+        if verify_password(model.token, r["token_hash"]):
+            db_conn.execute("DELETE FROM refresh_tokens WHERE id=?", (r["id"],))
+            success = True
+            break
+    db_conn.commit()
+    return {"success": success}
 
 
 @app.post("/reset-password")
@@ -792,6 +898,52 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
     )
     db_conn.commit()
     return {"status": "password reset"}
+
+
+@app.get("/api/user/profile")
+async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:  # pragma: no cover - simple data fetch
+    """Return the authenticated user's profile and preferences."""
+    row = db_conn.execute(
+        "SELECT id, role FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    user_id, role = row["id"], row["role"]
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        sr = dict(settings_row)
+        preferences = {
+            "theme": sr["theme"],
+            "categories": json.loads(sr["categories"]),
+            "rules": json.loads(sr["rules"]),
+            "lang": sr["lang"],
+            "summaryLang": sr["summary_lang"] or sr["lang"],
+            "specialty": sr["specialty"],
+            "payer": sr["payer"],
+            "region": sr["region"] or "",
+            "template": sr["template"],
+            "useLocalModels": bool(sr["use_local_models"]),
+            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
+            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
+            "beautifyModel": sr["beautify_model"],
+            "suggestModel": sr["suggest_model"],
+            "summarizeModel": sr["summarize_model"],
+            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+        }
+    else:
+        preferences = UserSettings().model_dump()
+    return {
+        "id": user_id,
+        "name": user["sub"],
+        "role": role,
+        "specialty": preferences.get("specialty"),
+        "permissions": [role],
+        "preferences": preferences,
+    }
 
 
 @app.get("/audit")
@@ -835,6 +987,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
 
 
 @app.post("/settings")
+@app.put("/api/user/preferences")
 async def save_user_settings(
     model: UserSettings, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
@@ -874,6 +1027,34 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
+
+
+@app.get("/api/user/session")
+async def get_user_session(user=Depends(require_role("user"))) -> Dict[str, Any]:  # pragma: no cover - simple state fetch
+    row = db_conn.execute(
+        "SELECT data FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)",
+        (user["sub"],),
+    ).fetchone()
+    data = json.loads(row["data"]) if row else {}
+    return {"session": data}
+
+
+@app.put("/api/user/session")
+async def put_user_session(
+    model: SessionModel, user=Depends(require_role("user"))
+) -> Dict[str, str]:  # pragma: no cover - simple state save
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    db_conn.execute(
+        "INSERT OR REPLACE INTO sessions (user_id, data, updated_at) VALUES (?, ?, ?)",
+        (row["id"], json.dumps(model.data), time.time()),
+    )
+    db_conn.commit()
+    return {"status": "saved"}
 
 
 class NoteRequest(BaseModel):
@@ -1660,11 +1841,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1812,6 +1993,9 @@ async def get_metrics(
         for k in keys
     }
 
+    top_compliance = sorted(
+        compliance_counts.items(), key=lambda kv: kv[1], reverse=True
+    )[:5]
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
@@ -1827,6 +2011,7 @@ async def get_metrics(
         },
         "clinicians": clinicians,
         "timeseries": timeseries,
+        "top_compliance": top_compliance,
     }
 
 

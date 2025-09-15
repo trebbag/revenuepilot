@@ -139,3 +139,35 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
 
     conn.commit()
+
+
+def ensure_refresh_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
+    """Ensure the refresh_tokens table exists for storing hashed tokens."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS refresh_tokens ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," \
+        "user_id INTEGER NOT NULL," \
+        "token_hash TEXT NOT NULL," \
+        "expires_at REAL NOT NULL," \
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)"
+    )
+    conn.commit()
+
+
+def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
+    """Ensure the sessions table exists for persisting user session state."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions ("
+        "user_id INTEGER PRIMARY KEY," \
+        "data TEXT NOT NULL," \
+        "updated_at REAL NOT NULL," \
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+    conn.commit()
