@@ -73,6 +73,9 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_patients_table,
+    ensure_encounters_table,
+    ensure_visit_sessions_table,
 )
 from backend.templates import TemplateModel, load_builtin_templates  # type: ignore
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -296,6 +299,7 @@ transcript_history: Dict[str, deque] = defaultdict(
 data_dir = user_data_dir(APP_NAME, APP_NAME)
 os.makedirs(data_dir, exist_ok=True)
 DB_PATH = os.path.join(data_dir, "analytics.db")
+UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
 
 # Migrate previous database file from the repository directory if it exists
 old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
@@ -363,6 +367,9 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_events_table(conn)
+    ensure_patients_table(conn)
+    ensure_encounters_table(conn)
+    ensure_visit_sessions_table(conn)
     conn.commit()
 
 
@@ -391,6 +398,11 @@ ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
 ensure_templates_table(db_conn)
+
+# Core clinical data tables.
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -1465,8 +1477,8 @@ async def get_metrics(
         totals_query = f"""
             SELECT
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
@@ -1483,8 +1495,8 @@ async def get_metrics(
         totals = dict(row) if row else {}
         metrics: Dict[str, Any] = {
             "total_notes": totals.get("total_notes", 0) or 0,
-            "total_beautify": totals.get("total_beautify", 0) or 0,
-            "total_suggest": totals.get("total_suggest", 0) or 0,
+            "beautify": totals.get("beautify", 0) or 0,
+            "suggest": totals.get("suggest", 0) or 0,
             "total_summary": totals.get("total_summary", 0) or 0,
             "total_chart_upload": totals.get("total_chart_upload", 0) or 0,
             "total_audio": totals.get("total_audio", 0) or 0,
@@ -1660,8 +1672,8 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
@@ -1794,8 +1806,8 @@ async def get_metrics(
 
     keys = [
         "total_notes",
-        "total_beautify",
-        "total_suggest",
+        "beautify",
+        "suggest",
         "total_summary",
         "total_chart_upload",
         "total_audio",
@@ -1812,6 +1824,13 @@ async def get_metrics(
         for k in keys
     }
 
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+    ]
+
     return {
         "baseline": baseline_metrics,
         "current": current_metrics,
@@ -1819,6 +1838,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -2489,3 +2509,110 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
 # ---------------------------------------------------------------------------
+
+
+class VisitSessionCreate(BaseModel):
+    encounter_id: int
+
+
+class VisitSessionUpdate(BaseModel):
+    session_id: int
+    action: str
+
+
+@app.get("/api/patients/search")
+async def search_patients(q: str, user=Depends(require_role("user"))):
+    like = f"%{q}%"
+    rows = db_conn.execute(
+        "SELECT id, first_name, last_name, dob, mrn FROM patients WHERE first_name LIKE ? OR last_name LIKE ? OR mrn LIKE ? LIMIT 10",
+        (like, like, like),
+    ).fetchall()
+    return [
+        {
+            "patientId": r["id"],
+            "name": f"{r['first_name']} {r['last_name']}",
+            "dob": r["dob"],
+            "mrn": r["mrn"],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/patients/{patient_id}")
+async def get_patient(patient_id: int, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM patients WHERE id=?", (patient_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="patient not found")
+    return {
+        "demographics": {
+            "patientId": row["id"],
+            "name": f"{row['first_name']} {row['last_name']}",
+            "dob": row["dob"],
+            "gender": row["gender"],
+        },
+        "allergies": json.loads(row["allergies"] or "[]"),
+        "medications": json.loads(row["medications"] or "[]"),
+        "lastVisit": row["last_visit"],
+        "insurance": row["insurance"],
+    }
+
+
+@app.get("/api/encounters/validate/{encounter_id}")
+async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM encounters WHERE id=?", (encounter_id,)).fetchone()
+    if not row:
+        return {"valid": False, "error": "Encounter not found"}
+    return {
+        "valid": True,
+        "patientId": row["patient_id"],
+        "date": row["date"],
+        "type": row["type"],
+        "provider": row["provider"],
+    }
+
+
+@app.post("/api/visits/session")
+async def start_visit_session(model: VisitSessionCreate, user=Depends(require_role("user"))):
+    now = datetime.utcnow().isoformat()
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "INSERT INTO visit_sessions (encounter_id, status, start_time) VALUES (?, ?, ?)",
+        (model.encounter_id, "started", now),
+    )
+    session_id = cursor.lastrowid
+    db_conn.commit()
+    return {"sessionId": session_id, "status": "started", "startTime": now}
+
+
+@app.put("/api/visits/session")
+async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="session not found")
+    end_time = row["end_time"]
+    status = model.action
+    if model.action == "complete":
+        end_time = datetime.utcnow().isoformat()
+    db_conn.execute(
+        "UPDATE visit_sessions SET status=?, end_time=? WHERE id=?",
+        (status, end_time, model.session_id),
+    )
+    db_conn.commit()
+    updated = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
+    return {
+        "sessionId": updated["id"],
+        "status": updated["status"],
+        "startTime": updated["start_time"],
+        "endTime": updated["end_time"],
+    }
+
+
+@app.post("/api/charts/upload")
+async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("user"))):
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    contents = await file.read()
+    dest = UPLOAD_DIR / file.filename
+    with open(dest, "wb") as f:
+        f.write(contents)
+    return {"filename": file.filename, "size": len(contents)}
+

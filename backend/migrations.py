@@ -139,3 +139,55 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE events ADD COLUMN satisfaction INTEGER")
 
     conn.commit()
+
+
+def ensure_patients_table(conn: sqlite3.Connection) -> None:
+    """Ensure the patients table exists for storing patient demographics."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS patients ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "first_name TEXT,"
+        "last_name TEXT,"
+        "dob TEXT,"
+        "mrn TEXT,"
+        "gender TEXT,"
+        "insurance TEXT,"
+        "last_visit TEXT,"
+        "allergies TEXT,"
+        "medications TEXT"
+        ")"
+    )
+    conn.commit()
+
+
+def ensure_encounters_table(conn: sqlite3.Connection) -> None:
+    """Ensure the encounters table exists for tracking patient encounters."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS encounters ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "patient_id INTEGER NOT NULL,"
+        "date TEXT,"
+        "type TEXT,"
+        "provider TEXT,"
+        "FOREIGN KEY(patient_id) REFERENCES patients(id)"
+        ")"
+    )
+    conn.commit()
+
+
+def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
+    """Ensure the visit_sessions table exists for visit timing data."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS visit_sessions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "encounter_id INTEGER NOT NULL,"
+        "status TEXT NOT NULL,"
+        "start_time TEXT,"
+        "end_time TEXT,"
+        "FOREIGN KEY(encounter_id) REFERENCES encounters(id)"
+        ")"
+    )
+    conn.commit()
