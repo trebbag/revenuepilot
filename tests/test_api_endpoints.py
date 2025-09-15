@@ -57,6 +57,14 @@ def test_endpoints_require_auth(client):
     assert client.post('/event', json={'eventType': 'x'}).status_code in {401, 403}
     assert client.post('/survey', json={'rating': 5}).status_code in {401, 403}
     assert client.post('/export', json={'note': 'hi'}).status_code in {401, 403}
+    assert (
+        client.post('/api/notes/pre-finalize-check', json={'content': 'hi'}).status_code
+        in {401, 403}
+    )
+    assert (
+        client.post('/api/notes/finalize', json={'content': 'hi'}).status_code
+        in {401, 403}
+    )
 
 
 def test_get_transcribe_requires_auth(client):
@@ -215,6 +223,77 @@ def test_export_requires_auth(client, monkeypatch):
         json={"note": "hi"},
         headers=auth_header(token_user),
     )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "exported"
+
+
+def test_ai_beautify_alias(client):
+    token = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+    resp = client.post(
+        "/api/ai/beautify",
+        json={"text": "hello", "useOfflineMode": True},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    assert "beautified" in resp.json()
+
+
+def test_formatting_rules_endpoint(client):
+    token = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+    uid = main.db_conn.execute(
+        "SELECT id FROM users WHERE username=?", ("user",)
+    ).fetchone()[0]
+    main.db_conn.execute(
+        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies, beautify_model, suggest_model, summarize_model, deid_engine, use_offline_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            uid,
+            "light",
+            json.dumps({}),
+            json.dumps(["uppercase headings"]),
+            "en",
+            "en",
+            None,
+            None,
+            "",
+            None,
+            0,
+            json.dumps(["CDC", "WHO"]),
+            None,
+            None,
+            None,
+            "regex",
+            0,
+        ),
+    )
+    main.db_conn.commit()
+    resp = client.get("/api/formatting/rules", headers=auth_header(token))
+    assert resp.status_code == 200
+    assert resp.json()["rules"] == ["uppercase headings"]
+
+
+def test_export_ehr_tracking(client, monkeypatch):
+    token = client.post(
+        "/login", json={"username": "user", "password": "pw"}
+    ).json()["access_token"]
+
+    def fake_post(note, codes, patient_id=None, encounter_id=None, procedures=None, medications=None):
+        return {"status": "exported"}
+
+    monkeypatch.setattr(ehr_integration, "post_note_and_codes", fake_post)
+    resp = client.post(
+        "/api/export/ehr",
+        json={"note": "n"},
+        headers=auth_header(token),
+    )
+    data = resp.json()
+    assert data["status"] == "exported"
+    assert data["progress"] == 1.0
+    export_id = data["exportId"]
+    resp = client.get(f"/api/export/ehr/{export_id}", headers=auth_header(token))
     assert resp.status_code == 200
     assert resp.json()["status"] == "exported"
 
@@ -626,3 +705,66 @@ def test_suggest_parses_public_health_reason(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["publicHealth"][0]["reason"] == "Prevents influenza"
+
+
+def test_pre_finalize_and_finalize(client):
+    token = main.create_token("u", "user")
+    payload = {
+        "content": "Patient is stable with follow up plan.",
+        "codes": ["99213"],
+        "prevention": ["flu shot"],
+        "diagnoses": ["J10.1"],
+        "differentials": ["J00"],
+        "compliance": ["HIPAA"],
+    }
+    resp = client.post(
+        "/api/notes/pre-finalize-check",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canFinalize"] is True
+    assert data["estimatedReimbursement"] == 75.0
+
+    resp2 = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["exportReady"] is True
+    assert data2["reimbursementSummary"]["total"] == 75.0
+
+
+def test_pre_finalize_detects_issues(client):
+    token = main.create_token("u", "user")
+    payload = {
+        "content": "",
+        "codes": ["99999"],
+        "prevention": [],
+        "diagnoses": [],
+        "differentials": [],
+        "compliance": [],
+    }
+    resp = client.post(
+        "/api/notes/pre-finalize-check",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["canFinalize"] is False
+    assert data["issues"]["content"]
+    assert data["issues"]["codes"]
+
+    resp2 = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["exportReady"] is False
+    assert data2["issues"]["codes"]
