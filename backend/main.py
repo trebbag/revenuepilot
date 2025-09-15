@@ -131,6 +131,7 @@ from backend.auth import (  # type: ignore
     verify_password,
 )
 from backend import deid as deid_module  # type: ignore
+from backend import worker  # type: ignore
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -184,12 +185,14 @@ _SHUTTING_DOWN = False  # exported for potential test assertions
 async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in integration
     logger.info("Lifespan startup begin")
     # Lightweight startup tasks could go here (e.g. warm caches)
+    worker.start_scheduler()
     start_ts = time.time()
     try:
         yield
     finally:
         global _SHUTTING_DOWN
         _SHUTTING_DOWN = True
+        await worker.stop_scheduler()
         try:
             db_conn.commit()  # ensure any buffered writes are flushed
         except Exception:  # pragma: no cover - defensive
@@ -1329,13 +1332,6 @@ async def log_client_error(model: ErrorLogModel, request: Request) -> Dict[str, 
     db_conn.commit()
     return {"status": "logged"}
 
-
-@app.websocket("/ws/notifications")
-async def notifications_ws(ws: WebSocket):
-    await ws.accept()
-    notification_clients.add(ws)
-    try:
-
 @app.get("/api/formatting/rules")
 async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return organisation-specific formatting rules for the user."""
@@ -1462,18 +1458,16 @@ async def notifications_ws(websocket: WebSocket, token: str):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    notification_clients.add(websocket)
     notification_subscribers[username].append(websocket)
     try:
         await websocket.send_json({"count": notification_counts[username]})
-
         while True:
             await asyncio.sleep(60)
     except WebSocketDisconnect:
         pass
     finally:
-
-        notification_clients.discard(ws)
-
+        notification_clients.discard(websocket)
         if websocket in notification_subscribers[username]:
             notification_subscribers[username].remove(websocket)
 
@@ -2178,6 +2172,25 @@ def get_note_versions(
     return NOTE_VERSIONS.get(note_id, [])
 
 
+@app.get("/api/notes/auto-save/status")
+def get_auto_save_status(
+    note_id: Optional[str] = None, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Return auto-save status for a specific note or all notes."""
+
+    if note_id:
+        versions = NOTE_VERSIONS.get(note_id, [])
+        last = versions[-1]["timestamp"] if versions else None
+        return {"noteId": note_id, "versions": len(versions), "lastSave": last}
+    return {
+        nid: {
+            "versions": len(v),
+            "lastSave": v[-1]["timestamp"] if v else None,
+        }
+        for nid, v in NOTE_VERSIONS.items()
+    }
+
+
 class ExportRequest(BaseModel):
     """Payload for exporting a note and codes to an external EHR system.
 
@@ -2265,6 +2278,28 @@ async def export_to_ehr_api(
 async def get_export_status(
     export_id: int, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id, status, ehr, timestamp, detail FROM exports WHERE id=?",
+        (export_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Export not found")
+    detail = json.loads(row["detail"]) if row["detail"] else None
+    return {
+        "exportId": row["id"],
+        "status": row["status"],
+        "ehrSystem": row["ehr"],
+        "timestamp": row["timestamp"],
+        "detail": detail,
+    }
+
+
+@app.get("/api/export/status/{export_id}")
+async def get_export_status_generic(
+    export_id: int, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Poll the status of an export operation by ID."""
+
     row = db_conn.execute(
         "SELECT id, status, ehr, timestamp, detail FROM exports WHERE id=?",
         (export_id,),
@@ -4012,10 +4047,25 @@ async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
     """Use an AI model to check if a note is ready for finalization."""
 
     cleaned = deidentify(req.text or "")
+    if USE_OFFLINE_MODEL:
+        return {"ok": True, "issues": []}
     messages = [
         {
             "role": "system",
             "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        ok = bool(data.get("ok", True))
+        issues = [str(x) for x in data.get("issues", [])]
+    except Exception:
+        ok = True
+        issues = []
+    return {"ok": ok, "issues": issues}
+
 
 class AnalyzeRequest(BaseModel):
     text: str
