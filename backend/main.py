@@ -20,7 +20,7 @@ import sys
 import uuid
 from pathlib import Path
 from collections import defaultdict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from typing import List, Optional, Dict, Any, Literal, Set, Tuple, Callable
 from fastapi import (
     FastAPI,
@@ -103,7 +103,7 @@ from backend.migrations import (  # type: ignore
     ensure_note_auto_saves_table,
     ensure_user_profile_table,
     ensure_session_state_table,
-
+    ensure_event_aggregates_table,
 )
 from backend.templates import (
     TemplateModel,
@@ -445,6 +445,7 @@ ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
+ensure_event_aggregates_table(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -573,6 +574,64 @@ db_conn.row_factory = sqlite3.Row
 get_api_key()
 
 
+def _serialise_audit_details(details: Any | None) -> str | None:
+    """Return a JSON serialisation suitable for the audit log."""
+
+    if details is None:
+        return None
+    if isinstance(details, str):
+        return details
+    try:
+        return json.dumps(details, ensure_ascii=False)
+    except TypeError:
+        return str(details)
+
+
+def _insert_audit_log(
+    username: str | None,
+    action: str,
+    details: Any | None = None,
+) -> None:
+    """Persist an entry into the audit_log table (best effort)."""
+
+    payload = _serialise_audit_details(details)
+    timestamp = time.time()
+    try:
+        db_conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+            (timestamp, username, action, payload),
+        )
+        db_conn.commit()
+    except sqlite3.OperationalError as exc:
+        if "no such table: audit_log" not in str(exc):
+            logger.exception("Failed to write audit log entry")
+            return
+        db_conn.execute(
+            "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+        )
+        db_conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
+            (timestamp, username, action, payload),
+        )
+        db_conn.commit()
+    except Exception:
+        logger.exception("Failed to write audit log entry")
+
+
+def _audit_details_from_request(request: Request) -> Dict[str, Any]:
+    """Capture structured request metadata for audit logging."""
+
+    details: Dict[str, Any] = {
+        "method": request.method,
+        "path": request.url.path,
+    }
+    if request.query_params:
+        details["query"] = dict(request.query_params)
+    if request.client:
+        details["client"] = request.client.host
+    return details
+
+
 # ---------------------------------------------------------------------------
 # Simple JSON configuration helpers for miscellaneous settings
 # ---------------------------------------------------------------------------
@@ -679,6 +738,17 @@ def get_current_user(
     return data
 
 
+def _log_action_for_user(
+    user: Dict[str, Any], action: str, details: Dict[str, Any] | None = None
+) -> None:
+    """Record an audit entry for the supplied user."""
+
+    payload = dict(details or {})
+    if user.get("role") and "role" not in payload:
+        payload["role"] = user["role"]
+    _insert_audit_log(user.get("sub"), action, payload)
+
+
 def require_role(role: str):
     """Dependency factory ensuring the current user has a given role.
 
@@ -691,26 +761,31 @@ def require_role(role: str):
         request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
     ):
         data = get_current_user(credentials, required_role=role)
-        if role == "admin":
-            # Robust insertion: some tests swap the in-memory db_conn after the
-            # dependency was created; ensure the audit_log table exists.
-            try:
-                db_conn.execute(
-                    "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-                    (time.time(), data["sub"], "admin_action", request.url.path),
-                )
-            except sqlite3.OperationalError as e:  # pragma: no cover - safety net
-                if "no such table: audit_log" in str(e):
-                    db_conn.execute(
-                        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
-                    )
-                    db_conn.execute(
-                        "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-                        (time.time(), data["sub"], "admin_action", request.url.path),
-                    )
-                else:
-                    raise
-            db_conn.commit()
+        _log_action_for_user(
+            data, f"{request.method} {request.url.path}", _audit_details_from_request(request)
+        )
+        return data
+
+    return checker
+
+
+def require_roles(*roles: str):
+    """Dependency factory ensuring the current user is in an allowed role."""
+
+    allowed = {"admin", *roles}
+
+    def checker(
+        request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+    ):
+        data = get_current_user(credentials)
+        if data.get("role") not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient privileges",
+            )
+        _log_action_for_user(
+            data, f"{request.method} {request.url.path}", _audit_details_from_request(request)
+        )
         return data
 
     return checker
@@ -726,7 +801,12 @@ async def ws_require_role(websocket: WebSocket, role: str) -> Dict[str, Any]:
     token = auth.split()[1]
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     try:
-        return get_current_user(credentials, required_role=role)
+        data = get_current_user(credentials, required_role=role)
+        details = {"path": websocket.url.path, "type": "websocket"}
+        if websocket.client:
+            details["client"] = websocket.client.host
+        _log_action_for_user(data, "websocket_connect", details)
+        return data
     except HTTPException:
         await websocket.close(code=1008)
         raise WebSocketDisconnect()
@@ -835,12 +915,22 @@ class UserSettings(BaseModel):
 
 
 @app.post("/register")
-async def register(model: RegisterModel) -> Dict[str, Any]:
+async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     """Register a new user and immediately issue JWT tokens."""
     try:
         _user_id = register_user(db_conn, model.username, model.password)
     except sqlite3.IntegrityError:
+        _insert_audit_log(
+            model.username,
+            "register_failed",
+            {"reason": "username exists", "client": request.client.host if request.client else None},
+        )
         raise HTTPException(status_code=400, detail="Username already exists")
+    _insert_audit_log(
+        model.username,
+        "register",
+        {"client": request.client.host if request.client else None},
+    )
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
     settings = UserSettings().model_dump()
@@ -860,7 +950,7 @@ async def register(model: RegisterModel) -> Dict[str, Any]:
 
 
 @app.post("/auth/register")
-async def auth_register(model: RegisterModel):
+async def auth_register(model: RegisterModel, request: Request):
     """Namespaced registration endpoint (idempotent for tests).
 
     Mirrors /register but if the user already exists returns 200 with tokens
@@ -868,12 +958,22 @@ async def auth_register(model: RegisterModel):
     """
     try:
         _user_id = register_user(db_conn, model.username, model.password)
+        _insert_audit_log(
+            model.username,
+            "register",
+            {"source": "auth", "client": request.client.host if request.client else None},
+        )
     except sqlite3.IntegrityError:
         row = db_conn.execute(
             "SELECT id, role FROM users WHERE username=?", (model.username,)
         ).fetchone()
         role = row["role"] if row else "user"
         user_id = row["id"] if row else None
+        _insert_audit_log(
+            model.username,
+            "register_exists",
+            {"source": "auth", "client": request.client.host if request.client else None},
+        )
         session_row = (
             db_conn.execute(
                 "SELECT data FROM session_state WHERE user_id=?", (user_id,)
@@ -951,7 +1051,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 
 
 @app.post("/login")
-async def login(model: LoginModel) -> Dict[str, Any]:
+async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     ensure_refresh_table(db_conn)
     cutoff = time.time() - 15 * 60
@@ -967,11 +1067,14 @@ async def login(model: LoginModel) -> Dict[str, Any]:
 
     auth = authenticate_user(db_conn, model.username, model.password)
     if not auth:
-        db_conn.execute(
-            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-            (time.time(), model.username, "failed_login", "invalid credentials"),
+        _insert_audit_log(
+            model.username,
+            "failed_login",
+            {
+                "reason": "invalid credentials",
+                "client": request.client.host if request.client else None,
+            },
         )
-        db_conn.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
@@ -987,6 +1090,12 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         (user_id, hash_password(refresh_token), expires_at),
     )
     db_conn.commit()
+
+    _insert_audit_log(
+        model.username,
+        "login",
+        {"client": request.client.host if request.client else None},
+    )
 
     settings_row = db_conn.execute(
         "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
@@ -1054,8 +1163,8 @@ async def login(model: LoginModel) -> Dict[str, Any]:
 
 @app.post("/auth/login")
 @app.post("/api/auth/login")
-async def auth_login(model: LoginModel):
-    return await login(model)
+async def auth_login(model: LoginModel, request: Request):
+    return await login(model, request)
 
 
 @app.post("/refresh")
@@ -1068,6 +1177,7 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         if data.get("type") != "refresh":
             raise jwt.PyJWTError()
     except jwt.PyJWTError:
+        _insert_audit_log(None, "refresh_failed", {"reason": "invalid_token"})
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
@@ -1076,6 +1186,7 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         (data["sub"],),
     ).fetchone()
     if not row:
+        _insert_audit_log(data.get("sub"), "refresh_failed", {"reason": "unknown_user"})
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     user_id = row["id"]
     rows = db_conn.execute(
@@ -1090,11 +1201,13 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
             valid = True
             break
     if not valid:
+        _insert_audit_log(data.get("sub"), "refresh_failed", {"reason": "token_mismatch"})
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
     expires_at_iso = (
         datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     ).isoformat() + "Z"
+    _insert_audit_log(data.get("sub"), "refresh_token", None)
     return {
         "token": access_token,
         "expiresAt": expires_at_iso,
@@ -1135,6 +1248,10 @@ async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cove
             success = True
             break
     db_conn.commit()
+    if success:
+        _insert_audit_log(data.get("sub"), "logout", None)
+    else:
+        _insert_audit_log(data.get("sub"), "logout_failed", None)
     return {"success": success}
 
 
@@ -1146,6 +1263,11 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
         (model.username,),
     ).fetchone()
     if not row or not verify_password(model.password, row["password_hash"]):
+        _insert_audit_log(
+            model.username,
+            "password_reset_failed",
+            {"reason": "invalid_credentials"},
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
@@ -1155,6 +1277,7 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
         (hash_password(model.new_password), model.username),
     )
     db_conn.commit()
+    _insert_audit_log(model.username, "password_reset", None)
     return {"status": "password reset"}
 
 
@@ -1285,26 +1408,6 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
-
-
-
-@app.get("/api/user/session")
-async def get_user_session(user=Depends(require_role("user"))) -> Dict[str, Any]:  # pragma: no cover - simple state fetch
-    row = db_conn.execute(
-        "SELECT data FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)",
-        (user["sub"],),
-    ).fetchone()
-    data = json.loads(row["data"]) if row else {}
-    return {"session": data}
-
-
-@app.put("/api/user/session")
-async def put_user_session(
-    model: SessionModel, user=Depends(require_role("user"))
-) -> Dict[str, str]:  # pragma: no cover - simple state save
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username=?",
-
 
 # ---------------------------------------------------------------------------
 # Additional configuration endpoints
@@ -1969,6 +2072,14 @@ class SystemStatusModel(BaseModel):
     ehrConnectionStatus: str
     lastSyncTime: Optional[datetime] = None
 
+
+class AuditLogEntryModel(BaseModel):
+    id: int
+    timestamp: datetime
+    username: Optional[str] = None
+    action: str
+    details: Optional[Any] = None
+
 # ------------------------- Dashboard endpoints ---------------------------
 
 
@@ -2553,7 +2664,7 @@ async def get_metrics(
     clinician: Optional[str] = None,
     daily: bool = True,
     weekly: bool = True,
-    user=Depends(require_role("admin")),
+    user=Depends(require_roles("analyst")),
 ) -> Dict[str, Any]:
     """Aggregate analytics separately for baseline and current events.
 
@@ -3035,9 +3146,142 @@ async def get_metrics(
     }
 
 
+def _aggregate_events_for_day(day: date) -> bool:
+    """Aggregate metrics for a single UTC day into ``event_aggregates``."""
+
+    start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+
+    cursor = db_conn.cursor()
+    try:
+        row = cursor.execute(
+            """
+        SELECT
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END) AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END) AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END) AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            SUM(COALESCE(revenue, 0)) AS revenue,
+            AVG(time_to_close) AS avg_time_to_close,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies,
+            SUM(CASE WHEN public_health = 1 THEN 1 ELSE 0 END) AS public_health_events,
+            AVG(CASE WHEN satisfaction IS NOT NULL THEN satisfaction END) AS avg_satisfaction,
+            SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS compliance_flags,
+            SUM(json_array_length(COALESCE(codes, '[]'))) AS total_codes,
+            COUNT(DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician')) AS clinicians
+        FROM events
+        WHERE timestamp >= ? AND timestamp < ?
+        """,
+        (start_ts, end_ts),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:  # pragma: no cover - depends on SQLite build
+        logger.warning("Skipping detailed aggregation for %s: %s", day.isoformat(), exc)
+        return False
+
+    if row is None:
+        return False
+
+    metrics = {
+        "notes": row["notes"] or 0,
+        "beautify": row["beautify"] or 0,
+        "suggest": row["suggest"] or 0,
+        "summary": row["summary"] or 0,
+        "chart_upload": row["chart_upload"] or 0,
+        "audio": row["audio"] or 0,
+        "revenue": float(row["revenue"] or 0.0),
+        "avg_time_to_close": float(row["avg_time_to_close"]) if row["avg_time_to_close"] is not None else None,
+        "denials": row["denials"] or 0,
+        "deficiencies": row["deficiencies"] or 0,
+        "public_health_events": row["public_health_events"] or 0,
+        "avg_satisfaction": float(row["avg_satisfaction"]) if row["avg_satisfaction"] is not None else None,
+        "compliance_flags": row["compliance_flags"] or 0,
+        "total_codes": row["total_codes"] or 0,
+        "clinicians": row["clinicians"] or 0,
+    }
+
+    db_conn.execute(
+        """
+        INSERT INTO event_aggregates (day, start_ts, end_ts, total_events, metrics, computed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(day) DO UPDATE SET
+            start_ts=excluded.start_ts,
+            end_ts=excluded.end_ts,
+            total_events=excluded.total_events,
+            metrics=excluded.metrics,
+            computed_at=excluded.computed_at
+        """,
+        (
+            day.isoformat(),
+            start_ts,
+            end_ts,
+            row["total_events"] or 0,
+            json.dumps(metrics, ensure_ascii=False),
+            time.time(),
+        ),
+    )
+    db_conn.commit()
+    return True
+
+
+def _aggregate_pending_days() -> int:
+    """Aggregate any days that have not yet been summarised."""
+
+    cursor = db_conn.cursor()
+    first_last = cursor.execute(
+        "SELECT MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts FROM events"
+    ).fetchone()
+    if not first_last or first_last["first_ts"] is None:
+        return 0
+
+    first_day = datetime.fromtimestamp(first_last["first_ts"], tz=timezone.utc).date()
+    last_event_day = datetime.fromtimestamp(first_last["last_ts"], tz=timezone.utc).date()
+    last_full_day = min(last_event_day, datetime.utcnow().date() - timedelta(days=1))
+    if first_day > last_full_day:
+        return 0
+
+    latest_row = cursor.execute(
+        "SELECT day FROM event_aggregates ORDER BY day DESC LIMIT 1"
+    ).fetchone()
+    if latest_row and latest_row["day"]:
+        start_day = datetime.fromisoformat(latest_row["day"]).date() + timedelta(days=1)
+    else:
+        start_day = first_day
+
+    if start_day > last_full_day:
+        return 0
+
+    aggregated_days = 0
+    current = start_day
+    while current <= last_full_day:
+        if _aggregate_events_for_day(current):
+            aggregated_days += 1
+        current += timedelta(days=1)
+    return aggregated_days
+
+
+async def _run_nightly_aggregation() -> None:
+    """Background task entry point executed by the worker scheduler."""
+
+    aggregated_days = await asyncio.to_thread(_aggregate_pending_days)
+    if aggregated_days:
+        logger.info("Aggregated analytics for %s day(s)", aggregated_days)
+        _insert_audit_log(None, "system_aggregate_events", {"days": aggregated_days})
+    else:
+        logger.debug("No analytics aggregation required")
+
+
+worker.register_analytics_aggregator(_run_nightly_aggregation)
+
+
 def _analytics_where(user: Dict[str, Any]) -> tuple[str, List[Any]]:
     """Return a WHERE clause limiting events based on user role."""
-    if user.get("role") == "admin":
+    if user.get("role") in {"admin", "analyst"}:
         return "", []
     return (
         "WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?",
@@ -3045,8 +3289,60 @@ def _analytics_where(user: Dict[str, Any]) -> tuple[str, List[Any]]:
     )
 
 
+@app.get("/api/activity/log")
+async def get_activity_log(
+    limit: int = 100,
+    cursor: Optional[int] = None,
+    user=Depends(require_roles("analyst")),
+) -> Dict[str, Any]:
+    """Return a paginated audit trail ordered from newest to oldest."""
+
+    if limit <= 0:
+        raise HTTPException(status_code=400, detail="limit must be positive")
+    limit = min(limit, 500)
+
+    params: List[Any] = []
+    where_clause = ""
+    if cursor is not None:
+        where_clause = "WHERE id < ?"
+        params.append(cursor)
+
+    query = (
+        "SELECT id, timestamp, username, action, details FROM audit_log "
+        f"{where_clause} ORDER BY id DESC LIMIT ?"
+    )
+    params.append(limit)
+    rows = db_conn.execute(query, params).fetchall()
+
+    entries: List[AuditLogEntryModel] = []
+    for row in rows:
+        details_raw = row["details"]
+        parsed: Any | None = None
+        if details_raw:
+            try:
+                parsed = json.loads(details_raw)
+            except json.JSONDecodeError:
+                parsed = details_raw
+        entries.append(
+            AuditLogEntryModel(
+                id=row["id"],
+                timestamp=datetime.fromtimestamp(row["timestamp"], tz=timezone.utc),
+                username=row["username"],
+                action=row["action"],
+                details=parsed,
+            )
+        )
+
+    next_cursor = rows[-1]["id"] if rows and len(rows) == limit else None
+    return {
+        "entries": [entry.model_dump() for entry in entries],
+        "next": next_cursor,
+        "count": len(entries),
+    }
+
+
 @app.get("/api/analytics/usage")
-async def analytics_usage(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -3078,7 +3374,7 @@ async def analytics_usage(user=Depends(require_role("user"))) -> Dict[str, Any]:
 
 
 @app.get("/api/analytics/coding-accuracy")
-async def analytics_coding_accuracy(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def analytics_coding_accuracy(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
     """Coding accuracy metrics derived from events and billing codes."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -3115,7 +3411,7 @@ async def analytics_coding_accuracy(user=Depends(require_role("user"))) -> Dict[
 
 
 @app.get("/api/analytics/revenue")
-async def analytics_revenue(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def analytics_revenue(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -3140,7 +3436,7 @@ async def analytics_revenue(user=Depends(require_role("user"))) -> Dict[str, Any
 
 
 @app.get("/api/analytics/compliance")
-async def analytics_compliance(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def analytics_compliance(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
     """Compliance analytics derived from logged events."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()

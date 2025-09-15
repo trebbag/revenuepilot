@@ -174,6 +174,33 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
 
 
 
+def ensure_event_aggregates_table(conn: sqlite3.Connection) -> None:
+    """Ensure the daily event aggregates table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS event_aggregates (
+            day TEXT PRIMARY KEY,
+            start_ts REAL NOT NULL,
+            end_ts REAL NOT NULL,
+            total_events INTEGER NOT NULL,
+            metrics TEXT NOT NULL,
+            computed_at REAL NOT NULL
+        )
+        """
+    )
+
+    # Backwards compatibility if the schema existed without computed_at
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(event_aggregates)")}
+    if "computed_at" not in columns:
+        conn.execute(
+            "ALTER TABLE event_aggregates ADD COLUMN computed_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+
+    conn.commit()
+
+
+
 def ensure_patients_table(conn: sqlite3.Connection) -> None:
     """Ensure the patients table exists for storing patient demographics."""
 
@@ -192,6 +219,7 @@ def ensure_refresh_table(conn: sqlite3.Connection) -> None:  # pragma: no cover 
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)"
+    )
 
 
 def ensure_notes_table(conn: sqlite3.Connection) -> None:
@@ -225,25 +253,37 @@ def ensure_notes_table(conn: sqlite3.Connection) -> None:
 
 def ensure_error_log_table(conn: sqlite3.Connection) -> None:
     """Ensure the error_log table exists for centralized error capture."""
+
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS error_log ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "timestamp REAL NOT NULL,"
-        "username TEXT,"
-        "message TEXT NOT NULL,"
-        "stack TEXT"
+        """
+        CREATE TABLE IF NOT EXISTS error_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            username TEXT,
+            message TEXT NOT NULL,
+            stack TEXT
+        )
+        """
+    )
+    conn.commit()
+
 
 def ensure_exports_table(conn: sqlite3.Connection) -> None:
     """Ensure the exports table exists for tracking EHR exports."""
 
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS exports ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "timestamp REAL NOT NULL,"
-        "ehr TEXT,"
-        "note TEXT,"
-        "status TEXT,"
-        "detail TEXT"
+        """
+        CREATE TABLE IF NOT EXISTS exports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            ehr TEXT,
+            note TEXT,
+            status TEXT,
+            detail TEXT
+        )
+        """
+    )
+    conn.commit()
 
 def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
     """Ensure the patients table exists."""
