@@ -24,6 +24,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         "use_local_models INTEGER NOT NULL DEFAULT 0,"
         "agencies TEXT NOT NULL DEFAULT '[]',"
         "use_offline_mode INTEGER NOT NULL DEFAULT 0,"
+        "layout_prefs TEXT NOT NULL DEFAULT '{}',"
         "FOREIGN KEY(user_id) REFERENCES users(id)"
         ")"
     )
@@ -75,7 +76,38 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN use_offline_mode INTEGER NOT NULL DEFAULT 0"
         )
+    if "layout_prefs" not in columns:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN layout_prefs TEXT NOT NULL DEFAULT '{}'"
+        )
 
+
+    conn.commit()
+
+
+def ensure_user_profile_table(conn: sqlite3.Connection) -> None:
+    """Ensure the user_profile table exists for storing profile data."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_profile ("
+        "user_id INTEGER PRIMARY KEY,"
+        "current_view TEXT,"
+        "clinic TEXT,"
+        "preferences TEXT,"
+        "ui_preferences TEXT,"
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
+    if "current_view" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN current_view TEXT")
+    if "clinic" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN clinic TEXT")
+    if "preferences" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN preferences TEXT")
+    if "ui_preferences" not in columns:
+        conn.execute("ALTER TABLE user_profile ADD COLUMN ui_preferences TEXT")
 
     conn.commit()
 
@@ -141,8 +173,81 @@ def ensure_events_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
 def ensure_patients_table(conn: sqlite3.Connection) -> None:
     """Ensure the patients table exists for storing patient demographics."""
+
+
+def ensure_refresh_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
+    """Ensure the refresh_tokens table exists for storing hashed tokens."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS refresh_tokens ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," \
+        "user_id INTEGER NOT NULL," \
+        "token_hash TEXT NOT NULL," \
+        "expires_at REAL NOT NULL," \
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)"
+
+
+def ensure_notes_table(conn: sqlite3.Connection) -> None:
+    """Ensure the notes table exists for storing draft and finalized notes.
+
+    Notes are stored with a ``status`` column so that drafts can be
+    distinguished from finalized notes. The table also tracks creation and
+    update timestamps to support future analytics.
+    """
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notes ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "content TEXT,"
+        "status TEXT NOT NULL,"
+        "created_at REAL,"
+        "updated_at REAL"
+        ")"
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
+    if "status" not in columns:
+        conn.execute(
+            "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'"
+        )
+    if "created_at" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN created_at REAL")
+    if "updated_at" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN updated_at REAL")
+
+
+def ensure_error_log_table(conn: sqlite3.Connection) -> None:
+    """Ensure the error_log table exists for centralized error capture."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS error_log ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "timestamp REAL NOT NULL,"
+        "username TEXT,"
+        "message TEXT NOT NULL,"
+        "stack TEXT"
+
+def ensure_exports_table(conn: sqlite3.Connection) -> None:
+    """Ensure the exports table exists for tracking EHR exports."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS exports ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "timestamp REAL NOT NULL,"
+        "ehr TEXT,"
+        "note TEXT,"
+        "status TEXT,"
+        "detail TEXT"
+
+def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the patients table exists."""
+
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS patients ("
@@ -161,8 +266,10 @@ def ensure_patients_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+
 def ensure_encounters_table(conn: sqlite3.Connection) -> None:
     """Ensure the encounters table exists for tracking patient encounters."""
+
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS encounters ("
@@ -171,14 +278,17 @@ def ensure_encounters_table(conn: sqlite3.Connection) -> None:
         "date TEXT,"
         "type TEXT,"
         "provider TEXT,"
+        "description TEXT,"
         "FOREIGN KEY(patient_id) REFERENCES patients(id)"
         ")"
     )
     conn.commit()
 
 
+
 def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
     """Ensure the visit_sessions table exists for visit timing data."""
+
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS visit_sessions ("
@@ -187,7 +297,38 @@ def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
         "status TEXT NOT NULL,"
         "start_time TEXT,"
         "end_time TEXT,"
+        "data TEXT,"
+        "updated_at REAL,"
         "FOREIGN KEY(encounter_id) REFERENCES encounters(id)"
         ")"
     )
     conn.commit()
+
+def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
+    """Ensure the sessions table exists for persisting user session state."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS sessions ("
+        "user_id INTEGER PRIMARY KEY," \
+        "data TEXT NOT NULL," \
+        "updated_at REAL NOT NULL," \
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+
+def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the note_auto_saves table exists."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_auto_saves ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "user_id INTEGER,"
+        "note_id INTEGER,"
+        "content TEXT,"
+        "updated_at REAL"
+
+        ")"
+    )
+
+    conn.commit()
+

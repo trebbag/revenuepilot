@@ -95,6 +95,18 @@
     "win": {
       "target": "nsis"
     },
+
+  "linux": {
+    "target": [
+      "AppImage",
+      "deb"
+    ],
+    "category": "Utility",
+
+    "cscLink": "${env.LINUX_CSC_LINK}",
+    "cscKeyPassword": "${env.LINUX_CSC_KEY_PASSWORD}"
+  },
+
     "linux": {
       "target": [
         "AppImage",
@@ -102,8 +114,10 @@
       ],
       "category": "Utility",
       "cscLink": "${env.LINUX_CSC_LINK}",
-      "cscKeyPassword": "${env.LINUX_CSC_PASSWORD}"
+      "cscKeyPassword": "${env.LINUX_CSC_KEY_PASSWORD}"
+
     },
+
     "publish": [
       {
         "provider": "generic",
