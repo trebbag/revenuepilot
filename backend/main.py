@@ -97,6 +97,7 @@ from backend.migrations import (  # type: ignore
     ensure_visit_sessions_table,
     ensure_note_auto_saves_table,
     ensure_user_profile_table,
+    ensure_session_state_table,
 
 )
 from backend.templates import (
@@ -433,6 +434,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_encounters_table(conn)
     ensure_visit_sessions_table(conn)
     ensure_note_auto_saves_table(conn)
+    ensure_session_state_table(conn)
     conn.commit()
 
 
@@ -465,6 +467,7 @@ ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
+ensure_session_state_table(db_conn)
 
 # User profile details including current view and UI preferences.
 ensure_user_profile_table(db_conn)
@@ -728,11 +731,18 @@ async def register(model: RegisterModel) -> Dict[str, Any]:
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
     settings = UserSettings().model_dump()
+    session = SessionStateModel().model_dump()
+    db_conn.execute(
+        "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
+        (_user_id, json.dumps(session), time.time()),
+    )
+    db_conn.commit()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "settings": settings,
+        "session": session,
     }
 
 
@@ -746,11 +756,34 @@ async def auth_register(model: RegisterModel):
     try:
         _user_id = register_user(db_conn, model.username, model.password)
     except sqlite3.IntegrityError:
-        # User exists; proceed to issue tokens using existing role (default user)
-        row = db_conn.execute("SELECT role FROM users WHERE username=?", (model.username,)).fetchone()
+        row = db_conn.execute(
+            "SELECT id, role FROM users WHERE username=?", (model.username,)
+        ).fetchone()
         role = row["role"] if row else "user"
+        user_id = row["id"] if row else None
+        session_row = (
+            db_conn.execute(
+                "SELECT data FROM session_state WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if user_id is not None
+            else None
+        )
+        if session_row and session_row["data"]:
+            try:
+                session = json.loads(session_row["data"])
+            except Exception:
+                session = SessionStateModel().model_dump()
+        else:
+            session = SessionStateModel().model_dump()
     else:
         role = "user"
+        user_id = _user_id
+        session = SessionStateModel().model_dump()
+        db_conn.execute(
+            "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
+            (user_id, json.dumps(session), time.time()),
+        )
+        db_conn.commit()
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
     settings = UserSettings().model_dump()
@@ -759,6 +792,7 @@ async def auth_register(model: RegisterModel):
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "settings": settings,
+        "session": session,
     }
 
 
@@ -856,11 +890,22 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         }
     else:
         settings = UserSettings().model_dump()
+    session_row = db_conn.execute(
+        "SELECT data FROM session_state WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if session_row and session_row["data"]:
+        try:
+            session = json.loads(session_row["data"])
+        except Exception:
+            session = SessionStateModel().model_dump()
+    else:
+        session = SessionStateModel().model_dump()
     return {
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         "settings": settings,
+        "session": session,
     }
 
 
@@ -1154,6 +1199,21 @@ class UiPreferencesModel(BaseModel):
     uiPreferences: Dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionStateModel(BaseModel):
+    selectedCodes: Dict[str, int] = Field(
+        default_factory=lambda: {
+            "codes": 0,
+            "prevention": 0,
+            "diagnoses": 0,
+            "differentials": 0,
+        }
+    )
+    panelStates: Dict[str, StrictBool] = Field(
+        default_factory=lambda: {"suggestionPanel": False}
+    )
+    currentNote: Optional[Dict[str, Any]] = None
+
+
 @app.get("/api/user/profile")
 async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
     row = db_conn.execute(
@@ -1235,6 +1295,39 @@ async def put_ui_preferences(
         )
     db_conn.commit()
     return {"uiPreferences": model.uiPreferences}
+
+
+@app.get("/api/user/session")
+async def get_user_session(user=Depends(require_role("user"))):
+    row = db_conn.execute(
+        "SELECT ss.data FROM session_state ss JOIN users u ON ss.user_id = u.id WHERE u.username=?",
+        (user["sub"],),
+    ).fetchone()
+    if row and row["data"]:
+        try:
+            data = json.loads(row["data"])
+        except Exception:
+            data = SessionStateModel().model_dump()
+    else:
+        data = SessionStateModel().model_dump()
+    return data
+
+
+@app.put("/api/user/session")
+async def put_user_session(
+    model: SessionStateModel, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?", (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    db_conn.execute(
+        "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
+        (row["id"], json.dumps(model.model_dump()), time.time()),
+    )
+    db_conn.commit()
+    return model.model_dump()
 
 
 @app.get("/api/notifications/count")

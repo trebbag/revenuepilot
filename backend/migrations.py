@@ -251,3 +251,15 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
         ")"
     )
     conn.commit()
+
+def ensure_session_state_table(conn: sqlite3.Connection) -> None:
+    """Ensure the session_state table exists."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS session_state ("
+        "user_id INTEGER PRIMARY KEY,"
+        "data TEXT,"
+        "updated_at REAL,"
+        "FOREIGN KEY(user_id) REFERENCES users(id)"
+        ")"
+    )
+    conn.commit()
