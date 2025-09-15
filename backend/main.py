@@ -17,11 +17,22 @@ import shutil
 import time
 import asyncio
 import sys
+import uuid
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    status,
+    UploadFile,
+    File,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -2488,4 +2499,121 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
     if not appt:
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
+# ---------------------------------------------------------------------------
+# WebSocket endpoints
+# ---------------------------------------------------------------------------
+
+
+class ConnectionManager:
+    """Track active WebSocket sessions and replay missed events on reconnect."""
+
+    def __init__(self) -> None:
+        self.active: Dict[str, WebSocket] = {}
+        self.history: Dict[str, deque[dict]] = defaultdict(deque)
+        self.counters: Dict[str, int] = defaultdict(int)
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        session_id: Optional[str],
+        last_event_id: Optional[int],
+    ) -> str:
+        await websocket.accept()
+        if not session_id or session_id not in self.history:
+            session_id = str(uuid.uuid4())
+        self.active[session_id] = websocket
+        await websocket.send_json({"event": "connected", "sessionId": session_id})
+        events = list(self.history[session_id])
+        if last_event_id is not None:
+            events = [e for e in events if e["eventId"] > last_event_id]
+        for payload in events:
+            await websocket.send_json(payload)
+        return session_id
+
+    def disconnect(self, session_id: str) -> None:
+        self.active.pop(session_id, None)
+
+    async def push(self, session_id: str, payload: Dict[str, Any]) -> None:
+        self.counters[session_id] += 1
+        enriched = {"event": "message", "eventId": self.counters[session_id], **payload}
+        self.history[session_id].append(enriched)
+        if len(self.history[session_id]) > 50:
+            self.history[session_id].popleft()
+        ws = self.active.get(session_id)
+        if ws is not None:
+            await ws.send_json(enriched)
+
+
+async def _ws_endpoint(manager: ConnectionManager, websocket: WebSocket) -> None:
+    """Common WebSocket connection handler with reconnect support."""
+
+    params = websocket.query_params
+    session_id = params.get("session_id")
+    last_event_id = params.get("last_event_id")
+    last_event = int(last_event_id) if last_event_id is not None else None
+    session_id = await manager.connect(websocket, session_id, last_event)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await manager.push(session_id, data)
+    except WebSocketDisconnect:
+        manager.disconnect(session_id)
+
+
+transcription_manager = ConnectionManager()
+compliance_manager = ConnectionManager()
+collaboration_manager = ConnectionManager()
+codes_manager = ConnectionManager()
+notifications_manager = ConnectionManager()
+
+
+@app.websocket("/ws/transcription")
+async def ws_transcription(websocket: WebSocket) -> None:
+    """Live speech-to-text stream.
+
+    Expected payload: ``{"transcript", "confidence", "isInterim", "timestamp", "speakerLabel"}``
+    """
+
+    await _ws_endpoint(transcription_manager, websocket)
+
+
+@app.websocket("/ws/compliance")
+async def ws_compliance(websocket: WebSocket) -> None:
+    """Real-time compliance alerts.
+
+    Expected payload: ``{"analysisId", "issues", "severity", "timestamp"}``
+    """
+
+    await _ws_endpoint(compliance_manager, websocket)
+
+
+@app.websocket("/ws/collaboration")
+async def ws_collaboration(websocket: WebSocket) -> None:
+    """Collaborative editing channel.
+
+    Expected payload: ``{"noteId", "changes", "userId", "timestamp", "conflicts"}``
+    """
+
+    await _ws_endpoint(collaboration_manager, websocket)
+
+
+@app.websocket("/ws/codes")
+async def ws_codes(websocket: WebSocket) -> None:
+    """Streaming coding suggestions.
+
+    Expected payload: ``{"code", "type", "description", "rationale", "confidence", "timestamp"}``
+    """
+
+    await _ws_endpoint(codes_manager, websocket)
+
+
+@app.websocket("/ws/notifications")
+async def ws_notifications(websocket: WebSocket) -> None:
+    """System notification channel.
+
+    Expected payload: ``{"type", "message", "priority", "userId", "timestamp"}``
+    """
+
+    await _ws_endpoint(notifications_manager, websocket)
+
 # ---------------------------------------------------------------------------
