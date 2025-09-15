@@ -174,6 +174,22 @@ logging.basicConfig(
 
 # Logger before app so lifespan can reference it
 logger = logging.getLogger(__name__)
+
+
+class SuccessResponse(BaseModel):
+    """Standard successful response envelope."""
+
+    success: Literal[True] = True
+    data: Any
+
+
+class ErrorResponse(BaseModel):
+    """Standard error response envelope."""
+
+    success: Literal[False] = False
+    error: Any
+
+
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 
 # Graceful shutdown via FastAPI lifespan (uvicorn will call this on SIGINT/SIGTERM)
@@ -202,6 +218,36 @@ async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in 
 
 # Instantiate app with lifespan for graceful shutdown
 app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def wrap_api_response(request: Request, call_next):
+    """Ensure all JSON endpoints return a standard envelope."""
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("Unhandled error: %s", exc)
+        return JSONResponse(
+            status_code=500, content=ErrorResponse(error=str(exc)).model_dump()
+        )
+
+    if isinstance(response, JSONResponse):
+        try:
+            payload = json.loads(response.body.decode()) if response.body else None
+        except Exception:  # pragma: no cover - non-json
+            return response
+        if isinstance(payload, dict) and "success" in payload:
+            return response
+        if 200 <= response.status_code < 400:
+            wrapper = SuccessResponse(data=payload)
+        else:
+            wrapper = ErrorResponse(error=payload)
+        return JSONResponse(
+            status_code=response.status_code, content=wrapper.model_dump()
+        )
+    return response
+
 
 # Record process start time for uptime calculations
 START_TIME = time.time()

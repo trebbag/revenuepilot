@@ -15,6 +15,7 @@ import {
   getSettings,
   saveSettings,
   refreshAccessToken,
+  autoSaveNote,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
@@ -401,10 +402,11 @@ function App() {
     }
   }, [patientID]);
 
-  // Persist the draft to localStorage whenever it changes
+  // Persist the draft locally and queue sync whenever it changes
   useEffect(() => {
     if (!patientID) return;
     localStorage.setItem(`draft_${patientID}`, draftText);
+    autoSaveNote(`draft_${patientID}`, draftText).catch(() => {});
   }, [draftText, patientID]);
 
   // Insert template into the draft
