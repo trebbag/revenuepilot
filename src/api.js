@@ -35,6 +35,118 @@ export function getLastBackendError() {
   return __lastBackendError;
 }
 
+// ---------------------------------------------------------------------------
+// Offline caching utilities
+// ---------------------------------------------------------------------------
+const TEMPLATE_CACHE_KEY = 'cache.templates';
+const NOTE_CACHE_KEY = 'cache.recentNotes';
+const CODE_CACHE_KEY = 'cache.codes';
+const OFFLINE_QUEUE_KEY = 'cache.pendingOps';
+
+function loadCache(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveCache(key, data) {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch {
+    /* ignore */
+  }
+}
+
+function enqueueOffline(op) {
+  const q = loadCache(OFFLINE_QUEUE_KEY, []);
+  q.push(op);
+  saveCache(OFFLINE_QUEUE_KEY, q);
+}
+
+async function processOp(op) {
+  const baseUrl = resolveBaseUrl();
+  const token = localStorage.getItem('token');
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  if (op.type === 'template:create') {
+    await rawFetch(`${baseUrl}/templates`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(op.tpl),
+    });
+  } else if (op.type === 'template:update') {
+    await rawFetch(`${baseUrl}/templates/${op.id}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(op.tpl),
+    });
+  } else if (op.type === 'template:delete') {
+    await rawFetch(`${baseUrl}/templates/${op.id}`, {
+      method: 'DELETE',
+      headers,
+    });
+  } else if (op.type === 'note:autoSave') {
+    await rawFetch(`${baseUrl}/api/notes/auto-save`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(op.note),
+    });
+  }
+}
+
+export async function syncOfflineQueue() {
+  const q = loadCache(OFFLINE_QUEUE_KEY, []);
+  if (!q.length) return;
+  const remaining = [];
+  for (const op of q) {
+    try {
+      await processOp(op);
+    } catch {
+      remaining.push(op);
+    }
+  }
+  saveCache(OFFLINE_QUEUE_KEY, remaining);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    syncOfflineQueue();
+  });
+  // attempt sync on load
+  syncOfflineQueue();
+}
+
+function cacheTemplates(list) {
+  saveCache(TEMPLATE_CACHE_KEY, list);
+}
+export function getCachedTemplates() {
+  return loadCache(TEMPLATE_CACHE_KEY, []);
+}
+
+function cacheRecentNote(note) {
+  const notes = loadCache(NOTE_CACHE_KEY, []);
+  notes.unshift({ ...note, ts: Date.now() });
+  saveCache(NOTE_CACHE_KEY, notes.slice(0, 20));
+}
+export function getCachedRecentNotes() {
+  return loadCache(NOTE_CACHE_KEY, []);
+}
+
+function cacheCodes(codes = []) {
+  const map = loadCache(CODE_CACHE_KEY, {});
+  for (const c of codes) {
+    if (c && c.code) map[c.code] = c;
+  }
+  saveCache(CODE_CACHE_KEY, map);
+}
+export function getCachedCodes() {
+  return loadCache(CODE_CACHE_KEY, {});
+}
+
 export async function pingBackend(opts = {}) {
   const { attempts = 3, timeoutMs = 8000, intervalMs = 750 } = opts || {};
   const baseUrl = resolveBaseUrl();
@@ -508,7 +620,9 @@ export async function getSuggestions(text, context = {}) {
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Unauthorized');
     }
-    return await resp.json();
+    const data = await resp.json();
+    cacheCodes(data.codes);
+    return data;
   }
   // fallback: simulate network delay and return stub suggestions
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -521,7 +635,7 @@ export async function getSuggestions(text, context = {}) {
     };
   }
   // In stub mode, we ignore additional context and return sample suggestions
-  return {
+  const stub = {
     codes: [
       {
         code: '99213',
@@ -555,6 +669,8 @@ export async function getSuggestions(text, context = {}) {
     ],
     followUp: { interval: '3 months', ics: 'BEGIN:VCALENDAR\nEND:VCALENDAR' },
   };
+  cacheCodes(stub.codes);
+  return stub;
 }
 
 /**
@@ -858,7 +974,6 @@ export async function getTemplates(specialty, payer) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  if (!baseUrl) return [];
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -866,14 +981,20 @@ export async function getTemplates(specialty, payer) {
   if (specialty) params.append('specialty', specialty);
   if (payer) params.append('payer', payer);
   const query = params.toString() ? `?${params.toString()}` : '';
-  const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/templates${query}`, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch templates');
+    }
+    const data = await resp.json();
+    cacheTemplates(data);
+    return data;
+  } catch {
+    return getCachedTemplates();
   }
-  if (!resp.ok) {
-    throw new Error('Failed to fetch templates');
-  }
-  return await resp.json();
 }
 
 /**
@@ -886,24 +1007,32 @@ export async function createTemplate(tpl) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  if (!baseUrl) return tpl;
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
-  const resp = await fetch(`${baseUrl}/templates`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(tpl),
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  const offlineTpl = { id: Date.now(), ...tpl };
+  try {
+    const resp = await fetch(`${baseUrl}/templates`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(tpl),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to create template');
+    }
+    const data = await resp.json();
+    cacheTemplates([...getCachedTemplates(), data]);
+    return data;
+  } catch {
+    cacheTemplates([...getCachedTemplates(), offlineTpl]);
+    enqueueOffline({ type: 'template:create', tpl: offlineTpl });
+    return offlineTpl;
   }
-  if (!resp.ok) {
-    throw new Error('Failed to create template');
-  }
-  return await resp.json();
 }
 
 /**
@@ -917,24 +1046,36 @@ export async function updateTemplate(id, tpl) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  if (!baseUrl) return { id, ...tpl };
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
-  const resp = await fetch(`${baseUrl}/templates/${id}`, {
-    method: 'PUT',
-    headers,
-    body: JSON.stringify(tpl),
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  const offlineTpl = { id, ...tpl };
+  try {
+    const resp = await fetch(`${baseUrl}/templates/${id}`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify(tpl),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to update template');
+    }
+    const data = await resp.json();
+    const list = getCachedTemplates().map((t) => (t.id === id ? data : t));
+    cacheTemplates(list);
+    return data;
+  } catch {
+    const list = getCachedTemplates().map((t) =>
+      t.id === id ? offlineTpl : t,
+    );
+    cacheTemplates(list);
+    enqueueOffline({ type: 'template:update', id, tpl: offlineTpl });
+    return offlineTpl;
   }
-  if (!resp.ok) {
-    throw new Error('Failed to update template');
-  }
-  return await resp.json();
 }
 
 /**
@@ -947,20 +1088,24 @@ export async function deleteTemplate(id) {
     import.meta?.env?.VITE_API_URL ||
     window.__BACKEND_URL__ ||
     window.location.origin;
-  if (!baseUrl) return;
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/templates/${id}`, {
-    method: 'DELETE',
-    headers,
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/templates/${id}`, {
+      method: 'DELETE',
+      headers,
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to delete template');
+    }
+  } catch {
+    enqueueOffline({ type: 'template:delete', id });
   }
-  if (!resp.ok) {
-    throw new Error('Failed to delete template');
-  }
+  cacheTemplates(getCachedTemplates().filter((t) => t.id !== id));
 }
 
 export async function getPromptTemplates() {
@@ -1053,6 +1198,59 @@ export async function setApiKey(key) {
     throw new Error(err.message || 'Failed to save key');
   }
   return await resp.json();
+}
+
+/**
+ * Auto-save note content locally and queue server sync.
+ * @param {string} noteId
+ * @param {string} content
+ */
+export async function autoSaveNote(noteId, content) {
+  const note = { note_id: noteId, content };
+  cacheRecentNote({ noteId, content });
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  try {
+    const resp = await rawFetch(`${baseUrl}/api/notes/auto-save`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ note_id: noteId, content }),
+    });
+    if (!resp.ok) throw new Error('Failed');
+  } catch {
+    enqueueOffline({ type: 'note:autoSave', note });
+  }
+}
+
+/**
+ * Fetch code metadata with offline cache fallback.
+ * @param {string[]} codes
+ */
+export async function getCodeDetails(codes = []) {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  try {
+    const resp = await rawFetch(`${baseUrl}/api/codes/details/batch`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ codes }),
+    });
+    if (!resp.ok) throw new Error('Failed');
+    const data = await resp.json();
+    cacheCodes(data);
+    return data;
+  } catch {
+    const cache = getCachedCodes();
+    return codes.map((c) => cache[c]).filter(Boolean);
+  }
 }
 
 /**
