@@ -498,7 +498,7 @@ This enhanced analysis provides comprehensive backend integration requirements f
 | `/api/compliance/rules` | GET | Regulatory rule engine | `Response: { rules, lastUpdated, jurisdiction, payerRules }` | **HIGH** |
 | `/api/compliance/issue-tracking` | POST | Issue tracking/learning | `Request: { issueId, userAction, reasoning }` | **MEDIUM** |
 | `/api/activity/log` | GET | Activity log retrieval | `Query: { dateRange, category, user }` → `Response: Array<ActivityEntry>` | **HIGH** |
-| `/api/activity/log` | POST | Activity logging | `Request: { action, category, details }` | **HIGH** |
+| `/api/activity/log` | POST | Activity logging | `Request: EventModel { eventType, details?, timestamp?, codes?, revenue?, timeToClose?, compliance?, publicHealth?, satisfaction? }` → `Response: { status: "logged" }` (Legacy alias: `POST /event` — deprecated) | **HIGH** |
 | `/api/export/ehr` | POST | EHR export | `Request: { noteId, ehrSystem }` → `Response: { status, exportId, progress }` | **MEDIUM** |
 
 ### 🌐 **REAL-TIME & STREAMING**

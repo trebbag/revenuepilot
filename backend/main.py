@@ -2951,7 +2951,7 @@ async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]
 # call this endpoint whenever a notable action occurs (e.g., starting
 # a note, beautifying a note, requesting suggestions).  Events are
 # stored in the global `events` list.  Returns a simple status.
-@app.post("/event")
+@app.post("/event", deprecated=True)
 async def log_event(
     event: EventModel, user=Depends(require_role("user"))
 ) -> Dict[str, str]:
@@ -3027,6 +3027,15 @@ async def log_event(
     except Exception as exc:
         logging.error("Error inserting event into database: %s", exc)
     return {"status": "logged"}
+
+
+@app.post("/api/activity/log")
+async def log_activity_event(
+    event: EventModel, user=Depends(require_role("user"))
+) -> Dict[str, str]:
+    """Canonical activity logging endpoint that forwards to ``/event`` handler."""
+
+    return await log_event(event, user)
 
 
 @app.post("/survey")
