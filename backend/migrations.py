@@ -376,6 +376,15 @@ def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
         "medications TEXT"
         ")"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_last_first ON patients(last_name, first_name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients(mrn)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_dob ON patients(dob)"
+    )
     conn.commit()
 
 
@@ -394,6 +403,12 @@ def ensure_encounters_table(conn: sqlite3.Connection) -> None:
         "description TEXT,"
         "FOREIGN KEY(patient_id) REFERENCES patients(id)"
         ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_encounters_date ON encounters(date)"
     )
     conn.commit()
 

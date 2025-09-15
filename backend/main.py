@@ -683,6 +683,7 @@ ensure_note_auto_saves_table(db_conn)
 ensure_event_aggregates_table(db_conn)
 ensure_compliance_issues_table(db_conn)
 ensure_confidence_scores_table(db_conn)
+patients.configure_database(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -753,6 +754,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_compliance_issues_table(conn)
     ensure_confidence_scores_table(conn)
     conn.commit()
+    patients.configure_database(conn)
 
 
 # Proper users table creation (replacing previously malformed snippet)
@@ -4989,59 +4991,6 @@ async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, A
     return {"history": history}
 
 
-@app.get("/api/patients/search")  # pragma: no cover - not exercised in tests
-async def search_patients(q: str, user=Depends(require_role("user"))):
-    """Search patients by name."""
-
-    cursor = db_conn.execute(
-        "SELECT id, name, dob FROM patients WHERE name LIKE ?",
-        (f"%{q}%",),
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    return {"patients": rows}
-
-
-@app.get("/api/encounters/validate/{encounter_id}")  # pragma: no cover - not exercised in tests
-async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
-    """Validate that an encounter exists."""
-
-    cur = db_conn.execute(
-        "SELECT 1 FROM encounters WHERE id = ?",
-        (encounter_id,),
-    )
-    return {"id": encounter_id, "valid": cur.fetchone() is not None}
-
-
-@app.post("/api/visits/session")  # pragma: no cover - not exercised in tests
-async def create_visit_session(
-    session: VisitSessionModel, user=Depends(require_role("user"))
-):
-    """Create a new visit session."""
-
-    cur = db_conn.execute(
-        "INSERT INTO visit_sessions (encounter_id, data, updated_at) VALUES (?, ?, ?)",
-        (session.encounter_id, session.data or "", time.time()),
-    )
-    db_conn.commit()
-    return {"id": cur.lastrowid}
-
-
-@app.put("/api/visits/session")  # pragma: no cover - not exercised in tests
-async def update_visit_session(
-    session: VisitSessionModel, user=Depends(require_role("user"))
-):
-    """Update an existing visit session."""
-
-    if session.id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "id required")
-    db_conn.execute(
-        "UPDATE visit_sessions SET encounter_id = ?, data = ?, updated_at = ? WHERE id = ?",
-        (session.encounter_id, session.data or "", time.time(), session.id),
-    )
-    db_conn.commit()
-    return {"status": "ok"}
-
-
 @app.websocket("/api/transcribe/stream")  # pragma: no cover - not exercised in tests
 async def transcribe_stream(websocket: WebSocket):
     """Stream transcription via WebSocket."""
@@ -6238,25 +6187,6 @@ async def schedule_bulk_operations(
 # ------------------- Additional API endpoints ------------------------------
 
 
-class Patient(BaseModel):
-    patientId: str
-    name: str
-    age: int
-    gender: str
-    insurance: str
-    lastVisit: str
-    allergies: List[str]
-    medications: List[str]
-
-
-@app.get("/api/patients/{patient_id}", response_model=Patient)
-async def get_patient_api(patient_id: str, user=Depends(require_role("user"))):
-    rec = patients.get_patient(patient_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail="patient not found")
-    return Patient(**rec)
-
-
 @app.get("/api/schedule/appointments", response_model=AppointmentList)
 async def api_list_appointments(user=Depends(require_role("user"))):
     items = list_appointments()
@@ -6298,15 +6228,6 @@ async def manage_visit_state(
     return VisitState(**state)
 
 
-@app.post("/api/charts/upload")
-async def upload_chart(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    user=Depends(require_role("user")),
-):
-    data = await file.read()
-    background_tasks.add_task(process_chart, file.filename, data)
-    return {"status": "processing"}
 # ---------------------------------------------------------------------------
 # ---------------------- Code validation & billing -------------------------
           
@@ -6559,54 +6480,54 @@ class VisitSessionUpdate(BaseModel):
 
 
 @app.get("/api/patients/search")
-async def search_patients(q: str, user=Depends(require_role("user"))):
-    like = f"%{q}%"
-    rows = db_conn.execute(
-        "SELECT id, first_name, last_name, dob, mrn FROM patients WHERE first_name LIKE ? OR last_name LIKE ? OR mrn LIKE ? LIMIT 10",
-        (like, like, like),
-    ).fetchall()
-    return [
-        {
-            "patientId": r["id"],
-            "name": f"{r['first_name']} {r['last_name']}",
-            "dob": r["dob"],
-            "mrn": r["mrn"],
-        }
-        for r in rows
-    ]
+async def search_patients_v2(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user=Depends(require_role("user")),
+):
+    return patients.search_patients(q, limit=limit, offset=offset)
 
 
 @app.get("/api/patients/{patient_id}")
 async def get_patient(patient_id: int, user=Depends(require_role("user"))):
-    row = db_conn.execute("SELECT * FROM patients WHERE id=?", (patient_id,)).fetchone()
-    if not row:
+    record = patients.get_patient(patient_id)
+    if not record:
         raise HTTPException(status_code=404, detail="patient not found")
+    demographics = {
+        "patientId": record.get("patientId"),
+        "mrn": record.get("mrn"),
+        "name": record.get("name"),
+        "firstName": record.get("firstName"),
+        "lastName": record.get("lastName"),
+        "dob": record.get("dob"),
+        "age": record.get("age"),
+        "gender": record.get("gender"),
+        "insurance": record.get("insurance"),
+        "lastVisit": record.get("lastVisit"),
+    }
     return {
-        "demographics": {
-            "patientId": row["id"],
-            "name": f"{row['first_name']} {row['last_name']}",
-            "dob": row["dob"],
-            "gender": row["gender"],
-        },
-        "allergies": json.loads(row["allergies"] or "[]"),
-        "medications": json.loads(row["medications"] or "[]"),
-        "lastVisit": row["last_visit"],
-        "insurance": row["insurance"],
+        "demographics": demographics,
+        "allergies": record.get("allergies", []),
+        "medications": record.get("medications", []),
+        "encounters": record.get("encounters", []),
     }
 
 
 @app.get("/api/encounters/validate/{encounter_id}")
-async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
-    row = db_conn.execute("SELECT * FROM encounters WHERE id=?", (encounter_id,)).fetchone()
-    if not row:
-        return {"valid": False, "error": "Encounter not found"}
-    return {
-        "valid": True,
-        "patientId": row["patient_id"],
-        "date": row["date"],
-        "type": row["type"],
-        "provider": row["provider"],
-    }
+async def validate_encounter_v2(
+    encounter_id: int, user=Depends(require_role("user"))
+):
+    encounter = patients.get_encounter(encounter_id)
+    if encounter is None:
+        return {"valid": False, "errors": ["Encounter not found"], "encounterId": encounter_id}
+    if "patient" not in encounter or not encounter["patient"].get("patientId"):
+        return {
+            "valid": False,
+            "errors": ["Encounter is missing an associated patient"],
+            "encounter": encounter,
+        }
+    return {"valid": True, "encounter": encounter}
 
 
 @app.post("/api/visits/session")
