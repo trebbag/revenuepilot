@@ -3182,6 +3182,48 @@ class AutoSaveRequest(BaseModel):
         return sanitize_text(v)
 
 
+class NoteCreateRequest(BaseModel):
+    patientId: str
+    encounterId: Optional[str] = None
+    template: Optional[str] = None
+    content: Optional[str] = Field(default="", max_length=10000)
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _default_content(cls, value: str | None) -> str:  # noqa: D401,N805
+        return value or ""
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, value: str) -> str:  # noqa: D401,N805
+        return sanitize_text(value)
+
+
+@app.post("/api/notes/create")
+def create_note(
+    req: NoteCreateRequest, user=Depends(require_role("user"))
+) -> Dict[str, str]:
+    """Create a new draft note and seed the in-memory version history."""
+
+    now = datetime.now(timezone.utc)
+    timestamp = now.timestamp()
+    try:
+        cursor = db_conn.execute(
+            "INSERT INTO notes (content, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (req.content or "", "draft", timestamp, timestamp),
+        )
+        db_conn.commit()
+    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        logger.exception("Failed to create note")
+        raise HTTPException(status_code=500, detail="Failed to create note") from exc
+
+    note_id = str(cursor.lastrowid)
+    NOTE_VERSIONS[note_id] = [
+        {"timestamp": now.isoformat(), "content": req.content or ""}
+    ]
+    return {"noteId": note_id}
+
+
 @app.post("/api/notes/auto-save")
 def auto_save_note(
     req: AutoSaveRequest, user=Depends(require_role("user"))

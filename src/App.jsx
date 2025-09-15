@@ -16,6 +16,7 @@ import {
   saveSettings,
   refreshAccessToken,
   autoSaveNote,
+  createNote,
 } from './api.js';
 import Sidebar from './components/Sidebar.jsx';
 import Drafts from './components/Drafts.jsx';
@@ -105,6 +106,8 @@ function App() {
   // Track the current patient ID for draft saving
   const [patientID, setPatientID] = useState('');
   const [encounterID, setEncounterID] = useState('');
+  const [noteId, setNoteId] = useState(null);
+  const noteCreateInFlightRef = useRef(false);
 
   useEffect(() => {
     if (
@@ -390,24 +393,96 @@ function App() {
 
   // Load a saved draft from localStorage when the patient ID changes
   useEffect(() => {
-    if (!patientID) return;
-    const saved = localStorage.getItem(`draft_${patientID}`);
-    if (saved !== null) {
-      setDraftText(saved);
+    if (!patientID) {
+      setNoteId(null);
+      noteCreateInFlightRef.current = false;
+      return;
+    }
+    let savedDraft = null;
+    try {
+      savedDraft = localStorage.getItem(`draft_${patientID}`);
+    } catch {
+      savedDraft = null;
+    }
+    if (savedDraft !== null) {
+      setDraftText(savedDraft);
       setActiveTab('draft');
       // Force suggestions update
       // suggestions will update via useEffect on draftText
     } else {
       setDraftText('');
     }
+    let storedNoteId = null;
+    try {
+      storedNoteId = localStorage.getItem(`noteId_${patientID}`);
+    } catch {
+      storedNoteId = null;
+    }
+    if (storedNoteId && storedNoteId !== 'null' && storedNoteId !== 'undefined') {
+      setNoteId(storedNoteId);
+    } else {
+      setNoteId(null);
+    }
+    noteCreateInFlightRef.current = false;
   }, [patientID]);
+
+  const activeTemplateId = settingsState?.template;
 
   // Persist the draft locally and queue sync whenever it changes
   useEffect(() => {
     if (!patientID) return;
-    localStorage.setItem(`draft_${patientID}`, draftText);
-    autoSaveNote(`draft_${patientID}`, draftText).catch(() => {});
-  }, [draftText, patientID]);
+    try {
+      localStorage.setItem(`draft_${patientID}`, draftText);
+    } catch {
+      /* ignore quota errors */
+    }
+
+    let cancelled = false;
+    const syncDraft = async () => {
+      if (!noteId) {
+        if (noteCreateInFlightRef.current) return;
+        noteCreateInFlightRef.current = true;
+        try {
+          const payload = {
+            patientId: patientID,
+            content: draftText,
+          };
+          if (encounterID) payload.encounterId = encounterID;
+          const templateId = activeTemplateId;
+          if (templateId !== undefined && templateId !== null && templateId !== '') {
+            payload.template = templateId;
+          }
+          const created = await createNote(payload);
+          if (!cancelled && created?.noteId) {
+            const newId = String(created.noteId);
+            setNoteId(newId);
+            try {
+              localStorage.setItem(`noteId_${patientID}`, newId);
+            } catch {
+              /* ignore quota errors */
+            }
+          }
+        } catch (err) {
+          console.error('Failed to create note', err);
+        } finally {
+          noteCreateInFlightRef.current = false;
+        }
+        return;
+      }
+
+      try {
+        await autoSaveNote(noteId, draftText);
+      } catch {
+        /* ignore auto-save errors; handled via offline queue */
+      }
+    };
+
+    syncDraft();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [draftText, patientID, noteId, encounterID, activeTemplateId]);
 
   // Insert template into the draft
   const insertTemplate = (content) => {
