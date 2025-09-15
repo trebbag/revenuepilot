@@ -17,10 +17,11 @@ import shutil
 import time
 import asyncio
 import sys
+import uuid
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any, Set, Literal
+from typing import List, Optional, Dict, Any, Literal, Set, Tuple, Callable
 from fastapi import (
     FastAPI,
     Depends,
@@ -29,6 +30,7 @@ from fastapi import (
     UploadFile,
     File,
     Request,
+    BackgroundTasks,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -90,6 +92,9 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
+    ensure_refresh_table,
+    ensure_session_table,
+    ensure_notes_table,
     ensure_error_log_table,
     ensure_exports_table,
     ensure_patients_table,
@@ -114,6 +119,10 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
 )
+from backend import code_tables  # type: ignore
+from backend import patients  # type: ignore
+from backend import visits  # type: ignore
+from backend.charts import process_chart  # type: ignore
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     authenticate_user,
@@ -122,6 +131,7 @@ from backend.auth import (  # type: ignore
     verify_password,
 )
 from backend import deid as deid_module  # type: ignore
+from backend import worker  # type: ignore
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
 # placeholder responses without calling external AI services.  This is useful
@@ -191,12 +201,14 @@ _SHUTTING_DOWN = False  # exported for potential test assertions
 async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in integration
     logger.info("Lifespan startup begin")
     # Lightweight startup tasks could go here (e.g. warm caches)
+    worker.start_scheduler()
     start_ts = time.time()
     try:
         yield
     finally:
         global _SHUTTING_DOWN
         _SHUTTING_DOWN = True
+        await worker.stop_scheduler()
         try:
             db_conn.commit()  # ensure any buffered writes are flushed
         except Exception:  # pragma: no cover - defensive
@@ -240,6 +252,19 @@ async def wrap_api_response(request: Request, call_next):
 # Record process start time for uptime calculations
 START_TIME = time.time()
 
+
+# Simple in-memory cache for dashboard and system endpoints
+_DASHBOARD_CACHE: Dict[str, tuple[float, Any]] = {}
+DASHBOARD_CACHE_TTL = float(os.getenv("DASHBOARD_CACHE_TTL", "10"))
+
+def _cached_response(key: str, builder: Callable[[], Any]):
+    """Return cached data for ``key`` rebuilding via ``builder`` when stale."""
+    now = time.time()
+    ts, data = _DASHBOARD_CACHE.get(key, (0.0, None))
+    if now - ts > DASHBOARD_CACHE_TTL:
+        data = builder()
+        _DASHBOARD_CACHE[key] = (now, data)
+    return data
 
 # Active WebSocket connections for system notifications.
 notification_clients: Set[WebSocket] = set()
@@ -399,6 +424,7 @@ async def _broadcast_notification_count(username: str) -> None:
 data_dir = user_data_dir(APP_NAME, APP_NAME)
 os.makedirs(data_dir, exist_ok=True)
 DB_PATH = os.path.join(data_dir, "analytics.db")
+UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
 
 # Migrate previous database file from the repository directory if it exists
 old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
@@ -473,6 +499,9 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_templates_table(conn)
     ensure_user_profile_table(conn)
     ensure_events_table(conn)
+    ensure_refresh_table(conn)
+    ensure_session_table(conn)
+    ensure_notes_table(conn)
     ensure_error_log_table(conn)
     ensure_exports_table(conn)
     ensure_patients_table(conn)
@@ -517,6 +546,18 @@ ensure_user_profile_table(db_conn)
 
 # Centralized error logging table.
 ensure_error_log_table(db_conn)
+
+# Table storing notes and drafts with status metadata.
+ensure_notes_table(db_conn)
+
+# Tables for refresh tokens and user session state
+ensure_refresh_table(db_conn)
+ensure_session_table(db_conn)
+
+# Core clinical data tables.
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -695,6 +736,14 @@ class RefreshModel(BaseModel):
     refresh_token: str
 
 
+class LogoutModel(BaseModel):
+    token: str
+
+
+class SessionModel(BaseModel):
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ResetPasswordModel(BaseModel):
     """Schema used when a user wishes to reset their password."""
 
@@ -852,6 +901,7 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 @app.post("/login")
 async def login(model: LoginModel) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
+    ensure_refresh_table(db_conn)
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
@@ -876,6 +926,16 @@ async def login(model: LoginModel) -> Dict[str, Any]:
     user_id, role = auth
     access_token = create_access_token(model.username, role)
     refresh_token = create_refresh_token(model.username, role)
+
+    # Persist hashed refresh token for later verification
+    expires_at = (datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).timestamp()
+    db_conn.execute("DELETE FROM refresh_tokens WHERE user_id=?", (user_id,))
+    db_conn.execute(
+        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+        (user_id, hash_password(refresh_token), expires_at),
+    )
+    db_conn.commit()
+
     settings_row = db_conn.execute(
         "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
         (user_id,),
@@ -902,7 +962,23 @@ async def login(model: LoginModel) -> Dict[str, Any]:
         }
     else:
         settings = UserSettings().model_dump()
+    user_obj = {
+        "id": user_id,
+        "name": model.username,
+        "role": role,
+        "specialty": settings.get("specialty"),
+        "permissions": [role],
+        "preferences": settings,
+    }
+    expires_at_iso = (
+        datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).isoformat() + "Z"
     return {
+        "token": access_token,
+        "refreshToken": refresh_token,
+        "user": user_obj,
+        "expiresAt": expires_at_iso,
+        # Backwards compatible fields
         "access_token": access_token,
         "refresh_token": refresh_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -911,13 +987,16 @@ async def login(model: LoginModel) -> Dict[str, Any]:
 
 
 @app.post("/auth/login")
+@app.post("/api/auth/login")
 async def auth_login(model: LoginModel):
     return await login(model)
 
 
 @app.post("/refresh")
+@app.post("/api/auth/refresh")
 async def refresh(model: RefreshModel) -> Dict[str, Any]:
     """Issue a new access token given a valid refresh token."""
+    ensure_refresh_table(db_conn)
     try:
         data = jwt.decode(model.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if data.get("type") != "refresh":
@@ -926,11 +1005,71 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (data["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    user_id = row["id"]
+    rows = db_conn.execute(
+        "SELECT token_hash, expires_at FROM refresh_tokens WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    valid = False
+    for r in rows:
+        if r["expires_at"] < time.time():
+            continue
+        if verify_password(model.refresh_token, r["token_hash"]):
+            valid = True
+            break
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
     access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
+    expires_at_iso = (
+        datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).isoformat() + "Z"
     return {
+        "token": access_token,
+        "expiresAt": expires_at_iso,
+        # Backwards compatible fields
         "access_token": access_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
+
+
+@app.post("/auth/logout")
+@app.post("/api/auth/logout")
+async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cover - simple DB op
+    """Revoke a refresh token by removing it from storage."""
+    ensure_refresh_table(db_conn)
+    try:
+        data = jwt.decode(model.token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if data.get("type") != "refresh":
+            raise jwt.PyJWTError()
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
+        (data["sub"],),
+    ).fetchone()
+    if not row:
+        return {"success": False}
+    user_id = row["id"]
+    rows = db_conn.execute(
+        "SELECT id, token_hash FROM refresh_tokens WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    success = False
+    for r in rows:
+        if verify_password(model.token, r["token_hash"]):
+            db_conn.execute("DELETE FROM refresh_tokens WHERE id=?", (r["id"],))
+            success = True
+            break
+    db_conn.commit()
+    return {"success": success}
 
 
 @app.post("/reset-password")
@@ -951,6 +1090,52 @@ async def reset_password(model: ResetPasswordModel) -> Dict[str, str]:
     )
     db_conn.commit()
     return {"status": "password reset"}
+
+
+@app.get("/api/user/profile")
+async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:  # pragma: no cover - simple data fetch
+    """Return the authenticated user's profile and preferences."""
+    row = db_conn.execute(
+        "SELECT id, role FROM users WHERE username=?",
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    user_id, role = row["id"], row["role"]
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        sr = dict(settings_row)
+        preferences = {
+            "theme": sr["theme"],
+            "categories": json.loads(sr["categories"]),
+            "rules": json.loads(sr["rules"]),
+            "lang": sr["lang"],
+            "summaryLang": sr["summary_lang"] or sr["lang"],
+            "specialty": sr["specialty"],
+            "payer": sr["payer"],
+            "region": sr["region"] or "",
+            "template": sr["template"],
+            "useLocalModels": bool(sr["use_local_models"]),
+            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
+            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
+            "beautifyModel": sr["beautify_model"],
+            "suggestModel": sr["suggest_model"],
+            "summarizeModel": sr["summarize_model"],
+            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+        }
+    else:
+        preferences = UserSettings().model_dump()
+    return {
+        "id": user_id,
+        "name": user["sub"],
+        "role": role,
+        "specialty": preferences.get("specialty"),
+        "permissions": [role],
+        "preferences": preferences,
+    }
 
 
 @app.get("/audit")
@@ -994,6 +1179,7 @@ async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any
 
 
 @app.post("/settings")
+@app.put("/api/user/preferences")
 async def save_user_settings(
     model: UserSettings, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
@@ -1034,6 +1220,24 @@ async def save_user_settings(
     db_conn.commit()
     return model.model_dump()
 
+
+
+@app.get("/api/user/session")
+async def get_user_session(user=Depends(require_role("user"))) -> Dict[str, Any]:  # pragma: no cover - simple state fetch
+    row = db_conn.execute(
+        "SELECT data FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)",
+        (user["sub"],),
+    ).fetchone()
+    data = json.loads(row["data"]) if row else {}
+    return {"session": data}
+
+
+@app.put("/api/user/session")
+async def put_user_session(
+    model: SessionModel, user=Depends(require_role("user"))
+) -> Dict[str, str]:  # pragma: no cover - simple state save
+    row = db_conn.execute(
+        "SELECT id FROM users WHERE username=?",
 
 
 # ---------------------------------------------------------------------------
@@ -1130,6 +1334,14 @@ async def put_layout_preferences(
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
+
+    db_conn.execute(
+        "INSERT OR REPLACE INTO sessions (user_id, data, updated_at) VALUES (?, ?, ?)",
+        (row["id"], json.dumps(model.data), time.time()),
+    )
+    db_conn.commit()
+    return {"status": "saved"}
+
     uid = row["id"]
     db_conn.execute(
         "INSERT OR IGNORE INTO settings (user_id, theme) VALUES (?, 'light')",
@@ -1165,13 +1377,6 @@ async def log_client_error(model: ErrorLogModel, request: Request) -> Dict[str, 
     )
     db_conn.commit()
     return {"status": "logged"}
-
-
-@app.websocket("/ws/notifications")
-async def notifications_ws(ws: WebSocket):
-    await ws.accept()
-    notification_clients.add(ws)
-    try:
 
 @app.get("/api/formatting/rules")
 async def get_formatting_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
@@ -1299,22 +1504,18 @@ async def notifications_ws(websocket: WebSocket, token: str):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    notification_clients.add(websocket)
     notification_subscribers[username].append(websocket)
     try:
         await websocket.send_json({"count": notification_counts[username]})
-
         while True:
             await asyncio.sleep(60)
     except WebSocketDisconnect:
         pass
     finally:
-
-        notification_clients.discard(ws)
-
+        notification_clients.discard(websocket)
         if websocket in notification_subscribers[username]:
             notification_subscribers[username].remove(websocket)
-
-
 
 
 class NoteRequest(BaseModel):
@@ -1445,6 +1646,22 @@ class SuggestionsResponse(BaseModel):
     followUp: Optional[FollowUp] = None
 
 
+
+class PreFinalizeCheckRequest(BaseModel):
+    """Payload for validating a note before finalization."""
+
+    content: str
+    codes: List[str] = Field(default_factory=list)
+    prevention: List[str] = Field(default_factory=list)
+    diagnoses: List[str] = Field(default_factory=list)
+    differentials: List[str] = Field(default_factory=list)
+    compliance: List[str] = Field(default_factory=list)
+
+
+class FinalizeNoteRequest(PreFinalizeCheckRequest):
+    """Request payload for completing note finalization."""
+    pass
+
 class CodeSuggestItem(BaseModel):
     code: str
     type: Optional[str] = None
@@ -1554,6 +1771,174 @@ class SurveyModel(BaseModel):
     feedback: Optional[str] = None
     patientID: Optional[str] = None
     clinician: Optional[str] = None
+
+
+# ------------------------- Dashboard models -------------------------------
+
+class DailyOverviewModel(BaseModel):
+    todaysNotes: int
+    completedVisits: int
+    pendingReviews: int
+    complianceScore: float
+    revenueToday: float
+
+
+class QuickActionsModel(BaseModel):
+    draftCount: int
+    upcomingAppointments: int
+    urgentReviews: int
+    systemAlerts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ActivityItemModel(BaseModel):
+    id: int
+    type: str
+    timestamp: datetime
+    description: Optional[str] = None
+    userId: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SystemStatusModel(BaseModel):
+    aiServicesStatus: str
+    ehrConnectionStatus: str
+    lastSyncTime: Optional[datetime] = None
+
+# ------------------------- Dashboard endpoints ---------------------------
+
+
+@app.get("/api/dashboard/daily-overview", response_model=DailyOverviewModel)
+async def dashboard_daily_overview(user=Depends(require_role("user"))):
+    def builder() -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        row = db_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN eventType='note_closed' AND (compliance_flags IS NULL OR compliance_flags='[]') THEN 1 ELSE 0 END) AS compliant,
+                SUM(COALESCE(revenue,0)) AS revenue
+            FROM events
+            WHERE timestamp>=? AND timestamp<?
+            """,
+            (start.timestamp(), end.timestamp()),
+        ).fetchone()
+        notes = row["notes"] or 0
+        closed = row["closed"] or 0
+        compliant = row["compliant"] or 0
+        revenue = row["revenue"] or 0.0
+        pending = notes - closed
+        score = 100.0 if closed == 0 else (compliant / closed) * 100.0
+        return {
+            "todaysNotes": int(notes),
+            "completedVisits": int(closed),
+            "pendingReviews": int(pending),
+            "complianceScore": round(score, 2),
+            "revenueToday": float(revenue),
+        }
+
+    return _cached_response("daily_overview", builder)
+
+
+@app.get("/api/dashboard/quick-actions", response_model=QuickActionsModel)
+async def dashboard_quick_actions(user=Depends(require_role("user"))):
+    def builder() -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        row = db_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN eventType='note_closed' AND compliance_flags IS NOT NULL AND compliance_flags<>'[]' THEN 1 ELSE 0 END) AS urgent
+            FROM events
+            WHERE timestamp>=? AND timestamp<?
+            """,
+            (start.timestamp(), end.timestamp()),
+        ).fetchone()
+        notes = row["notes"] or 0
+        closed = row["closed"] or 0
+        urgent = row["urgent"] or 0
+        now_dt = datetime.utcnow()
+        upcoming = 0
+        try:
+            for appt in list_appointments():
+                try:
+                    if datetime.fromisoformat(appt["start"]) >= now_dt:
+                        upcoming += 1
+                except Exception:
+                    continue
+        except Exception:
+            upcoming = 0
+        return {
+            "draftCount": int(max(notes - closed, 0)),
+            "upcomingAppointments": int(upcoming),
+            "urgentReviews": int(urgent),
+        }
+
+    data = _cached_response("quick_actions", builder)
+    h = await health()
+    alerts: List[Dict[str, Any]] = []
+    if not h.get("db", True):
+        alerts.append({"type": "db", "message": "Database unavailable"})
+    data["systemAlerts"] = alerts
+    return data
+
+
+@app.get("/api/dashboard/activity", response_model=List[ActivityItemModel])
+async def dashboard_activity(user=Depends(require_role("user"))):
+    def builder() -> List[Dict[str, Any]]:
+        cursor = db_conn.execute(
+            "SELECT id, eventType, timestamp, details FROM events ORDER BY timestamp DESC LIMIT 20"
+        )
+        items: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            try:
+                details = json.loads(row["details"] or "{}")
+            except Exception:
+                details = {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "type": row["eventType"],
+                    "timestamp": datetime.fromtimestamp(row["timestamp"], tz=timezone.utc),
+                    "description": details.get("description"),
+                    "userId": details.get("userId") or details.get("clinician"),
+                    "metadata": details,
+                }
+            )
+        return items
+
+    return _cached_response("activity", builder)
+
+
+@app.get("/api/system/status", response_model=SystemStatusModel, tags=["system"])
+async def system_status():
+    def builder() -> Dict[str, Any]:
+        row = db_conn.execute("SELECT MAX(timestamp) as ts FROM events").fetchone()
+        last_sync = (
+            datetime.fromtimestamp(row["ts"], tz=timezone.utc) if row["ts"] else None
+        )
+        if USE_OFFLINE_MODEL:
+            ai_status = "offline"
+        elif get_api_key():
+            ai_status = "online"
+        else:
+            ai_status = "degraded"
+        ehr_url = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
+        ehr_status = (
+            "connected" if ehr_url and "example.com" not in ehr_url else "disconnected"
+        )
+        return {
+            "aiServicesStatus": ai_status,
+            "ehrConnectionStatus": ehr_status,
+            "lastSyncTime": last_sync,
+        }
+
+    return _cached_response("system_status", builder)
 
 # The deidentify() implementation has been moved to backend.deid and is now
 # exposed via the thin wrapper defined near the top of this file. Tests
@@ -1833,6 +2218,25 @@ def get_note_versions(
     return NOTE_VERSIONS.get(note_id, [])
 
 
+@app.get("/api/notes/auto-save/status")
+def get_auto_save_status(
+    note_id: Optional[str] = None, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Return auto-save status for a specific note or all notes."""
+
+    if note_id:
+        versions = NOTE_VERSIONS.get(note_id, [])
+        last = versions[-1]["timestamp"] if versions else None
+        return {"noteId": note_id, "versions": len(versions), "lastSave": last}
+    return {
+        nid: {
+            "versions": len(v),
+            "lastSave": v[-1]["timestamp"] if v else None,
+        }
+        for nid, v in NOTE_VERSIONS.items()
+    }
+
+
 class ExportRequest(BaseModel):
     """Payload for exporting a note and codes to an external EHR system.
 
@@ -1920,6 +2324,28 @@ async def export_to_ehr_api(
 async def get_export_status(
     export_id: int, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
+    row = db_conn.execute(
+        "SELECT id, status, ehr, timestamp, detail FROM exports WHERE id=?",
+        (export_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Export not found")
+    detail = json.loads(row["detail"]) if row["detail"] else None
+    return {
+        "exportId": row["id"],
+        "status": row["status"],
+        "ehrSystem": row["ehr"],
+        "timestamp": row["timestamp"],
+        "detail": detail,
+    }
+
+
+@app.get("/api/export/status/{export_id}")
+async def get_export_status_generic(
+    export_id: int, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    """Poll the status of an export operation by ID."""
+
     row = db_conn.execute(
         "SELECT id, status, ehr, timestamp, detail FROM exports WHERE id=?",
         (export_id,),
@@ -2024,8 +2450,8 @@ async def get_metrics(
         totals_query = f"""
             SELECT
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS total_notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS total_suggest,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)        AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)         AS suggest,
                 SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)         AS total_summary,
                 SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END)    AS total_chart_upload,
                 SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END)  AS total_audio,
@@ -2042,8 +2468,8 @@ async def get_metrics(
         totals = dict(row) if row else {}
         metrics: Dict[str, Any] = {
             "total_notes": totals.get("total_notes", 0) or 0,
-            "total_beautify": totals.get("total_beautify", 0) or 0,
-            "total_suggest": totals.get("total_suggest", 0) or 0,
+            "beautify": totals.get("beautify", 0) or 0,
+            "suggest": totals.get("suggest", 0) or 0,
             "total_summary": totals.get("total_summary", 0) or 0,
             "total_chart_upload": totals.get("total_chart_upload", 0) or 0,
             "total_audio": totals.get("total_audio", 0) or 0,
@@ -2182,6 +2608,9 @@ async def get_metrics(
             satisfaction_sum / satisfaction_count if satisfaction_count else 0
         )
 
+        sorted_compliance = sorted(
+            compliance_counts.items(), key=lambda x: x[1], reverse=True
+        )
         metrics.update(
             {
                 "avg_beautify_time": avg_beautify_time,
@@ -2190,6 +2619,9 @@ async def get_metrics(
                 "denial_rates": denial_rates,
                 "deficiency_rate": deficiency_rate,
                 "compliance_counts": compliance_counts,
+                "top_compliance": [
+                    {"flag": f, "count": c} for f, c in sorted_compliance[:5]
+                ],
                 "public_health_rate": public_health_rate,
                 "avg_satisfaction": avg_satisfaction,
                 "template_counts": template_counts,
@@ -2208,6 +2640,7 @@ async def get_metrics(
     coding_distribution = current_metrics.pop("coding_distribution")
     denial_rates = current_metrics.pop("denial_rates")
     compliance_counts = current_metrics.pop("compliance_counts")
+    top_compliance = current_metrics.pop("top_compliance")
     public_health_rate = current_metrics.pop("public_health_rate")
     avg_satisfaction = current_metrics.pop("avg_satisfaction")
     template_counts = current_metrics.pop("template_counts")
@@ -2219,6 +2652,20 @@ async def get_metrics(
 
     top_compliance = [
         k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    ]
+
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+    ]
+
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
     ]
 
     daily_list: List[Dict[str, Any]] = []
@@ -2361,8 +2808,8 @@ async def get_metrics(
 
     keys = [
         "total_notes",
-        "total_beautify",
-        "total_suggest",
+        "beautify",
+        "suggest",
         "total_summary",
         "total_chart_upload",
         "total_audio",
@@ -2379,9 +2826,12 @@ async def get_metrics(
         for k in keys
     }
 
-
     top_compliance = [
-        k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+
     ]
 
     return {
@@ -2391,7 +2841,7 @@ async def get_metrics(
         "coding_distribution": coding_distribution,
         "denial_rates": denial_rates,
         "compliance_counts": compliance_counts,
-        "top_compliance": [c for c, _ in top_compliance],
+        "top_compliance": top_compliance,
         "public_health_rate": public_health_rate,
         "avg_satisfaction": avg_satisfaction,
         "template_usage": {
@@ -2400,7 +2850,148 @@ async def get_metrics(
         },
         "clinicians": clinicians,
         "timeseries": timeseries,
+        "top_compliance": top_compliance,
+
     }
+
+
+def _analytics_where(user: Dict[str, Any]) -> tuple[str, List[Any]]:
+    """Return a WHERE clause limiting events based on user role."""
+    if user.get("role") == "admin":
+        return "", []
+    return (
+        "WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?",
+        [user["sub"]],
+    )
+
+
+@app.get("/api/analytics/usage")
+async def analytics_usage(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Basic usage analytics aggregated from events."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END) AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END) AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END) AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length
+        FROM events {where}
+        """,
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    return {
+        "total_notes": data.get("total_notes", 0) or 0,
+        "beautify": data.get("beautify", 0) or 0,
+        "suggest": data.get("suggest", 0) or 0,
+        "summary": data.get("summary", 0) or 0,
+        "chart_upload": data.get("chart_upload", 0) or 0,
+        "audio": data.get("audio", 0) or 0,
+        "avg_note_length": data.get("avg_note_length", 0) or 0,
+    }
+
+
+@app.get("/api/analytics/coding-accuracy")
+async def analytics_coding_accuracy(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Coding accuracy metrics derived from events and billing codes."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+        FROM events {where}
+        """,
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    total = data.get("total_notes", 0) or 0
+    denials = data.get("denials", 0) or 0
+    deficiencies = data.get("deficiencies", 0) or 0
+    accuracy = (total - denials - deficiencies) / total if total else 0
+    cursor.execute(
+        "SELECT json_each.value AS code, COUNT(*) AS count FROM events "
+        "JOIN json_each(COALESCE(events.codes, '[]')) "
+        f"{where} GROUP BY code",
+        params,
+    )
+    distribution = {r["code"]: r["count"] for r in cursor.fetchall()}
+    return {
+        "total_notes": total,
+        "denials": denials,
+        "deficiencies": deficiencies,
+        "accuracy": accuracy,
+        "coding_distribution": distribution,
+    }
+
+
+@app.get("/api/analytics/revenue")
+async def analytics_revenue(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Revenue analytics aggregated from event billing data."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {where}",
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    cursor.execute(
+        "SELECT json_each.value AS code, SUM(events.revenue) AS revenue FROM events "
+        "JOIN json_each(COALESCE(events.codes, '[]')) "
+        f"{where} GROUP BY code",
+        params,
+    )
+    by_code = {r["code"]: r["revenue"] for r in cursor.fetchall()}
+    return {
+        "total_revenue": data.get("total", 0) or 0,
+        "average_revenue": data.get("average", 0) or 0,
+        "revenue_by_code": by_code,
+    }
+
+
+@app.get("/api/analytics/compliance")
+async def analytics_compliance(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Compliance analytics derived from logged events."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "SELECT json_each.value AS flag, COUNT(*) AS count FROM events "
+        "JOIN json_each(COALESCE(events.compliance_flags, '[]')) "
+        f"{where} GROUP BY flag",
+        params,
+    )
+    flags = {r["flag"]: r["count"] for r in cursor.fetchall()}
+    cursor.execute(
+        f"SELECT SUM(CASE WHEN compliance_flags IS NOT NULL AND compliance_flags != '[]' THEN 1 ELSE 0 END) AS notes_with_flags FROM events {where}",
+        params,
+    )
+    notes_row = cursor.fetchone()
+    cursor.execute(
+        f"SELECT SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS total_flags FROM events {where}",
+        params,
+    )
+    flags_row = cursor.fetchone()
+    return {
+        "compliance_counts": flags,
+        "notes_with_flags": (dict(notes_row).get("notes_with_flags", 0) if notes_row else 0),
+        "total_flags": (dict(flags_row).get("total_flags", 0) if flags_row else 0),
+    }
+
+
+@app.get("/api/user/permissions")
+async def get_user_permissions(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Return the current user's role."""
+    return {"role": user["role"]}
 
 
 @app.post("/summarize")
@@ -3078,6 +3669,82 @@ async def suggest(
 
 
 
+def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], List[Dict[str, float]], float]:
+    """Perform simple validation on a draft note and its metadata."""
+
+    issues: Dict[str, List[str]] = {
+        "content": [],
+        "codes": [],
+        "prevention": [],
+        "diagnoses": [],
+        "differentials": [],
+        "compliance": [],
+    }
+
+    content = req.content or ""
+    if not content.strip():
+        issues["content"].append("Content is empty")
+    if len(content.strip()) < 20:
+        issues["content"].append("Content too short")
+
+    details: List[Dict[str, float]] = []
+    total = 0.0
+    for code in req.codes:
+        if not re.fullmatch(r"\d{4,5}", code):
+            issues["codes"].append(f"Invalid code {code}")
+            continue
+        amt = CPT_REVENUE.get(code)
+        if amt is None:
+            issues["codes"].append(f"Unknown code {code}")
+        else:
+            details.append({"code": code, "amount": amt})
+            total += amt
+
+    if not req.prevention:
+        issues["prevention"].append("No prevention documented")
+    if not req.diagnoses:
+        issues["diagnoses"].append("No diagnoses provided")
+    if not req.differentials:
+        issues["differentials"].append("No differentials provided")
+    if not req.compliance:
+        issues["compliance"].append("No compliance checks provided")
+
+    return issues, details, total
+
+
+@app.post("/api/notes/pre-finalize-check")
+async def pre_finalize_check(
+    req: PreFinalizeCheckRequest, user=Depends(require_role("user"))
+):
+    """Validate a draft note before allowing finalization."""
+
+    issues, details, total = _validate_note(req)
+    can_finalize = all(len(v) == 0 for v in issues.values())
+    return {
+        "canFinalize": can_finalize,
+        "issues": issues,
+        "estimatedReimbursement": total,
+        "reimbursementSummary": {"total": total, "codes": details},
+    }
+
+
+@app.post("/api/notes/finalize")
+async def finalize_note(
+    req: FinalizeNoteRequest, user=Depends(require_role("user"))
+):
+    """Finalize a note and report export readiness and reimbursement."""
+
+    issues, details, total = _validate_note(req)
+    export_ready = all(len(v) == 0 for v in issues.values())
+    return {
+        "finalizedContent": req.content.strip(),
+        "codesSummary": details,
+        "reimbursementSummary": {"total": total, "codes": details},
+        "exportReady": export_ready,
+        "issues": issues,
+    }
+
+
 async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
@@ -3426,10 +4093,25 @@ async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
     """Use an AI model to check if a note is ready for finalization."""
 
     cleaned = deidentify(req.text or "")
+    if USE_OFFLINE_MODEL:
+        return {"ok": True, "issues": []}
     messages = [
         {
             "role": "system",
             "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+        },
+        {"role": "user", "content": cleaned},
+    ]
+    try:
+        response_content = call_openai(messages)
+        data = json.loads(response_content)
+        ok = bool(data.get("ok", True))
+        issues = [str(x) for x in data.get("issues", [])]
+    except Exception:
+        ok = True
+        issues = []
+    return {"ok": ok, "issues": issues}
+
 
 class AnalyzeRequest(BaseModel):
     text: str
@@ -3462,7 +4144,6 @@ async def analyze_note(
         ok = True
         issues = []
     return {"ok": ok, "issues": issues}
-
 
 
 
@@ -3525,7 +4206,415 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
     if not appt:
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
+# ------------------- Additional API endpoints ------------------------------
+
+
+class Patient(BaseModel):
+    patientId: str
+    name: str
+    age: int
+    gender: str
+    insurance: str
+    lastVisit: str
+    allergies: List[str]
+    medications: List[str]
+
+
+@app.get("/api/patients/{patient_id}", response_model=Patient)
+async def get_patient_api(patient_id: str, user=Depends(require_role("user"))):
+    rec = patients.get_patient(patient_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="patient not found")
+    return Patient(**rec)
+
+
+@app.get("/api/schedule/appointments", response_model=AppointmentList)
+async def api_list_appointments(user=Depends(require_role("user"))):
+    items = list_appointments()
+    parsed: List[Appointment] = []
+    for item in items:
+        parsed.append(
+            Appointment(
+                **{
+                    **item,
+                    "start": datetime.fromisoformat(item["start"]),
+                    "end": datetime.fromisoformat(item["end"]),
+                }
+            )
+        )
+    return AppointmentList(appointments=parsed)
+
+
+class VisitManageRequest(BaseModel):
+    encounterId: str
+    action: Literal["start", "complete"]
+
+
+class VisitState(BaseModel):
+    encounterId: str
+    visitStatus: str
+    startTime: Optional[str] = None
+    duration: int = 0
+    documentationComplete: bool = False
+
+
+@app.post("/api/visits/manage", response_model=VisitState)
+async def manage_visit_state(
+    req: VisitManageRequest,
+    background_tasks: BackgroundTasks,
+    user=Depends(require_role("user")),
+):
+    background_tasks.add_task(visits.update_visit_state, req.encounterId, req.action)
+    state = visits.peek_state(req.encounterId, req.action)
+    return VisitState(**state)
+
+
+@app.post("/api/charts/upload")
+async def upload_chart(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user=Depends(require_role("user")),
+):
+    data = await file.read()
+    background_tasks.add_task(process_chart, file.filename, data)
+    return {"status": "processing"}
 # ---------------------------------------------------------------------------
+# ---------------------- Code validation & billing -------------------------
+          
+class CombinationRequest(BaseModel):
+    cpt: List[str] = Field(default_factory=list)
+    icd10: List[str] = Field(default_factory=list)
+
+
+@app.get("/api/codes/validate/cpt/{code}")
+async def validate_cpt_code(code: str, user=Depends(require_role("user"))):
+    """Validate a CPT code."""
+    return code_tables.validate_cpt(code)
+
+
+@app.get("/api/codes/validate/icd10/{code}")
+async def validate_icd10_code(code: str, user=Depends(require_role("user"))):
+    """Validate an ICD-10 code."""
+    return code_tables.validate_icd10(code)
+
+
+@app.post("/api/codes/validate/combination")
+async def validate_code_combination(
+    req: CombinationRequest, user=Depends(require_role("user"))
+):
+    """Validate CPT/ICD-10 code combinations for medical necessity."""
+    cpt_codes = [c.upper() for c in req.cpt]
+    icd10_codes = [c.upper() for c in req.icd10]
+    return code_tables.validate_combination(cpt_codes, icd10_codes)
+
+
+class BillingRequest(BaseModel):
+    cpt: List[str]
+    payerType: str = "commercial"
+    location: Optional[str] = None
+
+
+@app.post("/api/billing/calculate")
+async def billing_calculate(
+    req: BillingRequest, user=Depends(require_role("user"))
+):
+    """Return estimated reimbursement for CPT codes."""
+    cpt_codes = [c.upper() for c in req.cpt]
+    return code_tables.calculate_billing(cpt_codes, req.payerType, req.location)
+
+
+@app.get("/api/codes/documentation/{code}")
+async def get_code_documentation(code: str, user=Depends(require_role("user"))):
+    """Return documentation requirements for a CPT or ICD-10 code."""
+    return code_tables.get_documentation(code)
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoints
+# ---------------------------------------------------------------------------
+
+
+class ConnectionManager:
+    """Track active WebSocket sessions and replay missed events on reconnect."""
+
+    def __init__(self) -> None:
+        self.active: Dict[str, WebSocket] = {}
+        self.history: Dict[str, deque[dict]] = defaultdict(deque)
+        self.counters: Dict[str, int] = defaultdict(int)
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        session_id: Optional[str],
+        last_event_id: Optional[int],
+    ) -> str:
+        await websocket.accept()
+        if not session_id or session_id not in self.history:
+            session_id = str(uuid.uuid4())
+        self.active[session_id] = websocket
+        await websocket.send_json({"event": "connected", "sessionId": session_id})
+        events = list(self.history[session_id])
+        if last_event_id is not None:
+            events = [e for e in events if e["eventId"] > last_event_id]
+        for payload in events:
+            await websocket.send_json(payload)
+        return session_id
+
+    def disconnect(self, session_id: str) -> None:
+        self.active.pop(session_id, None)
+
+    async def push(self, session_id: str, payload: Dict[str, Any]) -> None:
+        self.counters[session_id] += 1
+        enriched = {"event": "message", "eventId": self.counters[session_id], **payload}
+        self.history[session_id].append(enriched)
+        if len(self.history[session_id]) > 50:
+            self.history[session_id].popleft()
+        ws = self.active.get(session_id)
+        if ws is not None:
+            await ws.send_json(enriched)
+
+
+async def _ws_endpoint(manager: ConnectionManager, websocket: WebSocket) -> None:
+    """Common WebSocket connection handler with reconnect support."""
+
+    params = websocket.query_params
+    session_id = params.get("session_id")
+    last_event_id = params.get("last_event_id")
+    last_event = int(last_event_id) if last_event_id is not None else None
+    session_id = await manager.connect(websocket, session_id, last_event)
+    try:
+        while True:
+            data = await websocket.receive_json()
+            await manager.push(session_id, data)
+    except WebSocketDisconnect:
+        manager.disconnect(session_id)
+
+
+transcription_manager = ConnectionManager()
+compliance_manager = ConnectionManager()
+collaboration_manager = ConnectionManager()
+codes_manager = ConnectionManager()
+notifications_manager = ConnectionManager()
+
+
+@app.websocket("/ws/transcription")
+async def ws_transcription(websocket: WebSocket) -> None:
+    """Live speech-to-text stream.
+
+    Expected payload: ``{"transcript", "confidence", "isInterim", "timestamp", "speakerLabel"}``
+    """
+
+    await _ws_endpoint(transcription_manager, websocket)
+
+
+@app.websocket("/ws/compliance")
+async def ws_compliance(websocket: WebSocket) -> None:
+    """Real-time compliance alerts.
+
+    Expected payload: ``{"analysisId", "issues", "severity", "timestamp"}``
+    """
+
+    await _ws_endpoint(compliance_manager, websocket)
+
+
+@app.websocket("/ws/collaboration")
+async def ws_collaboration(websocket: WebSocket) -> None:
+    """Collaborative editing channel.
+
+    Expected payload: ``{"noteId", "changes", "userId", "timestamp", "conflicts"}``
+    """
+
+    await _ws_endpoint(collaboration_manager, websocket)
+
+
+@app.websocket("/ws/codes")
+async def ws_codes(websocket: WebSocket) -> None:
+    """Streaming coding suggestions.
+
+    Expected payload: ``{"code", "type", "description", "rationale", "confidence", "timestamp"}``
+    """
+
+    await _ws_endpoint(codes_manager, websocket)
+
+
+@app.websocket("/ws/notifications")
+async def ws_notifications(websocket: WebSocket) -> None:
+    """System notification channel.
+
+    Expected payload: ``{"type", "message", "priority", "userId", "timestamp"}``
+    """
+
+    await _ws_endpoint(notifications_manager, websocket)
+
+# ---------------------------------------------------------------------------
+
+
+
+class VisitSessionCreate(BaseModel):
+    encounter_id: int
+
+
+class VisitSessionUpdate(BaseModel):
+    session_id: int
+    action: str
+
+
+@app.get("/api/patients/search")
+async def search_patients(q: str, user=Depends(require_role("user"))):
+    like = f"%{q}%"
+    rows = db_conn.execute(
+        "SELECT id, first_name, last_name, dob, mrn FROM patients WHERE first_name LIKE ? OR last_name LIKE ? OR mrn LIKE ? LIMIT 10",
+        (like, like, like),
+    ).fetchall()
+    return [
+        {
+            "patientId": r["id"],
+            "name": f"{r['first_name']} {r['last_name']}",
+            "dob": r["dob"],
+            "mrn": r["mrn"],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/patients/{patient_id}")
+async def get_patient(patient_id: int, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM patients WHERE id=?", (patient_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="patient not found")
+    return {
+        "demographics": {
+            "patientId": row["id"],
+            "name": f"{row['first_name']} {row['last_name']}",
+            "dob": row["dob"],
+            "gender": row["gender"],
+        },
+        "allergies": json.loads(row["allergies"] or "[]"),
+        "medications": json.loads(row["medications"] or "[]"),
+        "lastVisit": row["last_visit"],
+        "insurance": row["insurance"],
+    }
+
+
+@app.get("/api/encounters/validate/{encounter_id}")
+async def validate_encounter(encounter_id: int, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM encounters WHERE id=?", (encounter_id,)).fetchone()
+    if not row:
+        return {"valid": False, "error": "Encounter not found"}
+    return {
+        "valid": True,
+        "patientId": row["patient_id"],
+        "date": row["date"],
+        "type": row["type"],
+        "provider": row["provider"],
+    }
+
+
+@app.post("/api/visits/session")
+async def start_visit_session(model: VisitSessionCreate, user=Depends(require_role("user"))):
+    now = datetime.utcnow().isoformat()
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "INSERT INTO visit_sessions (encounter_id, status, start_time) VALUES (?, ?, ?)",
+        (model.encounter_id, "started", now),
+    )
+    session_id = cursor.lastrowid
+    db_conn.commit()
+    return {"sessionId": session_id, "status": "started", "startTime": now}
+
+
+@app.put("/api/visits/session")
+async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_role("user"))):
+    row = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="session not found")
+    end_time = row["end_time"]
+    status = model.action
+    if model.action == "complete":
+        end_time = datetime.utcnow().isoformat()
+    db_conn.execute(
+        "UPDATE visit_sessions SET status=?, end_time=? WHERE id=?",
+        (status, end_time, model.session_id),
+    )
+    db_conn.commit()
+    updated = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
+    return {
+        "sessionId": updated["id"],
+        "status": updated["status"],
+        "startTime": updated["start_time"],
+        "endTime": updated["end_time"],
+    }
+
+
+@app.post("/api/charts/upload")
+async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("user"))):
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    contents = await file.read()
+    dest = UPLOAD_DIR / file.filename
+    with open(dest, "wb") as f:
+        f.write(contents)
+    return {"filename": file.filename, "size": len(contents)}
+
+
+# Notes and drafts management
+
+class BulkNotesRequest(BaseModel):
+    ids: List[int]
+    status: Optional[str] = None
+    delete: StrictBool = False
+
+
+@app.get("/api/notes/drafts")
+async def list_draft_notes(user=Depends(require_role("user"))):
+    cur = db_conn.execute(
+        "SELECT id, content, status, created_at, updated_at FROM notes WHERE status = 'draft' ORDER BY id"
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+@app.get("/api/notes/search")
+async def search_notes(
+    q: str,
+    status: Optional[str] = None,
+    user=Depends(require_role("user")),
+):
+    params: List[Any] = [f"%{q}%"]
+    query = "SELECT id, content, status, created_at, updated_at FROM notes WHERE content LIKE ?"
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    cur = db_conn.execute(query, params)
+    return [dict(row) for row in cur.fetchall()]
+
+
+@app.get("/api/analytics/drafts")
+async def draft_analytics(user=Depends(require_role("user"))):
+    total = db_conn.execute(
+        "SELECT COUNT(*) FROM notes WHERE status='draft'"
+    ).fetchone()[0]
+    return {"drafts": total}
+
+
+@app.post("/api/notes/bulk-operations")
+async def notes_bulk_operations(
+    req: BulkNotesRequest, user=Depends(require_role("user"))
+):
+    if not req.ids:
+        return {"updated": 0}
+    placeholders = ",".join("?" for _ in req.ids)
+    cur = db_conn.cursor()
+    if req.delete:
+        cur.execute(f"DELETE FROM notes WHERE id IN ({placeholders})", req.ids)
+        db_conn.commit()
+        return {"deleted": cur.rowcount}
+    if req.status is not None:
+        params: List[Any] = [req.status, time.time()] + list(req.ids)
+        cur.execute(
+            f"UPDATE notes SET status=?, updated_at=? WHERE id IN ({placeholders})",
+            params,
+        )
+        db_conn.commit()
+        return {"updated": cur.rowcount}
+    return {"updated": 0}
 
 # ------------------------- Coding & Billing APIs ---------------------------
 
@@ -3619,4 +4708,3 @@ async def validate_code_combination(
         "conflicts": conflicts,
         "warnings": [],
     }
-
