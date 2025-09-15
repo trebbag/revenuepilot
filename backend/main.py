@@ -4242,6 +4242,7 @@ async def get_activity_log(
 async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
         f"""
@@ -4253,7 +4254,7 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length
-        FROM events {where}
+        FROM events {base_where}
         """,
         params,
     )
@@ -4366,6 +4367,89 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         event_distribution=event_distribution,
     )
     return analytics.model_dump()
+
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m-%d', timestamp, 'unixepoch') AS day,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 7
+        """,
+        params,
+    )
+    daily_rows = cursor.fetchall()
+    daily_usage = [
+        {
+            "date": row["day"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(daily_rows)
+        if row["day"] is not None
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%W', timestamp, 'unixepoch') AS week,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY week
+        ORDER BY week DESC
+        LIMIT 8
+        """,
+        params,
+    )
+    weekly_rows = cursor.fetchall()
+    weekly_trend = [
+        {
+            "week": row["week"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(weekly_rows)
+        if row["week"] is not None
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m', timestamp, 'unixepoch') AS month,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY month
+        ORDER BY month DESC
+        LIMIT 12
+        """,
+        params,
+    )
+    monthly_rows = cursor.fetchall()
+    monthly_trend = [
+        {
+            "month": row["month"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(monthly_rows)
+        if row["month"] is not None
+    ]
+    return {
+        "total_notes": data.get("total_notes", 0) or 0,
+        "beautify": data.get("beautify", 0) or 0,
+        "suggest": data.get("suggest", 0) or 0,
+        "summary": data.get("summary", 0) or 0,
+        "chart_upload": data.get("chart_upload", 0) or 0,
+        "audio": data.get("audio", 0) or 0,
+        "avg_note_length": data.get("avg_note_length", 0) or 0,
+        "dailyUsage": daily_usage,
+        "weeklyTrend": weekly_trend,
+        "monthlyTrend": monthly_trend,
+    }
+
 
 
 @app.get("/api/analytics/coding-accuracy")
@@ -4486,9 +4570,10 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"
 async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
-        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {where}",
+        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {base_where}",
         params,
     )
     row = cursor.fetchone()
@@ -4499,6 +4584,7 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
         f"{where} GROUP BY code",
         params,
     )
+
     by_code = {r["code"]: float(r["revenue"] or 0.0) for r in cursor.fetchall()}
 
     cursor.execute(
