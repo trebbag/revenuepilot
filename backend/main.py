@@ -4159,9 +4159,10 @@ async def get_activity_log(
 
 
 @app.get("/api/analytics/usage")
-async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
         f"""
@@ -4173,12 +4174,81 @@ async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, A
             SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
             SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
             AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length
-        FROM events {where}
+        FROM events {base_where}
         """,
         params,
     )
     row = cursor.fetchone()
     data = dict(row) if row else {}
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m-%d', timestamp, 'unixepoch') AS day,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 7
+        """,
+        params,
+    )
+    daily_rows = cursor.fetchall()
+    daily_usage = [
+        {
+            "date": row["day"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(daily_rows)
+        if row["day"] is not None
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%W', timestamp, 'unixepoch') AS week,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY week
+        ORDER BY week DESC
+        LIMIT 8
+        """,
+        params,
+    )
+    weekly_rows = cursor.fetchall()
+    weekly_trend = [
+        {
+            "week": row["week"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(weekly_rows)
+        if row["week"] is not None
+    ]
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m', timestamp, 'unixepoch') AS month,
+            COUNT(*) AS total_events,
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
+        FROM events {base_where}
+        GROUP BY month
+        ORDER BY month DESC
+        LIMIT 12
+        """,
+        params,
+    )
+    monthly_rows = cursor.fetchall()
+    monthly_trend = [
+        {
+            "month": row["month"],
+            "total_events": row["total_events"] or 0,
+            "total_notes": row["total_notes"] or 0,
+        }
+        for row in reversed(monthly_rows)
+        if row["month"] is not None
+    ]
     return {
         "total_notes": data.get("total_notes", 0) or 0,
         "beautify": data.get("beautify", 0) or 0,
@@ -4187,11 +4257,14 @@ async def analytics_usage(user=Depends(require_roles("analyst"))) -> Dict[str, A
         "chart_upload": data.get("chart_upload", 0) or 0,
         "audio": data.get("audio", 0) or 0,
         "avg_note_length": data.get("avg_note_length", 0) or 0,
+        "dailyUsage": daily_usage,
+        "weeklyTrend": weekly_trend,
+        "monthlyTrend": monthly_trend,
     }
 
 
 @app.get("/api/analytics/coding-accuracy")
-async def analytics_coding_accuracy(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Coding accuracy metrics derived from events and billing codes."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
@@ -4228,12 +4301,13 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst"))) -> D
 
 
 @app.get("/api/analytics/revenue")
-async def analytics_revenue(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
     where, params = _analytics_where(user)
+    base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
-        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {where}",
+        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {base_where}",
         params,
     )
     row = cursor.fetchone()
@@ -4245,15 +4319,54 @@ async def analytics_revenue(user=Depends(require_roles("analyst"))) -> Dict[str,
         params,
     )
     by_code = {r["code"]: r["revenue"] for r in cursor.fetchall()}
+    cursor.execute(
+        f"""
+        SELECT
+            strftime('%Y-%m', timestamp, 'unixepoch') AS period,
+            SUM(COALESCE(revenue, 0)) AS revenue
+        FROM events {base_where}
+        GROUP BY period
+        ORDER BY period DESC
+        LIMIT 12
+        """,
+        params,
+    )
+    period_rows = cursor.fetchall()
+    revenue_by_period = [
+        {"period": row["period"], "revenue": row["revenue"] or 0.0}
+        for row in reversed(period_rows)
+        if row["period"] is not None
+    ]
+    month_where = f"{base_where} AND date(timestamp, 'unixepoch') >= date('now','start of month')"
+    cursor.execute(
+        f"""
+        SELECT
+            COALESCE(SUM(revenue), 0) AS month_revenue,
+            CAST(strftime('%d','now') AS INTEGER) AS days_elapsed,
+            CAST(strftime('%d', date('now','start of month','+1 month','-1 day')) AS INTEGER) AS days_in_month
+        FROM events {month_where}
+        """,
+        params,
+    )
+    month_row = cursor.fetchone()
+    month_data = dict(month_row) if month_row else {}
+    days_elapsed = month_data.get("days_elapsed") or 0
+    days_in_month = month_data.get("days_in_month") or 0
+    month_revenue = month_data.get("month_revenue", 0.0) or 0.0
+    projected_revenue = (
+        (month_revenue / days_elapsed) * days_in_month if days_elapsed else month_revenue
+    )
     return {
         "total_revenue": data.get("total", 0) or 0,
         "average_revenue": data.get("average", 0) or 0,
         "revenue_by_code": by_code,
+        "revenue_by_period": revenue_by_period,
+        "projected_revenue": projected_revenue,
     }
 
 
 @app.get("/api/analytics/compliance")
-async def analytics_compliance(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+async def analytics_compliance(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
     """Compliance analytics derived from logged events."""
     where, params = _analytics_where(user)
     cursor = db_conn.cursor()
