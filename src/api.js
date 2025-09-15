@@ -1205,9 +1205,55 @@ export async function setApiKey(key) {
  * @param {string} noteId
  * @param {string} content
  */
+export async function createNote({
+  patientId,
+  encounterId,
+  template,
+  content,
+} = {}) {
+  if (!patientId) {
+    throw new Error('patientId is required to create a note');
+  }
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const body = {
+    patientId,
+    content: typeof content === 'string' ? content : '',
+  };
+  if (encounterId) body.encounterId = encounterId;
+  if (template !== undefined && template !== null && template !== '') {
+    body.template = template;
+  }
+  const resp = await rawFetch(`${baseUrl}/api/notes/create`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = 'Failed to create note';
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return await resp.json();
+}
+
 export async function autoSaveNote(noteId, content) {
-  const note = { note_id: noteId, content };
-  cacheRecentNote({ noteId, content });
+  if (!noteId) return;
+  const resolvedId = String(noteId);
+  const note = { note_id: resolvedId, content };
+  cacheRecentNote({ noteId: resolvedId, content });
   const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -1218,7 +1264,7 @@ export async function autoSaveNote(noteId, content) {
     const resp = await rawFetch(`${baseUrl}/api/notes/auto-save`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ note_id: noteId, content }),
+      body: JSON.stringify({ note_id: resolvedId, content }),
     });
     if (!resp.ok) throw new Error('Failed');
   } catch {
