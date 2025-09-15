@@ -20,4 +20,5 @@ passlib[bcrypt]
 llama-cpp-python
 requests-mock
 cryptography
+bleach
 
