@@ -1,0 +1,39 @@
+[
+  {
+    "id": "modern",
+    "name": "Modern Minimal",
+    "description": "Clean neutral surfaces with bright accent colors for focus-intensive workflows.",
+    "preview": {
+      "background": "#f5f7fb",
+      "surface": "#ffffff",
+      "primary": "#2563eb",
+      "accent": "#38bdf8",
+      "text": "#1f2937"
+    },
+    "isDefault": true
+  },
+  {
+    "id": "dark",
+    "name": "Midnight Contrast",
+    "description": "High contrast dark theme designed to reduce eye strain in low-light environments.",
+    "preview": {
+      "background": "#0f172a",
+      "surface": "#1e293b",
+      "primary": "#38bdf8",
+      "accent": "#f59e0b",
+      "text": "#e2e8f0"
+    }
+  },
+  {
+    "id": "warm",
+    "name": "Warm Sunrise",
+    "description": "Soft warm neutrals with gentle contrast for a welcoming documentation experience.",
+    "preview": {
+      "background": "#fdf6f0",
+      "surface": "#fff7ed",
+      "primary": "#f97316",
+      "accent": "#facc15",
+      "text": "#78350f"
+    }
+  }
+]
