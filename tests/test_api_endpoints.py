@@ -90,7 +90,7 @@ def test_login_and_settings(client):
     resp = client.get("/settings", headers=auth_header(token))
     assert resp.status_code == 200
     data = resp.json()
-    assert data["theme"] == "modern"
+    assert data["theme"] == main.DEFAULT_THEME_ID
     assert data["lang"] == "en"
     assert data["specialty"] is None
     assert data["payer"] is None
@@ -134,13 +134,29 @@ def test_login_and_settings(client):
     ).json()["access_token"]
     resp = client.get("/settings", headers=auth_header(token_user))
     other = resp.json()
-    assert other["theme"] == "modern"
+    assert other["theme"] == main.DEFAULT_THEME_ID
     assert other["lang"] == "en"
     assert other["region"] == ""
 
     # unauthenticated request should fail
     resp = client.get("/settings")
     assert resp.status_code in {401, 403}
+
+
+def test_available_themes_endpoint(client):
+    resp = client.get("/api/themes/available")
+    assert resp.status_code == 200
+    payload = resp.json()
+    if isinstance(payload, dict) and "data" in payload:
+        payload = payload["data"]
+
+    theme_ids = {item["id"] for item in payload["themes"]}
+    assert payload["default"] == main.DEFAULT_THEME_ID
+    assert main.DEFAULT_THEME_ID in theme_ids
+    assert {"modern", "dark", "warm"}.issubset(theme_ids)
+    for entry in payload["themes"]:
+        assert "name" in entry and entry["name"]
+        assert "description" in entry and entry["description"]
 
 
 def test_events_metrics_with_auth(client):

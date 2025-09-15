@@ -921,6 +921,118 @@ class ResetPasswordModel(BaseModel):
     new_password: str
 
 
+class ThemePreviewModel(BaseModel):
+    """Color swatch preview metadata for a UI theme."""
+
+    background: Optional[str] = None
+    surface: Optional[str] = None
+    primary: Optional[str] = None
+    accent: Optional[str] = None
+    text: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
+class ThemeMetadataModel(BaseModel):
+    """Metadata describing an available UI theme."""
+
+    id: str
+    name: str
+    description: str
+    preview: ThemePreviewModel = Field(default_factory=ThemePreviewModel)
+    isDefault: bool = False
+
+    model_config = {"extra": "allow"}
+
+
+THEME_METADATA_PATH = Path(__file__).with_name("themes.json")
+
+_THEME_METADATA_FALLBACK: List[Dict[str, Any]] = [
+    {
+        "id": "modern",
+        "name": "Modern Minimal",
+        "description": "Clean neutral surfaces with bright accent colors for focus-intensive workflows.",
+        "preview": {
+            "background": "#f5f7fb",
+            "surface": "#ffffff",
+            "primary": "#2563eb",
+            "accent": "#38bdf8",
+            "text": "#1f2937",
+        },
+        "isDefault": True,
+    },
+    {
+        "id": "dark",
+        "name": "Midnight Contrast",
+        "description": "High contrast dark theme designed to reduce eye strain in low-light environments.",
+        "preview": {
+            "background": "#0f172a",
+            "surface": "#1e293b",
+            "primary": "#38bdf8",
+            "accent": "#f59e0b",
+            "text": "#e2e8f0",
+        },
+    },
+    {
+        "id": "warm",
+        "name": "Warm Sunrise",
+        "description": "Soft warm neutrals with gentle contrast for a welcoming documentation experience.",
+        "preview": {
+            "background": "#fdf6f0",
+            "surface": "#fff7ed",
+            "primary": "#f97316",
+            "accent": "#facc15",
+            "text": "#78350f",
+        },
+    },
+]
+
+
+def _load_theme_catalog(path: Path = THEME_METADATA_PATH) -> List[ThemeMetadataModel]:
+    """Load available themes from JSON metadata with sensible fallbacks."""
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+    except FileNotFoundError:
+        logger.warning("Theme metadata file not found at %s; using defaults", path)
+        raw_data = _THEME_METADATA_FALLBACK
+    except Exception:
+        logger.exception("Failed to load theme metadata; using defaults")
+        raw_data = _THEME_METADATA_FALLBACK
+
+    if isinstance(raw_data, dict):
+        items = raw_data.get("themes", [])
+    else:
+        items = raw_data
+
+    catalog: List[ThemeMetadataModel] = []
+    for entry in items:
+        try:
+            catalog.append(ThemeMetadataModel.model_validate(entry))
+        except Exception:
+            logger.warning("Skipping invalid theme metadata entry: %s", entry)
+
+    if not catalog:
+        catalog = [ThemeMetadataModel.model_validate(item) for item in _THEME_METADATA_FALLBACK]
+
+    return catalog
+
+
+THEME_CATALOG: List[ThemeMetadataModel] = _load_theme_catalog()
+THEME_ID_SET: Set[str] = {theme.id for theme in THEME_CATALOG}
+DEFAULT_THEME_ID: str = next(
+    (theme.id for theme in THEME_CATALOG if theme.isDefault),
+    "modern",
+)
+
+if not THEME_ID_SET:
+    THEME_ID_SET = {"modern", "dark", "warm"}
+
+if DEFAULT_THEME_ID not in THEME_ID_SET:
+    DEFAULT_THEME_ID = next(iter(THEME_ID_SET))
+
+
 class CategorySettings(BaseModel):
     """Which suggestion categories are enabled for a user."""
 
@@ -933,7 +1045,7 @@ class CategorySettings(BaseModel):
 
 
 class UserSettings(BaseModel):
-    theme: str = "modern"
+    theme: str = DEFAULT_THEME_ID
     categories: CategorySettings = CategorySettings()
     rules: List[str] = []
     lang: str = "en"
@@ -953,7 +1065,7 @@ class UserSettings(BaseModel):
     @field_validator("theme")
     @classmethod
     def validate_theme(cls, v: str) -> str:  # noqa: D401,N805
-        allowed = {"modern", "dark", "warm"}
+        allowed = THEME_ID_SET
         if v not in allowed:
             raise ValueError("invalid theme")
         return v
@@ -1557,6 +1669,16 @@ async def save_user_settings(
 
     db_conn.commit()
     return model.model_dump()
+
+
+@app.get("/api/themes/available", tags=["themes"])
+async def list_available_themes() -> Dict[str, Any]:
+    """Return metadata describing the themes that the UI can render."""
+
+    return {
+        "themes": [theme.model_dump() for theme in THEME_CATALOG],
+        "default": DEFAULT_THEME_ID,
+    }
 
 # ---------------------------------------------------------------------------
 # Additional configuration endpoints
