@@ -195,7 +195,10 @@ def test_events_metrics_with_auth(client):
     )
     resp = client.get("/events", headers=auth_header(token_admin))
     assert resp.status_code == 200
-    assert len(resp.json()) == 1
+    events_payload = resp.json()
+    if isinstance(events_payload, dict) and "data" in events_payload:
+        events_payload = events_payload["data"]
+    assert len(events_payload) == 1
 
     resp = client.get("/metrics", headers=auth_header(token_admin))
     assert resp.status_code == 200
@@ -391,14 +394,20 @@ def test_transcribe_endpoint(client, monkeypatch):
     resp = client.post(
         "/transcribe", files={"file": ("a.wav", b"bytes")}, headers=auth_header(token)
     )
-    assert resp.json()["provider"] == "hello"
+    data = resp.json()
+    if isinstance(data, dict) and "data" in data:
+        data = data["data"]
+    assert data["provider"] == "hello"
 
     resp = client.post(
         "/transcribe?diarise=true",
         files={"file": ("a.wav", b"bytes")},
         headers=auth_header(token),
     )
-    assert resp.json() == {
+    diarised = resp.json()
+    if isinstance(diarised, dict) and "data" in diarised:
+        diarised = diarised["data"]
+    assert diarised == {
         "provider": "p",
         "patient": "q",
         "segments": [
@@ -429,6 +438,8 @@ def test_transcribe_endpoint_diarise_failure(client, monkeypatch):
         headers=auth_header(token),
     )
     data = resp.json()
+    if isinstance(data, dict) and "data" in data:
+        data = data["data"]
     assert data["provider"] == "fallback"
     assert data["segments"] == [
         {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "fallback"}
@@ -467,6 +478,8 @@ def test_transcribe_endpoint_offline(client, monkeypatch):
         headers=auth_header(token),
     )
     data = resp.json()
+    if isinstance(data, dict) and "data" in data:
+        data = data["data"]
     assert data["provider"] == "offline text"
     assert data["segments"] == [
         {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "offline text"}
@@ -495,7 +508,10 @@ def test_get_last_transcript(client, monkeypatch):
         headers=auth_header(token),
     )
     resp = client.get("/transcribe", headers=auth_header(token))
-    assert resp.json() == {
+    history = resp.json()
+    if isinstance(history, dict) and "data" in history:
+        history = history["data"]
+    assert history == {
         "history": [
             {
                 "provider": "hello",
@@ -514,7 +530,10 @@ def test_get_last_transcript(client, monkeypatch):
         headers=auth_header(token),
     )
     resp = client.get("/transcribe", headers=auth_header(token))
-    assert resp.json() == {
+    history = resp.json()
+    if isinstance(history, dict) and "data" in history:
+        history = history["data"]
+    assert history == {
         "history": [
             {
                 "provider": "hello",

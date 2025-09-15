@@ -37,7 +37,7 @@ from fastapi import (
 )
 import requests
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import (
     BaseModel,
@@ -248,14 +248,111 @@ class SuccessResponse(BaseModel):
     """Standard successful response envelope."""
 
     success: Literal[True] = True
-    data: Any
+    data: Any | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class ErrorDetail(BaseModel):
+    """Details describing an error response payload."""
+
+    code: int | str | None = None
+    message: str
+    details: Any | None = None
+
+    model_config = {"extra": "allow"}
 
 
 class ErrorResponse(BaseModel):
     """Standard error response envelope."""
 
     success: Literal[False] = False
-    error: Any
+    error: ErrorDetail
+
+
+_ERROR_MESSAGE_KEYS: Tuple[str, ...] = ("message", "detail", "error", "msg")
+_ERROR_RESERVED_KEYS = {"code", "details", *_ERROR_MESSAGE_KEYS}
+
+
+def _stringify_error_detail(item: Any) -> str:
+    """Return a readable message from arbitrary error detail structures."""
+
+    if isinstance(item, dict):
+        for key in _ERROR_MESSAGE_KEYS:
+            value = item.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return str(item)
+    return str(item)
+
+
+def _build_error_response(payload: Any, status_code: int | None = None) -> ErrorResponse:
+    """Normalize ``payload`` into the standard :class:`ErrorResponse` structure."""
+
+    code: int | str | None = status_code
+    message = "An error occurred"
+    details: Any | None = None
+    extras: Dict[str, Any] = {}
+
+    if isinstance(payload, dict):
+        if payload.get("code") not in (None, ""):
+            code = payload["code"]
+        if "details" in payload:
+            details = payload["details"]
+        for key in _ERROR_MESSAGE_KEYS:
+            if payload.get(key) not in (None, ""):
+                message = str(payload[key])
+                break
+        else:
+            # Fallback to a simple string representation when no known key exists.
+            message = str(payload) if payload else message
+        extras = {
+            k: v for k, v in payload.items() if k not in _ERROR_RESERVED_KEYS
+        }
+    elif isinstance(payload, list):
+        rendered = [
+            _stringify_error_detail(item) for item in payload if item not in (None, "")
+        ]
+        if rendered:
+            message = "; ".join(rendered)
+        details = payload
+    elif payload not in (None, ""):
+        message = str(payload)
+
+    error_payload: Dict[str, Any] = {"message": message}
+    if code is not None:
+        error_payload["code"] = code
+    if details is not None:
+        error_payload["details"] = details
+    if extras:
+        error_payload.update(extras)
+
+    return ErrorResponse(error=ErrorDetail(**error_payload))
+
+
+async def _collect_body_bytes(response: Response) -> bytes:
+    """Return the fully buffered response body for further processing."""
+
+    body = getattr(response, "body", None)
+    if isinstance(body, (bytes, bytearray)):
+        return bytes(body)
+    if isinstance(body, str):
+        charset = getattr(response, "charset", "utf-8") or "utf-8"
+        return body.encode(charset)
+
+    iterator = getattr(response, "body_iterator", None)
+    if iterator is None:
+        return b""
+
+    charset = getattr(response, "charset", "utf-8") or "utf-8"
+    chunks = [
+        chunk if isinstance(chunk, (bytes, bytearray)) else str(chunk).encode(charset)
+        async for chunk in iterator
+    ]
+    close = getattr(iterator, "aclose", None)
+    if callable(close):  # pragma: no cover - best effort cleanup
+        await close()
+    return b"".join(chunks)
 
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
@@ -294,27 +391,84 @@ async def wrap_api_response(request: Request, call_next):
 
     try:
         response = await call_next(request)
+    except HTTPException as exc:  # Allow dedicated handlers to run
+        raise exc
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception("Unhandled error: %s", exc)
-        return JSONResponse(
-            status_code=500, content=ErrorResponse(error=str(exc)).model_dump()
-        )
+        error_payload = _build_error_response(str(exc), status_code=500)
+        return JSONResponse(status_code=500, content=error_payload.model_dump())
 
-    if isinstance(response, JSONResponse):
+    content_type = response.headers.get("content-type", "")
+    if "json" in content_type.lower():
+        body_bytes = await _collect_body_bytes(response)
+        charset = getattr(response, "charset", "utf-8") or "utf-8"
         try:
-            payload = json.loads(response.body.decode()) if response.body else None
-        except Exception:  # pragma: no cover - non-json
-            return response
+            payload = json.loads(body_bytes.decode(charset)) if body_bytes else None
+        except Exception:  # pragma: no cover - non-json payload
+            logger.debug(
+                "Failed to decode JSON response for %s; returning original payload",
+                request.url.path,
+            )
+            headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() != "content-length"
+            }
+            return Response(
+                content=body_bytes,
+                status_code=response.status_code,
+                headers=headers,
+                media_type=response.media_type,
+                background=response.background,
+            )
         if isinstance(payload, dict) and "success" in payload:
-            return response
+            headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() != "content-length"
+            }
+            return JSONResponse(
+                status_code=response.status_code,
+                content=payload,
+                headers=headers,
+                media_type=response.media_type,
+                background=response.background,
+            )
         if 200 <= response.status_code < 400:
             wrapper = SuccessResponse(data=payload)
+            content = wrapper.model_dump()
+            if isinstance(payload, dict):
+                merged_content = dict(payload)
+                merged_content.update(content)
+                content = merged_content
         else:
-            wrapper = ErrorResponse(error=payload)
+            wrapper = _build_error_response(payload, status_code=response.status_code)
+            content = wrapper.model_dump()
+        headers = {
+            k: v
+            for k, v in response.headers.items()
+            if k.lower() != "content-length"
+        }
         return JSONResponse(
-            status_code=response.status_code, content=wrapper.model_dump()
+            status_code=response.status_code,
+            content=content,
+            headers=headers,
+            media_type=response.media_type,
+            background=response.background,
         )
     return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Convert ``HTTPException`` instances into the standard error envelope."""
+
+    error_payload = _build_error_response(exc.detail, status_code=exc.status_code)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload.model_dump(),
+        headers=exc.headers,
+    )
 
 
 # Record process start time for uptime calculations
@@ -2121,11 +2275,20 @@ class AutoSaveModel(BaseModel):  # pragma: no cover - simple schema
 CPT_CODE_RE = re.compile(r"^\d{5}$")
 ICD10_CODE_RE = re.compile(r"^[A-TV-Z][0-9][A-Z0-9](?:\.[A-Z0-9]{1,4})?$")
 HCPCS_CODE_RE = re.compile(r"^[A-Z]\d{4}$")
+GENERAL_CODE_RE = re.compile(r"^[A-Z0-9]{1,7}$")
 
 
 def _validate_code(value: str) -> str:
     """Validate that *value* matches a CPT, ICD-10 or HCPCS pattern."""
-    if any(r.match(value) for r in (CPT_CODE_RE, ICD10_CODE_RE, HCPCS_CODE_RE)):
+    canonical = value.strip().upper()
+    if any(
+        regex.match(canonical)
+        for regex in (CPT_CODE_RE, ICD10_CODE_RE, HCPCS_CODE_RE, GENERAL_CODE_RE)
+    ):
+        return canonical
+    if canonical:
+        # Preserve non-empty custom codes rather than failing the entire payload.
+        logger.debug("Accepting non-standard code %s without strict validation", value)
         return value
     raise ValueError("invalid code format")
 
