@@ -210,7 +210,8 @@ export async function login(username, password, lang = 'en') {
   const settings = data.settings
     ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
     : { lang, summaryLang: lang };
-  return { token, refreshToken, settings };
+  const session = data.session || null;
+  return { token, refreshToken, settings, session };
 }
 
 export async function register(username, password, lang = 'en') {
@@ -247,7 +248,8 @@ export async function register(username, password, lang = 'en') {
   const settings = data.settings
     ? { ...data.settings, lang, summaryLang: data.settings.summaryLang || lang }
     : { lang, summaryLang: lang };
-  return { token, refreshToken, settings };
+  const session = data.session || null;
+  return { token, refreshToken, settings, session };
 }
 
 /**
@@ -1404,6 +1406,32 @@ export async function getEvents() {
   } catch {
     throw new Error('Failed to fetch events');
   }
+}
+
+export async function getUserSession() {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await rawFetch(`${baseUrl}/api/user/session`, { headers });
+  if (!resp.ok) throw new Error('Failed to fetch session');
+  return await resp.json();
+}
+
+export async function putUserSession(state) {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await rawFetch(`${baseUrl}/api/user/session`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(state || {}),
+  });
+  if (!resp.ok) throw new Error('Failed to save session');
+  return await resp.json();
 }
 
 export function getBackendBaseUrl() {

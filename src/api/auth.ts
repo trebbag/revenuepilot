@@ -4,6 +4,7 @@ export interface AuthResponse {
   token: string;
   refreshToken: string;
   settings: any;
+  session: any;
 }
 
 // The raw helpers already return { token, refreshToken, settings }
