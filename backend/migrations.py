@@ -445,6 +445,34 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
 
     conn.commit()
 
+
+def ensure_notification_counters_table(conn: sqlite3.Connection) -> None:
+    """Ensure the notification_counters table exists for unread counts."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_counters (
+            user_id INTEGER PRIMARY KEY,
+            count INTEGER NOT NULL DEFAULT 0,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(notification_counters)")}
+    if "count" not in columns:
+        conn.execute(
+            "ALTER TABLE notification_counters ADD COLUMN count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "updated_at" not in columns:
+        conn.execute(
+            "ALTER TABLE notification_counters ADD COLUMN updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+
+    conn.commit()
+
+
 def ensure_session_state_table(conn: sqlite3.Connection) -> None:
     """Ensure the session_state table exists."""
     conn.execute(

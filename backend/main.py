@@ -22,7 +22,18 @@ import uuid
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
-from typing import List, Optional, Dict, Any, Literal, Set, Tuple, Callable
+from typing import (
+    List,
+    Optional,
+    Dict,
+    Any,
+    Literal,
+    Set,
+    Tuple,
+    Callable,
+    Iterable,
+    Awaitable,
+)
 from fastapi import (
     FastAPI,
     Depends,
@@ -109,6 +120,7 @@ from backend.migrations import (  # type: ignore
     ensure_event_aggregates_table,
     ensure_compliance_issues_table,
     ensure_confidence_scores_table,
+    ensure_notification_counters_table,
 )
 from backend.templates import (
     TemplateModel,
@@ -501,9 +513,6 @@ def _cached_response(key: str, builder: Callable[[], Any]):
         _DASHBOARD_CACHE[key] = (now, data)
     return data
 
-# Active WebSocket connections for system notifications.
-notification_clients: Set[WebSocket] = set()
-
 # Simple in-memory storage for note versions keyed by note ID.
 NOTE_VERSIONS: Dict[str, List[Dict[str, str]]] = defaultdict(list)
 
@@ -636,24 +645,12 @@ transcript_history: Dict[str, deque] = defaultdict(
     lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
 )
 
-# Simple in-memory notification tracking.
-notification_counts: Dict[str, int] = defaultdict(int)
-notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
+# Simple in-memory notification tracking backed by persistent storage.
+notification_counts: Dict[str, int] = {}
 
 COMPLIANCE_SEVERITIES = {"low", "medium", "high", "critical"}
 COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 
-
-async def _broadcast_notification_count(username: str) -> None:
-    """Send updated notification count to all websocket subscribers."""
-    for ws in list(notification_subscribers.get(username, [])):
-        try:
-            await ws.send_json({"count": notification_counts[username]})
-        except Exception:
-            try:
-                notification_subscribers[username].remove(ws)
-            except Exception:
-                pass
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # now lives in the user's data directory (platform-specific) so analytics
@@ -683,6 +680,7 @@ ensure_note_auto_saves_table(db_conn)
 ensure_event_aggregates_table(db_conn)
 ensure_compliance_issues_table(db_conn)
 ensure_confidence_scores_table(db_conn)
+ensure_notification_counters_table(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -752,6 +750,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_session_state_table(conn)
     ensure_compliance_issues_table(conn)
     ensure_confidence_scores_table(conn)
+    ensure_notification_counters_table(conn)
     conn.commit()
 
 
@@ -813,6 +812,84 @@ db_conn.row_factory = sqlite3.Row
 
 # Preload any stored API key into the environment so subsequent calls work.
 get_api_key()
+
+
+def _iso_timestamp(ts: float | None = None) -> str:
+    """Return an ISO 8601 timestamp, defaulting to current UTC time."""
+
+    if ts is None:
+        return datetime.now(timezone.utc).isoformat()
+    try:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+    except Exception:
+        return datetime.now(timezone.utc).isoformat()
+
+
+def _load_notification_count(username: str) -> int:
+    """Fetch the persisted unread notification count for *username*."""
+
+    if username in notification_counts:
+        return notification_counts[username]
+    row = db_conn.execute(
+        """
+        SELECT nc.count
+          FROM notification_counters nc
+          JOIN users u ON u.id = nc.user_id
+         WHERE u.username = ?
+        """,
+        (username,),
+    ).fetchone()
+    count = int(row["count"]) if row and row["count"] is not None else 0
+    notification_counts[username] = count
+    return count
+
+
+def _persist_notification_count(username: str, count: int) -> None:
+    """Persist unread notification *count* for *username*."""
+
+    ensure_notification_counters_table(db_conn)
+    row = db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    if not row:
+        return
+    user_id = row["id"]
+    now = time.time()
+    db_conn.execute(
+        """
+        INSERT INTO notification_counters (user_id, count, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            count=excluded.count,
+            updated_at=excluded.updated_at
+        """,
+        (user_id, count, now),
+    )
+    db_conn.commit()
+
+
+def current_notification_count(username: str) -> int:
+    """Return the current unread notification count for *username*."""
+
+    return _load_notification_count(username)
+
+
+def increment_notification_count(username: str, delta: int = 1) -> int:
+    """Increase unread notifications for *username* and persist the result."""
+
+    count = _load_notification_count(username) + delta
+    if count < 0:
+        count = 0
+    notification_counts[username] = count
+    _persist_notification_count(username, count)
+    return count
+
+
+def set_notification_count(username: str, count: int) -> int:
+    """Explicitly set unread notifications for *username*."""
+
+    count = max(count, 0)
+    notification_counts[username] = count
+    _persist_notification_count(username, count)
+    return count
 
 
 def _serialise_audit_details(details: Any | None) -> str | None:
@@ -1496,6 +1573,8 @@ async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     refresh_token = create_refresh_token(model.username, "user")
     settings = UserSettings().model_dump()
     session = SessionStateModel().model_dump()
+    ensure_session_state_table(db_conn)
+    ensure_notification_counters_table(db_conn)
     db_conn.execute(
         "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
         (_user_id, json.dumps(session), time.time()),
@@ -2363,26 +2442,7 @@ async def put_user_session(
 async def get_notification_count(
     user=Depends(require_role("user"))
 ) -> Dict[str, int]:
-    return {"count": notification_counts[user["sub"]]}
-
-
-@app.websocket("/ws/notifications")
-async def notifications_ws(websocket: WebSocket):
-    user = await ws_require_role(websocket, "user")
-    username = user["sub"]
-    await websocket.accept()
-    notification_clients.add(websocket)
-    notification_subscribers[username].append(websocket)
-    try:
-        await websocket.send_json({"count": notification_counts[username]})
-        while True:
-            await asyncio.sleep(60)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        notification_clients.discard(websocket)
-        if websocket in notification_subscribers[username]:
-            notification_subscribers[username].remove(websocket)
+    return {"count": current_notification_count(user["sub"])}
 
 
 class NoteRequest(BaseModel):
@@ -5800,6 +5860,12 @@ async def compliance_monitor(
             )
             if record.get("issueId"):
                 persisted_ids.append(record["issueId"])
+                recipients = {
+                    user.get("sub"),
+                    record.get("assignee"),
+                    record.get("createdBy"),
+                }
+                await _notify_compliance_issue(record, recipients)
     response = ComplianceMonitorResponse(
         issues=issues,
         summary=result.get("summary", {}),
@@ -5838,6 +5904,8 @@ async def compliance_issue_tracking(
     )
     if not record:
         raise HTTPException(status_code=500, detail="Failed to persist issue")
+    recipients = {user.get("sub"), record.get("assignee"), record.get("createdBy")}
+    await _notify_compliance_issue(record, recipients)
     return ComplianceIssueRecord(**record)
 
 
@@ -6081,6 +6149,7 @@ async def auto_save_note(note: AutoSaveModel, user=Depends(require_role("user"))
         (uid, note.note_id, note.content, time.time()),
     )
     db_conn.commit()
+    await _notify_note_auto_save(user["sub"], note.note_id)
     return {"status": "saved"}
 
 
@@ -6438,21 +6507,27 @@ class ConnectionManager:
 
     def __init__(self) -> None:
         self.active: Dict[str, WebSocket] = {}
+        self.session_users: Dict[str, str] = {}
+        self.user_sessions: Dict[str, Set[str]] = defaultdict(set)
+        self.latest_session_by_user: Dict[str, str] = {}
         self.history: Dict[str, deque[dict]] = defaultdict(deque)
         self.counters: Dict[str, int] = defaultdict(int)
 
     async def connect(
         self,
         websocket: WebSocket,
+        username: str,
         session_id: Optional[str],
         last_event_id: Optional[int],
     ) -> str:
         await websocket.accept()
-        if not session_id or session_id not in self.history:
+        if not session_id or session_id not in self.session_users:
             session_id = str(uuid.uuid4())
+        self.session_users[session_id] = username
         self.active[session_id] = websocket
-        await websocket.send_json({"event": "connected", "sessionId": session_id})
-        events = list(self.history[session_id])
+        self.user_sessions[username].add(session_id)
+        self.latest_session_by_user[username] = session_id
+        events = list(self.history[username])
         if last_event_id is not None:
             events = [e for e in events if e["eventId"] > last_event_id]
         for payload in events:
@@ -6461,30 +6536,92 @@ class ConnectionManager:
 
     def disconnect(self, session_id: str) -> None:
         self.active.pop(session_id, None)
+        username = self.session_users.pop(session_id, None)
+        if not username:
+            return
+        sessions = self.user_sessions.get(username)
+        if sessions:
+            sessions.discard(session_id)
+            if not sessions:
+                self.user_sessions.pop(username, None)
+                self.latest_session_by_user.pop(username, None)
+            elif self.latest_session_by_user.get(username) == session_id:
+                self.latest_session_by_user[username] = next(iter(sessions))
+
+    def latest_session(self, username: str) -> Optional[str]:
+        """Return the most recently active session for *username*."""
+
+        return self.latest_session_by_user.get(username)
 
     async def push(self, session_id: str, payload: Dict[str, Any]) -> None:
-        self.counters[session_id] += 1
-        enriched = {"event": "message", "eventId": self.counters[session_id], **payload}
-        self.history[session_id].append(enriched)
-        if len(self.history[session_id]) > 50:
-            self.history[session_id].popleft()
-        ws = self.active.get(session_id)
-        if ws is not None:
-            await ws.send_json(enriched)
+        username = self.session_users.get(session_id)
+        if not username:
+            return
+        self.counters[username] += 1
+        enriched = {"eventId": self.counters[username], **payload}
+        enriched.setdefault("event", "message")
+        history = self.history[username]
+        history.append(enriched)
+        if len(history) > 50:
+            history.popleft()
+        for sid in list(self.user_sessions.get(username, [])):
+            ws = self.active.get(sid)
+            if ws is None:
+                continue
+            try:
+                await ws.send_json(enriched)
+            except Exception:
+                self.disconnect(sid)
+
+    async def push_user(self, username: str, payload: Dict[str, Any]) -> None:
+        """Queue *payload* for *username*, broadcasting if connected."""
+
+        session_id = self.latest_session(username)
+        if session_id:
+            await self.push(session_id, payload)
+            return
+        self.counters[username] += 1
+        enriched = {"eventId": self.counters[username], **payload}
+        enriched.setdefault("event", "message")
+        history = self.history[username]
+        history.append(enriched)
+        if len(history) > 50:
+            history.popleft()
 
 
-async def _ws_endpoint(manager: ConnectionManager, websocket: WebSocket) -> None:
+async def _ws_endpoint(
+    manager: ConnectionManager,
+    websocket: WebSocket,
+    *,
+    channel: str,
+    required_role: str = "user",
+    announce: bool = True,
+    handshake_first: bool = True,
+    on_connect: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+) -> None:
     """Common WebSocket connection handler with reconnect support."""
 
+    user = await ws_require_role(websocket, required_role)
+    username = user["sub"]
     params = websocket.query_params
     session_id = params.get("session_id")
     last_event_id = params.get("last_event_id")
     last_event = int(last_event_id) if last_event_id is not None else None
-    session_id = await manager.connect(websocket, session_id, last_event)
+    session_id = await manager.connect(websocket, username, session_id, last_event)
+    if announce and handshake_first:
+        await websocket.send_json({"event": "connected", "sessionId": session_id})
+    if on_connect is not None:
+        await on_connect(session_id, user)
+    if announce and not handshake_first:
+        await websocket.send_json({"event": "connected", "sessionId": session_id})
     try:
         while True:
             data = await websocket.receive_json()
-            await manager.push(session_id, data)
+            payload = {**data}
+            payload.setdefault("channel", channel)
+            payload.setdefault("timestamp", _iso_timestamp())
+            payload.setdefault("event", f"{channel}_message")
+            await manager.push(session_id, payload)
     except WebSocketDisconnect:
         manager.disconnect(session_id)
 
@@ -6496,6 +6633,86 @@ codes_manager = ConnectionManager()
 notifications_manager = ConnectionManager()
 
 
+async def _push_notification_event(
+    username: str,
+    payload: Dict[str, Any],
+    *,
+    increment: bool = False,
+) -> None:
+    """Dispatch a notification payload to ``/ws/notifications`` for *username*."""
+
+    enriched = {**payload}
+    enriched.setdefault("channel", "notifications")
+    enriched.setdefault("event", "notification")
+    enriched.setdefault("timestamp", _iso_timestamp())
+    count = (
+        increment_notification_count(username)
+        if increment
+        else current_notification_count(username)
+    )
+    enriched["unreadCount"] = count
+    session_id = notifications_manager.latest_session(username)
+    if session_id:
+        await notifications_manager.push(session_id, enriched)
+    else:
+        await notifications_manager.push_user(username, enriched)
+
+
+async def _notify_note_auto_save(username: str, note_id: Optional[int]) -> None:
+    """Broadcast an auto-save event to collaboration clients for *username*."""
+
+    payload = {
+        "channel": "collaboration",
+        "event": "note_auto_save",
+        "noteId": note_id,
+        "status": "saved",
+        "timestamp": _iso_timestamp(),
+    }
+    session_id = collaboration_manager.latest_session(username)
+    if session_id:
+        await collaboration_manager.push(session_id, payload)
+    else:
+        await collaboration_manager.push_user(username, payload)
+
+
+async def _notify_compliance_issue(
+    record: Dict[str, Any],
+    recipients: Iterable[str],
+) -> None:
+    """Broadcast compliance issue updates and increment notifications."""
+
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    note_id = metadata.get("noteId") or metadata.get("note_id")
+    timestamp = _iso_timestamp(record.get("updatedAt") or record.get("createdAt"))
+    base_payload = {
+        "channel": "compliance",
+        "event": "compliance_issue",
+        "issueId": record.get("issueId"),
+        "ruleId": record.get("ruleId"),
+        "title": record.get("title"),
+        "severity": record.get("severity"),
+        "status": record.get("status"),
+        "category": record.get("category"),
+        "noteId": note_id,
+        "timestamp": timestamp,
+    }
+    notify_payload = {
+        "type": "compliance_issue",
+        "issueId": record.get("issueId"),
+        "severity": record.get("severity"),
+        "title": record.get("title"),
+        "timestamp": timestamp,
+    }
+    for username in {user for user in recipients if user}:
+        session_id = compliance_manager.latest_session(username)
+        payload = dict(base_payload)
+        if session_id:
+            await compliance_manager.push(session_id, payload)
+        else:
+            await compliance_manager.push_user(username, payload)
+        await _push_notification_event(username, dict(notify_payload), increment=True)
+
+
 @app.websocket("/ws/transcription")
 async def ws_transcription(websocket: WebSocket) -> None:
     """Live speech-to-text stream.
@@ -6503,7 +6720,7 @@ async def ws_transcription(websocket: WebSocket) -> None:
     Expected payload: ``{"transcript", "confidence", "isInterim", "timestamp", "speakerLabel"}``
     """
 
-    await _ws_endpoint(transcription_manager, websocket)
+    await _ws_endpoint(transcription_manager, websocket, channel="transcription")
 
 
 @app.websocket("/ws/compliance")
@@ -6513,7 +6730,7 @@ async def ws_compliance(websocket: WebSocket) -> None:
     Expected payload: ``{"analysisId", "issues", "severity", "timestamp"}``
     """
 
-    await _ws_endpoint(compliance_manager, websocket)
+    await _ws_endpoint(compliance_manager, websocket, channel="compliance")
 
 
 @app.websocket("/ws/collaboration")
@@ -6523,7 +6740,7 @@ async def ws_collaboration(websocket: WebSocket) -> None:
     Expected payload: ``{"noteId", "changes", "userId", "timestamp", "conflicts"}``
     """
 
-    await _ws_endpoint(collaboration_manager, websocket)
+    await _ws_endpoint(collaboration_manager, websocket, channel="collaboration")
 
 
 @app.websocket("/ws/codes")
@@ -6533,7 +6750,7 @@ async def ws_codes(websocket: WebSocket) -> None:
     Expected payload: ``{"code", "type", "description", "rationale", "confidence", "timestamp"}``
     """
 
-    await _ws_endpoint(codes_manager, websocket)
+    await _ws_endpoint(codes_manager, websocket, channel="codes")
 
 
 @app.websocket("/ws/notifications")
@@ -6543,7 +6760,25 @@ async def ws_notifications(websocket: WebSocket) -> None:
     Expected payload: ``{"type", "message", "priority", "userId", "timestamp"}``
     """
 
-    await _ws_endpoint(notifications_manager, websocket)
+    async def _initial(session_id: str, user_data: Dict[str, Any]) -> None:
+        username = user_data.get("sub")
+        count = current_notification_count(username) if username else 0
+        payload = {
+            "channel": "notifications",
+            "event": "notification_snapshot",
+            "count": count,
+            "unreadCount": count,
+            "timestamp": _iso_timestamp(),
+        }
+        await notifications_manager.push(session_id, payload)
+
+    await _ws_endpoint(
+        notifications_manager,
+        websocket,
+        channel="notifications",
+        handshake_first=False,
+        on_connect=_initial,
+    )
 
 # ---------------------------------------------------------------------------
 
