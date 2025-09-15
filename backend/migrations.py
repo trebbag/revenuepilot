@@ -200,6 +200,41 @@ def ensure_event_aggregates_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_confidence_scores_table(conn: sqlite3.Connection) -> None:
+    """Ensure the confidence_scores table exists for tracking suggestion accuracy."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS confidence_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            note_id TEXT,
+            code TEXT NOT NULL,
+            confidence REAL,
+            accepted INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(confidence_scores)")}
+    if "accepted" not in columns:
+        conn.execute(
+            "ALTER TABLE confidence_scores ADD COLUMN accepted INTEGER NOT NULL DEFAULT 0"
+        )
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE confidence_scores ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "note_id" not in columns:
+        conn.execute("ALTER TABLE confidence_scores ADD COLUMN note_id TEXT")
+    if "confidence" not in columns:
+        conn.execute("ALTER TABLE confidence_scores ADD COLUMN confidence REAL")
+
+    conn.commit()
+
+
 def ensure_compliance_issues_table(conn: sqlite3.Connection) -> None:
     """Ensure the compliance_issues table exists for manual tracking."""
 

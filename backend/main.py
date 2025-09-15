@@ -108,6 +108,7 @@ from backend.migrations import (  # type: ignore
     ensure_session_state_table,
     ensure_event_aggregates_table,
     ensure_compliance_issues_table,
+    ensure_confidence_scores_table,
 )
 from backend.templates import (
     TemplateModel,
@@ -674,6 +675,7 @@ ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_event_aggregates_table(db_conn)
 ensure_compliance_issues_table(db_conn)
+ensure_confidence_scores_table(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -742,6 +744,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
     ensure_compliance_issues_table(conn)
+    ensure_confidence_scores_table(conn)
     conn.commit()
 
 
@@ -776,6 +779,7 @@ ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
 ensure_compliance_issues_table(db_conn)
+ensure_confidence_scores_table(db_conn)
 
 # User profile details including current view and UI preferences.
 ensure_user_profile_table(db_conn)
@@ -846,6 +850,68 @@ def _insert_audit_log(
         db_conn.commit()
     except Exception:
         logger.exception("Failed to write audit log entry")
+
+
+def _normalise_confidence(value: Any) -> Optional[float]:
+    """Parse ``value`` into a 0-1 confidence score when possible."""
+
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        score = float(value)
+    elif isinstance(value, str):
+        try:
+            cleaned = value.strip().rstrip("%")
+            if not cleaned:
+                return None
+            score = float(cleaned)
+        except ValueError:
+            return None
+    else:
+        return None
+    if score > 1:
+        score /= 100.0
+    if 0 <= score <= 1:
+        return score
+    return None
+
+
+def _log_confidence_scores(
+    user: Dict[str, Any],
+    note_id: str | None,
+    codes: List[Tuple[str, Optional[float]]],
+) -> None:
+    """Persist confidence scores for returned code suggestions."""
+
+    if not codes:
+        return
+    username = user.get("sub")
+    if not username:
+        return
+    try:
+        row = db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    except sqlite3.Error as exc:  # pragma: no cover - defensive logging
+        logger.warning("Unable to record confidence scores: %s", exc)
+        return
+    if not row:
+        return
+    user_id = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+    note_ref = str(note_id) if note_id is not None else None
+    timestamp = time.time()
+    entries = [(user_id, note_ref, code, confidence, 0, timestamp) for code, confidence in codes if code]
+    if not entries:
+        return
+    try:
+        db_conn.executemany(
+            """
+            INSERT INTO confidence_scores (user_id, note_id, code, confidence, accepted, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            entries,
+        )
+        db_conn.commit()
+    except sqlite3.Error as exc:  # pragma: no cover - defensive logging
+        logger.warning("Failed to persist confidence scores: %s", exc)
 
 
 def _normalise_severity(value: str | None) -> str:
@@ -2337,6 +2403,7 @@ class NoteRequest(BaseModel):
     beautifyModel: Optional[str] = None
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
+    noteId: Optional[str] = Field(None, alias="note_id")
 
     class Config:
         populate_by_name = True
@@ -4172,6 +4239,74 @@ async def analytics_compliance(user=Depends(require_roles("analyst"))) -> Dict[s
     }
 
 
+@app.get("/api/analytics/confidence")
+async def analytics_confidence(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+    """Aggregate confidence score accuracy over time."""
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) AS accepted,
+            AVG(confidence) AS avg_confidence
+        FROM confidence_scores
+        """
+    )
+    overall_row = cursor.fetchone()
+    total = int(overall_row["total"]) if overall_row and overall_row["total"] is not None else 0
+    accepted = (
+        int(overall_row["accepted"])
+        if overall_row and overall_row["accepted"] is not None
+        else 0
+    )
+    avg_conf = (
+        float(overall_row["avg_confidence"])
+        if overall_row and overall_row["avg_confidence"] is not None
+        else 0.0
+    )
+    accuracy = accepted / total if total else 0.0
+    calibration_gap = accuracy - avg_conf if total else 0.0
+
+    cursor.execute(
+        """
+        SELECT
+            date(datetime(created_at, 'unixepoch')) AS day,
+            COUNT(*) AS total,
+            SUM(CASE WHEN accepted = 1 THEN 1 ELSE 0 END) AS accepted,
+            AVG(confidence) AS avg_confidence
+        FROM confidence_scores
+        GROUP BY day
+        ORDER BY day
+        """
+    )
+    series: List[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        day_total = row["total"] or 0
+        day_accepted = row["accepted"] or 0
+        avg_day_conf = row["avg_confidence"] if row["avg_confidence"] is not None else 0.0
+        series.append(
+            {
+                "day": row["day"],
+                "total": day_total,
+                "accepted": day_accepted,
+                "accuracy": (day_accepted / day_total) if day_total else 0.0,
+                "avg_confidence": avg_day_conf,
+            }
+        )
+
+    return {
+        "overall": {
+            "total": total,
+            "accepted": accepted,
+            "accuracy": accuracy,
+            "avg_confidence": avg_conf,
+            "calibration_gap": calibration_gap,
+        },
+        "timeseries": series,
+    }
+
+
 @app.get("/api/user/permissions")
 async def get_user_permissions(user=Depends(require_role("user"))) -> Dict[str, Any]:
     """Return the current user's role."""
@@ -4552,8 +4687,21 @@ async def suggest(
                         public_health.append(
                             PublicHealthSuggestion(recommendation=str(rec))
                         )
+        code_items = data.get("codes", [])
+        codes = [CodeSuggestion(**c) for c in code_items]
+        _log_confidence_scores(
+            user,
+            req.noteId,
+            [
+                (
+                    item.get("code") or item.get("Code"),
+                    _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+                )
+                for item in code_items
+            ],
+        )
         return SuggestionsResponse(
-            codes=[CodeSuggestion(**c) for c in data["codes"]],
+            codes=codes,
             compliance=data["compliance"],
             publicHealth=public_health,
             differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
@@ -4579,12 +4727,17 @@ async def suggest(
         # Convert codes list of dicts into CodeSuggestion objects.  Provide
         # defaults for missing fields.
         codes_list: List[CodeSuggestion] = []
+        logged_codes: List[Tuple[str, Optional[float]]] = []
         for item in data.get("codes", []):
             code_str = item.get("code") or item.get("Code") or ""
             rationale = item.get("rationale") or item.get("Rationale") or None
             upgrade = item.get("upgrade_to") or item.get("upgradeTo") or None
             upgrade_path = item.get("upgrade_path") or item.get("upgradePath") or None
+            confidence_val = _normalise_confidence(
+                item.get("confidence") or item.get("Confidence")
+            )
             if code_str:
+                logged_codes.append((code_str, confidence_val))
                 codes_list.append(
                     CodeSuggestion(
                         code=code_str,
@@ -4676,6 +4829,7 @@ async def suggest(
             req.specialty,
             req.payer,
         )
+        _log_confidence_scores(user, req.noteId, logged_codes)
         return SuggestionsResponse(
             codes=codes_list,
             compliance=compliance,
