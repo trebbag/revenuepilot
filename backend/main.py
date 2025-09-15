@@ -10,6 +10,7 @@ each endpoint returns a sensible fallback.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -177,6 +178,70 @@ logging.basicConfig(
 
 # Logger before app so lifespan can reference it
 logger = logging.getLogger(__name__)
+
+
+CATEGORIZATION_RULES_FILENAME = "code_categorization_rules.json"
+CATEGORIZATION_RULES_ENV = "CODE_CATEGORIZATION_RULES_PATH"
+DEFAULT_CATEGORIZATION_RULES: Dict[str, Any] = {
+    "autoCategories": {},
+    "userOverrides": {},
+    "rules": [],
+}
+_categorization_rules_cache: Dict[str, Any] | None = None
+_categorization_rules_mtime: float | None = None
+
+
+def _categorization_rules_path() -> Path:
+    """Return the path to the categorization rules file."""
+
+    override = os.getenv(CATEGORIZATION_RULES_ENV)
+    if override:
+        return Path(override)
+    return Path(__file__).with_name(CATEGORIZATION_RULES_FILENAME)
+
+
+def load_code_categorization_rules(force_refresh: bool = False) -> Dict[str, Any]:
+    """Load categorization rules from disk with basic caching."""
+
+    global _categorization_rules_cache, _categorization_rules_mtime
+
+    path = _categorization_rules_path()
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        mtime = None
+
+    if (
+        not force_refresh
+        and _categorization_rules_cache is not None
+        and _categorization_rules_mtime == mtime
+    ):
+        return copy.deepcopy(_categorization_rules_cache)
+
+    if not path.exists():
+        logger.warning(
+            "Code categorization rules file not found at %s; using defaults.", path
+        )
+        data = copy.deepcopy(DEFAULT_CATEGORIZATION_RULES)
+    else:
+        try:
+            with path.open("r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error(
+                "Failed to load code categorization rules from %s: %s", path, exc
+            )
+            data = copy.deepcopy(DEFAULT_CATEGORIZATION_RULES)
+        else:
+            data = {
+                "autoCategories": payload.get("autoCategories") or {},
+                "userOverrides": payload.get("userOverrides") or {},
+                "rules": payload.get("rules") or [],
+            }
+
+    _categorization_rules_cache = copy.deepcopy(data)
+    _categorization_rules_mtime = mtime
+    return copy.deepcopy(data)
 
 
 class SuccessResponse(BaseModel):
@@ -4762,6 +4827,15 @@ async def upload_chart(
 class CombinationRequest(BaseModel):
     cpt: List[str] = Field(default_factory=list)
     icd10: List[str] = Field(default_factory=list)
+
+
+@app.get("/api/codes/categorization/rules")
+async def get_code_categorization_rules(
+    user=Depends(require_role("user")),
+) -> Dict[str, Any]:
+    """Return categorization rules for client-side code organization."""
+
+    return load_code_categorization_rules()
 
 
 @app.get("/api/codes/validate/cpt/{code}")

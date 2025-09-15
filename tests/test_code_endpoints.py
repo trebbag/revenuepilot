@@ -84,3 +84,18 @@ def test_documentation(client, token):
     assert resp.status_code == 200
     data = resp.json()
     assert 'required' in data
+
+
+def test_categorization_rules(client, token):
+    resp = client.get(
+        '/api/codes/categorization/rules', headers=auth_header(token)
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert 'autoCategories' in data
+    assert 'userOverrides' in data
+    assert 'rules' in data
+    assert isinstance(data['autoCategories'], dict)
+    assert isinstance(data['userOverrides'], dict)
+    assert isinstance(data['rules'], list)
+    assert data['rules'], 'expected at least one categorization rule'

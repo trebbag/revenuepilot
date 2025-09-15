@@ -1,0 +1,68 @@
+{
+  "autoCategories": {
+    "CPT": {
+      "99213": "codes",
+      "99214": "codes",
+      "93000": "codes"
+    },
+    "ICD-10": {
+      "E11.9": "diagnoses",
+      "I10": "diagnoses",
+      "J06.9": "diagnoses"
+    },
+    "HCPCS": {
+      "G0008": "prevention",
+      "90658": "prevention"
+    }
+  },
+  "userOverrides": {
+    "demo-user": {
+      "99213": "diagnoses",
+      "J06.9": "differentials"
+    },
+    "rehab-team": {
+      "G0008": "codes"
+    }
+  },
+  "rules": [
+    {
+      "id": "cpt-evaluation-management",
+      "type": "CPT",
+      "category": "codes",
+      "priority": 100,
+      "description": "Evaluation and management visits default to the selected codes column.",
+      "rationale": "E/M visits represent billed services and should stay grouped with other CPT codes.",
+      "match": {
+        "prefix": ["992"],
+        "descriptionKeywords": ["visit", "evaluation"]
+      },
+      "examples": ["99213", "99214"]
+    },
+    {
+      "id": "icd10-chronic-conditions",
+      "type": "ICD-10",
+      "category": "diagnoses",
+      "priority": 90,
+      "description": "Chronic condition diagnosis codes appear in the diagnoses column.",
+      "rationale": "Helps clinicians quickly review chronic diagnoses associated with the encounter.",
+      "match": {
+        "codes": ["E11.9", "I10"],
+        "descriptionKeywords": ["diabetes", "hypertension"]
+      },
+      "examples": ["E11.9", "I10"]
+    },
+    {
+      "id": "hcpcs-immunization-admin",
+      "type": "HCPCS",
+      "category": "prevention",
+      "priority": 80,
+      "description": "Immunization administration codes are categorized under prevention.",
+      "rationale": "Prevention workflows highlight vaccine-related services for follow-up reminders.",
+      "match": {
+        "prefix": ["G0008", "906"],
+        "descriptionKeywords": ["immunization", "influenza", "vaccine"]
+      },
+      "examples": ["G0008", "90658"]
+    }
+  ]
+}
