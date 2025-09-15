@@ -34,6 +34,7 @@ from fastapi import (
     BackgroundTasks,
     WebSocket,
     WebSocketDisconnect,
+    Query,
 )
 import requests
 from fastapi.middleware.cors import CORSMiddleware
@@ -5314,6 +5315,458 @@ async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("
 
 
 # Notes and drafts management
+
+_DEEP_SEARCH_NOT_FOUND = object()
+
+
+def _safe_json_loads(value: Any) -> Any:
+    """Return parsed JSON for ``value`` if possible, otherwise ``None``."""
+
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            value = value.decode("utf-8", errors="ignore")
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _deep_get(container: Any, key: str) -> Any:
+    """Recursively search ``container`` for ``key`` and return its value."""
+
+    if isinstance(container, dict):
+        for current_key, value in container.items():
+            if current_key == key:
+                return value
+            nested = _deep_get(value, key)
+            if nested is not _DEEP_SEARCH_NOT_FOUND:
+                return nested
+    elif isinstance(container, list):
+        for item in container:
+            nested = _deep_get(item, key)
+            if nested is not _DEEP_SEARCH_NOT_FOUND:
+                return nested
+    return _DEEP_SEARCH_NOT_FOUND
+
+
+def _normalize_tags(value: Any) -> List[str]:
+    """Convert a tag payload into a list of string tags."""
+
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None]
+    if isinstance(value, str):
+        parsed = _safe_json_loads(value)
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if item is not None]
+        text = value.strip()
+        if text:
+            return [text]
+    return []
+
+
+def _parse_datetime_param(value: Any, *, end_of_day: bool = False) -> Optional[float]:
+    """Parse a date/datetime/epoch input into a UTC timestamp."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        if float(value) == 0:
+            return None
+        return float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            try:
+                numeric = float(text)
+            except ValueError:
+                return None
+            if numeric == 0:
+                return None
+            return numeric
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            dt = datetime.fromisoformat(iso_text)
+        except ValueError:
+            try:
+                dt = datetime.strptime(text, "%Y-%m-%d")
+            except ValueError:
+                return None
+        if end_of_day and re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            dt = dt + timedelta(days=1) - timedelta(microseconds=1)
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _ts_to_iso(value: Any) -> Optional[str]:
+    """Convert a timestamp/date-like value into an ISO 8601 string."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    if isinstance(value, (int, float)):
+        if float(value) == 0:
+            return None
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+            try:
+                numeric = float(text)
+            except ValueError:
+                numeric = None
+            else:
+                if numeric == 0:
+                    return None
+                try:
+                    return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat()
+                except (OverflowError, OSError, ValueError):
+                    return None
+        iso_text = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            dt = datetime.fromisoformat(iso_text)
+        except ValueError:
+            return text
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    return None
+
+
+def _format_note_row(row: sqlite3.Row) -> Dict[str, Any]:
+    """Map a raw ``notes`` row into the list API response structure."""
+
+    raw_content = row["content"]
+    if isinstance(raw_content, (bytes, bytearray)):
+        raw_content = raw_content.decode("utf-8", errors="ignore")
+    if raw_content is None:
+        raw_content = ""
+    elif not isinstance(raw_content, str):
+        raw_content = str(raw_content)
+
+    parsed = _safe_json_loads(raw_content)
+    metadata: Dict[str, Any] = {}
+    if isinstance(parsed, dict):
+        meta_candidate = parsed.get("metadata")
+        if isinstance(meta_candidate, dict):
+            metadata = meta_candidate
+        elif isinstance(parsed.get("meta"), dict):
+            metadata = dict(parsed.get("meta") or {})
+        else:
+            metadata = parsed
+
+    patient_info: Optional[Dict[str, Any]] = None
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("patient", "patientInfo", "patientDetails", "patient_data", "patientData", "demographics"):
+                candidate = source.get(key)
+                if isinstance(candidate, dict):
+                    patient_info = candidate
+                    break
+        if patient_info:
+            break
+    if patient_info is None and isinstance(parsed, dict):
+        for key in ("patient", "patientInfo", "patientDetails", "patient_data", "patientData", "demographics"):
+            candidate = _deep_get(parsed, key)
+            if candidate is not _DEEP_SEARCH_NOT_FOUND and isinstance(candidate, dict):
+                patient_info = candidate
+                break
+
+    patient_name: Optional[str] = None
+    patient_id: Optional[str] = None
+    if isinstance(patient_info, dict):
+        name_candidates = [
+            patient_info.get("name"),
+            patient_info.get("fullName"),
+            patient_info.get("patientName"),
+        ]
+        patient_name = next(
+            (
+                str(val).strip()
+                for val in name_candidates
+                if isinstance(val, str) and val.strip()
+            ),
+            None,
+        )
+        if not patient_name:
+            first = patient_info.get("firstName") or patient_info.get("first_name")
+            last = patient_info.get("lastName") or patient_info.get("last_name")
+            combined = " ".join(
+                str(part).strip()
+                for part in (first, last)
+                if isinstance(part, str) and part.strip()
+            ).strip()
+            patient_name = combined or None
+        for identifier in ("id", "patientId", "patient_id", "mrn", "externalId"):
+            value = patient_info.get(identifier)
+            if value not in (None, ""):
+                patient_id = str(value)
+                break
+    if not patient_name and isinstance(metadata, dict):
+        name_value = metadata.get("patientName") or metadata.get("patient_name")
+        if isinstance(name_value, str) and name_value.strip():
+            patient_name = name_value.strip()
+    if not patient_name and isinstance(parsed, dict):
+        name_value = parsed.get("patientName") or parsed.get("patient_name")
+        if isinstance(name_value, str) and name_value.strip():
+            patient_name = name_value.strip()
+    if not patient_id and isinstance(metadata, dict):
+        id_value = metadata.get("patientId") or metadata.get("patient_id")
+        if id_value not in (None, ""):
+            patient_id = str(id_value)
+    if not patient_id and isinstance(parsed, dict):
+        id_value = parsed.get("patientId") or parsed.get("patient_id")
+        if id_value not in (None, ""):
+            patient_id = str(id_value)
+
+    title: Optional[str] = None
+    title_keys = ("title", "noteTitle", "subject", "summaryTitle", "visitTitle")
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in title_keys:
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    title = value.strip()
+                    break
+        if title:
+            break
+    if not title and isinstance(parsed, dict):
+        for key in title_keys:
+            value = _deep_get(parsed, key)
+            if value is not _DEEP_SEARCH_NOT_FOUND and isinstance(value, str) and value.strip():
+                title = value.strip()
+                break
+
+    body_candidates: List[str] = []
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("content", "note", "body", "text"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    body_candidates.append(value)
+    if not body_candidates and raw_content:
+        body_candidates.append(raw_content)
+    body_text = next((text for text in body_candidates if text.strip()), "")
+
+    summary: Optional[str] = None
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("summary", "description", "preview", "abstract"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    summary = value.strip()
+                    break
+        if summary:
+            break
+
+    template: Optional[str] = None
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("template", "templateName", "noteTemplate"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    template = value.strip()
+                    break
+        if template:
+            break
+
+    tags: List[str] = []
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("tags", "labels"):
+                extracted = _normalize_tags(source.get(key))
+                if extracted:
+                    tags = extracted
+                    break
+        if tags:
+            break
+
+    date_value: Optional[str] = None
+    for source in (metadata, parsed):
+        if isinstance(source, dict):
+            for key in ("date", "noteDate", "encounterDate", "visitDate"):
+                raw_date = source.get(key)
+                if raw_date is None:
+                    continue
+                iso_val = _ts_to_iso(raw_date)
+                if iso_val:
+                    date_value = iso_val
+                elif isinstance(raw_date, str) and raw_date.strip():
+                    date_value = raw_date.strip()
+                if date_value:
+                    break
+        if date_value:
+            break
+    if not date_value:
+        date_value = _ts_to_iso(row["created_at"])
+
+    last_modified = _ts_to_iso(row["updated_at"]) or None
+    if not last_modified:
+        for source in (metadata, parsed):
+            if isinstance(source, dict):
+                for key in ("lastModified", "updatedAt", "modifiedAt"):
+                    candidate = source.get(key)
+                    if candidate is None:
+                        continue
+                    iso_val = _ts_to_iso(candidate)
+                    if iso_val:
+                        last_modified = iso_val
+                        break
+                if last_modified:
+                    break
+    if not last_modified:
+        last_modified = _ts_to_iso(row["created_at"])
+
+    created_at = _ts_to_iso(row["created_at"])
+
+    if not title:
+        if body_text:
+            for line in body_text.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    title = stripped[:120]
+                    break
+        if not title:
+            title = f"Note {row['id']}"
+
+    preview: Optional[str] = None
+    if summary:
+        preview = summary
+    elif body_text:
+        preview = body_text
+    if preview:
+        preview = re.sub(r"\s+", " ", preview).strip()[:200]
+
+    note: Dict[str, Any] = {
+        "id": row["id"],
+        "title": title,
+        "patientName": patient_name,
+        "patientId": patient_id,
+        "status": row["status"] or "draft",
+        "lastModified": last_modified,
+        "createdAt": created_at,
+        "date": date_value,
+        "template": template,
+        "tags": tags,
+    }
+    if summary:
+        note["summary"] = summary
+    if preview:
+        note["preview"] = preview
+
+    search_parts: List[str] = []
+    for field in ("patientName", "patientId", "title", "summary", "preview"):
+        value = note.get(field)
+        if isinstance(value, str) and value:
+            search_parts.append(value.lower())
+    if raw_content:
+        search_parts.append(str(raw_content).lower())
+    if isinstance(parsed, dict):
+        try:
+            search_parts.append(json.dumps(parsed).lower())
+        except (TypeError, ValueError):
+            pass
+    note["_search_blob"] = " ".join(search_parts)
+
+    return note
+
+
+def _note_matches_patient(note: Dict[str, Any], patient_query: str) -> bool:
+    """Return ``True`` if ``note`` should be included for ``patient_query``."""
+
+    if not patient_query:
+        return True
+    query = patient_query.strip().lower()
+    if not query:
+        return True
+    for key in ("patientName", "patientId"):
+        value = note.get(key)
+        if isinstance(value, str) and query in value.lower():
+            return True
+    blob = note.get("_search_blob")
+    if isinstance(blob, str) and query in blob:
+        return True
+    return False
+
+
+@app.get("/api/notes/list")
+async def list_notes(
+    page: int = Query(1, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=200),
+    page_size_alias: Optional[int] = Query(None, alias="pageSize", ge=1, le=200),
+    status: Optional[str] = None,
+    patient: Optional[str] = None,
+    start_date: Optional[str] = Query(None),
+    start_date_alias: Optional[str] = Query(None, alias="startDate"),
+    end_date: Optional[str] = Query(None),
+    end_date_alias: Optional[str] = Query(None, alias="endDate"),
+    user=Depends(require_role("user")),
+):
+    """Return paginated notes with optional status, patient and date filters."""
+
+    size = page_size_alias or page_size or 20
+    size = max(1, min(int(size), 200))
+
+    start_filter = start_date_alias or start_date
+    end_filter = end_date_alias or end_date
+
+    timestamp_expr = "COALESCE(updated_at, created_at, 0)"
+    conditions: List[str] = []
+    params: List[Any] = []
+
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+
+    start_ts = _parse_datetime_param(start_filter)
+    if start_ts is not None:
+        conditions.append(f"{timestamp_expr} >= ?")
+        params.append(start_ts)
+
+    end_ts = _parse_datetime_param(end_filter, end_of_day=True)
+    if end_ts is not None:
+        conditions.append(f"{timestamp_expr} <= ?")
+        params.append(end_ts)
+
+    query = "SELECT id, content, status, created_at, updated_at FROM notes"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += f" ORDER BY {timestamp_expr} DESC"
+
+    rows = db_conn.execute(query, params).fetchall()
+
+    notes: List[Dict[str, Any]] = []
+    for row in rows:
+        formatted = _format_note_row(row)
+        if patient and not _note_matches_patient(formatted, patient):
+            continue
+        formatted.pop("_search_blob", None)
+        notes.append(formatted)
+
+    start_index = (page - 1) * size
+    end_index = start_index + size
+    return notes[start_index:end_index]
+
 
 class BulkNotesRequest(BaseModel):
     ids: List[int]
