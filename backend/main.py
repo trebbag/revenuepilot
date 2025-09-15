@@ -2195,6 +2195,13 @@ async def get_metrics(
         k for k, _ in sorted(compliance_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
     ]
 
+    top_compliance = [
+        k
+        for k, _ in sorted(
+            compliance_counts.items(), key=lambda x: x[1], reverse=True
+        )[:5]
+    ]
+
     daily_list: List[Dict[str, Any]] = []
     if daily:
         daily_query = f"""
@@ -2375,6 +2382,145 @@ async def get_metrics(
         "clinicians": clinicians,
         "timeseries": timeseries,
     }
+
+
+def _analytics_where(user: Dict[str, Any]) -> tuple[str, List[Any]]:
+    """Return a WHERE clause limiting events based on user role."""
+    if user.get("role") == "admin":
+        return "", []
+    return (
+        "WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?",
+        [user["sub"]],
+    )
+
+
+@app.get("/api/analytics/usage")
+async def analytics_usage(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Basic usage analytics aggregated from events."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END) AS beautify,
+            SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END) AS suggest,
+            SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END) AS summary,
+            SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+            SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
+            AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length
+        FROM events {where}
+        """,
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    return {
+        "total_notes": data.get("total_notes", 0) or 0,
+        "beautify": data.get("beautify", 0) or 0,
+        "suggest": data.get("suggest", 0) or 0,
+        "summary": data.get("summary", 0) or 0,
+        "chart_upload": data.get("chart_upload", 0) or 0,
+        "audio": data.get("audio", 0) or 0,
+        "avg_note_length": data.get("avg_note_length", 0) or 0,
+    }
+
+
+@app.get("/api/analytics/coding-accuracy")
+async def analytics_coding_accuracy(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Coding accuracy metrics derived from events and billing codes."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS total_notes,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.denial') = 1 THEN 1 ELSE 0 END) AS denials,
+            SUM(CASE WHEN eventType='note_closed' AND json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.deficiency') = 1 THEN 1 ELSE 0 END) AS deficiencies
+        FROM events {where}
+        """,
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    total = data.get("total_notes", 0) or 0
+    denials = data.get("denials", 0) or 0
+    deficiencies = data.get("deficiencies", 0) or 0
+    accuracy = (total - denials - deficiencies) / total if total else 0
+    cursor.execute(
+        "SELECT json_each.value AS code, COUNT(*) AS count FROM events "
+        "JOIN json_each(COALESCE(events.codes, '[]')) "
+        f"{where} GROUP BY code",
+        params,
+    )
+    distribution = {r["code"]: r["count"] for r in cursor.fetchall()}
+    return {
+        "total_notes": total,
+        "denials": denials,
+        "deficiencies": deficiencies,
+        "accuracy": accuracy,
+        "coding_distribution": distribution,
+    }
+
+
+@app.get("/api/analytics/revenue")
+async def analytics_revenue(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Revenue analytics aggregated from event billing data."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"SELECT SUM(revenue) AS total, AVG(revenue) AS average FROM events {where}",
+        params,
+    )
+    row = cursor.fetchone()
+    data = dict(row) if row else {}
+    cursor.execute(
+        "SELECT json_each.value AS code, SUM(events.revenue) AS revenue FROM events "
+        "JOIN json_each(COALESCE(events.codes, '[]')) "
+        f"{where} GROUP BY code",
+        params,
+    )
+    by_code = {r["code"]: r["revenue"] for r in cursor.fetchall()}
+    return {
+        "total_revenue": data.get("total", 0) or 0,
+        "average_revenue": data.get("average", 0) or 0,
+        "revenue_by_code": by_code,
+    }
+
+
+@app.get("/api/analytics/compliance")
+async def analytics_compliance(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Compliance analytics derived from logged events."""
+    where, params = _analytics_where(user)
+    cursor = db_conn.cursor()
+    cursor.execute(
+        "SELECT json_each.value AS flag, COUNT(*) AS count FROM events "
+        "JOIN json_each(COALESCE(events.compliance_flags, '[]')) "
+        f"{where} GROUP BY flag",
+        params,
+    )
+    flags = {r["flag"]: r["count"] for r in cursor.fetchall()}
+    cursor.execute(
+        f"SELECT SUM(CASE WHEN compliance_flags IS NOT NULL AND compliance_flags != '[]' THEN 1 ELSE 0 END) AS notes_with_flags FROM events {where}",
+        params,
+    )
+    notes_row = cursor.fetchone()
+    cursor.execute(
+        f"SELECT SUM(json_array_length(COALESCE(compliance_flags, '[]'))) AS total_flags FROM events {where}",
+        params,
+    )
+    flags_row = cursor.fetchone()
+    return {
+        "compliance_counts": flags,
+        "notes_with_flags": (dict(notes_row).get("notes_with_flags", 0) if notes_row else 0),
+        "total_flags": (dict(flags_row).get("total_flags", 0) if flags_row else 0),
+    }
+
+
+@app.get("/api/user/permissions")
+async def get_user_permissions(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    """Return the current user's role."""
+    return {"role": user["role"]}
 
 
 @app.post("/summarize")
