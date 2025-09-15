@@ -445,6 +445,36 @@ def ensure_note_auto_saves_table(conn: sqlite3.Connection) -> None:  # pragma: n
 
     conn.commit()
 
+
+def ensure_note_versions_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the note_versions table exists for tracking version history."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS note_versions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "note_id TEXT NOT NULL,"
+        "user_id INTEGER,"
+        "content TEXT,"
+        "created_at REAL"
+        ")"
+    )
+
+    conn.commit()
+
+
+def ensure_notifications_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
+    """Ensure the notifications table exists for per-user counts."""
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notifications ("
+        "username TEXT PRIMARY KEY,"
+        "count INTEGER NOT NULL DEFAULT 0,"
+        "updated_at REAL"
+        ")"
+    )
+
+    conn.commit()
+
 def ensure_session_state_table(conn: sqlite3.Connection) -> None:
     """Ensure the session_state table exists."""
     conn.execute(

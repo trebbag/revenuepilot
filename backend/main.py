@@ -104,6 +104,8 @@ from backend.migrations import (  # type: ignore
     ensure_encounters_table,
     ensure_visit_sessions_table,
     ensure_note_auto_saves_table,
+    ensure_note_versions_table,
+    ensure_notifications_table,
     ensure_user_profile_table,
     ensure_session_state_table,
     ensure_event_aggregates_table,
@@ -504,10 +506,6 @@ def _cached_response(key: str, builder: Callable[[], Any]):
 # Active WebSocket connections for system notifications.
 notification_clients: Set[WebSocket] = set()
 
-# Simple in-memory storage for note versions keyed by note ID.
-NOTE_VERSIONS: Dict[str, List[Dict[str, str]]] = defaultdict(list)
-
-
 # Health/readiness endpoint used by the desktop app to know when the backend is up.
 # Returns basic process / db status without requiring auth.
 @app.get("/health", tags=["system"])  # pragma: no cover - trivial logic mostly, but still tested
@@ -636,9 +634,144 @@ transcript_history: Dict[str, deque] = defaultdict(
     lambda: deque(maxlen=TRANSCRIPT_HISTORY_LIMIT)
 )
 
-# Simple in-memory notification tracking.
-notification_counts: Dict[str, int] = defaultdict(int)
+# Active websocket subscribers interested in notification counts.
 notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
+
+
+class NotificationStore:
+    """SQLite-backed mapping interface for notification counters."""
+
+    def __getitem__(self, username: str) -> int:
+        return self.get(username, 0)
+
+    def __setitem__(self, username: str, value: int) -> None:
+        ensure_notifications_table(db_conn)
+        db_conn.execute(
+            """
+            INSERT INTO notifications (username, count, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                count=excluded.count,
+                updated_at=excluded.updated_at
+            """,
+            (username, int(value), time.time()),
+        )
+        db_conn.commit()
+
+    def get(self, username: str, default: int = 0) -> int:
+        ensure_notifications_table(db_conn)
+        try:
+            row = db_conn.execute(
+                "SELECT count FROM notifications WHERE username=?",
+                (username,),
+            ).fetchone()
+        except sqlite3.Error:
+            return default
+        if not row:
+            return default
+        try:
+            return int(row["count"])
+        except (KeyError, TypeError, ValueError):
+            try:
+                return int(row[0])
+            except (TypeError, ValueError, IndexError):
+                return default
+
+
+notification_counts = NotificationStore()
+
+
+def _timestamp_to_iso(value: Any) -> str | None:
+    """Convert a Unix timestamp to ISO 8601 in UTC."""
+
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _get_user_db_id(username: str) -> int | None:
+    """Return the internal database user id for ``username`` if present."""
+
+    try:
+        row = db_conn.execute(
+            "SELECT id FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    try:
+        return int(row["id"])
+    except (KeyError, TypeError, ValueError):
+        try:
+            return int(row[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+
+
+def _save_note_version(
+    note_id: str,
+    content: str,
+    user_id: int | None = None,
+    created_at: datetime | None = None,
+) -> datetime:
+    """Persist a note version to SQLite and prune history beyond 20 entries."""
+
+    ensure_note_versions_table(db_conn)
+    timestamp = created_at or datetime.now(timezone.utc)
+    db_conn.execute(
+        "INSERT INTO note_versions (note_id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
+        (str(note_id), user_id, content, timestamp.timestamp()),
+    )
+    db_conn.execute(
+        """
+        DELETE FROM note_versions
+        WHERE note_id = ?
+          AND id NOT IN (
+            SELECT id FROM note_versions
+            WHERE note_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT 20
+        )
+        """,
+        (str(note_id), str(note_id)),
+    )
+    return timestamp
+
+
+def _fetch_note_versions(note_id: str) -> List[Dict[str, str]]:
+    """Retrieve ordered note versions for ``note_id`` from SQLite."""
+
+    ensure_note_versions_table(db_conn)
+    try:
+        rows = db_conn.execute(
+            """
+            SELECT content, created_at
+            FROM note_versions
+            WHERE note_id=?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (str(note_id),),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    versions: List[Dict[str, str]] = []
+    for row in rows or []:
+        try:
+            created = row["created_at"]
+        except (KeyError, TypeError):
+            created = row[1] if len(row) > 1 else None
+        try:
+            content = row["content"]
+        except (KeyError, TypeError):
+            content = row[0] if row else ""
+        versions.append({"timestamp": _timestamp_to_iso(created), "content": content or ""})
+    return versions
+
 
 COMPLIANCE_SEVERITIES = {"low", "medium", "high", "critical"}
 COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
@@ -646,9 +779,10 @@ COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 
 async def _broadcast_notification_count(username: str) -> None:
     """Send updated notification count to all websocket subscribers."""
+    count = notification_counts[username]
     for ws in list(notification_subscribers.get(username, [])):
         try:
-            await ws.send_json({"count": notification_counts[username]})
+            await ws.send_json({"count": count})
         except Exception:
             try:
                 notification_subscribers[username].remove(ws)
@@ -680,6 +814,8 @@ ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
+ensure_note_versions_table(db_conn)
+ensure_notifications_table(db_conn)
 ensure_event_aggregates_table(db_conn)
 ensure_compliance_issues_table(db_conn)
 ensure_confidence_scores_table(db_conn)
@@ -3351,24 +3487,24 @@ class NoteCreateRequest(BaseModel):
 def create_note(
     req: NoteCreateRequest, user=Depends(require_role("user"))
 ) -> Dict[str, str]:
-    """Create a new draft note and seed the in-memory version history."""
+    """Create a new draft note and seed the persisted version history."""
 
     now = datetime.now(timezone.utc)
     timestamp = now.timestamp()
+    user_id = _get_user_db_id(user["sub"])
     try:
         cursor = db_conn.execute(
             "INSERT INTO notes (content, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
             (req.content or "", "draft", timestamp, timestamp),
         )
+        note_id = str(cursor.lastrowid)
+        _save_note_version(note_id, req.content or "", user_id, created_at=now)
         db_conn.commit()
     except sqlite3.Error as exc:  # pragma: no cover - safety net
         logger.exception("Failed to create note")
+        db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to create note") from exc
 
-    note_id = str(cursor.lastrowid)
-    NOTE_VERSIONS[note_id] = [
-        {"timestamp": now.isoformat(), "content": req.content or ""}
-    ]
     return {"noteId": note_id}
 
 
@@ -3376,15 +3512,22 @@ def create_note(
 def auto_save_note(
     req: AutoSaveRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    """Persist note content in-memory for versioning."""
+    """Persist note content for versioning in the database."""
 
-    versions = NOTE_VERSIONS[req.noteId]
-    versions.append(
-        {"timestamp": datetime.now(timezone.utc).isoformat(), "content": req.content}
-    )
-    if len(versions) > 20:
-        versions.pop(0)
-    return {"status": "saved", "version": len(versions)}
+    user_id = _get_user_db_id(user["sub"])
+    try:
+        _save_note_version(req.noteId, req.content, user_id)
+        row = db_conn.execute(
+            "SELECT COUNT(*) FROM note_versions WHERE note_id=?",
+            (str(req.noteId),),
+        ).fetchone()
+        version_count = int(row[0] if row else 0)
+        db_conn.commit()
+    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        logger.exception("Failed to auto-save note %s", req.noteId)
+        db_conn.rollback()
+        raise HTTPException(status_code=500, detail="Failed to auto-save note") from exc
+    return {"status": "saved", "version": version_count}
 
 
 @app.get("/api/notes/versions/{note_id}")
@@ -3393,7 +3536,7 @@ def get_note_versions(
 ) -> List[Dict[str, str]]:
     """Return previously auto-saved versions for a note."""
 
-    return NOTE_VERSIONS.get(note_id, [])
+    return _fetch_note_versions(note_id)
 
 
 @app.get("/api/notes/auto-save/status")
@@ -3402,17 +3545,57 @@ def get_auto_save_status(
 ) -> Dict[str, Any]:
     """Return auto-save status for a specific note or all notes."""
 
-    if note_id:
-        versions = NOTE_VERSIONS.get(note_id, [])
-        last = versions[-1]["timestamp"] if versions else None
-        return {"noteId": note_id, "versions": len(versions), "lastSave": last}
-    return {
-        nid: {
-            "versions": len(v),
-            "lastSave": v[-1]["timestamp"] if v else None,
+    ensure_note_versions_table(db_conn)
+    if note_id is not None:
+        try:
+            row = db_conn.execute(
+                "SELECT COUNT(*) AS count, MAX(created_at) AS last FROM note_versions WHERE note_id=?",
+                (str(note_id),),
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        count = 0
+        last_iso = None
+        if row:
+            try:
+                count = int(row["count"])
+            except (KeyError, TypeError):
+                count = int(row[0]) if row[0] is not None else 0
+            try:
+                last_raw = row["last"]
+            except (KeyError, TypeError):
+                last_raw = row[1] if len(row) > 1 else None
+            last_iso = _timestamp_to_iso(last_raw)
+        return {"noteId": note_id, "versions": count, "lastSave": last_iso}
+
+    try:
+        rows = db_conn.execute(
+            "SELECT note_id, COUNT(*) AS count, MAX(created_at) AS last FROM note_versions GROUP BY note_id"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    result: Dict[str, Any] = {}
+    for row in rows or []:
+        try:
+            nid = row["note_id"]
+        except (KeyError, TypeError):
+            nid = row[0] if row else None
+        if nid is None:
+            continue
+        try:
+            count = row["count"]
+        except (KeyError, TypeError):
+            count = row[1] if len(row) > 1 else 0
+        try:
+            last_raw = row["last"]
+        except (KeyError, TypeError):
+            last_raw = row[2] if len(row) > 2 else None
+        result[str(nid)] = {
+            "versions": int(count) if count is not None else 0,
+            "lastSave": _timestamp_to_iso(last_raw),
         }
-        for nid, v in NOTE_VERSIONS.items()
-    }
+    return result
 
 
 class ExportRequest(BaseModel):
