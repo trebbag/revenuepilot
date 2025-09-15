@@ -129,6 +129,43 @@ def test_validate_icd10(client, token):
     assert any('age' in issue.lower() for issue in age_issue['issues'])
 
 
+def test_validate_hcpcs(client, token):
+    base_params = {
+        'age': 67,
+        'gender': 'female',
+        'encounterType': 'outpatient',
+        'providerSpecialty': 'primary care',
+    }
+    resp = client.get(
+        '/api/codes/validate/hcpcs/J3490',
+        params=base_params,
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['valid'] is True
+    assert data['issues'] == []
+    assert data['coverage']['status']
+    assert data['documentation']['required']
+
+    resp = client.get(
+        '/api/codes/validate/hcpcs/G0008',
+        params={**base_params, 'age': 2},
+        headers=auth_header(token),
+    )
+    underage = resp.json()
+    assert underage['valid'] is False
+    assert underage['reason'] == 'context'
+    assert any('age' in issue.lower() for issue in underage['issues'])
+
+    resp = client.get(
+        '/api/codes/validate/hcpcs/12345', headers=auth_header(token)
+    )
+    pattern_error = resp.json()
+    assert pattern_error['valid'] is False
+    assert pattern_error['reason'] == 'pattern'
+
+
 def test_validate_combination(client, token):
     payload = {
         'cpt': ['99213'],
