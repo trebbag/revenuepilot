@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Request
 import requests
 from fastapi.middleware.cors import CORSMiddleware
@@ -160,6 +160,19 @@ app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
 
 # Record process start time for uptime calculations
 START_TIME = time.time()
+
+# Simple in-memory cache for dashboard and system endpoints
+_DASHBOARD_CACHE: Dict[str, tuple[float, Any]] = {}
+DASHBOARD_CACHE_TTL = float(os.getenv("DASHBOARD_CACHE_TTL", "10"))
+
+def _cached_response(key: str, builder: Callable[[], Any]):
+    """Return cached data for ``key`` rebuilding via ``builder`` when stale."""
+    now = time.time()
+    ts, data = _DASHBOARD_CACHE.get(key, (0.0, None))
+    if now - ts > DASHBOARD_CACHE_TTL:
+        data = builder()
+        _DASHBOARD_CACHE[key] = (now, data)
+    return data
 
 # Health/readiness endpoint used by the desktop app to know when the backend is up.
 # Returns basic process / db status without requiring auth.
@@ -1001,6 +1014,174 @@ class SurveyModel(BaseModel):
     patientID: Optional[str] = None
     clinician: Optional[str] = None
 
+
+# ------------------------- Dashboard models -------------------------------
+
+class DailyOverviewModel(BaseModel):
+    todaysNotes: int
+    completedVisits: int
+    pendingReviews: int
+    complianceScore: float
+    revenueToday: float
+
+
+class QuickActionsModel(BaseModel):
+    draftCount: int
+    upcomingAppointments: int
+    urgentReviews: int
+    systemAlerts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ActivityItemModel(BaseModel):
+    id: int
+    type: str
+    timestamp: datetime
+    description: Optional[str] = None
+    userId: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SystemStatusModel(BaseModel):
+    aiServicesStatus: str
+    ehrConnectionStatus: str
+    lastSyncTime: Optional[datetime] = None
+
+# ------------------------- Dashboard endpoints ---------------------------
+
+
+@app.get("/api/dashboard/daily-overview", response_model=DailyOverviewModel)
+async def dashboard_daily_overview(user=Depends(require_role("user"))):
+    def builder() -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        row = db_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN eventType='note_closed' AND (compliance_flags IS NULL OR compliance_flags='[]') THEN 1 ELSE 0 END) AS compliant,
+                SUM(COALESCE(revenue,0)) AS revenue
+            FROM events
+            WHERE timestamp>=? AND timestamp<?
+            """,
+            (start.timestamp(), end.timestamp()),
+        ).fetchone()
+        notes = row["notes"] or 0
+        closed = row["closed"] or 0
+        compliant = row["compliant"] or 0
+        revenue = row["revenue"] or 0.0
+        pending = notes - closed
+        score = 100.0 if closed == 0 else (compliant / closed) * 100.0
+        return {
+            "todaysNotes": int(notes),
+            "completedVisits": int(closed),
+            "pendingReviews": int(pending),
+            "complianceScore": round(score, 2),
+            "revenueToday": float(revenue),
+        }
+
+    return _cached_response("daily_overview", builder)
+
+
+@app.get("/api/dashboard/quick-actions", response_model=QuickActionsModel)
+async def dashboard_quick_actions(user=Depends(require_role("user"))):
+    def builder() -> Dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        row = db_conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
+                SUM(CASE WHEN eventType='note_closed' THEN 1 ELSE 0 END) AS closed,
+                SUM(CASE WHEN eventType='note_closed' AND compliance_flags IS NOT NULL AND compliance_flags<>'[]' THEN 1 ELSE 0 END) AS urgent
+            FROM events
+            WHERE timestamp>=? AND timestamp<?
+            """,
+            (start.timestamp(), end.timestamp()),
+        ).fetchone()
+        notes = row["notes"] or 0
+        closed = row["closed"] or 0
+        urgent = row["urgent"] or 0
+        now_dt = datetime.utcnow()
+        upcoming = 0
+        try:
+            for appt in list_appointments():
+                try:
+                    if datetime.fromisoformat(appt["start"]) >= now_dt:
+                        upcoming += 1
+                except Exception:
+                    continue
+        except Exception:
+            upcoming = 0
+        return {
+            "draftCount": int(max(notes - closed, 0)),
+            "upcomingAppointments": int(upcoming),
+            "urgentReviews": int(urgent),
+        }
+
+    data = _cached_response("quick_actions", builder)
+    h = await health()
+    alerts: List[Dict[str, Any]] = []
+    if not h.get("db", True):
+        alerts.append({"type": "db", "message": "Database unavailable"})
+    data["systemAlerts"] = alerts
+    return data
+
+
+@app.get("/api/dashboard/activity", response_model=List[ActivityItemModel])
+async def dashboard_activity(user=Depends(require_role("user"))):
+    def builder() -> List[Dict[str, Any]]:
+        cursor = db_conn.execute(
+            "SELECT id, eventType, timestamp, details FROM events ORDER BY timestamp DESC LIMIT 20"
+        )
+        items: List[Dict[str, Any]] = []
+        for row in cursor.fetchall():
+            try:
+                details = json.loads(row["details"] or "{}")
+            except Exception:
+                details = {}
+            items.append(
+                {
+                    "id": row["id"],
+                    "type": row["eventType"],
+                    "timestamp": datetime.fromtimestamp(row["timestamp"], tz=timezone.utc),
+                    "description": details.get("description"),
+                    "userId": details.get("userId") or details.get("clinician"),
+                    "metadata": details,
+                }
+            )
+        return items
+
+    return _cached_response("activity", builder)
+
+
+@app.get("/api/system/status", response_model=SystemStatusModel, tags=["system"])
+async def system_status():
+    def builder() -> Dict[str, Any]:
+        row = db_conn.execute("SELECT MAX(timestamp) as ts FROM events").fetchone()
+        last_sync = (
+            datetime.fromtimestamp(row["ts"], tz=timezone.utc) if row["ts"] else None
+        )
+        if USE_OFFLINE_MODEL:
+            ai_status = "offline"
+        elif get_api_key():
+            ai_status = "online"
+        else:
+            ai_status = "degraded"
+        ehr_url = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
+        ehr_status = (
+            "connected" if ehr_url and "example.com" not in ehr_url else "disconnected"
+        )
+        return {
+            "aiServicesStatus": ai_status,
+            "ehrConnectionStatus": ehr_status,
+            "lastSyncTime": last_sync,
+        }
+
+    return _cached_response("system_status", builder)
+
 # The deidentify() implementation has been moved to backend.deid and is now
 # exposed via the thin wrapper defined near the top of this file. Tests
 # continue to monkeypatch symbols on backend.main (e.g. _DEID_ENGINE) which
@@ -1660,11 +1841,11 @@ async def get_metrics(
             SELECT
                 date(datetime(timestamp, 'unixepoch')) AS date,
                 SUM(CASE WHEN eventType IN ('note_started','note_saved') THEN 1 ELSE 0 END) AS notes,
-                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS total_beautify,
-                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS total_suggest,
-                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS total_summary,
-                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS total_chart_upload,
-                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS total_audio,
+                SUM(CASE WHEN eventType='beautify' THEN 1 ELSE 0 END)   AS beautify,
+                SUM(CASE WHEN eventType='suggest' THEN 1 ELSE 0 END)    AS suggest,
+                SUM(CASE WHEN eventType='summary' THEN 1 ELSE 0 END)    AS summary,
+                SUM(CASE WHEN eventType='chart_upload' THEN 1 ELSE 0 END) AS chart_upload,
+                SUM(CASE WHEN eventType='audio_recorded' THEN 1 ELSE 0 END) AS audio,
                 AVG(CAST(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{{}}' END, '$.length') AS REAL)) AS avg_note_length,
                 SUM(revenue) AS revenue_projection,
                 AVG(revenue) AS revenue_per_visit,
@@ -1827,6 +2008,7 @@ async def get_metrics(
         },
         "clinicians": clinicians,
         "timeseries": timeseries,
+        "top_compliance": [],
     }
 
 
