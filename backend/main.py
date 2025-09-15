@@ -105,6 +105,7 @@ from backend.migrations import (  # type: ignore
     ensure_user_profile_table,
     ensure_session_state_table,
     ensure_event_aggregates_table,
+    ensure_compliance_issues_table,
 )
 from backend.templates import (
     TemplateModel,
@@ -133,6 +134,7 @@ from backend.auth import (  # type: ignore
     verify_password,
 )
 from backend import deid as deid_module  # type: ignore
+from backend import compliance as compliance_engine  # type: ignore
 from backend.sanitizer import sanitize_text
 from backend import worker  # type: ignore
 
@@ -473,6 +475,9 @@ transcript_history: Dict[str, deque] = defaultdict(
 notification_counts: Dict[str, int] = defaultdict(int)
 notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
 
+COMPLIANCE_SEVERITIES = {"low", "medium", "high", "critical"}
+COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
+
 
 async def _broadcast_notification_count(username: str) -> None:
     """Send updated notification count to all websocket subscribers."""
@@ -511,6 +516,7 @@ ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_event_aggregates_table(db_conn)
+ensure_compliance_issues_table(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -578,6 +584,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_visit_sessions_table(conn)
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
+    ensure_compliance_issues_table(conn)
     conn.commit()
 
 
@@ -611,6 +618,7 @@ ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
+ensure_compliance_issues_table(db_conn)
 
 # User profile details including current view and UI preferences.
 ensure_user_profile_table(db_conn)
@@ -683,6 +691,149 @@ def _insert_audit_log(
         logger.exception("Failed to write audit log entry")
 
 
+def _normalise_severity(value: str | None) -> str:
+    if not value:
+        return "medium"
+    value_norm = value.lower()
+    if value_norm not in COMPLIANCE_SEVERITIES:
+        return "medium"
+    return value_norm
+
+
+def _normalise_status(value: str | None) -> str:
+    if not value:
+        return "open"
+    value_norm = value.lower()
+    if value_norm not in COMPLIANCE_STATUSES:
+        return "open"
+    return value_norm
+
+
+def _row_to_compliance_issue(row: sqlite3.Row | None) -> Dict[str, Any]:
+    if row is None:
+        return {}
+    data = dict(row)
+    metadata_payload = data.get("metadata")
+    metadata: Dict[str, Any] | None = None
+    if metadata_payload:
+        try:
+            metadata = json.loads(metadata_payload)
+        except Exception:
+            metadata = {"raw": metadata_payload}
+    return {
+        "issueId": data.get("issue_id"),
+        "ruleId": data.get("rule_id"),
+        "title": data.get("title"),
+        "severity": _normalise_severity(data.get("severity")),
+        "category": data.get("category"),
+        "status": _normalise_status(data.get("status")),
+        "noteExcerpt": data.get("note_excerpt"),
+        "metadata": metadata,
+        "createdAt": data.get("created_at"),
+        "updatedAt": data.get("updated_at"),
+        "createdBy": data.get("created_by"),
+        "assignee": data.get("assignee"),
+    }
+
+
+def _serialise_metadata(metadata: Dict[str, Any] | None) -> str | None:
+    if not metadata:
+        return None
+
+    def _convert(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): _convert(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_convert(v) for v in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    safe_payload = _convert(metadata)
+    try:
+        return json.dumps(safe_payload, ensure_ascii=False)
+    except Exception:
+        return json.dumps(str(safe_payload), ensure_ascii=False)
+
+
+def _persist_compliance_issue(
+    *,
+    issue_id: str | None,
+    rule_id: str | None,
+    title: str,
+    severity: str | None,
+    category: str | None,
+    status: str | None,
+    note_excerpt: str | None,
+    metadata: Dict[str, Any] | None,
+    created_by: str | None,
+    assignee: str | None,
+) -> Dict[str, Any]:
+    issue_id = issue_id or str(uuid4())
+    severity_norm = _normalise_severity(severity)
+    status_norm = _normalise_status(status)
+    note_excerpt_clean = sanitize_text(note_excerpt) if note_excerpt else None
+    metadata_json = _serialise_metadata(metadata)
+    now = time.time()
+    try:
+        db_conn.execute(
+            """
+            INSERT INTO compliance_issues (
+                issue_id, rule_id, title, severity, category, status,
+                note_excerpt, metadata, created_at, updated_at, created_by, assignee
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                issue_id,
+                rule_id,
+                title,
+                severity_norm,
+                category,
+                status_norm,
+                note_excerpt_clean,
+                metadata_json,
+                now,
+                now,
+                created_by,
+                assignee,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        db_conn.execute(
+            """
+            UPDATE compliance_issues
+               SET rule_id = ?,
+                   title = ?,
+                   severity = ?,
+                   category = ?,
+                   status = ?,
+                   note_excerpt = ?,
+                   metadata = ?,
+                   updated_at = ?,
+                   assignee = ?,
+                   created_by = COALESCE(created_by, ?)
+             WHERE issue_id = ?
+            """,
+            (
+                rule_id,
+                title,
+                severity_norm,
+                category,
+                status_norm,
+                note_excerpt_clean,
+                metadata_json,
+                now,
+                assignee,
+                created_by,
+                issue_id,
+            ),
+        )
+    db_conn.commit()
+    row = db_conn.execute(
+        "SELECT * FROM compliance_issues WHERE issue_id = ?",
+        (issue_id,),
+    ).fetchone()
+    return _row_to_compliance_issue(row)
 def _audit_details_from_request(request: Request) -> Dict[str, Any]:
     """Capture structured request metadata for audit logging."""
 
@@ -2223,6 +2374,117 @@ class ComplianceAlert(BaseModel):
 
 class ComplianceCheckResponse(BaseModel):
     alerts: List[ComplianceAlert]
+
+
+class ComplianceMonitorIssue(BaseModel):
+    issueId: str
+    ruleId: Optional[str] = None
+    title: str
+    severity: str
+    category: Optional[str] = None
+    summary: Optional[str] = None
+    recommendation: Optional[str] = None
+    references: Optional[List[Dict[str, Any]]] = None
+    status: Optional[str] = None
+    noteExcerpt: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    createdAt: Optional[float] = None
+
+
+class ComplianceMonitorRequest(BaseModel):
+    note: str = Field(..., max_length=10000)
+    metadata: Optional[Dict[str, Any]] = None
+    ruleIds: Optional[List[str]] = None
+    persistFindings: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
+
+    @field_validator("note")
+    @classmethod
+    def sanitize_note(cls, value: str) -> str:  # noqa: D401,N805
+        return sanitize_text(value)
+
+    @field_validator("ruleIds")
+    @classmethod
+    def unique_rules(cls, value: Optional[List[str]]) -> Optional[List[str]]:  # noqa: D401,N805
+        if not value:
+            return value
+        seen: Set[str] = set()
+        unique: List[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            lowered = item.strip()
+            if not lowered:
+                continue
+            lowered_norm = lowered.lower()
+            if lowered_norm in seen:
+                continue
+            seen.add(lowered_norm)
+            unique.append(lowered)
+        return unique
+
+
+class ComplianceMonitorResponse(BaseModel):
+    issues: List[ComplianceMonitorIssue]
+    summary: Dict[str, Any]
+    rulesEvaluated: int
+    appliedRules: List[str]
+    persistedIssueIds: Optional[List[str]] = None
+
+
+class ComplianceIssueCreateRequest(BaseModel):
+    title: str
+    severity: str
+    ruleId: Optional[str] = None
+    category: Optional[str] = None
+    status: Optional[str] = None
+    noteExcerpt: Optional[str] = Field(None, max_length=2000)
+    metadata: Optional[Dict[str, Any]] = None
+    assignee: Optional[str] = None
+    issueId: Optional[str] = None
+    createdBy: Optional[str] = None
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, value: str) -> str:  # noqa: D401,N805
+        if not value:
+            raise ValueError("Severity is required")
+        normalised = value.lower()
+        if normalised not in COMPLIANCE_SEVERITIES:
+            raise ValueError("Invalid severity")
+        return normalised
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: Optional[str]) -> Optional[str]:  # noqa: D401,N805
+        if value is None:
+            return value
+        normalised = value.lower()
+        if normalised not in COMPLIANCE_STATUSES:
+            raise ValueError("Invalid status")
+        return normalised
+
+    @field_validator("noteExcerpt")
+    @classmethod
+    def sanitize_excerpt(cls, value: Optional[str]) -> Optional[str]:  # noqa: D401,N805
+        return sanitize_text(value) if value else value
+
+
+class ComplianceIssueRecord(BaseModel):
+    issueId: str
+    ruleId: Optional[str] = None
+    title: str
+    severity: str
+    category: Optional[str] = None
+    status: str
+    noteExcerpt: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    createdAt: float
+    updatedAt: float
+    createdBy: Optional[str] = None
+    assignee: Optional[str] = None
 
 
 class DifferentialItem(BaseModel):
@@ -4606,6 +4868,96 @@ async def ws_compliance_check(websocket: WebSocket):
     resp = await _compliance_check(ComplianceCheckRequest(**data))
     await websocket.send_json(resp.model_dump())
     await websocket.close()
+
+
+@app.post("/api/compliance/monitor", response_model=ComplianceMonitorResponse)
+async def compliance_monitor(
+    req: ComplianceMonitorRequest, user=Depends(require_role("user"))
+) -> ComplianceMonitorResponse:
+    metadata = req.metadata if isinstance(req.metadata, dict) else {}
+    result = compliance_engine.evaluate_note(
+        note=req.note,
+        metadata=metadata,
+        rule_ids=req.ruleIds,
+    )
+    issues = [ComplianceMonitorIssue(**item) for item in result.get("issues", [])]
+    persisted_ids: List[str] = []
+    if req.persistFindings and issues:
+        for issue in issues:
+            metadata_payload: Dict[str, Any] = {}
+            if issue.details:
+                metadata_payload["details"] = issue.details
+            if metadata:
+                metadata_payload["context"] = metadata
+            if issue.recommendation:
+                metadata_payload["recommendation"] = issue.recommendation
+            if issue.references:
+                metadata_payload["references"] = issue.references
+            if issue.summary:
+                metadata_payload["summary"] = issue.summary
+            record = _persist_compliance_issue(
+                issue_id=issue.issueId,
+                rule_id=issue.ruleId,
+                title=issue.title,
+                severity=issue.severity,
+                category=issue.category,
+                status=issue.status or "open",
+                note_excerpt=issue.noteExcerpt,
+                metadata=metadata_payload or None,
+                created_by=user.get("sub"),
+                assignee=None,
+            )
+            if record.get("issueId"):
+                persisted_ids.append(record["issueId"])
+    response = ComplianceMonitorResponse(
+        issues=issues,
+        summary=result.get("summary", {}),
+        rulesEvaluated=result.get("rulesEvaluated", 0),
+        appliedRules=result.get("appliedRules", []),
+        persistedIssueIds=persisted_ids or None,
+    )
+    return response
+
+
+@app.get("/api/compliance/rules")
+async def compliance_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
+    rules = compliance_engine.get_rules()
+    return {"rules": rules, "count": len(rules)}
+
+
+@app.post("/api/compliance/issue-tracking", response_model=ComplianceIssueRecord)
+async def compliance_issue_tracking(
+    req: ComplianceIssueCreateRequest, user=Depends(require_role("user"))
+) -> ComplianceIssueRecord:
+    metadata_payload: Dict[str, Any] = {}
+    if isinstance(req.metadata, dict):
+        metadata_payload.update(req.metadata)
+    metadata_payload["manual"] = True
+    record = _persist_compliance_issue(
+        issue_id=req.issueId,
+        rule_id=req.ruleId,
+        title=sanitize_text(req.title),
+        severity=req.severity,
+        category=req.category,
+        status=req.status or "open",
+        note_excerpt=req.noteExcerpt,
+        metadata=metadata_payload or None,
+        created_by=req.createdBy or user.get("sub"),
+        assignee=req.assignee,
+    )
+    if not record:
+        raise HTTPException(status_code=500, detail="Failed to persist issue")
+    return ComplianceIssueRecord(**record)
+
+
+@app.get("/api/compliance/resources")
+async def compliance_resources(
+    region: Optional[str] = None,
+    category: Optional[str] = None,
+    user=Depends(require_role("user")),
+) -> Dict[str, Any]:
+    resources = compliance_engine.get_resources(region=region, category=category)
+    return {"resources": resources, "count": len(resources)}
 
 
 async def _differentials_generate(

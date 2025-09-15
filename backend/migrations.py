@@ -200,6 +200,44 @@ def ensure_event_aggregates_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_compliance_issues_table(conn: sqlite3.Connection) -> None:
+    """Ensure the compliance_issues table exists for manual tracking."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compliance_issues (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_id TEXT UNIQUE NOT NULL,
+            rule_id TEXT,
+            title TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            category TEXT,
+            status TEXT NOT NULL,
+            note_excerpt TEXT,
+            metadata TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            created_by TEXT,
+            assignee TEXT
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(compliance_issues)")}
+    if "assignee" not in columns:
+        conn.execute("ALTER TABLE compliance_issues ADD COLUMN assignee TEXT")
+    if "created_by" not in columns:
+        conn.execute("ALTER TABLE compliance_issues ADD COLUMN created_by TEXT")
+    if "note_excerpt" not in columns:
+        conn.execute("ALTER TABLE compliance_issues ADD COLUMN note_excerpt TEXT")
+    if "metadata" not in columns:
+        conn.execute("ALTER TABLE compliance_issues ADD COLUMN metadata TEXT")
+    if "status" not in columns:
+        conn.execute("ALTER TABLE compliance_issues ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")
+
+    conn.commit()
+
+
 
 def ensure_patients_table(conn: sqlite3.Connection) -> None:
     """Ensure the patients table exists for storing patient demographics."""
