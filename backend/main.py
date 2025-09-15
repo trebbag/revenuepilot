@@ -20,7 +20,9 @@ import sys
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Dict, Any, Set
+
+from typing import List, Optional, Dict, Any, Literal, Set
+
 from fastapi import (
     FastAPI,
     Depends,
@@ -29,8 +31,10 @@ from fastapi import (
     UploadFile,
     File,
     Request,
+    BackgroundTasks,
     WebSocket,
     WebSocketDisconnect,
+
 )
 import requests
 from fastapi.middleware.cors import CORSMiddleware
@@ -115,6 +119,10 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
 )
+
+from backend import patients  # type: ignore
+from backend import visits  # type: ignore
+from backend.charts import process_chart  # type: ignore
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     authenticate_user,
@@ -3491,6 +3499,78 @@ async def export_schedule_appointment(req: ScheduleExportRequest, user=Depends(r
     if not appt:
         raise HTTPException(status_code=404, detail="appointment not found")
     return {"ics": export_appointment_ics(appt)}
+# ------------------- Additional API endpoints ------------------------------
+
+
+class Patient(BaseModel):
+    patientId: str
+    name: str
+    age: int
+    gender: str
+    insurance: str
+    lastVisit: str
+    allergies: List[str]
+    medications: List[str]
+
+
+@app.get("/api/patients/{patient_id}", response_model=Patient)
+async def get_patient_api(patient_id: str, user=Depends(require_role("user"))):
+    rec = patients.get_patient(patient_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="patient not found")
+    return Patient(**rec)
+
+
+@app.get("/api/schedule/appointments", response_model=AppointmentList)
+async def api_list_appointments(user=Depends(require_role("user"))):
+    items = list_appointments()
+    parsed: List[Appointment] = []
+    for item in items:
+        parsed.append(
+            Appointment(
+                **{
+                    **item,
+                    "start": datetime.fromisoformat(item["start"]),
+                    "end": datetime.fromisoformat(item["end"]),
+                }
+            )
+        )
+    return AppointmentList(appointments=parsed)
+
+
+class VisitManageRequest(BaseModel):
+    encounterId: str
+    action: Literal["start", "complete"]
+
+
+class VisitState(BaseModel):
+    encounterId: str
+    visitStatus: str
+    startTime: Optional[str] = None
+    duration: int = 0
+    documentationComplete: bool = False
+
+
+@app.post("/api/visits/manage", response_model=VisitState)
+async def manage_visit_state(
+    req: VisitManageRequest,
+    background_tasks: BackgroundTasks,
+    user=Depends(require_role("user")),
+):
+    background_tasks.add_task(visits.update_visit_state, req.encounterId, req.action)
+    state = visits.peek_state(req.encounterId, req.action)
+    return VisitState(**state)
+
+
+@app.post("/api/charts/upload")
+async def upload_chart(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user=Depends(require_role("user")),
+):
+    data = await file.read()
+    background_tasks.add_task(process_chart, file.filename, data)
+    return {"status": "processing"}
 # ---------------------------------------------------------------------------
 
 
