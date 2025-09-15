@@ -114,8 +114,8 @@
       ],
       "category": "Utility",
 
-      "cscLink": "${env.CSC_LINK}",
-      "cscKeyPassword": "${env.CSC_KEY_PASSWORD}"
+      "cscLink": "${env.LINUX_CSC_LINK}",
+      "cscKeyPassword": "${env.LINUX_CSC_KEY_PASSWORD}"
 
     },
 
