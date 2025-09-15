@@ -100,7 +100,9 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "cscLink": "https://example.com/cert.p12",
+      "cscKeyPassword": "example-password"
     },
     "publish": [
       {
