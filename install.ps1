@@ -12,9 +12,13 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
+$frontendDir = Join-Path $scriptDir 'revenuepilot-frontend'
 
 Write-Host "Installing Node dependencies..."
 npm install
+
+Write-Host "Installing standalone frontend dependencies..."
+npm install --prefix $frontendDir
 
 Write-Host "Setting up Python backend..."
 Set-Location backend

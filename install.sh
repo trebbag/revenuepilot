@@ -43,6 +43,9 @@ cd "$SCRIPT_DIR"
 echo "Installing Node dependencies..."
 npm install
 
+echo "Installing standalone frontend dependencies..."
+npm --prefix revenuepilot-frontend install
+
 echo "Setting up Python backend..."
 cd backend
 python3 -m venv venv

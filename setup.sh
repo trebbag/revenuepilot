@@ -10,6 +10,10 @@ cd "$SCRIPT_DIR"
 # Install prerequisites and project dependencies
 ./install.sh
 
+# Build the standalone Vite frontend bundle
+echo "Building standalone frontend bundle..."
+npm --prefix revenuepilot-frontend run build
+
 # Build the packaged Electron application
 npm run electron:build
 
