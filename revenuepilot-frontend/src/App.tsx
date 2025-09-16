@@ -1,22 +1,31 @@
-import { useState } from "react"
-import { Sidebar, SidebarContent, SidebarProvider, SidebarTrigger } from "./components/ui/sidebar"
-import { TooltipProvider } from "./components/ui/tooltip"
-import { NavigationSidebar } from "./components/NavigationSidebar"
-import { Dashboard } from "./components/Dashboard"
-import { Analytics } from "./components/Analytics"
-import { Settings } from "./components/Settings"
-import { ActivityLog } from "./components/ActivityLog"
-import { Drafts } from "./components/Drafts"
-import { Schedule } from "./components/Schedule"
-import { Builder } from "./components/Builder"
-import { NoteEditor } from "./components/NoteEditor"
-import { SuggestionPanel } from "./components/SuggestionPanel"
-import { SelectedCodesBar } from "./components/SelectedCodesBar"
-import { StyleGuide } from "./components/StyleGuide"
-import { FigmaComponentLibrary } from "./components/FigmaComponentLibrary"
-import { FinalizationWizardDemo } from "./components/FinalizationWizardDemo"
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { Button } from "./components/ui/button"
+import { AuthProvider, useAuth } from "./contexts/AuthContext"
+import { SessionProvider, useSession } from "./contexts/SessionContext"
+import { ProtectedApp } from "./ProtectedApp"
+
+interface FullscreenMessageProps {
+  title: string
+  description?: string
+  actionLabel?: string
+  onAction?: () => void
+}
+
+function FullscreenMessage({ title, description, actionLabel, onAction }: FullscreenMessageProps) {
+  return (
+    <div className="flex min-h-screen w-full items-center justify-center bg-background">
+      <div className="flex flex-col items-center gap-4 text-center">
+        <h1 className="text-xl font-semibold text-foreground">{title}</h1>
+        {description && <p className="max-w-md text-sm text-muted-foreground">{description}</p>}
+        {actionLabel && onAction && (
+          <Button variant="outline" onClick={onAction}>
+            {actionLabel}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 import { Badge } from "./components/ui/badge"
 
 export default function App() {
@@ -588,224 +597,54 @@ export default function App() {
     )
   }
 
-  // Schedule View
-  if (currentView === 'schedule') {
+
+function AppShell() {
+  const { status, checking, refresh } = useAuth()
+  const { hydrated, actions } = useSession()
+
+  if (checking) {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="schedule" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Patient Schedule</h1>
-                  <Badge variant="outline" className="ml-2">
-                    Today's Appointments
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('app')}>
-                    Documentation
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('drafts')}>
-                    Drafts
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('activity')}>
-                    Activity Log
-                  </Button>
-                </div>
-              </div>
-              
-              <div className="flex-1 overflow-auto">
-                <Schedule 
-                  currentUser={currentUser}
-                  onStartVisit={handleStartVisit}
-                  onUploadChart={handleUploadChart}
-                  appointments={sharedAppointments}
-                />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+      <FullscreenMessage
+        title="Signing you in"
+        description="Checking your authentication status."
+      />
     )
   }
 
-  // Builder View
-  if (currentView === 'builder') {
+  if (status !== "authenticated") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="builder" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Schedule Builder</h1>
-                  <Badge variant="outline" className="ml-2">
-                    Template Creator
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('schedule')}>
-                    Schedule
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('app')}>
-                    Documentation
-                  </Button>
-                </div>
-              </div>
-              
-              <div className="flex-1 overflow-auto">
-                <Builder 
-                  currentUser={currentUser}
-                  appointments={sharedAppointments}
-                  onAppointmentsChange={setSharedAppointments}
-                />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+      <FullscreenMessage
+        title="Authentication required"
+        description="Your session has ended. Please sign in again to continue."
+        actionLabel="Retry"
+        onAction={() => refresh()}
+      />
     )
   }
 
-  // Style Guide View
-  if (currentView === 'style-guide') {
+  if (!hydrated) {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="style-guide" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">RevenuePilot Design System</h1>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('figma-library')}>
-                    Figma Library
-                  </Button>
-                </div>
-              </div>
-              <div className="flex-1 overflow-auto">
-                <StyleGuide />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+      <FullscreenMessage
+        title="Preparing your workspace"
+        description="Loading your session data and layout preferences."
+        actionLabel="Reload"
+        onAction={() => actions.refresh()}
+      />
     )
   }
 
-  // Figma Library View
-  if (currentView === 'figma-library') {
-    return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="figma-library" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Figma Component Library</h1>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('style-guide')}>
-                    Style Guide
-                  </Button>
-                </div>
-              </div>
-              <div className="flex-1 overflow-auto">
-                <FigmaComponentLibrary />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
-    )
-  }
+  return <ProtectedApp />
+}
 
-  // Finalization Demo View
-  if (currentView === 'finalization-demo') {
-    return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="finalization-demo" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Finalization Wizard Demo</h1>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => setCurrentView('app')}>
-                    Documentation
-                  </Button>
-                </div>
-              </div>
-              <div className="flex-1 overflow-auto">
-                <FinalizationWizardDemo />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
-    )
-  }
-
-  // Main App View (Documentation Editor)
+export default function App() {
   return (
+
+    <AuthProvider>
+      <SessionProvider>
+        <AppShell />
+      </SessionProvider>
+    </AuthProvider>
+
     <TooltipProvider>
       <SidebarProvider defaultOpen={false}>
         <div className="flex h-screen w-full bg-background">
