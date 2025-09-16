@@ -124,6 +124,7 @@ from backend.migrations import (  # type: ignore
     ensure_session_state_table,
     ensure_event_aggregates_table,
     ensure_compliance_issues_table,
+    ensure_compliance_issue_history_table,
     ensure_compliance_rules_table,
     ensure_confidence_scores_table,
     ensure_notification_counters_table,
@@ -133,6 +134,7 @@ from backend.migrations import (  # type: ignore
     ensure_hcpcs_codes_table,
     ensure_cpt_reference_table,
     ensure_payer_schedule_table,
+    ensure_billing_audits_table,
     seed_compliance_rules,
     seed_cpt_codes,
     seed_icd10_codes,
@@ -1014,6 +1016,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
     ensure_compliance_issues_table(conn)
+    ensure_compliance_issue_history_table(conn)
     ensure_compliance_rules_table(conn)
     ensure_confidence_scores_table(conn)
     ensure_notification_counters_table(conn)
@@ -1023,6 +1026,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_hcpcs_codes_table(conn)
     ensure_cpt_reference_table(conn)
     ensure_payer_schedule_table(conn)
+    ensure_billing_audits_table(conn)
     _seed_reference_data(conn)
     conn.commit()
     patients.configure_database(conn)
@@ -1060,6 +1064,7 @@ ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
 ensure_compliance_issues_table(db_conn)
+ensure_compliance_issue_history_table(db_conn)
 ensure_compliance_rules_table(db_conn)
 ensure_confidence_scores_table(db_conn)
 ensure_compliance_rule_catalog_table(db_conn)
@@ -1068,6 +1073,7 @@ ensure_icd10_codes_table(db_conn)
 ensure_hcpcs_codes_table(db_conn)
 ensure_cpt_reference_table(db_conn)
 ensure_payer_schedule_table(db_conn)
+ensure_billing_audits_table(db_conn)
 
 # User profile details including current view and UI preferences.
 ensure_user_profile_table(db_conn)
@@ -1347,6 +1353,72 @@ def _serialise_metadata(metadata: Dict[str, Any] | None) -> str | None:
         return json.dumps(str(safe_payload), ensure_ascii=False)
 
 
+def _clean_optional_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        text = str(value)
+    except Exception:
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    return sanitize_text(stripped)
+
+
+def _deserialise_findings(value: Any) -> Any:
+    if value in (None, "", b""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            text = value.decode("utf-8")
+        except Exception:
+            text = value.decode("utf-8", "ignore")
+    else:
+        text = str(value)
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _log_compliance_history_entry(
+    *,
+    issue_id: str,
+    code: str | None,
+    payer: str | None,
+    findings: Dict[str, Any] | str | None,
+    user_id: str | None,
+    timestamp: float,
+) -> None:
+    try:
+        ensure_compliance_issue_history_table(db_conn)
+        payload: str | None
+        if isinstance(findings, str):
+            payload = findings
+        else:
+            payload = _serialise_metadata(findings)
+        db_conn.execute(
+            """
+            INSERT INTO compliance_issue_history (
+                issue_id, code, payer, findings, created_at, user_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                issue_id,
+                code,
+                payer,
+                payload,
+                timestamp,
+                user_id,
+            ),
+        )
+    except sqlite3.Error as exc:  # pragma: no cover - best effort logging
+        logging.warning("Failed to append compliance history: %s", exc)
+
+
 def _persist_compliance_issue(
     *,
     issue_id: str | None,
@@ -1359,6 +1431,7 @@ def _persist_compliance_issue(
     metadata: Dict[str, Any] | None,
     created_by: str | None,
     assignee: str | None,
+    payer: str | None = None,
 ) -> Dict[str, Any]:
     issue_id = issue_id or str(uuid4())
     severity_norm = _normalise_severity(severity)
@@ -1366,6 +1439,9 @@ def _persist_compliance_issue(
     note_excerpt_clean = sanitize_text(note_excerpt) if note_excerpt else None
     metadata_json = _serialise_metadata(metadata)
     now = time.time()
+    payer_clean = _clean_optional_text(payer)
+    user_clean = _clean_optional_text(created_by)
+    code_clean = _clean_optional_text(rule_id)
     try:
         db_conn.execute(
             """
@@ -1385,7 +1461,7 @@ def _persist_compliance_issue(
                 metadata_json,
                 now,
                 now,
-                created_by,
+                user_clean,
                 assignee,
             ),
         )
@@ -1415,16 +1491,135 @@ def _persist_compliance_issue(
                 metadata_json,
                 now,
                 assignee,
-                created_by,
+                user_clean,
                 issue_id,
             ),
         )
+    findings_payload: Dict[str, Any] = {
+        "title": title,
+        "severity": severity_norm,
+        "category": category,
+        "status": status_norm,
+    }
+    if note_excerpt_clean:
+        findings_payload["noteExcerpt"] = note_excerpt_clean
+    if metadata_json:
+        try:
+            findings_payload["metadata"] = json.loads(metadata_json)
+        except Exception:
+            findings_payload["metadata"] = metadata_json
+    _log_compliance_history_entry(
+        issue_id=issue_id,
+        code=code_clean,
+        payer=payer_clean,
+        findings=findings_payload,
+        user_id=user_clean,
+        timestamp=now,
+    )
     db_conn.commit()
     row = db_conn.execute(
         "SELECT * FROM compliance_issues WHERE issue_id = ?",
         (issue_id,),
     ).fetchone()
     return _row_to_compliance_issue(row)
+
+
+def _persist_billing_audit(
+    *,
+    audit_id: str | None,
+    codes: Iterable[str],
+    payer: str | None,
+    findings: Dict[str, Any] | None,
+    user_id: str | None,
+) -> str:
+    audit_ref = audit_id or str(uuid4())
+    try:
+        ensure_billing_audits_table(db_conn)
+    except sqlite3.Error as exc:  # pragma: no cover - defensive
+        logging.warning("Failed to ensure billing audits table: %s", exc)
+    now = time.time()
+    payer_clean = _clean_optional_text(payer)
+    user_clean = _clean_optional_text(user_id)
+    normalized_codes = [
+        code.strip().upper()
+        for code in codes
+        if isinstance(code, str) and code.strip()
+    ]
+    records = normalized_codes or ["__SUMMARY__"]
+    breakdown: Dict[str, Any]
+    payer_specific: Dict[str, Any] | None
+    issues: List[str]
+    total_estimated: Any
+    total_rvu: Any
+
+    if isinstance(findings, dict):
+        breakdown = (
+            findings.get("breakdown")
+            if isinstance(findings.get("breakdown"), dict)
+            else {}
+        )
+        payer_specific = (
+            findings.get("payerSpecific")
+            if isinstance(findings.get("payerSpecific"), dict)
+            else None
+        )
+        issues = (
+            findings.get("issues")
+            if isinstance(findings.get("issues"), list)
+            else []
+        )
+        total_estimated = findings.get("totalEstimated")
+        total_rvu = findings.get("totalRvu")
+    else:
+        breakdown = {}
+        payer_specific = None
+        issues = []
+        total_estimated = None
+        total_rvu = None
+
+    for code in records:
+        detail = breakdown.get(code) if breakdown else None
+        payload: Dict[str, Any] = {
+            "totalEstimated": total_estimated,
+            "totalRvu": total_rvu,
+        }
+        if payer_specific:
+            payload["payerSpecific"] = payer_specific
+        if detail is not None:
+            payload["detail"] = detail
+        if issues:
+            if code and code != "__SUMMARY__":
+                related = [
+                    issue
+                    for issue in issues
+                    if isinstance(issue, str) and code in issue
+                ]
+                payload["issues"] = related or issues
+            else:
+                payload["issues"] = issues
+        try:
+            db_conn.execute(
+                """
+                INSERT INTO billing_audits (
+                    audit_id, code, payer, findings, created_at, user_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_ref,
+                    code,
+                    payer_clean,
+                    _serialise_metadata(payload),
+                    now,
+                    user_clean,
+                ),
+            )
+        except sqlite3.Error as exc:  # pragma: no cover - best effort logging
+            logging.warning("Failed to persist billing audit entry: %s", exc)
+    try:
+        db_conn.commit()
+    except sqlite3.Error:
+        pass
+    return audit_ref
 def _audit_details_from_request(request: Request) -> Dict[str, Any]:
     """Capture structured request metadata for audit logging."""
 
@@ -6353,6 +6548,7 @@ async def compliance_monitor(
                 metadata=metadata_payload or None,
                 created_by=user.get("sub"),
                 assignee=None,
+                payer=metadata.get("payer") if isinstance(metadata, dict) else None,
             )
             if record.get("issueId"):
                 persisted_ids.append(record["issueId"])
@@ -6468,12 +6664,73 @@ async def compliance_issue_tracking(
         metadata=metadata_payload or None,
         created_by=req.createdBy or user.get("sub"),
         assignee=req.assignee,
+        payer=metadata_payload.get("payer"),
     )
     if not record:
         raise HTTPException(status_code=500, detail="Failed to persist issue")
     recipients = {user.get("sub"), record.get("assignee"), record.get("createdBy")}
     await _notify_compliance_issue(record, recipients)
     return ComplianceIssueRecord(**record)
+
+
+@app.get("/api/compliance/issues/history")
+async def compliance_issue_history(
+    issue_id: Optional[str] = Query(None, alias="issueId"),
+    code: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None, alias="userId"),
+    start: Optional[float] = Query(None, ge=0),
+    end: Optional[float] = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    user=Depends(require_role("user")),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Dict[str, Any]:
+    query = (
+        "SELECT issue_id, code, payer, findings, created_at, user_id "
+        "FROM compliance_issue_history"
+    )
+    clauses: List[str] = []
+    params: List[Any] = []
+
+    if issue_id:
+        clauses.append("issue_id = ?")
+        params.append(issue_id.strip())
+    if code:
+        clauses.append("UPPER(code) = ?")
+        params.append(code.strip().upper())
+    if payer:
+        clauses.append("LOWER(payer) = ?")
+        params.append(payer.strip().lower())
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id.strip())
+    if start is not None:
+        clauses.append("created_at >= ?")
+        params.append(float(start))
+    if end is not None:
+        clauses.append("created_at <= ?")
+        params.append(float(end))
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC"
+    if limit:
+        query += " LIMIT ?"
+        params.append(int(limit))
+
+    rows = conn.execute(query, params).fetchall()
+    records = [
+        {
+            "issueId": row["issue_id"],
+            "code": row["code"],
+            "payer": row["payer"],
+            "findings": _deserialise_findings(row["findings"]),
+            "timestamp": _iso_timestamp(row["created_at"]),
+            "userId": row["user_id"],
+        }
+        for row in rows
+    ]
+    return {"count": len(records), "records": records}
 
 
 @app.get("/api/compliance/resources")
@@ -7071,12 +7328,23 @@ async def billing_calculate(
 ):
     """Return estimated reimbursement for CPT codes."""
     cpt_codes = [c.upper() for c in req.cpt]
-    return code_tables.calculate_billing(
+    result = code_tables.calculate_billing(
         cpt_codes,
         req.payerType,
         req.location,
         session=conn,
     )
+    try:
+        _persist_billing_audit(
+            audit_id=None,
+            codes=cpt_codes,
+            payer=req.payerType,
+            findings=result,
+            user_id=user.get("sub"),
+        )
+    except Exception as exc:  # pragma: no cover - best effort audit
+        logging.warning("Failed to persist billing audit: %s", exc)
+    return result
 
 
 @app.get("/api/codes/documentation/{code}")
@@ -8056,12 +8324,83 @@ async def billing_calculate(
     codes_upper = [code.upper() for code in req.codes]
     payer_type = req.payerType or "commercial"
 
-    return code_tables.calculate_billing(
+    result = code_tables.calculate_billing(
         codes_upper,
         payer_type,
         req.location,
         session=conn,
     )
+    try:
+        _persist_billing_audit(
+            audit_id=None,
+            codes=codes_upper,
+            payer=payer_type,
+            findings=result,
+            user_id=user.get("sub"),
+        )
+    except Exception as exc:  # pragma: no cover - best effort audit
+        logging.warning("Failed to persist billing audit: %s", exc)
+    return result
+
+
+@app.get("/api/billing/audits")
+async def list_billing_audits(
+    audit_id: Optional[str] = Query(None, alias="auditId"),
+    code: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user_id: Optional[str] = Query(None, alias="userId"),
+    start: Optional[float] = Query(None, ge=0),
+    end: Optional[float] = Query(None, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    user=Depends(require_role("user")),
+    conn: sqlite3.Connection = Depends(get_db),
+) -> Dict[str, Any]:
+    query = (
+        "SELECT audit_id, code, payer, findings, created_at, user_id "
+        "FROM billing_audits"
+    )
+    clauses: List[str] = []
+    params: List[Any] = []
+
+    if audit_id:
+        clauses.append("audit_id = ?")
+        params.append(audit_id.strip())
+    if code:
+        clauses.append("UPPER(code) = ?")
+        params.append(code.strip().upper())
+    if payer:
+        clauses.append("LOWER(payer) = ?")
+        params.append(payer.strip().lower())
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id.strip())
+    if start is not None:
+        clauses.append("created_at >= ?")
+        params.append(float(start))
+    if end is not None:
+        clauses.append("created_at <= ?")
+        params.append(float(end))
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY created_at DESC"
+    if limit:
+        query += " LIMIT ?"
+        params.append(int(limit))
+
+    rows = conn.execute(query, params).fetchall()
+    records = [
+        {
+            "auditId": row["audit_id"],
+            "code": row["code"],
+            "payer": row["payer"],
+            "findings": _deserialise_findings(row["findings"]),
+            "timestamp": _iso_timestamp(row["created_at"]),
+            "userId": row["user_id"],
+        }
+        for row in rows
+    ]
+    return {"count": len(records), "records": records}
 
 
 @app.post("/api/codes/validate/combination")
