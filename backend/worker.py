@@ -203,8 +203,7 @@ def _update_compliance_payload(payload: Mapping[str, Any]) -> Dict[str, Optional
         if not isinstance(rules_raw, Sequence):
             raise ValueError("rules payload must be a sequence")
         rules = [dict(item) for item in rules_raw if isinstance(item, Mapping)]
-        compliance._DEFAULT_RULES = rules
-        counts["rules"] = len(rules)
+        counts["rules"] = compliance.replace_rules(rules)
 
     if "resources" in payload:
         resources_raw = payload.get("resources")
