@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
@@ -8,29 +8,43 @@ import { Alert, AlertDescription } from "./ui/alert"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
 import { Separator } from "./ui/separator"
+import { toast } from "sonner@2.0.3"
 import { defaultFinalizationSteps, type FinalizationStepConfig } from "./finalizationSteps"
 import {
   FileText,
   Code2,
   Heart,
-  Activity, 
-  Stethoscope, 
-  Shield, 
-  CheckCircle, 
-  AlertTriangle, 
-  X, 
-  ArrowLeft, 
+  Activity,
+  Stethoscope,
+  Shield,
+  CheckCircle,
+  AlertTriangle,
+  X,
+  ArrowLeft,
   ArrowRight,
   Download,
   Send,
   Clock,
   DollarSign,
-  Info
+  Info,
+  Loader2
 } from "lucide-react"
+
+export interface FinalizeNoteResponse {
+  finalizedContent: string
+  codesSummary: Array<Record<string, unknown>>
+  reimbursementSummary: {
+    total: number
+    codes: Array<Record<string, unknown>>
+  }
+  exportReady: boolean
+  issues: Record<string, string[]>
+  [key: string]: unknown
+}
 
 interface FinalizationWizardProps {
   isOpen: boolean
-  onClose: () => void
+  onClose: (result?: FinalizeNoteResponse) => void
   selectedCodes: {
     codes: number
     prevention: number
@@ -72,6 +86,27 @@ export function FinalizationWizard({
   const [stepValidation, setStepValidation] = useState<{[key: number]: { valid: boolean, issues: string[] }}>({})
   const [isFinalizationComplete, setIsFinalizationComplete] = useState(false)
   const [estimatedReimbursement, setEstimatedReimbursement] = useState(0)
+  const [isFinalizing, setIsFinalizing] = useState(false)
+  const [finalizeError, setFinalizeError] = useState<string | null>(null)
+  const [finalizeResult, setFinalizeResult] = useState<FinalizeNoteResponse | null>(null)
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsFinalizationComplete(false)
+      setFinalizeError(null)
+      setFinalizeResult(null)
+      setIsFinalizing(false)
+    }
+  }, [isOpen])
+
+  const handleDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        onClose()
+      }
+    },
+    [onClose]
+  )
 
   useEffect(() => {
     setCompletedSteps(prev => {
@@ -210,17 +245,96 @@ export function FinalizationWizard({
     return requiredSteps.every(({ index }) => completedSteps[index])
   }
 
-  const handleFinalize = () => {
-    if (canFinalize()) {
-      setIsFinalizationComplete(true)
-      // TODO: Implement actual finalization API call
-      console.log("Finalizing note with data:", {
-        selectedCodes,
-        selectedCodesList,
-        complianceStatus: complianceIssues.filter(issue => !issue.dismissed),
-        estimatedReimbursement,
-        patientInfo
+  const handleFinalize = async () => {
+    if (!canFinalize() || isFinalizing) {
+      return
+    }
+
+    setFinalizeError(null)
+    setIsFinalizing(true)
+
+    const sanitizedCodes = Array.isArray(selectedCodesList) ? selectedCodesList : []
+    const extractCodes = (category: string) => {
+      const matches = sanitizedCodes
+        .filter(code => {
+          if (!code) return false
+          if (category === "codes") {
+            return code.category === "codes" || code.type === "CPT" || code.type === "HCPCS"
+          }
+          return code.category === category
+        })
+        .map(code => (typeof code.code === "string" ? code.code.trim() : ""))
+        .filter((code): code is string => code.length > 0)
+
+      return Array.from(new Set(matches))
+    }
+
+    const payload = {
+      content: noteContent,
+      codes: extractCodes("codes"),
+      prevention: extractCodes("prevention"),
+      diagnoses: extractCodes("diagnoses"),
+      differentials: extractCodes("differentials"),
+      compliance: (Array.isArray(complianceIssues) ? complianceIssues : [])
+        .filter(issue => issue && !issue.dismissed)
+        .map(issue => {
+          const identifier = typeof issue.id === "string" && issue.id.trim().length > 0 ? issue.id.trim() : null
+          const fallback = typeof issue.title === "string" && issue.title.trim().length > 0 ? issue.title.trim() : null
+          return identifier ?? fallback
+        })
+        .filter((value): value is string => Boolean(value))
+    }
+
+    let result: FinalizeNoteResponse | null = null
+
+    try {
+      const response = await fetch("/api/notes/finalize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
       })
+
+      if (!response.ok) {
+        let errorMessage = "Failed to finalize the note."
+        try {
+          const errorData = await response.json()
+          errorMessage =
+            (typeof errorData?.detail === "string" && errorData.detail.length > 0)
+              ? errorData.detail
+              : errorMessage
+        } catch {
+          // Ignore JSON parsing errors and fall back to default message
+        }
+        throw new Error(errorMessage)
+      }
+
+      const data: FinalizeNoteResponse = await response.json()
+      result = data
+      setFinalizeResult(data)
+      setIsFinalizationComplete(true)
+      toast.success("Note finalized", {
+        description: data.exportReady
+          ? "The note has been finalized and is ready for export."
+          : "The note was finalized, but some items still require review."
+      })
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "An unexpected error occurred while finalizing the note."
+      setFinalizeError(message)
+      toast.error("Finalization failed", {
+        description: message
+      })
+      console.error("Failed to finalize note:", error)
+    } finally {
+      setIsFinalizing(false)
+    }
+
+    if (result) {
+      onClose(result)
     }
   }
 
@@ -498,8 +612,20 @@ export function FinalizationWizard({
   }
 
   if (isFinalizationComplete) {
+    const totalFinalizedCodes = finalizeResult?.codesSummary?.length ?? (selectedCodesList || []).length
+    const totalFinalizedReimbursement =
+      typeof finalizeResult?.reimbursementSummary?.total === "number"
+        ? finalizeResult.reimbursementSummary.total
+        : estimatedReimbursement
+    const exportStatusText = finalizeResult
+      ? finalizeResult.exportReady
+        ? "✅ Approved"
+        : "⚠️ Requires Review"
+      : "✅ Approved"
+    const exportStatusClass = finalizeResult && !finalizeResult.exportReady ? "text-amber-600" : "text-green-600"
+
     return (
-      <Dialog open={isOpen} onOpenChange={onClose}>
+      <Dialog open={isOpen} onOpenChange={handleDialogOpenChange}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -516,15 +642,15 @@ export function FinalizationWizard({
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span>Total Codes:</span>
-                  <span className="font-medium">{(selectedCodesList || []).length}</span>
+                  <span className="font-medium">{totalFinalizedCodes}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span>Estimated Reimbursement:</span>
-                  <span className="font-bold text-green-600">${estimatedReimbursement.toFixed(2)}</span>
+                  <span className="font-bold text-green-600">${totalFinalizedReimbursement.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span>Compliance Status:</span>
-                  <span className="font-medium text-green-600">✅ Approved</span>
+                  <span className={`font-medium ${exportStatusClass}`}>{exportStatusText}</span>
                 </div>
               </div>
             </div>
@@ -542,7 +668,7 @@ export function FinalizationWizard({
           </div>
 
           <div className="flex justify-end">
-            <Button variant="outline" onClick={onClose}>
+            <Button variant="outline" onClick={() => onClose()}>
               Close
             </Button>
           </div>
@@ -552,7 +678,7 @@ export function FinalizationWizard({
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <Dialog open={isOpen} onOpenChange={handleDialogOpenChange}>
       <DialogContent className="max-w-4xl h-[90vh] flex flex-col p-0">
         <DialogHeader className="px-6 py-4 border-b shrink-0">
           <DialogTitle className="flex items-center gap-2">
@@ -702,15 +828,26 @@ export function FinalizationWizard({
                   ) : (
                     <Button
                       onClick={handleFinalize}
-                      disabled={!canFinalize()}
+                      disabled={!canFinalize() || isFinalizing}
                       className="bg-green-600 hover:bg-green-700"
                     >
-                      <CheckCircle className="h-4 w-4 mr-2" />
-                      Finalize Note
+                      {isFinalizing ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                      )}
+                      {isFinalizing ? "Finalizing..." : "Finalize Note"}
                     </Button>
                   )}
                 </div>
               </div>
+
+              {finalizeError && (
+                <Alert variant="destructive" className="mt-4">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{finalizeError}</AlertDescription>
+                </Alert>
+              )}
 
               {!canFinalize() && currentStep === steps.length - 1 && (
                 <div className="mt-3 text-sm text-amber-600 flex items-center gap-2">
