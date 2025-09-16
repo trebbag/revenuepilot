@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
@@ -11,13 +11,11 @@ import {
   Save, 
   Play, 
   Square, 
-  Clock, 
-  Undo, 
-  Redo,
-  X,
+  Clock,
   Mic,
   MicOff,
-  AlertTriangle
+  AlertTriangle,
+  Loader2
 } from "lucide-react"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView } from "./BeautifiedView"
@@ -35,6 +33,94 @@ interface ComplianceIssue {
   dismissed?: boolean
 }
 
+interface PatientSuggestion {
+  patientId: string
+  name?: string
+  firstName?: string
+  lastName?: string
+  dob?: string
+  mrn?: string
+  age?: number
+  gender?: string
+  source: 'local' | 'external'
+}
+
+interface EncounterValidationState {
+  status: 'idle' | 'loading' | 'valid' | 'invalid'
+  message?: string
+  encounter?: {
+    encounterId?: number
+    patientId?: string | number
+    date?: string
+    type?: string
+    provider?: string
+    description?: string
+    patient?: Record<string, unknown>
+  }
+}
+
+interface TranscriptEntry {
+  id: string
+  text: string
+  confidence: number
+  isInterim: boolean
+  timestamp: number
+  speaker?: string
+}
+
+const getStoredToken = (): string | null => {
+  if (typeof window === "undefined") return null
+  const candidates: Array<Storage | undefined> = [
+    typeof window.localStorage !== "undefined" ? window.localStorage : undefined,
+    typeof window.sessionStorage !== "undefined" ? window.sessionStorage : undefined
+  ]
+  for (const storage of candidates) {
+    if (!storage) continue
+    try {
+      const token =
+        storage.getItem("token") ||
+        storage.getItem("accessToken") ||
+        storage.getItem("authToken")
+      if (token) {
+        return token
+      }
+    } catch {
+      // Ignore storage access errors (e.g. privacy mode)
+    }
+  }
+  return null
+}
+
+const buildAuthHeaders = (headers?: HeadersInit, opts: { json?: boolean } = {}) => {
+  const result = new Headers(headers ?? {})
+  if (opts.json && !result.has("Content-Type")) {
+    result.set("Content-Type", "application/json")
+  }
+  const token = getStoredToken()
+  if (token && !result.has("Authorization")) {
+    result.set("Authorization", `Bearer ${token}`)
+  }
+  return result
+}
+
+const severityFromText = (text: string): ComplianceIssue["severity"] => {
+  const lower = text.toLowerCase()
+  if (lower.includes("critical") || lower.includes("violation") || lower.includes("missing")) {
+    return "critical"
+  }
+  if (lower.includes("warning") || lower.includes("should") || lower.includes("insufficient")) {
+    return "warning"
+  }
+  return "info"
+}
+
+const slugify = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+
 interface NoteEditorProps {
   prePopulatedPatient?: {
     patientId: string
@@ -49,63 +135,679 @@ interface NoteEditorProps {
   selectedCodesList?: any[]
 }
 
-export function NoteEditor({ 
+export function NoteEditor({
   prePopulatedPatient,
   selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 },
   selectedCodesList = []
 }: NoteEditorProps) {
+  const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(prePopulatedPatient?.patientId || "")
+  const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
+  const [patientSuggestions, setPatientSuggestions] = useState<PatientSuggestion[]>([])
+  const [patientSearchLoading, setPatientSearchLoading] = useState(false)
+  const [patientSearchError, setPatientSearchError] = useState<string | null>(null)
+  const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false)
+
   const [encounterId, setEncounterId] = useState(prePopulatedPatient?.encounterId || "")
+  const [encounterValidation, setEncounterValidation] = useState<EncounterValidationState>({
+    status: prePopulatedPatient?.encounterId ? 'loading' : 'idle'
+  })
+
   const [noteContent, setNoteContent] = useState("")
+  const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([])
+  const [complianceLoading, setComplianceLoading] = useState(false)
+  const [complianceError, setComplianceError] = useState<string | null>(null)
 
   const [isRecording, setIsRecording] = useState(false)
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
+  const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
+  const [transcriptionIndex, setTranscriptionIndex] = useState(-1)
+  const [showFullTranscript, setShowFullTranscript] = useState(false)
+
   const [visitStarted, setVisitStarted] = useState(false)
+  const [visitLoading, setVisitLoading] = useState(false)
+  const [visitError, setVisitError] = useState<string | null>(null)
+  const [visitSession, setVisitSession] = useState<{ sessionId?: number; status?: string; startTime?: string; endTime?: string }>({})
   const [hasEverStarted, setHasEverStarted] = useState(false)
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
   const [pausedTime, setPausedTime] = useState(0)
-  const [transcriptionIndex, setTranscriptionIndex] = useState(0)
-  const [showFullTranscript, setShowFullTranscript] = useState(false)
+
   const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
 
-  // Mock compliance issues data
-  const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([
-    {
-      id: "mdm-1",
-      severity: "critical",
-      title: "Medical Decision Making complexity not documented",
-      description: "The note lacks specific documentation of medical decision making complexity required for E/M coding.",
-      category: "documentation",
-      details: "For CPT 99214, you must document moderate level medical decision making. Include number of diagnoses/management options, amount of data reviewed, and risk assessment.",
-      suggestion: "Add a Medical Decision Making section with: 1) Problem complexity assessment, 2) Data reviewed, 3) Risk stratification table showing moderate complexity.",
-      learnMoreUrl: "https://www.cms.gov/outreach-and-education/medicare-learning-network-mln/mlnproducts/downloads/eval-mgmt-serv-guide-icn006764.pdf",
-      dismissed: false
+  const [noteId, setNoteId] = useState<string | null>(null)
+  const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
+  const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
+
+  const patientSearchAbortRef = useRef<AbortController | null>(null)
+  const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const encounterValidationAbortRef = useRef<AbortController | null>(null)
+  const encounterValidationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const complianceAbortRef = useRef<AbortController | null>(null)
+  const lastComplianceContentRef = useRef<string>("")
+  const noteContentRef = useRef(noteContent)
+  const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoSaveLastContentRef = useRef<string>("")
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const mediaStreamRef = useRef<MediaStream | null>(null)
+  const websocketRef = useRef<WebSocket | null>(null)
+  const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
+  const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  type FetchOptions = RequestInit & { json?: boolean }
+
+  const fetchWithAuth = useCallback(
+    (input: RequestInfo | URL, init: FetchOptions = {}) => {
+      const { json, headers, ...rest } = init
+      const mergedHeaders = buildAuthHeaders(headers, { json })
+      return fetch(input, { ...rest, headers: mergedHeaders })
     },
-    {
-      id: "ros-1", 
-      severity: "warning",
-      title: "Review of Systems incomplete",
-      description: "Extended Review of Systems (ROS) documentation is missing or incomplete for this level of service.",
-      category: "documentation",
-      details: "E/M level 4 visits require extended ROS covering 2-9 systems or complete ROS covering 10+ systems to support the level of service billed.",
-      suggestion: "Document a systematic review of systems including respiratory, cardiovascular, gastrointestinal, and other relevant systems. Include both positive and negative findings.",
-      learnMoreUrl: "https://www.cms.gov/medicare/physician-fee-schedule/physician-fee-schedule",
-      dismissed: false
-    },
-    {
-      id: "icd-specificity-1",
-      severity: "info", 
-      title: "ICD-10 code specificity can be improved",
-      description: "Some diagnosis codes could be more specific to improve clinical accuracy and billing precision.",
-      category: "coding",
-      details: "Using more specific ICD-10 codes when clinical information supports it can improve care coordination and reduce the need for additional documentation requests.",
-      suggestion: "Review selected diagnosis codes and consider if more specific codes are appropriate based on documented clinical findings.",
-      dismissed: false
+    []
+  )
+
+  const convertComplianceResponse = useCallback((raw: any): ComplianceIssue[] => {
+    if (!Array.isArray(raw)) return []
+    return raw
+      .map((item, index) => {
+        if (item && typeof item === "object") {
+          const rawId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : undefined
+          const titleCandidate =
+            typeof item.title === "string" && item.title.trim().length > 0
+              ? item.title.trim()
+              : typeof item.description === "string" && item.description.trim().length > 0
+                ? item.description.trim()
+                : undefined
+          const title = titleCandidate ?? `Compliance issue ${index + 1}`
+          const description =
+            typeof item.description === "string" && item.description.trim().length > 0
+              ? item.description.trim()
+              : title
+          const category =
+            item.category === "documentation" ||
+            item.category === "coding" ||
+            item.category === "billing" ||
+            item.category === "quality"
+              ? item.category
+              : "documentation"
+          const severity =
+            item.severity === "critical" ||
+            item.severity === "warning" ||
+            item.severity === "info"
+              ? item.severity
+              : severityFromText(`${title} ${description}`)
+          return {
+            id: rawId ?? `issue-${slugify(title)}-${index}`,
+            severity,
+            title,
+            description,
+            category,
+            details:
+              typeof item.details === "string" && item.details.trim().length > 0
+                ? item.details.trim()
+                : description,
+            suggestion:
+              typeof item.suggestion === "string" && item.suggestion.trim().length > 0
+                ? item.suggestion.trim()
+                : "Review the note content and update documentation to resolve this issue.",
+            learnMoreUrl:
+              typeof item.learnMoreUrl === "string" && item.learnMoreUrl.trim().length > 0
+                ? item.learnMoreUrl.trim()
+                : undefined,
+            dismissed: Boolean(item.dismissed)
+          } satisfies ComplianceIssue
+        }
+        if (typeof item === "string" && item.trim().length > 0) {
+          const text = item.trim()
+          const sentence = text.split(/[.!?]/)[0]?.trim() ?? text
+          return {
+            id: `issue-${slugify(sentence || text)}-${index}`,
+            severity: severityFromText(text),
+            title: sentence.length > 0 ? sentence : `Compliance issue ${index + 1}`,
+            description: text,
+            category: "documentation",
+            details: text,
+            suggestion: "Review the highlighted area for compliance gaps.",
+            dismissed: false
+          } satisfies ComplianceIssue
+        }
+        return null
+      })
+      .filter((item): item is ComplianceIssue => Boolean(item))
+  }, [])
+
+  const ensureNoteCreated = useCallback(async () => {
+    if (noteId) return noteId
+    if (!patientId || patientId.trim().length === 0) {
+      throw new Error("Patient ID is required before creating a note")
     }
-  ])
+    try {
+      const payload = {
+        patientId: patientId.trim(),
+        encounterId: encounterId.trim().length > 0 ? encounterId.trim() : undefined,
+        content: noteContentRef.current
+      }
+      const response = await fetchWithAuth("/api/notes/create", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        json: true
+      })
+      if (!response.ok) {
+        throw new Error(`Failed to create note (${response.status})`)
+      }
+      const data = await response.json()
+      const createdId = data?.noteId ? String(data.noteId) : null
+      if (!createdId) {
+        throw new Error("Note identifier missing from response")
+      }
+      setNoteId(createdId)
+      setAutoSaveError(null)
+      return createdId
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unable to create a draft note"
+      setAutoSaveError(message)
+      throw error
+    }
+  }, [noteId, patientId, encounterId, fetchWithAuth])
+
+  const stopAudioStream = useCallback(() => {
+    const recorder = mediaRecorderRef.current
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.ondataavailable = null
+        recorder.stop()
+      } catch (error) {
+        console.error("Failed to stop recorder", error)
+      }
+    }
+    mediaRecorderRef.current = null
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => {
+        try {
+          track.stop()
+        } catch (error) {
+          console.error("Failed to stop track", error)
+        }
+      })
+    }
+    mediaStreamRef.current = null
+
+    const socket = websocketRef.current
+    if (socket) {
+      try {
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close()
+        }
+      } catch (error) {
+        console.error("Failed to close websocket", error)
+      }
+    }
+    websocketRef.current = null
+    queuedAudioChunksRef.current = []
+    setIsRecording(false)
+  }, [])
+
+  const startAudioStream = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setTranscriptionError("Microphone access is not supported in this browser.")
+      return false
+    }
+    setTranscriptionError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      mediaStreamRef.current = stream
+      const recorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = recorder
+      queuedAudioChunksRef.current = []
+
+      const token = getStoredToken()
+      const protocol =
+        typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws"
+      const host = typeof window !== "undefined" ? window.location.host : "localhost"
+      const url = `${protocol}://${host}/api/transcribe/stream${
+        token ? `?token=${encodeURIComponent(token)}` : ""
+      }`
+      const ws = token
+        ? new WebSocket(url, ["authorization", `Bearer ${token}`])
+        : new WebSocket(url)
+      websocketRef.current = ws
+
+      ws.onopen = () => {
+        if (queuedAudioChunksRef.current.length) {
+          for (const chunk of queuedAudioChunksRef.current) {
+            ws.send(chunk)
+          }
+          queuedAudioChunksRef.current = []
+        }
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const payload =
+            typeof event.data === "string"
+              ? JSON.parse(event.data)
+              : JSON.parse(new TextDecoder().decode(event.data))
+          if (!payload || typeof payload !== "object" || !payload.transcript) return
+          const text = String(payload.transcript)
+          const entry: TranscriptEntry = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            text,
+            confidence:
+              typeof payload.confidence === "number"
+                ? payload.confidence
+                : typeof payload.confidence === "string"
+                  ? Number.parseFloat(payload.confidence) || 0
+                  : 0,
+            isInterim: Boolean(payload.isInterim),
+            timestamp: Date.now(),
+            speaker:
+              typeof payload.speakerLabel === "string" && payload.speakerLabel.trim().length > 0
+                ? payload.speakerLabel.trim()
+                : undefined
+          }
+          setTranscriptEntries(prev => [...prev, entry])
+        } catch (error) {
+          console.error("Failed to parse transcript payload", error)
+        }
+      }
+
+      ws.onerror = () => {
+        setTranscriptionError("Unable to maintain transcription connection.")
+      }
+
+      ws.onclose = () => {
+        websocketRef.current = null
+      }
+
+      recorder.ondataavailable = async (event: BlobEvent) => {
+        if (!event.data || event.data.size === 0) return
+        try {
+          const buffer = await event.data.arrayBuffer()
+          const socket = websocketRef.current
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(buffer)
+          } else {
+            queuedAudioChunksRef.current.push(buffer)
+          }
+        } catch (error) {
+          console.error("Failed to process audio chunk", error)
+        }
+      }
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach(track => {
+          try {
+            track.stop()
+          } catch (error) {
+            console.error("Failed to stop track", error)
+          }
+        })
+      }
+
+      recorder.start(1000)
+      setIsRecording(true)
+      return true
+    } catch (error) {
+      console.error("Unable to start audio stream", error)
+      setTranscriptionError(
+        error instanceof Error ? error.message : "Unable to access microphone"
+      )
+      stopAudioStream()
+      return false
+    }
+  }, [stopAudioStream])
+
+  const handlePatientInputChange = useCallback((value: string) => {
+    setPatientInputValue(value)
+    setPatientId(value.trim())
+    setSelectedPatient(null)
+  }, [])
+
+  const handleSelectPatient = useCallback((suggestion: PatientSuggestion) => {
+    setSelectedPatient(suggestion)
+    setPatientId(suggestion.patientId)
+    setPatientInputValue(suggestion.patientId)
+    setIsPatientDropdownOpen(false)
+  }, [])
+
+  const openPatientDropdown = useCallback(() => {
+    if (patientDropdownCloseTimeoutRef.current) {
+      clearTimeout(patientDropdownCloseTimeoutRef.current)
+      patientDropdownCloseTimeoutRef.current = null
+    }
+    setIsPatientDropdownOpen(true)
+  }, [])
+
+  const scheduleClosePatientDropdown = useCallback(() => {
+    if (patientDropdownCloseTimeoutRef.current) {
+      clearTimeout(patientDropdownCloseTimeoutRef.current)
+    }
+    patientDropdownCloseTimeoutRef.current = window.setTimeout(() => {
+      setIsPatientDropdownOpen(false)
+    }, 150)
+  }, [])
+
+  useEffect(() => {
+    noteContentRef.current = noteContent
+  }, [noteContent])
+
+  useEffect(() => {
+    if (prePopulatedPatient?.patientId) {
+      setPatientId(prePopulatedPatient.patientId)
+      setPatientInputValue(prePopulatedPatient.patientId)
+    }
+    if (prePopulatedPatient?.encounterId) {
+      setEncounterId(prePopulatedPatient.encounterId)
+    }
+  }, [prePopulatedPatient])
+
+  useEffect(() => {
+    if (!patientInputValue || patientInputValue.trim().length < 2) {
+      setPatientSuggestions([])
+      setPatientSearchError(null)
+      patientSearchAbortRef.current?.abort()
+      setIsPatientDropdownOpen(false)
+      return
+    }
+
+    if (patientSearchTimeoutRef.current) {
+      clearTimeout(patientSearchTimeoutRef.current)
+    }
+
+    const controller = new AbortController()
+    patientSearchAbortRef.current?.abort()
+    patientSearchAbortRef.current = controller
+
+    patientSearchTimeoutRef.current = window.setTimeout(async () => {
+      setPatientSearchLoading(true)
+      setPatientSearchError(null)
+      try {
+        const query = encodeURIComponent(patientInputValue.trim())
+        const response = await fetchWithAuth(`/api/patients/search?q=${query}&limit=10`, {
+          signal: controller.signal
+        })
+        if (!response.ok) {
+          throw new Error(`Search failed (${response.status})`)
+        }
+        const data = await response.json()
+        const local: PatientSuggestion[] = Array.isArray(data?.patients)
+          ? data.patients.map((patient: any) => ({
+              patientId: String(patient?.patientId ?? patient?.id ?? ""),
+              name: typeof patient?.name === "string" ? patient.name : undefined,
+              firstName: typeof patient?.firstName === "string" ? patient.firstName : undefined,
+              lastName: typeof patient?.lastName === "string" ? patient.lastName : undefined,
+              dob: typeof patient?.dob === "string" ? patient.dob : undefined,
+              mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
+              age: typeof patient?.age === "number" ? patient.age : undefined,
+              gender: typeof patient?.gender === "string" ? patient.gender : undefined,
+              source: "local"
+            }))
+          : []
+        const external: PatientSuggestion[] = Array.isArray(data?.externalPatients)
+          ? data.externalPatients.map((patient: any) => ({
+              patientId: String(patient?.patientId ?? patient?.id ?? patient?.identifier ?? ""),
+              name: typeof patient?.name === "string" ? patient.name : undefined,
+              firstName: typeof patient?.firstName === "string" ? patient.firstName : undefined,
+              lastName: typeof patient?.lastName === "string" ? patient.lastName : undefined,
+              dob: typeof patient?.dob === "string" ? patient.dob : undefined,
+              mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
+              age: typeof patient?.age === "number" ? patient.age : undefined,
+              gender: typeof patient?.gender === "string" ? patient.gender : undefined,
+              source: "external"
+            }))
+          : []
+        const combined = [...local, ...external].filter((suggestion) => suggestion.patientId)
+        setPatientSuggestions(combined.slice(0, 10))
+        setIsPatientDropdownOpen(true)
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") return
+        setPatientSuggestions([])
+        setPatientSearchError(
+          error instanceof Error ? error.message : "Unable to search patients"
+        )
+      } finally {
+        setPatientSearchLoading(false)
+      }
+    }, 300)
+
+    return () => {
+      if (patientSearchTimeoutRef.current) {
+        clearTimeout(patientSearchTimeoutRef.current)
+      }
+      controller.abort()
+    }
+  }, [patientInputValue, fetchWithAuth])
+
+  useEffect(() => {
+    if (!encounterId || encounterId.trim().length === 0) {
+      setEncounterValidation({ status: "idle" })
+      encounterValidationAbortRef.current?.abort()
+      return
+    }
+
+    if (encounterValidationTimeoutRef.current) {
+      clearTimeout(encounterValidationTimeoutRef.current)
+    }
+
+    const controller = new AbortController()
+    encounterValidationAbortRef.current?.abort()
+    encounterValidationAbortRef.current = controller
+
+    encounterValidationTimeoutRef.current = window.setTimeout(async () => {
+      setEncounterValidation({ status: "loading" })
+      try {
+        const numericId = Number(encounterId)
+        if (!Number.isFinite(numericId)) {
+          throw new Error("Encounter ID must be numeric")
+        }
+        const response = await fetchWithAuth(`/api/encounters/validate/${numericId}`, {
+          signal: controller.signal
+        })
+        if (!response.ok) {
+          throw new Error(`Validation failed (${response.status})`)
+        }
+        const data = await response.json()
+        if (data?.valid) {
+          const encounterPatientId = data?.encounter?.patient?.patientId ?? data?.encounter?.patientId
+          if (encounterPatientId && !patientId) {
+            setPatientId(String(encounterPatientId))
+            setPatientInputValue(String(encounterPatientId))
+          } else if (
+            encounterPatientId &&
+            patientId &&
+            String(encounterPatientId) !== String(patientId)
+          ) {
+            setEncounterValidation({
+              status: "invalid",
+              encounter: data?.encounter,
+              message: "Encounter is associated with a different patient"
+            })
+            return
+          }
+          const summaryParts = [
+            typeof data?.encounter?.date === "string" ? data.encounter.date : null,
+            typeof data?.encounter?.type === "string" ? data.encounter.type : null,
+            typeof data?.encounter?.provider === "string" ? data.encounter.provider : null
+          ].filter(Boolean)
+          setEncounterValidation({
+            status: "valid",
+            encounter: data?.encounter,
+            message: summaryParts.length ? summaryParts.join(" • ") : "Encounter validated"
+          })
+        } else {
+          const errors: string[] = Array.isArray(data?.errors)
+            ? data.errors.filter((item: any) => typeof item === "string")
+            : []
+          setEncounterValidation({
+            status: "invalid",
+            encounter: data?.encounter,
+            message: errors.length ? errors.join(", ") : "Encounter not found"
+          })
+        }
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") return
+        setEncounterValidation({
+          status: "invalid",
+          message:
+            error instanceof Error ? error.message : "Unable to validate encounter"
+        })
+      }
+    }, 400)
+
+    return () => {
+      if (encounterValidationTimeoutRef.current) {
+        clearTimeout(encounterValidationTimeoutRef.current)
+      }
+      controller.abort()
+    }
+  }, [encounterId, patientId, fetchWithAuth])
+
+  useEffect(() => {
+    if (complianceTimeoutRef.current) {
+      clearTimeout(complianceTimeoutRef.current)
+    }
+
+    if (!noteContent || noteContent.trim().length === 0) {
+      lastComplianceContentRef.current = ""
+      setComplianceIssues([])
+      setComplianceError(null)
+      return
+    }
+
+    complianceTimeoutRef.current = window.setTimeout(async () => {
+      if (noteContentRef.current === lastComplianceContentRef.current) return
+      const controller = new AbortController()
+      complianceAbortRef.current?.abort()
+      complianceAbortRef.current = controller
+      setComplianceLoading(true)
+      setComplianceError(null)
+      try {
+        const payload: Record<string, unknown> = {
+          text: noteContentRef.current,
+          specialty: specialty ?? undefined,
+          payer: payer ?? undefined
+        }
+        if (noteId) {
+          payload.note_id = noteId
+        }
+        const response = await fetchWithAuth("/api/compliance/analyze", {
+          method: "POST",
+          body: JSON.stringify(payload),
+          json: true,
+          signal: controller.signal
+        })
+        if (!response.ok) {
+          throw new Error(`Compliance analysis failed (${response.status})`)
+        }
+        const data = await response.json()
+        const normalized = convertComplianceResponse(
+          Array.isArray(data?.compliance) ? data.compliance : data?.issues ?? data?.results ?? data
+        )
+        setComplianceIssues((prev) => {
+          const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
+          return normalized.map((issue) => ({
+            ...issue,
+            dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
+          }))
+        })
+        lastComplianceContentRef.current = noteContentRef.current
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") return
+        setComplianceError(
+          error instanceof Error ? error.message : "Compliance analysis unavailable"
+        )
+      } finally {
+        setComplianceLoading(false)
+      }
+    }, 2000)
+
+    return () => {
+      if (complianceTimeoutRef.current) {
+        clearTimeout(complianceTimeoutRef.current)
+      }
+      complianceAbortRef.current?.abort()
+    }
+  }, [noteContent, specialty, payer, noteId, fetchWithAuth, convertComplianceResponse])
+
+  useEffect(() => {
+    if (autoSaveIntervalRef.current) {
+      clearInterval(autoSaveIntervalRef.current)
+      autoSaveIntervalRef.current = null
+    }
+    if (!noteId || !hasEverStarted) {
+      return
+    }
+
+    const performAutoSave = async () => {
+      const content = noteContentRef.current
+      if (content === autoSaveLastContentRef.current) return
+      try {
+        const response = await fetchWithAuth("/api/notes/auto-save", {
+          method: "POST",
+          body: JSON.stringify({ noteId, content }),
+          json: true
+        })
+        if (!response.ok) {
+          throw new Error(`Auto-save failed (${response.status})`)
+        }
+        autoSaveLastContentRef.current = content
+        setLastAutoSaveTime(new Date().toISOString())
+        setAutoSaveError(null)
+      } catch (error) {
+        setAutoSaveError(
+          error instanceof Error ? error.message : "Unable to auto-save note"
+        )
+      }
+    }
+
+    void performAutoSave()
+    autoSaveIntervalRef.current = window.setInterval(performAutoSave, 30_000)
+
+    return () => {
+      if (autoSaveIntervalRef.current) {
+        clearInterval(autoSaveIntervalRef.current)
+        autoSaveIntervalRef.current = null
+      }
+    }
+  }, [noteId, hasEverStarted, fetchWithAuth])
+
+  useEffect(() => {
+    return () => {
+      patientSearchAbortRef.current?.abort()
+      encounterValidationAbortRef.current?.abort()
+      complianceAbortRef.current?.abort()
+      if (patientDropdownCloseTimeoutRef.current) {
+        clearTimeout(patientDropdownCloseTimeoutRef.current)
+      }
+      if (autoSaveIntervalRef.current) {
+        clearInterval(autoSaveIntervalRef.current)
+      }
+      stopAudioStream()
+    }
+  }, [stopAudioStream])
+
+  useEffect(() => {
+    if (!visitStarted || !isRecording) return
+    const interval = window.setInterval(() => {
+      setCurrentSessionTime(time => time + 1)
+    }, 1000)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [visitStarted, isRecording])
+
+  useEffect(() => {
+    if (!transcriptEntries.length) {
+      setTranscriptionIndex(-1)
+    } else {
+      setTranscriptionIndex(transcriptEntries.length - 1)
+    }
+  }, [transcriptEntries])
 
   const handleDismissIssue = (issueId: string) => {
-    setComplianceIssues(prev => 
-      prev.map(issue => 
+    setComplianceIssues(prev =>
+      prev.map(issue =>
         issue.id === issueId ? { ...issue, dismissed: true } : issue
       )
     )
@@ -125,52 +827,31 @@ export function NoteEditor({
   const hasActiveIssues = activeIssues.length > 0
   const hasCriticalIssues = criticalIssues.length > 0
 
-  // Mock transcription lines that simulate a live medical conversation
-  const mockTranscriptionLines = [
-    "Patient: I've been having this persistent cough for about two weeks now.",
-    "Doctor: Can you describe the cough? Is it dry or productive?",
-    "Patient: It's mostly dry, but sometimes I bring up a little clear mucus.",
-    "Doctor: Any fever or shortness of breath with the cough?",
-    "Patient: No fever, but I do feel a bit winded when I climb stairs.",
-    "Doctor: Let me listen to your lungs. Take a deep breath for me.",
-    "Patient: Should I be concerned about this lasting so long?",
-    "Doctor: Your lungs sound clear. When did you first notice the symptoms?",
-    "Patient: It started right after I got over that cold everyone had.",
-    "Doctor: That's helpful context. Any family history of respiratory issues?",
-    "Patient: My father had asthma, but I've never been diagnosed with it.",
-    "Doctor: Let's check your oxygen saturation and peak flow.",
-    "Patient: Is this something that could be related to allergies?",
-    "Doctor: Possibly. Have you noticed any environmental triggers?",
-    "Patient: Now that you mention it, it does seem worse in the mornings."
-  ]
+  const recentTranscription = useMemo(() => {
+    if (!transcriptEntries.length) return []
+    return transcriptEntries.slice(Math.max(0, transcriptEntries.length - 3))
+  }, [transcriptEntries])
 
-  // Timer effect for recording
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null
-    if (isRecording && visitStarted) {
-      interval = setInterval(() => {
-        setCurrentSessionTime(time => time + 1)
-        // Update transcription every 3 seconds to simulate live transcription
-        if (currentSessionTime % 3 === 0) {
-          setTranscriptionIndex(prev => (prev + 1) % mockTranscriptionLines.length)
-        }
-      }, 1000)
-    }
-    
-    return () => {
-      if (interval) clearInterval(interval)
-    }
-  }, [isRecording, visitStarted, currentSessionTime, mockTranscriptionLines.length])
+  const totalTranscriptWords = useMemo(() => {
+    return transcriptEntries.reduce((sum, entry) => {
+      if (!entry.text) return sum
+      const words = entry.text.trim().split(/\s+/).filter(Boolean).length
+      return sum + words
+    }, 0)
+  }, [transcriptEntries])
 
-  // Get the last 3 lines of transcription for tooltip
-  const getRecentTranscription = () => {
-    const lines = []
-    for (let i = 2; i >= 0; i--) {
-      const index = (transcriptionIndex - i + mockTranscriptionLines.length) % mockTranscriptionLines.length
-      lines.push(mockTranscriptionLines[index])
-    }
-    return lines
-  }
+  const averageTranscriptConfidence = useMemo(() => {
+    if (!transcriptEntries.length) return null
+    const sum = transcriptEntries.reduce((total, entry) => total + entry.confidence, 0)
+    return sum / transcriptEntries.length
+  }, [transcriptEntries])
+
+  const totalTranscribedLines = transcriptEntries.length
+  const currentTranscriptCount = transcriptionIndex >= 0 ? transcriptionIndex + 1 : 0
+  const averageConfidencePercent =
+    averageTranscriptConfidence === null
+      ? null
+      : Math.round(Math.min(1, Math.max(0, averageTranscriptConfidence)) * 100)
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -187,32 +868,121 @@ export function NoteEditor({
     console.log("Saving draft and exiting...")
   }
 
-  const handleVisitToggle = () => {
+  const canStartVisit = useMemo(() => {
+    return (
+      patientId.trim().length > 0 &&
+      encounterValidation.status === "valid"
+    )
+  }, [patientId, encounterValidation.status])
+
+  const handleVisitToggle = useCallback(async () => {
+    if (visitLoading) return
     if (!visitStarted) {
-      // Starting or resuming visit
-      setVisitStarted(true)
-      setIsRecording(true)
-      if (!hasEverStarted) {
-        // First time starting - reset everything
-        setHasEverStarted(true)
-        setCurrentSessionTime(0)
-        setPausedTime(0)
-      } else {
-        // Resuming - continue from paused time
-        setCurrentSessionTime(pausedTime)
+      if (!canStartVisit) {
+        setVisitError("Validate patient and encounter before starting a visit.")
+        return
+      }
+      setVisitLoading(true)
+      setVisitError(null)
+      try {
+        const encounterNumeric = Number(
+          encounterValidation.encounter?.encounterId ?? encounterId
+        )
+        if (!Number.isFinite(encounterNumeric)) {
+          throw new Error("Encounter ID must be numeric")
+        }
+        let sessionData: any = null
+        if (!visitSession.sessionId) {
+          const response = await fetchWithAuth("/api/visits/session", {
+            method: "POST",
+            body: JSON.stringify({ encounter_id: encounterNumeric }),
+            json: true
+          })
+          if (!response.ok) {
+            throw new Error(`Failed to start visit (${response.status})`)
+          }
+          sessionData = await response.json()
+        } else {
+          const response = await fetchWithAuth("/api/visits/session", {
+            method: "PUT",
+            body: JSON.stringify({ session_id: visitSession.sessionId, action: "active" }),
+            json: true
+          })
+          if (!response.ok) {
+            throw new Error(`Failed to resume visit (${response.status})`)
+          }
+          sessionData = await response.json()
+        }
+        if (sessionData) {
+          setVisitSession(prev => ({ ...prev, ...sessionData }))
+        }
+        if (!hasEverStarted) {
+          setHasEverStarted(true)
+          setCurrentSessionTime(0)
+          setPausedTime(0)
+          setTranscriptEntries([])
+        } else {
+          setCurrentSessionTime(pausedTime)
+        }
+        await ensureNoteCreated()
+        setVisitStarted(true)
+        const started = await startAudioStream()
+        if (!started) {
+          setVisitError("Microphone access is required for live transcription.")
+        }
+      } catch (error) {
+        setVisitError(
+          error instanceof Error ? error.message : "Unable to start visit"
+        )
+        stopAudioStream()
+        setVisitStarted(false)
+      } finally {
+        setVisitLoading(false)
       }
     } else {
-      // Pausing visit
-      setVisitStarted(false)
-      setIsRecording(false)
-      setPausedTime(currentSessionTime)
+      setVisitLoading(true)
+      try {
+        if (visitSession.sessionId) {
+          const response = await fetchWithAuth("/api/visits/session", {
+            method: "PUT",
+            body: JSON.stringify({ session_id: visitSession.sessionId, action: "paused" }),
+            json: true
+          })
+          if (response.ok) {
+            const data = await response.json().catch(() => null)
+            if (data) {
+              setVisitSession(prev => ({ ...prev, ...data }))
+            }
+          }
+        }
+      } catch (error) {
+        setVisitError(error instanceof Error ? error.message : "Unable to pause visit")
+      } finally {
+        stopAudioStream()
+        setVisitStarted(false)
+        setPausedTime(currentSessionTime)
+        setVisitLoading(false)
+      }
     }
-  }
+  }, [
+    visitLoading,
+    visitStarted,
+    canStartVisit,
+    encounterValidation.encounter?.encounterId,
+    encounterId,
+    fetchWithAuth,
+    visitSession.sessionId,
+    hasEverStarted,
+    pausedTime,
+    ensureNoteCreated,
+    startAudioStream,
+    stopAudioStream,
+    currentSessionTime
+  ])
 
   const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
   const isEditorDisabled = !visitStarted
   const hasRecordedTime = totalDisplayTime > 0
-  const canStartVisit = patientId.trim() !== "" && encounterId.trim() !== ""
 
   return (
     <div className="flex flex-col flex-1">
@@ -221,14 +991,75 @@ export function NoteEditor({
         <div className="flex flex-wrap gap-4 items-end">
           <div className="grid w-full max-w-sm items-center gap-1.5">
             <Label htmlFor="patient-id">Patient ID</Label>
-            <Input
-              id="patient-id"
-              value={patientId}
-              onChange={(e) => setPatientId(e.target.value)}
-              placeholder="Enter Patient ID"
-            />
+            <div className="relative">
+              <Input
+                id="patient-id"
+                value={patientInputValue}
+                onChange={(e) => handlePatientInputChange(e.target.value)}
+                onFocus={openPatientDropdown}
+                onBlur={scheduleClosePatientDropdown}
+                placeholder="Search patients by name or ID"
+                autoComplete="off"
+              />
+              {isPatientDropdownOpen && patientInputValue.trim().length >= 2 && (
+                <div
+                  className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border border-border bg-popover shadow-lg"
+                  onMouseEnter={openPatientDropdown}
+                  onMouseLeave={scheduleClosePatientDropdown}
+                >
+                  {patientSuggestions.map(suggestion => {
+                    const descriptionParts = [
+                      suggestion.name ?? [suggestion.firstName, suggestion.lastName].filter(Boolean).join(" "),
+                      suggestion.dob ? `DOB: ${suggestion.dob}` : null,
+                      suggestion.mrn ? `MRN: ${suggestion.mrn}` : null
+                    ].filter(Boolean)
+                    return (
+                      <button
+                        key={`${suggestion.source}-${suggestion.patientId}`}
+                        type="button"
+                        className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-muted"
+                        onMouseDown={event => {
+                          event.preventDefault()
+                          handleSelectPatient(suggestion)
+                        }}
+                      >
+                        <span className="text-sm font-medium text-foreground">
+                          {suggestion.patientId}
+                        </span>
+                        {descriptionParts.length > 0 && (
+                          <span className="text-xs text-muted-foreground">
+                            {descriptionParts.join(" • ")}
+                          </span>
+                        )}
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                          {suggestion.source === "local" ? "Internal" : "External"}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  {patientSearchLoading && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      Searching...
+                    </div>
+                  )}
+                  {!patientSearchLoading && patientSuggestions.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      No patients found
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {patientSearchError && (
+              <p className="text-xs text-destructive">{patientSearchError}</p>
+            )}
+            {selectedPatient && (
+              <p className="text-xs text-muted-foreground">
+                Selected: {selectedPatient.name || `${selectedPatient.firstName ?? ""} ${selectedPatient.lastName ?? ""}`.trim() || selectedPatient.patientId}
+              </p>
+            )}
           </div>
-          
+
           <div className="grid w-full max-w-sm items-center gap-1.5">
             <Label htmlFor="encounter-id">Encounter ID</Label>
             <Input
@@ -237,6 +1068,15 @@ export function NoteEditor({
               onChange={(e) => setEncounterId(e.target.value)}
               placeholder="Enter Encounter ID"
             />
+            {encounterValidation.status === 'loading' && (
+              <p className="text-xs text-muted-foreground">Validating encounter…</p>
+            )}
+            {encounterValidation.status === 'valid' && encounterValidation.message && (
+              <p className="text-xs text-emerald-600">{encounterValidation.message}</p>
+            )}
+            {encounterValidation.status === 'invalid' && encounterValidation.message && (
+              <p className="text-xs text-destructive">{encounterValidation.message}</p>
+            )}
           </div>
         </div>
         
@@ -277,7 +1117,7 @@ export function NoteEditor({
             </Tooltip>
           </TooltipProvider>
           
-          <Button 
+          <Button
             variant="outline"
             onClick={handleSaveDraft}
             disabled={!hasRecordedTime}
@@ -286,16 +1126,29 @@ export function NoteEditor({
             <Save className="w-4 h-4 mr-2" />
             Save Draft & Exit
           </Button>
-          
+          <div className="text-xs text-muted-foreground">
+            {lastAutoSaveTime
+              ? `Auto-saved ${new Date(lastAutoSaveTime).toLocaleTimeString()}`
+              : "Auto-save pending"}
+            {autoSaveError && (
+              <span className="ml-2 text-destructive">{autoSaveError}</span>
+            )}
+          </div>
+
           {/* Start Visit with Recording Indicator */}
           <div className="flex items-center gap-3">
-            <Button 
+            <Button
               onClick={handleVisitToggle}
-              disabled={!canStartVisit && !visitStarted}
+              disabled={visitLoading || (!visitStarted && !canStartVisit)}
               variant={visitStarted ? "destructive" : "default"}
               className={!visitStarted ? "bg-destructive hover:bg-destructive/90 text-destructive-foreground shadow-sm" : ""}
             >
-              {!visitStarted ? (
+              {visitLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {visitStarted ? "Stopping..." : "Starting..."}
+                </>
+              ) : !visitStarted ? (
                 <>
                   <Play className="w-4 h-4 mr-2" />
                   Start Visit
@@ -307,7 +1160,11 @@ export function NoteEditor({
                 </>
               )}
             </Button>
-            
+
+            {visitError && (
+              <p className="text-xs text-destructive">{visitError}</p>
+            )}
+
             {/* Show indicators when visit has ever been started */}
             {hasEverStarted && (
               <div className="flex items-center gap-3 text-destructive">
@@ -351,19 +1208,22 @@ export function NoteEditor({
                             {isRecording ? 'Live Transcription Preview' : 'Transcription Preview (Paused)'}
                           </div>
                           <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-1">
-                            {getRecentTranscription().map((line, index) => (
-                              <div 
-                                key={index} 
+                            {recentTranscription.map((entry, index) => (
+                              <div
+                                key={entry.id}
                                 className={`text-xs leading-relaxed ${
-                                  index === 2 
-                                    ? 'text-foreground font-medium' 
+                                  index === recentTranscription.length - 1
+                                    ? 'text-foreground font-medium'
                                     : 'text-muted-foreground'
                                 }`}
                                 style={{
-                                  opacity: index === 2 ? 1 : 0.7 - (index * 0.2)
+                                  opacity:
+                                    index === recentTranscription.length - 1
+                                      ? 1
+                                      : 0.7 - (index * 0.2)
                                 }}
                               >
-                                {line}
+                                {entry.text}
                               </div>
                             ))}
                           </div>
@@ -379,6 +1239,9 @@ export function NoteEditor({
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
+                  {transcriptionError && (
+                    <p className="text-xs text-destructive">{transcriptionError}</p>
+                  )}
                 )}
               </div>
             )}
@@ -445,20 +1308,35 @@ export function NoteEditor({
               </div>
               
               <div className="space-y-3">
-                {mockTranscriptionLines.map((line, index) => {
-                  const isRecent = index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
+                {transcriptEntries.map((entry, index) => {
+                  const isRecent =
+                    index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
                   const isCurrent = index === transcriptionIndex && isRecording
-                  const speaker = line.split(':')[0]
-                  const content = line.split(':').slice(1).join(':').trim()
-                  
+                  const rawText = entry.text ?? ""
+                  let speakerLabel = entry.speaker?.trim()
+                  let content = rawText
+                  if (!speakerLabel && rawText.includes(":")) {
+                    const [potentialSpeaker, ...rest] = rawText.split(":")
+                    if (rest.length) {
+                      speakerLabel = potentialSpeaker.trim()
+                      content = rest.join(":").trim()
+                    }
+                  }
+                  if (!speakerLabel || speakerLabel.length === 0) {
+                    speakerLabel = "Speaker"
+                  }
+                  if (!content || content.length === 0) {
+                    content = rawText
+                  }
+
                   return (
-                    <div 
-                      key={index}
+                    <div
+                      key={entry.id}
                       className={`flex gap-3 p-3 rounded-lg transition-all duration-300 ${
-                        isCurrent 
-                          ? 'bg-destructive/10 border border-destructive/20 shadow-sm' 
-                          : isRecent 
-                            ? 'bg-accent/50' 
+                        isCurrent
+                          ? 'bg-destructive/10 border border-destructive/20 shadow-sm'
+                          : isRecent
+                            ? 'bg-accent/50'
                             : 'bg-muted/30'
                       }`}
                       style={{
@@ -466,9 +1344,9 @@ export function NoteEditor({
                       }}
                     >
                       <div className={`font-medium text-sm min-w-16 ${
-                        speaker === 'Doctor' ? 'text-primary' : 'text-blue-600'
+                        speakerLabel.toLowerCase() === 'doctor' ? 'text-primary' : 'text-blue-600'
                       }`}>
-                        {speaker}:
+                        {speakerLabel}:
                       </div>
                       <div className={`text-sm leading-relaxed flex-1 ${
                         isCurrent ? 'font-medium' : ''
@@ -481,6 +1359,11 @@ export function NoteEditor({
                     </div>
                   )
                 })}
+                {!transcriptEntries.length && (
+                  <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                    No transcript available yet. Start the visit to capture the conversation.
+                  </div>
+                )}
               </div>
               
               {isRecording && (
@@ -497,11 +1380,13 @@ export function NoteEditor({
           <div className="border-t border-border p-4 bg-muted/30 shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <div>
-                {transcriptionIndex + 1} of {mockTranscriptionLines.length} lines transcribed
+                {currentTranscriptCount} of {totalTranscribedLines} lines transcribed
               </div>
               <div className="flex items-center gap-4">
-                <div>Words: ~{(transcriptionIndex + 1) * 12}</div>
-                <div>Confidence: 94%</div>
+                <div>Words: {totalTranscriptWords.toLocaleString()}</div>
+                <div>
+                  Confidence: {averageConfidencePercent !== null ? `${averageConfidencePercent}%` : 'N/A'}
+                </div>
               </div>
             </div>
           </div>
