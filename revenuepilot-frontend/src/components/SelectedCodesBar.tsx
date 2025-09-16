@@ -1,17 +1,126 @@
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
 import { Textarea } from "./ui/textarea"
-import { 
+import {
   FileText,
   Activity,
   Pill,
   Stethoscope,
   X,
-  ArrowUpDown
+  ArrowUpDown,
+  AlertTriangle,
+  CheckCircle,
+  Loader2
 } from "lucide-react"
+
+interface ApiCodeDetail {
+  code: string
+  type?: string
+  category?: string
+  description?: string
+  rationale?: string
+  confidence?: number
+  reimbursement?: string | number | null
+  rvu?: string | number | null
+}
+
+interface BillingBreakdownEntry {
+  amount?: number
+  amountFormatted?: string
+  rvu?: number
+}
+
+interface BillingSummary {
+  totalEstimated?: number
+  totalEstimatedFormatted?: string
+  totalRvu?: number
+  currency?: string
+  breakdown?: Record<string, BillingBreakdownEntry>
+  payerSpecific?: Record<string, string | undefined>
+  issues?: string[]
+}
+
+interface CombinationConflict {
+  code1?: string
+  code2?: string
+  reason?: string
+}
+
+interface CombinationContextIssue {
+  code?: string
+  issue?: string
+}
+
+interface CombinationValidationResult {
+  validCombinations?: boolean
+  conflicts?: CombinationConflict[]
+  contextIssues?: CombinationContextIssue[]
+  warnings?: string[]
+}
+
+interface DocumentationInfo {
+  code: string
+  required?: string[]
+  recommended?: string[]
+  examples?: string[]
+}
+
+interface CategorizationRule {
+  id?: string
+  type?: string
+  category?: string
+  priority?: number
+  match?: {
+    prefix?: string[]
+    codes?: string[]
+    descriptionKeywords?: string[]
+  }
+}
+
+interface CategorizationRules {
+  autoCategories?: Record<string, Record<string, string>>
+  userOverrides?: Record<string, Record<string, string>>
+  rules?: CategorizationRule[]
+}
+
+const unwrapApiPayload = <T,>(payload: any): T => {
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return payload.data as T
+  }
+  return payload as T
+}
+
+async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+  const response = await fetch(input, init)
+  let text = ""
+
+  try {
+    text = await response.text()
+  } catch (error) {
+    console.error(`Failed to read response body for ${String(input)}`, error)
+    text = ""
+  }
+
+  if (!response.ok) {
+    const message = text || response.statusText || "Request failed"
+    throw new Error(message)
+  }
+
+  if (!text) {
+    return ({} as unknown) as T
+  }
+
+  try {
+    const payload = JSON.parse(text)
+    return unwrapApiPayload<T>(payload)
+  } catch (error) {
+    console.error(`Failed to parse response from ${String(input)}`, error)
+    return ({} as unknown) as T
+  }
+}
 
 interface SelectedCodesBarProps {
   selectedCodes: {
@@ -34,41 +143,521 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     differentials: true
   })
 
+  const [codeDetails, setCodeDetails] = useState<Record<string, ApiCodeDetail>>({})
+  const [billingSummary, setBillingSummary] = useState<BillingSummary | null>(null)
+  const [combinationResult, setCombinationResult] = useState<CombinationValidationResult | null>(null)
+  const [documentationMap, setDocumentationMap] = useState<Record<string, DocumentationInfo>>({})
+  const [categorizationRules, setCategorizationRules] = useState<CategorizationRules | null>(null)
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  const overrideMap = useMemo(() => {
+    if (!categorizationRules?.userOverrides) {
+      return {}
+    }
+
+    const aggregated: Record<string, string> = {}
+    Object.values(categorizationRules.userOverrides).forEach(overrides => {
+      if (!overrides) {
+        return
+      }
+      Object.entries(overrides).forEach(([code, category]) => {
+        if (typeof code !== "string" || typeof category !== "string") {
+          return
+        }
+        const normalized = code.trim().toUpperCase()
+        if (normalized.length > 0) {
+          aggregated[normalized] = category
+        }
+      })
+    })
+
+    return aggregated
+  }, [categorizationRules])
+
+  const autoCategoryMap = useMemo(() => {
+    if (!categorizationRules?.autoCategories) {
+      return {}
+    }
+
+    const map: Record<string, Record<string, string>> = {}
+    Object.entries(categorizationRules.autoCategories).forEach(([type, codes]) => {
+      if (!type || !codes) {
+        return
+      }
+      const typeKey = type.trim().toUpperCase()
+      if (!typeKey) {
+        return
+      }
+      map[typeKey] = {}
+      Object.entries(codes).forEach(([code, category]) => {
+        if (typeof code !== "string" || typeof category !== "string") {
+          return
+        }
+        const normalized = code.trim().toUpperCase()
+        if (normalized.length > 0) {
+          map[typeKey][normalized] = category
+        }
+      })
+    })
+
+    return map
+  }, [categorizationRules])
+
+  const sortedCategorizationRules = useMemo(() => {
+    const rules = categorizationRules?.rules ?? []
+    return [...rules].sort((a, b) => (b?.priority ?? 0) - (a?.priority ?? 0))
+  }, [categorizationRules])
+
   const [showRemoveDialog, setShowRemoveDialog] = useState(false)
   const [selectedCodeToRemove, setSelectedCodeToRemove] = useState<any>(null)
   const [removeReasoning, setRemoveReasoning] = useState("")
 
-  const toggleCategory = (category: string) => {
-    setActiveCategories(prev => ({
-      ...prev,
-      [category]: !prev[category]
-    }))
-  }
+  useEffect(() => {
+    let isCancelled = false
 
-  const handleRemoveCode = (code: any) => {
-    setSelectedCodeToRemove(code)
-    setRemoveReasoning("")
-    setShowRemoveDialog(true)
-  }
-
-  const confirmRemoval = (action: 'clear' | 'return') => {
-    if (selectedCodeToRemove && onRemoveCode) {
-      onRemoveCode(selectedCodeToRemove, action, removeReasoning || undefined)
-      
-      // Update the counts
-      const updatedCodes = { ...selectedCodes }
-      if (selectedCodeToRemove.category) {
-        updatedCodes[selectedCodeToRemove.category] = Math.max(0, selectedCodes[selectedCodeToRemove.category] - 1)
+    const loadCategorizationRules = async () => {
+      try {
+        const data = await fetchJson<CategorizationRules>("/api/codes/categorization/rules")
+        if (!isCancelled && data) {
+          setCategorizationRules(data)
+        }
+      } catch (error) {
+        console.error("Failed to load categorization rules", error)
       }
-      onUpdateCodes(updatedCodes)
     }
-    setShowRemoveDialog(false)
-    setSelectedCodeToRemove(null)
-    setRemoveReasoning("")
-  }
 
-  // Helper function to get icon and styling for a code
-  const getCodeDisplayInfo = (codeItem: any) => {
+    loadCategorizationRules()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    const entries = (Array.isArray(selectedCodesList) ? selectedCodesList : [])
+      .map(item => {
+        const rawCode = typeof item?.code === "string" ? item.code.trim() : ""
+        if (!rawCode) {
+          return null
+        }
+        const type = typeof item?.type === "string" ? item.type.trim().toUpperCase() : ""
+        return { code: rawCode.trim().toUpperCase(), type }
+      })
+      .filter((entry): entry is { code: string; type: string } => Boolean(entry && entry.code.length > 0))
+
+    const uniqueCodes = Array.from(new Set(entries.map(entry => entry.code)))
+
+    if (uniqueCodes.length === 0) {
+      setCodeDetails({})
+      setBillingSummary(null)
+      setCombinationResult(null)
+      setDocumentationMap({})
+      setFetchError(null)
+      setIsLoadingDetails(false)
+      return
+    }
+
+    const cptCodes = Array.from(
+      new Set(
+        entries
+          .filter(entry => entry.type === "CPT" || entry.type === "HCPCS" || /^[0-9]/.test(entry.code))
+          .map(entry => entry.code)
+      )
+    )
+
+    let isCancelled = false
+
+    const loadDetails = async () => {
+      setIsLoadingDetails(true)
+      setFetchError(null)
+
+      const detailsPromise = fetchJson<ApiCodeDetail[]>("/api/codes/details/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codes: uniqueCodes })
+      }).catch(error => {
+        console.error("Failed to fetch code details", error)
+        return [] as ApiCodeDetail[]
+      })
+
+      const billingPromise = cptCodes.length
+        ? fetchJson<BillingSummary>("/api/billing/calculate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ codes: cptCodes })
+          }).catch(error => {
+            console.error("Failed to calculate billing summary", error)
+            return null
+          })
+        : Promise.resolve<BillingSummary | null>(null)
+
+      const combinationPromise = fetchJson<CombinationValidationResult>("/api/codes/validate/combination", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ codes: uniqueCodes })
+      }).catch(error => {
+        console.error("Failed to validate code combination", error)
+        return null
+      })
+
+      const documentationPromise = Promise.all(
+        uniqueCodes.map(async code => {
+          try {
+            const documentation = await fetchJson<DocumentationInfo>(`/api/codes/documentation/${encodeURIComponent(code)}`)
+            return [code, documentation] as const
+          } catch (error) {
+            console.error(`Failed to fetch documentation for code ${code}`, error)
+            return [
+              code,
+              {
+                code,
+                required: [],
+                recommended: [],
+                examples: []
+              }
+            ] as const
+          }
+        })
+      ).catch(error => {
+        console.error("Failed to load documentation requirements", error)
+        return uniqueCodes.map(code => [
+          code,
+          {
+            code,
+            required: [],
+            recommended: [],
+            examples: []
+          }
+        ] as const)
+      })
+
+      try {
+        const [detailsData, billingData, combinationData, documentationEntries] = await Promise.all([
+          detailsPromise,
+          billingPromise,
+          combinationPromise,
+          documentationPromise
+        ])
+
+        if (isCancelled) {
+          return
+        }
+
+        const detailMap: Record<string, ApiCodeDetail> = {}
+        if (Array.isArray(detailsData)) {
+          detailsData.forEach(detail => {
+            if (!detail || typeof detail.code !== "string") {
+              return
+            }
+            const normalized = detail.code.trim().toUpperCase()
+            if (!normalized) {
+              return
+            }
+            detailMap[normalized] = detail
+          })
+        }
+
+        const documentation: Record<string, DocumentationInfo> = {}
+        documentationEntries.forEach(([code, doc]) => {
+          const normalized = typeof code === "string" ? code.trim().toUpperCase() : ""
+          if (!normalized) {
+            return
+          }
+          documentation[normalized] = doc
+        })
+
+        setCodeDetails(detailMap)
+        setDocumentationMap(documentation)
+        setBillingSummary(billingData)
+        setCombinationResult(combinationData)
+      } catch (error) {
+        if (isCancelled) {
+          return
+        }
+        console.error("Failed to load selected code details", error)
+        const message =
+          error instanceof Error && error.message.length > 0
+            ? error.message
+            : "Unable to load code insights."
+        setFetchError(message)
+        setCodeDetails({})
+        setDocumentationMap({})
+        setBillingSummary(null)
+        setCombinationResult(null)
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingDetails(false)
+        }
+      }
+    }
+
+    loadDetails()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [selectedCodesList])
+
+  const doesRuleApply = useCallback(
+    (rule: CategorizationRule | undefined, code: string, type: string, description: string) => {
+      if (!rule) {
+        return false
+      }
+
+      const expectedType = typeof rule.type === "string" ? rule.type.trim().toUpperCase() : ""
+      if (expectedType && expectedType !== type) {
+        return false
+      }
+
+      const match = rule.match ?? {}
+      const normalizedCode = code.trim().toUpperCase()
+
+      if (Array.isArray(match.codes) && match.codes.some(candidate => typeof candidate === "string" && candidate.trim().toUpperCase() === normalizedCode)) {
+        return true
+      }
+
+      if (
+        Array.isArray(match.prefix) &&
+        match.prefix.some(prefix => typeof prefix === "string" && normalizedCode.startsWith(prefix.trim().toUpperCase()))
+      ) {
+        return true
+      }
+
+      if (Array.isArray(match.descriptionKeywords) && description) {
+        const descriptionLower = description.toLowerCase()
+        if (
+          match.descriptionKeywords.some(keyword => typeof keyword === "string" && descriptionLower.includes(keyword.toLowerCase()))
+        ) {
+          return true
+        }
+      }
+
+      return false
+    },
+    []
+  )
+
+  const determineCategory = useCallback(
+    (codeItem: any, detail?: ApiCodeDetail) => {
+      const resolvedType = (detail?.type || codeItem?.type || "").toString().trim().toUpperCase()
+      const normalizedCode = (detail?.code || codeItem?.code || "").toString().trim().toUpperCase()
+
+      const fallbackCategory =
+        detail?.category ||
+        codeItem?.category ||
+        (resolvedType === "ICD-10"
+          ? "diagnoses"
+          : resolvedType === "CPT" || resolvedType === "HCPCS"
+            ? "codes"
+            : resolvedType === "PREVENTION"
+              ? "prevention"
+              : resolvedType === "DIFFERENTIAL"
+                ? "differentials"
+                : "codes")
+
+      if (!normalizedCode) {
+        return fallbackCategory
+      }
+
+      if (overrideMap[normalizedCode]) {
+        return overrideMap[normalizedCode]
+      }
+
+      const byType = autoCategoryMap[resolvedType]
+      if (byType && byType[normalizedCode]) {
+        return byType[normalizedCode]
+      }
+
+      const description = (detail?.description || codeItem?.description || "").toString()
+      for (const rule of sortedCategorizationRules) {
+        if (doesRuleApply(rule, normalizedCode, resolvedType, description)) {
+          if (typeof rule?.category === "string" && rule.category.trim().length > 0) {
+            return rule.category
+          }
+        }
+      }
+
+      return fallbackCategory
+    },
+    [autoCategoryMap, doesRuleApply, overrideMap, sortedCategorizationRules]
+  )
+
+  const sanitizeConfidence = useCallback((value: unknown): number => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.min(100, Math.max(0, Math.round(value)))
+    }
+
+    if (typeof value === "string") {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) {
+        return Math.min(100, Math.max(0, Math.round(parsed)))
+      }
+    }
+
+    return 0
+  }, [])
+
+  const ensureCurrency = useCallback((value: unknown): string | null => {
+    if (value === null || value === undefined) {
+      return null
+    }
+
+    if (typeof value === "string") {
+      const trimmed = value.trim()
+      if (!trimmed) {
+        return null
+      }
+
+      if (trimmed.startsWith("$")) {
+        return trimmed
+      }
+
+      const numeric = Number(trimmed)
+      if (Number.isFinite(numeric)) {
+        try {
+          return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(numeric)
+        } catch {
+          return `$${numeric.toFixed(2)}`
+        }
+      }
+
+      return trimmed
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      try {
+        return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value)
+      } catch {
+        return `$${value.toFixed(2)}`
+      }
+    }
+
+    return null
+  }, [])
+
+  const formatDocumentationSummary = useCallback((documentation?: DocumentationInfo) => {
+    if (!documentation) {
+      return "No additional documentation requirements."
+    }
+
+    const segments: string[] = []
+
+    if (Array.isArray(documentation.required) && documentation.required.length > 0) {
+      segments.push(`Required: ${documentation.required.join(", ")}`)
+    }
+
+    if (Array.isArray(documentation.recommended) && documentation.recommended.length > 0) {
+      segments.push(`Recommended: ${documentation.recommended.join(", ")}`)
+    }
+
+    if (Array.isArray(documentation.examples) && documentation.examples.length > 0) {
+      segments.push(`Examples: ${documentation.examples.join(", ")}`)
+    }
+
+    if (segments.length === 0) {
+      return "No additional documentation requirements."
+    }
+
+    return segments.join(" • ")
+  }, [])
+
+  const buildBillingConsiderations = useCallback(
+    (codeItem: any, breakdown?: BillingBreakdownEntry) => {
+      const type = (codeItem?.type || "").toString().trim().toUpperCase()
+      const messages: string[] = []
+
+      if (breakdown) {
+        if (typeof breakdown.amountFormatted === "string" && breakdown.amountFormatted.trim()) {
+          messages.push(`Estimated reimbursement ${breakdown.amountFormatted}`)
+        } else if (typeof breakdown.amount === "number" && Number.isFinite(breakdown.amount)) {
+          const formatted = ensureCurrency(breakdown.amount)
+          if (formatted) {
+            messages.push(`Estimated reimbursement ${formatted}`)
+          }
+        }
+
+        if (typeof breakdown.rvu === "number" && Number.isFinite(breakdown.rvu)) {
+          messages.push(`RVU ${breakdown.rvu.toFixed(2)}`)
+        }
+      }
+
+      if (messages.length > 0) {
+        return messages.join(" • ")
+      }
+
+      if (type === "CPT" || type === "HCPCS") {
+        return "Ensure documentation supports billed service and medical necessity."
+      }
+
+      if (type === "ICD-10") {
+        return "Verify diagnosis specificity aligns with billing requirements."
+      }
+
+      return "Standard billing requirements apply."
+    },
+    [ensureCurrency]
+  )
+
+  const billingBreakdown = useMemo(() => billingSummary?.breakdown ?? {}, [billingSummary])
+
+  const conflictDetailsMap = useMemo(() => {
+    const map: Record<string, { conflicts: string[]; contextIssues: string[] }> = {}
+
+    if (!combinationResult) {
+      return map
+    }
+
+    const conflicts = Array.isArray(combinationResult.conflicts) ? combinationResult.conflicts : []
+    conflicts.forEach(conflict => {
+      if (!conflict) {
+        return
+      }
+
+      const reason =
+        typeof conflict.reason === "string" && conflict.reason.trim().length > 0
+          ? conflict.reason
+          : "Medical necessity conflict detected"
+
+      const code1 = typeof conflict.code1 === "string" ? conflict.code1.trim().toUpperCase() : ""
+      if (code1) {
+        map[code1] = map[code1] || { conflicts: [], contextIssues: [] }
+        map[code1].conflicts.push(reason)
+      }
+
+      if (typeof conflict.code2 === "string" && conflict.code2.trim().length > 0) {
+        conflict.code2.split(",").forEach(raw => {
+          const normalized = raw.trim().toUpperCase()
+          if (!normalized) {
+            return
+          }
+          map[normalized] = map[normalized] || { conflicts: [], contextIssues: [] }
+          map[normalized].conflicts.push(reason)
+        })
+      }
+    })
+
+    const contextIssues = Array.isArray(combinationResult.contextIssues) ? combinationResult.contextIssues : []
+    contextIssues.forEach(issue => {
+      if (!issue) {
+        return
+      }
+
+      const code = typeof issue.code === "string" ? issue.code.trim().toUpperCase() : ""
+      if (!code) {
+        return
+      }
+
+      map[code] = map[code] || { conflicts: [], contextIssues: [] }
+      if (typeof issue.issue === "string" && issue.issue.trim().length > 0) {
+        map[code].contextIssues.push(issue.issue)
+      }
+    })
+
+    return map
+  }, [combinationResult])
+
+  const selectedCodesDetails = useMemo(() => {
     const categoryInfo = {
       codes: {
         icon: FileText,
@@ -96,47 +685,159 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       }
     }
 
-    const categoryStyle = categoryInfo[codeItem.category] || categoryInfo.diagnoses
-    
-    return {
-      ...codeItem,
-      icon: categoryStyle.icon,
-      color: categoryStyle.color,
-      lightColor: categoryStyle.lightColor,
-      textColor: categoryStyle.textColor,
-      billingConsiderations: getBillingConsiderations(codeItem),
-      treatmentNotes: getTreatmentNotes(codeItem),
-      documentationRequirements: getDocumentationRequirements(codeItem)
+    return (Array.isArray(selectedCodesList) ? selectedCodesList : []).map(codeItem => {
+      const normalized = typeof codeItem?.code === "string" ? codeItem.code.trim().toUpperCase() : ""
+      const detail = normalized ? codeDetails[normalized] : undefined
+      const documentation = normalized ? documentationMap[normalized] : undefined
+      const breakdown = normalized ? billingBreakdown?.[normalized] : undefined
+      const conflicts = normalized ? conflictDetailsMap[normalized] : undefined
+      const resolvedCategory = determineCategory(codeItem, detail)
+      const categoryStyle = categoryInfo[(resolvedCategory as keyof typeof categoryInfo) || "diagnoses"] || categoryInfo.diagnoses
+      const resolvedType = detail?.type || codeItem?.type
+      const confidence = sanitizeConfidence(detail?.confidence ?? codeItem?.confidence)
+      const reimbursement =
+        (breakdown?.amountFormatted && breakdown.amountFormatted.trim())
+          ? breakdown.amountFormatted
+          : ensureCurrency(detail?.reimbursement) ?? ensureCurrency(codeItem?.reimbursement) ?? (resolvedType === "ICD-10" ? "N/A (Diagnosis code)" : "N/A")
+
+      const rvuValue = (() => {
+        if (typeof breakdown?.rvu === "number" && Number.isFinite(breakdown.rvu)) {
+          return breakdown.rvu.toFixed(2)
+        }
+        if (typeof detail?.rvu === "number" && Number.isFinite(detail.rvu)) {
+          return detail.rvu.toFixed(2)
+        }
+        return detail?.rvu ?? codeItem?.rvu
+      })()
+
+      const conflictInfo = {
+        conflicts: conflicts?.conflicts ?? [],
+        contextIssues: conflicts?.contextIssues ?? []
+      }
+
+      const hasConflict = conflictInfo.conflicts.length > 0 || conflictInfo.contextIssues.length > 0
+
+      return {
+        ...codeItem,
+        ...detail,
+        code: detail?.code ?? codeItem.code,
+        type: detail?.type ?? codeItem.type,
+        category: resolvedCategory,
+        description: detail?.description ?? codeItem.description,
+        rationale: detail?.rationale ?? codeItem.rationale,
+        confidence,
+        reimbursement,
+        rvu: rvuValue,
+        icon: categoryStyle.icon,
+        color: categoryStyle.color,
+        lightColor: categoryStyle.lightColor,
+        textColor: categoryStyle.textColor,
+        billingConsiderations: buildBillingConsiderations({ ...codeItem, ...detail, type: resolvedType }, breakdown),
+        treatmentNotes: detail?.rationale ?? codeItem?.rationale ?? "Clinical assessment and appropriate treatment plan documented.",
+        documentationRequirements: formatDocumentationSummary(documentation),
+        documentation,
+        hasConflict,
+        conflictDetails: conflictInfo,
+        billingBreakdown: breakdown
+      }
+    })
+  }, [
+    billingBreakdown,
+    buildBillingConsiderations,
+    codeDetails,
+    conflictDetailsMap,
+    determineCategory,
+    documentationMap,
+    ensureCurrency,
+    formatDocumentationSummary,
+    sanitizeConfidence,
+    selectedCodesList
+  ])
+
+  const computedCounts = useMemo(() => {
+    const counts = {
+      codes: 0,
+      prevention: 0,
+      diagnoses: 0,
+      differentials: 0
     }
-  }
 
-  // Helper functions for detailed information
-  const getBillingConsiderations = (codeItem: any) => {
-    if (codeItem.type === "CPT") {
-      return codeItem.code.startsWith("992") || codeItem.code.startsWith("993") 
-        ? "Requires documentation of medically appropriate history/exam and appropriate level of medical decision making."
-        : "Ensure proper documentation of medical necessity for billing."
-    } else if (codeItem.type === "ICD-10") {
-      return "Diagnosis code - ensure specificity and accurate documentation of condition."
+    selectedCodesDetails.forEach(detail => {
+      const category = (detail?.category || "") as keyof typeof counts
+      if (category && typeof counts[category] === "number") {
+        counts[category] += 1
+      }
+    })
+
+    return counts
+  }, [selectedCodesDetails])
+
+  useEffect(() => {
+    const categories: (keyof typeof computedCounts)[] = ["codes", "prevention", "diagnoses", "differentials"]
+    const hasDifference = categories.some(category => (selectedCodes?.[category] ?? 0) !== (computedCounts?.[category] ?? 0))
+
+    if (hasDifference) {
+      onUpdateCodes(computedCounts)
     }
-    return "Standard billing requirements apply."
-  }
+  }, [computedCounts, onUpdateCodes, selectedCodes])
 
-  const getTreatmentNotes = (codeItem: any) => {
-    return codeItem.rationale || "Clinical assessment and appropriate treatment plan documented."
-  }
-
-  const getDocumentationRequirements = (codeItem: any) => {
-    if (codeItem.type === "CPT") {
-      return "Document clinical findings, time spent, and medical decision making complexity."
-    } else if (codeItem.type === "ICD-10") {
-      return "Document clinical signs, symptoms, and examination findings supporting diagnosis."
+  const conflictSummary = useMemo(() => {
+    if (!combinationResult) {
+      return null
     }
-    return "Maintain appropriate clinical documentation."
+
+    const conflicts = Array.isArray(combinationResult.conflicts) ? combinationResult.conflicts : []
+    const contextIssues = Array.isArray(combinationResult.contextIssues) ? combinationResult.contextIssues : []
+
+    if (conflicts.length === 0 && contextIssues.length === 0) {
+      return { hasConflicts: false, messages: [] as string[] }
+    }
+
+    const messages: string[] = []
+
+    conflicts.forEach(conflict => {
+      if (!conflict) {
+        return
+      }
+      const code1 = typeof conflict.code1 === "string" && conflict.code1.trim().length > 0 ? conflict.code1.trim() : "CPT code"
+      const code2 = typeof conflict.code2 === "string" && conflict.code2.trim().length > 0 ? conflict.code2.trim() : ""
+      const reason = typeof conflict.reason === "string" && conflict.reason.trim().length > 0 ? conflict.reason.trim() : "Medical necessity conflict"
+      messages.push(code2 ? `${code1} ↔ ${code2}: ${reason}` : `${code1}: ${reason}`)
+    })
+
+    contextIssues.forEach(issue => {
+      if (!issue) {
+        return
+      }
+      const code = typeof issue.code === "string" && issue.code.trim().length > 0 ? issue.code.trim() : "Code"
+      const description = typeof issue.issue === "string" && issue.issue.trim().length > 0 ? issue.issue.trim() : "Requires review"
+      messages.push(`${code}: ${description}`)
+    })
+
+    return { hasConflicts: true, messages }
+  }, [combinationResult])
+
+  const toggleCategory = (category: string) => {
+    setActiveCategories(prev => ({
+      ...prev,
+      [category]: !prev[category]
+    }))
   }
 
-  // Convert selectedCodesList to display format with styling info
-  const selectedCodesDetails = selectedCodesList.map(getCodeDisplayInfo)
+  const handleRemoveCode = (code: any) => {
+    setSelectedCodeToRemove(code)
+    setRemoveReasoning("")
+    setShowRemoveDialog(true)
+  }
+
+  const confirmRemoval = (action: 'clear' | 'return') => {
+    if (selectedCodeToRemove && onRemoveCode) {
+      onRemoveCode(selectedCodeToRemove, action, removeReasoning || undefined)
+    }
+    setShowRemoveDialog(false)
+    setSelectedCodeToRemove(null)
+    setRemoveReasoning("")
+  }
 
   // Filter codes based on active categories
   const filteredCodes = selectedCodesDetails.filter(code => activeCategories[code.category])
@@ -150,7 +851,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       color: 'text-blue-600',
       bgColor: 'bg-blue-100',
       borderColor: 'border-blue-200',
-      count: selectedCodes.codes
+      count: computedCounts.codes
     },
     {
       key: 'prevention',
@@ -159,7 +860,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       color: 'text-red-600',
       bgColor: 'bg-red-100',
       borderColor: 'border-red-200',
-      count: selectedCodes.prevention
+      count: computedCounts.prevention
     },
     {
       key: 'diagnoses',
@@ -168,7 +869,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       color: 'text-purple-600',
       bgColor: 'bg-purple-100',
       borderColor: 'border-purple-200',
-      count: selectedCodes.diagnoses
+      count: computedCounts.diagnoses
     },
     {
       key: 'differentials',
@@ -177,12 +878,12 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       color: 'text-green-600',
       bgColor: 'bg-green-100',
       borderColor: 'border-green-200',
-      count: selectedCodes.differentials
+      count: computedCounts.differentials
     }
   ]
 
   // Calculate total codes
-  const totalCodes = selectedCodes.codes + selectedCodes.prevention + selectedCodes.diagnoses + selectedCodes.differentials
+  const totalCodes = computedCounts.codes + computedCounts.prevention + computedCounts.diagnoses + computedCounts.differentials
   const visibleCodes = filteredCodes.length
 
   // Circular confidence indicator component
@@ -279,22 +980,104 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
             <div className="text-xs text-muted-foreground">
               {visibleCodes} of {totalCodes} codes
             </div>
-          </div>
+        </div>
 
-          {/* Horizontally Scrollable Code Boxes */}
-          <div className="relative">
-            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-muted-foreground/20">
-              {filteredCodes.map((codeDetail, index) => {
-                const IconComponent = codeDetail.icon
-                return (
-                  <div
-                    key={index}
+        {(isLoadingDetails || billingSummary || (conflictSummary && selectedCodesDetails.length > 0) || fetchError) && (
+          <div className="flex flex-col gap-2 text-xs">
+            {isLoadingDetails && (
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>Loading code insights...</span>
+              </div>
+            )}
+
+            {billingSummary && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
+                <span className="font-medium">Estimated reimbursement:</span>
+                <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
+                  {billingSummary.totalEstimatedFormatted ?? ensureCurrency(billingSummary.totalEstimated) ?? "Not available"}
+                </Badge>
+                <span className="font-medium">Total RVU:</span>
+                <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
+                  {typeof billingSummary.totalRvu === "number" && Number.isFinite(billingSummary.totalRvu)
+                    ? billingSummary.totalRvu.toFixed(2)
+                    : "N/A"}
+                </Badge>
+              </div>
+            )}
+
+            {billingSummary?.issues && billingSummary.issues.length > 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
+                {billingSummary.issues.join(" ")}
+              </div>
+            )}
+
+            {conflictSummary && selectedCodesDetails.length > 0 && (
+              <div
+                className={`flex items-start gap-2 rounded-md border px-3 py-2 ${
+                  conflictSummary.hasConflicts
+                    ? 'border-red-200 bg-red-50 text-red-700'
+                    : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                }`}
+              >
+                {conflictSummary.hasConflicts ? (
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                ) : (
+                  <CheckCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                )}
+                <div className="space-y-1">
+                  <div className="text-xs font-medium">
+                    {conflictSummary.hasConflicts ? 'Review code conflicts' : 'No conflicts detected'}
+                  </div>
+                  {conflictSummary.messages.length > 0 && (
+                    <ul className="space-y-0.5 text-xs">
+                      {conflictSummary.messages.slice(0, 3).map((message, index) => (
+                        <li key={`${message}-${index}`} className="leading-snug">
+                          {message}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {conflictSummary.hasConflicts && conflictSummary.messages.length > 3 && (
+                    <div className="text-[10px] text-muted-foreground">
+                      Showing {Math.min(3, conflictSummary.messages.length)} of {conflictSummary.messages.length} findings.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {fetchError && (
+              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
+                {fetchError}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Horizontally Scrollable Code Boxes */}
+        <div className="relative">
+          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-muted-foreground/20">
+            {filteredCodes.map((codeDetail, index) => {
+              const IconComponent = codeDetail.icon
+              return (
+                <div
+                    key={codeDetail.code ?? index}
                     className={`
-                      relative p-3 rounded-lg border cursor-pointer flex-shrink-0 min-w-[140px] group
+                      relative p-3 rounded-lg border cursor-pointer flex-shrink-0 min-w-[160px] group
                       ${codeDetail.lightColor} hover:scale-105 transition-all duration-200
-                      border-current/20 hover:shadow-md
+                      ${codeDetail.hasConflict ? 'border-red-300 ring-1 ring-red-200/80' : 'border-current/20'}
+                      hover:shadow-md
                     `}
                   >
+                    {codeDetail.hasConflict && (
+                      <Badge
+                        variant="destructive"
+                        className="absolute left-3 top-2 h-4 rounded-sm px-2 text-[10px]"
+                      >
+                        Review
+                      </Badge>
+                    )}
                     {/* Remove button - only visible on hover */}
                     <Button
                       variant="ghost"
@@ -345,29 +1128,81 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                           </div>
                         </div>
                       </TooltipTrigger>
-                      <TooltipContent className="max-w-xs p-4" side="top">
-                        <div className="space-y-2">
-                          <div className="font-medium text-sm">{codeDetail.code} - {codeDetail.description}</div>
-                          <div className="text-xs space-y-1">
+                      <TooltipContent className="max-w-sm p-4" side="top">
+                        <div className="space-y-2 text-xs">
+                          <div className="space-y-0.5">
+                            <div className="text-sm font-medium">{codeDetail.code} - {codeDetail.description}</div>
+                            <div className="text-[11px] text-muted-foreground">{codeDetail.type}</div>
+                          </div>
+                          {codeDetail.rationale && (
                             <div><span className="font-medium">Reason:</span> {codeDetail.rationale}</div>
-                            {codeDetail.reimbursement !== "N/A (Diagnosis code)" && (
-                              <div><span className="font-medium">Reimbursement:</span> {codeDetail.reimbursement}</div>
-                            )}
-                            {codeDetail.rvu && (
-                              <div><span className="font-medium">RVU:</span> {codeDetail.rvu}</div>
-                            )}
+                          )}
+                          <div><span className="font-medium">Estimated reimbursement:</span> {codeDetail.reimbursement}</div>
+                          {codeDetail.rvu && (
+                            <div><span className="font-medium">RVU:</span> {codeDetail.rvu}</div>
+                          )}
+                          {codeDetail.billingConsiderations && (
                             <div><span className="font-medium">Billing:</span> {codeDetail.billingConsiderations}</div>
+                          )}
+                          {codeDetail.treatmentNotes && (
                             <div><span className="font-medium">Treatment:</span> {codeDetail.treatmentNotes}</div>
-                            <div><span className="font-medium">Documentation:</span> {codeDetail.documentationRequirements}</div>
-                            <div className="pt-1 border-t">
-                              <span className="font-medium">Confidence:</span> 
-                              <span className={`ml-1 ${
-                                codeDetail.confidence >= 80 ? 'text-green-600' :
-                                codeDetail.confidence >= 60 ? 'text-yellow-600' : 'text-red-600'
-                              }`}>
-                                {codeDetail.confidence}%
-                              </span>
+                          )}
+                          {codeDetail.documentation ? (
+                            <div className="space-y-1">
+                              <div className="font-medium">Documentation</div>
+                              {codeDetail.documentation.required?.length ? (
+                                <div>Required: {codeDetail.documentation.required.join(', ')}</div>
+                              ) : null}
+                              {codeDetail.documentation.recommended?.length ? (
+                                <div>Recommended: {codeDetail.documentation.recommended.join(', ')}</div>
+                              ) : null}
+                              {codeDetail.documentation.examples?.length ? (
+                                <div>Examples: {codeDetail.documentation.examples.join(', ')}</div>
+                              ) : null}
+                              {!codeDetail.documentation.required?.length && !codeDetail.documentation.recommended?.length && !codeDetail.documentation.examples?.length && (
+                                <div>{codeDetail.documentationRequirements}</div>
+                              )}
                             </div>
+                          ) : (
+                            <div><span className="font-medium">Documentation:</span> {codeDetail.documentationRequirements}</div>
+                          )}
+                          {codeDetail.hasConflict && (
+                            <div className="space-y-1 rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-red-700">
+                              {codeDetail.conflictDetails?.conflicts?.length ? (
+                                <div>
+                                  <span className="font-medium">Conflicts:</span>
+                                  <ul className="ml-4 list-disc">
+                                    {codeDetail.conflictDetails.conflicts.map((conflict, conflictIndex) => (
+                                      <li key={`conflict-${conflictIndex}`}>{conflict}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
+                              {codeDetail.conflictDetails?.contextIssues?.length ? (
+                                <div>
+                                  <span className="font-medium">Context issues:</span>
+                                  <ul className="ml-4 list-disc">
+                                    {codeDetail.conflictDetails.contextIssues.map((issue, issueIndex) => (
+                                      <li key={`context-${issueIndex}`}>{issue}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                          <div className="border-t pt-1">
+                            <span className="font-medium">Confidence:</span>
+                            <span
+                              className={`ml-1 ${
+                                codeDetail.confidence >= 80
+                                  ? 'text-green-600'
+                                  : codeDetail.confidence >= 60
+                                    ? 'text-yellow-600'
+                                    : 'text-red-600'
+                              }`}
+                            >
+                              {codeDetail.confidence}%
+                            </span>
                           </div>
                         </div>
                       </TooltipContent>
