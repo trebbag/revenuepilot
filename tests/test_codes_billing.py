@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import pytest
 from fastapi.testclient import TestClient
@@ -40,7 +41,8 @@ def test_code_details_batch(client):
         headers=auth_header(token),
     )
     assert resp.status_code == 200
-    data = resp.json()
+    payload = resp.json()
+    data = payload.get("data", payload)
     assert len(data) == 3
     assert any(d["code"] == "99213" and d["rvu"] > 0 for d in data)
     assert any(d["code"] == "E11.9" and d["type"] == "ICD-10" for d in data)
@@ -54,10 +56,13 @@ def test_billing_calculate(client):
         headers=auth_header(token),
     )
     assert resp.status_code == 200
-    data = resp.json()
+    payload = resp.json()
+    data = payload.get("data", payload)
     assert data["totalEstimated"] == pytest.approx(85.32, rel=1e-2)
     assert data["totalRvu"] == pytest.approx(1.29, rel=1e-2)
     assert len(data["breakdown"]) == 2
+    assert data["payerSpecific"]["payerType"].lower() == "commercial"
+    assert data["breakdown"]["99213"]["rvu"] == pytest.approx(1.29, rel=1e-2)
 
 
 def test_validate_combination(client):
@@ -68,7 +73,44 @@ def test_validate_combination(client):
         headers=auth_header(token),
     )
     assert resp.status_code == 200
-    data = resp.json()
+    payload = resp.json()
+    data = payload.get("data", payload)
     assert data["conflicts"]
     assert not data["validCombinations"]
+
+
+def test_compliance_rule_references(client, monkeypatch):
+    token = get_token(client)
+
+    def fake_call_openai(messages):
+        return json.dumps(
+            {
+                "alerts": [
+                    {
+                        "text": "Chief complaint documentation is missing.",
+                        "category": "documentation",
+                        "priority": "high",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(main, "call_openai", fake_call_openai)
+
+    resp = client.post(
+        "/api/ai/compliance/check",
+        json={"content": "Note missing chief complaint", "codes": []},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    data = payload.get("data", payload)
+    assert data["ruleReferences"], "expected aggregated rule references"
+    assert any(
+        ref["ruleId"] == "documentation-chief-complaint" for ref in data["ruleReferences"]
+    )
+    alert = data["alerts"][0]
+    assert alert["ruleReferences"], "expected rule references on alert"
+    assert alert["ruleReferences"][0]["ruleId"] == "documentation-chief-complaint"
+    assert alert["ruleReferences"][0]["citations"], "expected citations for rule"
 

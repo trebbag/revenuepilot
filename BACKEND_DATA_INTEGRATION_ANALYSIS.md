@@ -63,7 +63,7 @@ This document identifies every UI element in the RevenuePilot application that r
 | Element Name | Data Type & Structure | Expected Data Source | Update Trigger | Current Status |
 |--------------|----------------------|---------------------|----------------|----------------|
 | **Code Suggestions (CPT/ICD-10/HCPCS)** | `Array<{ code: string, type: "CPT" \| "ICD-10" \| "HCPCS", description: string, rationale: string, confidence: number (0-100), category: "codes" \| "diagnoses", reimbursement?: string, rvu?: string }>` | `/api/ai/codes/suggest` | Note content change, manual refresh | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
-| **Compliance Suggestions** | `Array<{ text: string, reason: string, priority: "high" \| "medium" \| "low", category: "documentation" \| "coding" \| "billing" \| "quality", actionRequired: boolean }>` | `/api/ai/compliance/check` | Note content change, real-time | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
+| **Compliance Suggestions** | `{ alerts: Array<ComplianceAlert>, ruleReferences: Array<RuleReference> }` (`ComplianceAlert` now includes `ruleReferences` with rule ids & citations) | `/api/ai/compliance/check` | Note content change, real-time | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
 | **Differential Diagnoses** | `Array<{ diagnosis: string, percentage: number (0-100), reasoning: string, supportingFactors: Array<string>, contradictingFactors: Array<string>, testsToConfirm?: Array<string> }>` | `/api/ai/differentials/generate` | Symptom extraction, patient data | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
 | **Prevention & Public Health** | `Array<{ recommendation: string, priority: "urgent" \| "routine", source: "CDC" \| "WHO" \| "USPSTF" \| "Local", ageRelevant: boolean, riskFactors: Array<string> }>` | `/api/ai/prevention/suggest` | Patient demographics, risk factors | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
 | **Confidence Score Tracking** | All suggestions include `confidence: number (0-100)` with reasoning | Included in all AI responses | Real-time with suggestions | ⚠️ **NEEDS IMPLEMENTATION** - Mock percentages |
@@ -78,7 +78,7 @@ This document identifies every UI element in the RevenuePilot application that r
 | Element Name | Data Type & Structure | Expected Data Source | Update Trigger | Current Status |
 |--------------|----------------------|---------------------|----------------|----------------|
 | **Selected Codes Details** | `Array<{ code: string, type: "CPT" \| "ICD-10" \| "HCPCS", category: "codes" \| "diagnoses" \| "differentials" \| "prevention", description: string, rationale: string, confidence: number, reimbursement?: string, rvu?: string }>` | `/api/codes/details/batch` | Code selection, page load | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
-| **Real-time Reimbursement Calculation** | `{ totalEstimated: number, breakdown: Array<{ code: string, amount: number, rvu: number }>, payerSpecific?: object }` | `/api/billing/calculate` | Code selection/removal | ⚠️ **NEEDS IMPLEMENTATION** - Hardcoded values |
+| **Real-time Reimbursement Calculation** | `{ totalEstimated: number, breakdown: Array<{ code: string, amount: number, rvu: number }>, payerSpecific: { payerType: string, location?: string } }` | `/api/billing/calculate` | Code selection/removal | ⚠️ **NEEDS IMPLEMENTATION** - Hardcoded values |
 | **Code Validation & Conflicts** | `{ validCombinations: boolean, conflicts: Array<{ code1: string, code2: string, reason: string }>, warnings: Array<string> }` | `/api/codes/validate/combination` | Code selection changes | ⚠️ **NEEDS IMPLEMENTATION** - No validation |
 | **Documentation Requirements** | `{ code: string, required: Array<string>, recommended: Array<string>, timeRequirements?: string, examples: Array<string> }` | `/api/codes/documentation/{code}` | Code selection | ⚠️ **NEEDS IMPLEMENTATION** - Static text |
 | **Code Categorization Logic** | `{ autoCategories: object, userOverrides: object, rules: Array<object> }` | `/api/codes/categorization/rules` | Code addition, user category changes | ⚠️ **NEEDS IMPLEMENTATION** - Simple type-based logic |
@@ -440,7 +440,7 @@ This enhanced analysis provides comprehensive backend integration requirements f
 |----------|--------|---------|---------------------------|----------|
 | `/api/ai/analyze/realtime` | POST | Real-time content analysis | `Request: { content, patientContext }` → `Response: { extractedSymptoms, medications, history }` | **CRITICAL** |
 | `/api/ai/codes/suggest` | POST | Code suggestions | `Request: { content, patientData }` → `Response: Array<{ code, type, description, rationale, confidence, reimbursement }>` | **CRITICAL** |
-| `/api/ai/compliance/check` | POST | Compliance monitoring | `Request: { content, codes }` → `Response: Array<{ severity, title, description, suggestion }>` | **CRITICAL** |
+| `/api/ai/compliance/check` | POST | Compliance monitoring | `Request: { content, codes }` → `Response: { alerts: Array<ComplianceAlert>, ruleReferences: Array<RuleReference> }` | **CRITICAL** |
 | `/api/ai/differentials/generate` | POST | Differential diagnoses | `Request: { symptoms, patientData }` → `Response: Array<{ diagnosis, percentage, reasoning, supportingFactors }>` | **HIGH** |
 | `/api/ai/prevention/suggest` | POST | Prevention recommendations | `Request: { patientData, demographics }` → `Response: Array<{ recommendation, priority, source, ageRelevant }>` | **HIGH** |
 | `/api/ai/beautify` | POST | Note beautification | `Request: { content, template }` → `Response: { subjective, objective, assessment, plan, suggestedEdits }>` | **MEDIUM** |
@@ -455,7 +455,7 @@ This enhanced analysis provides comprehensive backend integration requirements f
 | `/api/codes/validate/icd10/{code}` | GET | ICD-10 validation | `Response: { valid, description, clinicalContext, contraindications }` | **CRITICAL** |
 | `/api/codes/validate/combination` | POST | Code combination validation | `Request: { codes }` → `Response: { validCombinations, conflicts, warnings }` | **HIGH** |
 | `/api/codes/details/batch` | POST | Batch code details | `Request: { codes }` → `Response: Array<{ code, description, reimbursement, rvu, requirements }>` | **HIGH** |
-| `/api/billing/calculate` | POST | Reimbursement calculation | `Request: { codes, payerType, location }` → `Response: { totalEstimated, breakdown, payerSpecific }` | **HIGH** |
+| `/api/billing/calculate` | POST | Reimbursement calculation | `Request: { codes, payerType, location }` → `Response: { totalEstimated, breakdown, payerSpecific, totalRvu }` | **HIGH** |
 | `/api/codes/documentation/{code}` | GET | Documentation requirements | `Response: { required, recommended, timeRequirements, examples }` | **MEDIUM** |
 
 ### 📊 **ANALYTICS & REPORTING**

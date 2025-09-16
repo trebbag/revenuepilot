@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 import re
-from typing import Dict, Iterable, List, Optional, Tuple
+import sqlite3
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 # Example CPT, HCPCS and ICD-10 tables. In a production system these would be
 # loaded from an external database and kept up to date via scheduled jobs. The
@@ -482,8 +483,20 @@ def calculate_billing(
     cpt_codes: List[str],
     payer_type: str = "commercial",
     location: str | None = None,
+    session: sqlite3.Connection | None = None,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """Calculate estimated reimbursement for CPT codes with currency validation."""
+
+    if session is not None:
+        return _calculate_billing_from_session(
+            session,
+            cpt_codes,
+            payer_type,
+            location,
+            metadata=metadata,
+        )
 
     multiplier = Decimal("0.8") if payer_type and payer_type.lower() == "medicare" else Decimal("1.0")
     breakdown: Dict[str, dict] = {}
@@ -509,6 +522,127 @@ def calculate_billing(
             issues.append(f"Calculated reimbursement for code {code} is not positive.")
             continue
 
+        breakdown[code] = {
+            "amount": float(amount),
+            "amountFormatted": _format_currency(amount),
+            "rvu": float(rvu_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        }
+        total += amount
+        total_rvu += rvu_value
+
+    total = total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    total_rvu = total_rvu.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return {
+        "totalEstimated": float(total),
+        "totalEstimatedFormatted": _format_currency(total),
+        "breakdown": breakdown,
+        "currency": "USD",
+        "payerSpecific": {"payerType": payer_type, "location": location},
+        "issues": issues,
+        "totalRvu": float(total_rvu),
+    }
+
+
+def _calculate_billing_from_session(
+    session: sqlite3.Connection,
+    cpt_codes: List[str],
+    payer_type: str,
+    location: str | None,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> dict:
+    normalized = [code.strip().upper() for code in cpt_codes if code]
+    payer_norm = (payer_type or "commercial").lower()
+    location_norm = location.lower() if location else None
+
+    breakdown: Dict[str, dict] = {}
+    issues: List[str] = []
+
+    if not normalized:
+        zero = Decimal("0.00")
+        return {
+            "totalEstimated": 0.0,
+            "totalEstimatedFormatted": _format_currency(zero),
+            "breakdown": breakdown,
+            "currency": "USD",
+            "payerSpecific": {"payerType": payer_type, "location": location},
+            "issues": issues,
+            "totalRvu": 0.0,
+        }
+
+    placeholders = ",".join("?" for _ in normalized)
+    try:
+        base_rows = session.execute(
+            f"SELECT code, base_rvu, base_reimbursement FROM cpt_reference WHERE code IN ({placeholders})",
+            normalized,
+        ).fetchall()
+    except sqlite3.Error:
+        base_rows = []
+    base_map: Dict[str, Dict[str, Any]] = {}
+    for row in base_rows:
+        record = dict(row)
+        code = str(record.get("code") or "").upper()
+        if code:
+            base_map[code] = record
+
+    try:
+        schedule_rows = session.execute(
+            f"SELECT code, reimbursement, rvu, location FROM payer_schedules WHERE LOWER(payer_type) = ? AND code IN ({placeholders})",
+            [payer_norm, *normalized],
+        ).fetchall()
+    except sqlite3.Error:
+        schedule_rows = []
+    schedule_map: Dict[str, Dict[str, Any]] = {}
+    for row in schedule_rows:
+        record = dict(row)
+        code = str(record.get("code") or "").upper()
+        if not code:
+            continue
+        schedule_location = (record.get("location") or "").strip().lower() or None
+        rank = 1 if schedule_location is None else 0
+        if location_norm and schedule_location == location_norm:
+            rank = 2
+        existing = schedule_map.get(code)
+        existing_rank = existing.get("_rank") if existing else -1
+        if rank >= existing_rank:
+            record["_rank"] = rank
+            schedule_map[code] = record
+
+    if metadata is None:
+        from backend.codes_data import load_code_metadata  # local import to avoid cycles
+
+        metadata = load_code_metadata()
+
+    total = Decimal("0.00")
+    total_rvu = Decimal("0.00")
+
+    for code in normalized:
+        base = base_map.get(code)
+        schedule = schedule_map.get(code)
+        reimbursement_value: Optional[Decimal] = None
+        rvu_value: Optional[Decimal] = None
+
+        if schedule and schedule.get("reimbursement") not in (None, ""):
+            reimbursement_value = Decimal(str(schedule["reimbursement"]))
+        elif base and base.get("base_reimbursement") not in (None, ""):
+            reimbursement_value = Decimal(str(base["base_reimbursement"]))
+        elif metadata and metadata.get(code, {}).get("reimbursement") is not None:
+            reimbursement_value = Decimal(str(metadata[code].get("reimbursement", 0)))
+
+        if reimbursement_value is None or reimbursement_value <= 0:
+            issues.append(f"CPT code {code} is not recognized.")
+            continue
+
+        if schedule and schedule.get("rvu") not in (None, ""):
+            rvu_value = Decimal(str(schedule["rvu"]))
+        elif base and base.get("base_rvu") not in (None, ""):
+            rvu_value = Decimal(str(base["base_rvu"]))
+        elif metadata and metadata.get(code, {}).get("rvu") is not None:
+            rvu_value = Decimal(str(metadata[code].get("rvu", 0)))
+        else:
+            rvu_value = Decimal("0.0")
+
+        amount = reimbursement_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         breakdown[code] = {
             "amount": float(amount),
             "amountFormatted": _format_currency(amount),

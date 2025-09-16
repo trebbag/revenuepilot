@@ -217,12 +217,14 @@ def test_billing_calculate(client, token):
     payload = {'cpt': ['99213', '99214'], 'payerType': 'medicare'}
     resp = client.post('/api/billing/calculate', json=payload, headers=auth_header(token))
     assert resp.status_code == 200
-    data = resp.json()
+    payload = resp.json()
+    data = payload.get('data', payload)
     assert data['totalEstimated'] > 0
     assert data['totalEstimatedFormatted'].startswith('$')
     assert data['currency'] == 'USD'
     assert data['issues'] == []
     assert data['totalRvu'] > 0
+    assert data['payerSpecific']['payerType'].lower() == 'medicare'
     assert '99213' in data['breakdown']
     assert data['breakdown']['99213']['amount'] > 0
     assert data['breakdown']['99213']['amountFormatted'].startswith('$')
