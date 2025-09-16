@@ -9,16 +9,34 @@ access.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import sqlite3
 import time
-from typing import Any, Dict, Iterable, List, Optional
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 from uuid import uuid4
+
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+try:  # prefer appdirs when available
+    from appdirs import user_data_dir  # type: ignore
+except Exception:  # pragma: no cover - fallback for limited environments
+    from platformdirs import user_data_dir  # type: ignore
+
+from backend.compliance_models import Base, ComplianceRule
+from backend.key_manager import APP_NAME
 
 # ---------------------------------------------------------------------------
 # Rule catalogue
 # ---------------------------------------------------------------------------
 
-_DEFAULT_RULES: List[Dict[str, Any]] = [
+_RULE_SEED: List[Dict[str, Any]] = [
     {
         "id": "documentation-chief-complaint",
         "name": "Document the chief complaint",
@@ -175,17 +193,299 @@ _RISK_WEIGHTS = {
 }
 
 
+_engine: Optional[Engine] = None
+_SessionLocal: Optional[sessionmaker] = None
+
+
+def _default_db_url() -> str:
+    """Return the SQLite URL for the analytics database."""
+
+    data_dir = user_data_dir(APP_NAME, APP_NAME)
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, "analytics.db")
+    return f"sqlite:///{db_path}"
+
+
+def configure_engine(
+    connection: Optional[sqlite3.Connection] = None,
+    db_url: Optional[str] = None,
+) -> None:
+    """Configure the SQLAlchemy engine used for compliance rules."""
+
+    global _engine, _SessionLocal
+
+    if connection is not None:
+        def _creator() -> sqlite3.Connection:
+            return connection
+
+        _engine = create_engine(
+            "sqlite://",
+            creator=_creator,
+            poolclass=StaticPool,
+            future=True,
+        )
+    else:
+        url = db_url or _default_db_url()
+        _engine = create_engine(
+            url,
+            connect_args={"check_same_thread": False},
+            future=True,
+        )
+
+    Base.metadata.create_all(_engine)
+    _SessionLocal = sessionmaker(
+        bind=_engine,
+        expire_on_commit=False,
+        autoflush=False,
+        future=True,
+    )
+    _seed_rules_if_empty()
+
+
+def _get_session() -> Session:
+    if _SessionLocal is None:
+        configure_engine()
+    assert _SessionLocal is not None
+    return _SessionLocal()
+
+
+@contextmanager
+def session_scope() -> Iterable[Session]:
+    """Provide a transactional scope around a series of operations."""
+
+    session = _get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _seed_rules_if_empty() -> None:
+    """Populate the database with seed rules when empty."""
+
+    with session_scope() as session:
+        existing = session.execute(select(ComplianceRule.id).limit(1)).scalar_one_or_none()
+        if existing is not None:
+            return
+        now = datetime.utcnow()
+        for payload in _RULE_SEED:
+            rule = ComplianceRule.from_dict(payload)
+            rule.created_at = now
+            rule.updated_at = now
+            session.add(rule)
+
+
+# Initialise the engine on import for default usage. Tests may reconfigure it.
+configure_engine()
+
+
+def _split_rule_payload(
+    data: Mapping[str, Any]
+) -> tuple[Dict[str, Any], Dict[str, Any], bool, Optional[List[Dict[str, Any]]], bool]:
+    """Split an incoming payload into core fields, metadata and references."""
+
+    core: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {}
+    metadata_replace = False
+    references: Optional[List[Dict[str, Any]]] = None
+    references_replace = False
+
+    if "metadata" in data:
+        metadata_replace = True
+        raw_metadata = data.get("metadata")
+        if isinstance(raw_metadata, Mapping):
+            metadata.update(dict(raw_metadata))
+        else:
+            metadata = {}
+
+    if "references" in data:
+        references_replace = True
+        raw_refs = data.get("references")
+        if isinstance(raw_refs, Sequence):
+            references = [dict(item) for item in raw_refs if isinstance(item, Mapping)]
+        else:
+            references = []
+
+    for key, value in data.items():
+        if key in {"metadata", "references", "created_at", "updated_at", "createdAt", "updatedAt"}:
+            continue
+        if key in {"id", "name", "description", "category", "severity", "type"}:
+            core[key] = value
+        else:
+            metadata[key] = value
+
+    return core, metadata, metadata_replace, references, references_replace
+
+
+def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
+
+def get_rule(rule_id: str) -> Optional[Dict[str, Any]]:
+    """Return a single compliance rule when present."""
+
+    clean_id = (rule_id or "").strip()
+    if not clean_id:
+        return None
+    with session_scope() as session:
+        rule = session.get(ComplianceRule, clean_id)
+        if rule is None:
+            return None
+        session.expunge(rule)
+        return rule.to_dict()
+
+
+def create_rule(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Persist a new compliance rule and return its serialised representation."""
+
+    core, metadata, _, references, _ = _split_rule_payload(payload)
+    clean_id = str(core.get("id", "")).strip()
+    if not clean_id:
+        raise ValueError("Rule id is required")
+    name = str(core.get("name", "")).strip()
+    description = str(core.get("description", "")).strip()
+    if not name:
+        raise ValueError("Rule name is required")
+    if not description:
+        raise ValueError("Rule description is required")
+    rule_type = str(core.get("type", "absence") or "absence")
+
+    metadata_clean = _clean_metadata(metadata)
+    payload_dict: Dict[str, Any] = {
+        "id": clean_id,
+        "name": name,
+        "description": description,
+        "category": core.get("category"),
+        "severity": core.get("severity"),
+        "type": rule_type,
+    }
+    if metadata_clean:
+        payload_dict["metadata"] = metadata_clean
+    if references:
+        payload_dict["references"] = references
+
+    with session_scope() as session:
+        if session.get(ComplianceRule, clean_id) is not None:
+            raise ValueError(f"Rule '{clean_id}' already exists")
+        rule = ComplianceRule.from_dict(payload_dict)
+        session.add(rule)
+        session.flush()
+        session.refresh(rule)
+        result = rule.to_dict()
+        session.expunge(rule)
+        return result
+
+
+def update_rule(rule_id: str, updates: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Update an existing rule and return the new representation."""
+
+    clean_id = (rule_id or "").strip()
+    if not clean_id:
+        raise ValueError("Rule id is required")
+
+    core, metadata, metadata_replace, references, references_replace = _split_rule_payload(updates)
+    metadata_clean = _clean_metadata(metadata)
+    metadata_remove = {key for key, value in metadata.items() if value is None}
+
+    with session_scope() as session:
+        rule = session.get(ComplianceRule, clean_id)
+        if rule is None:
+            return None
+
+        if "name" in core:
+            rule.name = str(core.get("name", ""))
+        if "description" in core:
+            rule.description = str(core.get("description", ""))
+        if "category" in core:
+            rule.category = core.get("category")
+        if "severity" in core:
+            rule.severity = core.get("severity")
+        if "type" in core:
+            rule.rule_type = str(core.get("type", "absence") or "absence")
+
+        metadata_current = rule.metadata_dict()
+        if metadata_replace:
+            metadata_current = {}
+        else:
+            for key in metadata_remove:
+                metadata_current.pop(key, None)
+        for key, value in metadata_clean.items():
+            metadata_current[key] = value
+        if metadata_current:
+            rule.metadata_json = json.dumps(metadata_current)
+        else:
+            rule.metadata_json = None
+
+        if references_replace:
+            if references:
+                rule.references_json = json.dumps(references)
+            else:
+                rule.references_json = None
+
+        rule.updated_at = datetime.utcnow()
+        session.add(rule)
+        session.flush()
+        session.refresh(rule)
+        result = rule.to_dict()
+        session.expunge(rule)
+        return result
+
+
+def delete_rule(rule_id: str) -> bool:
+    """Delete a rule. Returns ``True`` when a row was removed."""
+
+    clean_id = (rule_id or "").strip()
+    if not clean_id:
+        return False
+    with session_scope() as session:
+        result = session.execute(delete(ComplianceRule).where(ComplianceRule.id == clean_id))
+        deleted = result.rowcount or 0
+        return deleted > 0
+
+
+def replace_rules(rules: Sequence[Mapping[str, Any]]) -> int:
+    """Replace the rule catalogue with the provided sequence."""
+
+    cleaned: List[Dict[str, Any]] = []
+    for item in rules:
+        if isinstance(item, Mapping):
+            cleaned.append(dict(item))
+
+    with session_scope() as session:
+        session.execute(delete(ComplianceRule))
+        count = 0
+        for payload in cleaned:
+            try:
+                rule = ComplianceRule.from_dict(payload)
+            except Exception:
+                continue
+            session.add(rule)
+            count += 1
+        session.flush()
+        return count
+
 def get_rules(rule_ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     """Return the configured compliance rules."""
 
-    if rule_ids is None:
-        return [dict(rule) for rule in _DEFAULT_RULES]
-    wanted = {rid.lower() for rid in rule_ids}
-    return [dict(rule) for rule in _DEFAULT_RULES if rule["id"].lower() in wanted]
+    with session_scope() as session:
+        query = select(ComplianceRule)
+        if rule_ids is not None:
+            wanted = {rid.lower() for rid in rule_ids if isinstance(rid, str)}
+            if not wanted:
+                return []
+            query = query.where(func.lower(ComplianceRule.id).in_(wanted))
+        query = query.order_by(ComplianceRule.name)
+        results = session.execute(query).scalars().all()
+        return [rule.to_dict() for rule in results]
 
 
 def get_resources(region: Optional[str] = None, category: Optional[str] = None) -> List[Dict[str, Any]]:

@@ -235,6 +235,49 @@ def ensure_confidence_scores_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_compliance_rules_table(conn: sqlite3.Connection) -> None:
+    """Ensure the compliance_rules table exists for storing rule metadata."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compliance_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            category TEXT,
+            severity TEXT,
+            type TEXT NOT NULL,
+            metadata TEXT,
+            "references" TEXT,
+            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
+            updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(compliance_rules)")}
+    if "metadata" not in columns:
+        conn.execute("ALTER TABLE compliance_rules ADD COLUMN metadata TEXT")
+    if "references" not in columns:
+        conn.execute('ALTER TABLE compliance_rules ADD COLUMN "references" TEXT')
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_rules ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "updated_at" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_rules ADD COLUMN updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "category" not in columns:
+        conn.execute("ALTER TABLE compliance_rules ADD COLUMN category TEXT")
+    if "severity" not in columns:
+        conn.execute("ALTER TABLE compliance_rules ADD COLUMN severity TEXT")
+    if "type" not in columns:
+        conn.execute("ALTER TABLE compliance_rules ADD COLUMN type TEXT NOT NULL DEFAULT 'absence'")
+
+    conn.commit()
+
+
 def ensure_compliance_issues_table(conn: sqlite3.Connection) -> None:
     """Ensure the compliance_issues table exists for manual tracking."""
 

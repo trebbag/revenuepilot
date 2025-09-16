@@ -116,7 +116,7 @@ async def test_update_code_databases_refreshes_metadata(monkeypatch: pytest.Monk
 
 @pytest.mark.asyncio
 async def test_check_compliance_rules_refreshes_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
-    original_rules = deepcopy(compliance._DEFAULT_RULES)
+    original_rules = compliance.get_rules()
     original_resources = deepcopy(compliance._RESOURCE_LIBRARY)
 
     payload = {
@@ -155,7 +155,7 @@ async def test_check_compliance_rules_refreshes_catalog(monkeypatch: pytest.Monk
         resources = compliance.get_resources()
         assert resources and resources[0]["title"] == "CMS Telehealth Guidance"
     finally:
-        compliance._DEFAULT_RULES = original_rules
+        compliance.replace_rules(original_rules)
         compliance._RESOURCE_LIBRARY = original_resources
 
 
