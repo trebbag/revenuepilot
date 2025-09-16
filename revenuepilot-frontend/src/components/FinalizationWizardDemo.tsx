@@ -3,6 +3,7 @@ import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
 import { FinalizationWizard } from "./FinalizationWizard"
+import type { FinalizeNoteResponse } from "./FinalizationWizard"
 import { 
   Shield,
   FileText,
@@ -14,6 +15,14 @@ import {
 
 export function FinalizationWizardDemo() {
   const [showWizard, setShowWizard] = useState(false)
+
+  const handleWizardClose = (result?: FinalizeNoteResponse) => {
+    setShowWizard(false)
+
+    if (result) {
+      console.log("Finalized note data:", result)
+    }
+  }
 
   // Mock data that would typically come from the actual note editor
   const mockSelectedCodes = {
@@ -311,7 +320,7 @@ The patient was counseled on supportive care measures including rest, hydration,
       {showWizard && (
         <FinalizationWizard
           isOpen={showWizard}
-          onClose={() => setShowWizard(false)}
+          onClose={handleWizardClose}
           selectedCodes={mockSelectedCodes}
           selectedCodesList={mockSelectedCodesList}
           complianceIssues={mockComplianceIssues}
