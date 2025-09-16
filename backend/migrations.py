@@ -319,6 +319,111 @@ def ensure_compliance_issues_table(conn: sqlite3.Connection) -> None:
 
 
 
+def ensure_compliance_issue_history_table(conn: sqlite3.Connection) -> None:
+    """Ensure the compliance_issue_history table exists for auditing."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compliance_issue_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issue_id TEXT NOT NULL,
+            code TEXT,
+            payer TEXT,
+            findings TEXT,
+            created_at REAL NOT NULL,
+            user_id TEXT
+        )
+        """
+    )
+
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(compliance_issue_history)")
+    }
+
+    if "code" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_issue_history ADD COLUMN code TEXT"
+        )
+    if "payer" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_issue_history ADD COLUMN payer TEXT"
+        )
+    if "findings" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_issue_history ADD COLUMN findings TEXT"
+        )
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_issue_history ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "user_id" not in columns:
+        conn.execute(
+            "ALTER TABLE compliance_issue_history ADD COLUMN user_id TEXT"
+        )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_compliance_history_issue ON compliance_issue_history(issue_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_compliance_history_code ON compliance_issue_history(code)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_compliance_history_created_at ON compliance_issue_history(created_at)"
+    )
+
+    conn.commit()
+
+
+def ensure_billing_audits_table(conn: sqlite3.Connection) -> None:
+    """Ensure the billing_audits table exists for reimbursement logging."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS billing_audits (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            audit_id TEXT NOT NULL,
+            code TEXT,
+            payer TEXT,
+            findings TEXT,
+            created_at REAL NOT NULL,
+            user_id TEXT
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(billing_audits)")}
+
+    if "code" not in columns:
+        conn.execute("ALTER TABLE billing_audits ADD COLUMN code TEXT")
+    if "payer" not in columns:
+        conn.execute("ALTER TABLE billing_audits ADD COLUMN payer TEXT")
+    if "findings" not in columns:
+        conn.execute("ALTER TABLE billing_audits ADD COLUMN findings TEXT")
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE billing_audits ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE billing_audits ADD COLUMN user_id TEXT")
+    if "audit_id" not in columns:
+        conn.execute(
+            "ALTER TABLE billing_audits ADD COLUMN audit_id TEXT NOT NULL DEFAULT ''"
+        )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_billing_audits_audit ON billing_audits(audit_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_billing_audits_code ON billing_audits(code)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_billing_audits_created_at ON billing_audits(created_at)"
+    )
+
+    conn.commit()
+
+
 def ensure_patients_table(conn: sqlite3.Connection) -> None:
     """Ensure the patients table exists for storing patient demographics."""
 
