@@ -3,6 +3,7 @@ import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
 import { FinalizationWizard } from "./FinalizationWizard"
+
 import type { FinalizeNoteResponse } from "./FinalizationWizard"
 import { 
   Shield,
@@ -12,6 +13,8 @@ import {
   Activity,
   Stethoscope
 } from "lucide-react"
+import { defaultFinalizationSteps } from "./finalizationSteps"
+import { Shield, FileText } from "lucide-react"
 
 export function FinalizationWizardDemo() {
   const [showWizard, setShowWizard] = useState(false)
@@ -151,44 +154,7 @@ The patient was counseled on supportive care measures including rest, hydration,
     encounterId: "ENC-67890"
   }
 
-  const wizardSteps = [
-    {
-      icon: FileText,
-      title: "Content Review",
-      description: "Review and verify note documentation completeness",
-      color: "text-blue-600"
-    },
-    {
-      icon: Code2,
-      title: "Code Verification", 
-      description: "Validate selected CPT and procedure codes",
-      color: "text-blue-600"
-    },
-    {
-      icon: Heart,
-      title: "Prevention Items",
-      description: "Review preventive care recommendations",
-      color: "text-red-600"
-    },
-    {
-      icon: Activity,
-      title: "Diagnoses Confirmation",
-      description: "Confirm primary and secondary diagnoses", 
-      color: "text-purple-600"
-    },
-    {
-      icon: Stethoscope,
-      title: "Differentials Review",
-      description: "Review differential diagnosis considerations",
-      color: "text-green-600"
-    },
-    {
-      icon: Shield,
-      title: "Compliance Checks",
-      description: "Final compliance and billing validation",
-      color: "text-amber-600"
-    }
-  ]
+  const wizardSteps = defaultFinalizationSteps
 
   return (
     <div className="p-6 space-y-6">
@@ -250,7 +216,7 @@ The patient was counseled on supportive care measures including rest, hydration,
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Shield className="h-5 w-5" />
-                6-Step Finalization Process
+                {`${wizardSteps.length}-Step Finalization Process`}
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -326,6 +292,7 @@ The patient was counseled on supportive care measures including rest, hydration,
           complianceIssues={mockComplianceIssues}
           noteContent={mockNoteContent}
           patientInfo={mockPatientInfo}
+          steps={wizardSteps}
         />
       )}
     </div>
