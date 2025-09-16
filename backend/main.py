@@ -128,9 +128,15 @@ from backend.migrations import (  # type: ignore
     ensure_confidence_scores_table,
     ensure_notification_counters_table,
     ensure_compliance_rule_catalog_table,
+    ensure_cpt_codes_table,
+    ensure_icd10_codes_table,
+    ensure_hcpcs_codes_table,
     ensure_cpt_reference_table,
     ensure_payer_schedule_table,
     seed_compliance_rules,
+    seed_cpt_codes,
+    seed_icd10_codes,
+    seed_hcpcs_codes,
     seed_cpt_reference,
     seed_payer_schedules,
 )
@@ -927,6 +933,18 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
             if (info.get("type") or "").upper() == "CPT"
         }
 
+        existing_cpt_codes = conn.execute("SELECT COUNT(*) FROM cpt_codes").fetchone()[0]
+        if existing_cpt_codes == 0:
+            seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items())
+
+        existing_icd_codes = conn.execute("SELECT COUNT(*) FROM icd10_codes").fetchone()[0]
+        if existing_icd_codes == 0:
+            seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items())
+
+        existing_hcpcs_codes = conn.execute("SELECT COUNT(*) FROM hcpcs_codes").fetchone()[0]
+        if existing_hcpcs_codes == 0:
+            seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items())
+
         existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
         if existing_cpt == 0:
             seed_cpt_reference(conn, cpt_metadata.items())
@@ -1000,6 +1018,9 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_confidence_scores_table(conn)
     ensure_notification_counters_table(conn)
     ensure_compliance_rule_catalog_table(conn)
+    ensure_cpt_codes_table(conn)
+    ensure_icd10_codes_table(conn)
+    ensure_hcpcs_codes_table(conn)
     ensure_cpt_reference_table(conn)
     ensure_payer_schedule_table(conn)
     _seed_reference_data(conn)
@@ -1042,6 +1063,9 @@ ensure_compliance_issues_table(db_conn)
 ensure_compliance_rules_table(db_conn)
 ensure_confidence_scores_table(db_conn)
 ensure_compliance_rule_catalog_table(db_conn)
+ensure_cpt_codes_table(db_conn)
+ensure_icd10_codes_table(db_conn)
+ensure_hcpcs_codes_table(db_conn)
 ensure_cpt_reference_table(db_conn)
 ensure_payer_schedule_table(db_conn)
 

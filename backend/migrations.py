@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from typing import Iterable, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 
 def ensure_settings_table(conn: sqlite3.Connection) -> None:
@@ -551,6 +551,120 @@ def ensure_compliance_rule_catalog_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_cpt_codes_table(conn: sqlite3.Connection) -> None:
+    """Create or migrate the CPT metadata table."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cpt_codes (
+            code TEXT PRIMARY KEY,
+            description TEXT,
+            rvu REAL,
+            reimbursement REAL,
+            documentation TEXT,
+            icd10_prefixes TEXT,
+            demographics TEXT,
+            encounter_types TEXT,
+            specialties TEXT,
+            last_updated TEXT
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cpt_codes)")}
+    if "documentation" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN documentation TEXT")
+    if "icd10_prefixes" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN icd10_prefixes TEXT")
+    if "demographics" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN demographics TEXT")
+    if "encounter_types" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN encounter_types TEXT")
+    if "specialties" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN specialties TEXT")
+    if "last_updated" not in columns:
+        conn.execute("ALTER TABLE cpt_codes ADD COLUMN last_updated TEXT")
+
+
+def ensure_icd10_codes_table(conn: sqlite3.Connection) -> None:
+    """Create or migrate the ICD-10 metadata table."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS icd10_codes (
+            code TEXT PRIMARY KEY,
+            description TEXT,
+            clinical_context TEXT,
+            contraindications TEXT,
+            documentation TEXT,
+            demographics TEXT,
+            encounter_types TEXT,
+            specialties TEXT,
+            last_updated TEXT
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(icd10_codes)")}
+    if "clinical_context" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN clinical_context TEXT")
+    if "contraindications" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN contraindications TEXT")
+    if "documentation" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN documentation TEXT")
+    if "demographics" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN demographics TEXT")
+    if "encounter_types" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN encounter_types TEXT")
+    if "specialties" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN specialties TEXT")
+    if "last_updated" not in columns:
+        conn.execute("ALTER TABLE icd10_codes ADD COLUMN last_updated TEXT")
+
+
+def ensure_hcpcs_codes_table(conn: sqlite3.Connection) -> None:
+    """Create or migrate the HCPCS metadata table."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hcpcs_codes (
+            code TEXT PRIMARY KEY,
+            description TEXT,
+            rvu REAL,
+            reimbursement REAL,
+            coverage TEXT,
+            documentation TEXT,
+            demographics TEXT,
+            encounter_types TEXT,
+            specialties TEXT,
+            last_updated TEXT
+        )
+        """
+    )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(hcpcs_codes)")}
+    if "coverage" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN coverage TEXT")
+    if "documentation" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN documentation TEXT")
+    if "demographics" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN demographics TEXT")
+    if "encounter_types" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN encounter_types TEXT")
+    if "specialties" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN specialties TEXT")
+    if "last_updated" not in columns:
+        conn.execute("ALTER TABLE hcpcs_codes ADD COLUMN last_updated TEXT")
+
+
+def _serialize_json(value: Any, default: Any | None = None) -> Optional[str]:
+    if value is None:
+        if default is None:
+            return None
+        value = default
+    return json.dumps(value)
+
+
 def ensure_cpt_reference_table(conn: sqlite3.Connection) -> None:
     """Ensure reference CPT pricing data table exists."""
 
@@ -610,6 +724,136 @@ def seed_compliance_rules(
                 rule.get("severity"),
                 citations,
                 keywords,
+            ),
+        )
+
+
+def seed_cpt_codes(
+    conn: sqlite3.Connection,
+    data: Iterable[Tuple[str, dict]],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Upsert CPT metadata rows into the persistent table."""
+
+    if overwrite:
+        conn.execute("DELETE FROM cpt_codes")
+
+    for code, info in data:
+        if not code:
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO cpt_codes (
+                code,
+                description,
+                rvu,
+                reimbursement,
+                documentation,
+                icd10_prefixes,
+                demographics,
+                encounter_types,
+                specialties,
+                last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                code,
+                info.get("description"),
+                info.get("rvu"),
+                info.get("reimbursement"),
+                _serialize_json(info.get("documentation")),
+                _serialize_json(info.get("icd10_prefixes"), default=[]),
+                _serialize_json(info.get("demographics")),
+                _serialize_json(info.get("encounterTypes"), default=[]),
+                _serialize_json(info.get("specialties"), default=[]),
+                info.get("lastUpdated") or info.get("updated"),
+            ),
+        )
+
+
+def seed_icd10_codes(
+    conn: sqlite3.Connection,
+    data: Iterable[Tuple[str, dict]],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Upsert ICD-10 metadata rows."""
+
+    if overwrite:
+        conn.execute("DELETE FROM icd10_codes")
+
+    for code, info in data:
+        if not code:
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO icd10_codes (
+                code,
+                description,
+                clinical_context,
+                contraindications,
+                documentation,
+                demographics,
+                encounter_types,
+                specialties,
+                last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                code,
+                info.get("description"),
+                info.get("clinicalContext"),
+                _serialize_json(info.get("contraindications"), default=[]),
+                _serialize_json(info.get("documentation")),
+                _serialize_json(info.get("demographics")),
+                _serialize_json(info.get("encounterTypes"), default=[]),
+                _serialize_json(info.get("specialties"), default=[]),
+                info.get("lastUpdated") or info.get("updated"),
+            ),
+        )
+
+
+def seed_hcpcs_codes(
+    conn: sqlite3.Connection,
+    data: Iterable[Tuple[str, dict]],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Upsert HCPCS metadata rows."""
+
+    if overwrite:
+        conn.execute("DELETE FROM hcpcs_codes")
+
+    for code, info in data:
+        if not code:
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO hcpcs_codes (
+                code,
+                description,
+                rvu,
+                reimbursement,
+                coverage,
+                documentation,
+                demographics,
+                encounter_types,
+                specialties,
+                last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                code,
+                info.get("description"),
+                info.get("rvu"),
+                info.get("reimbursement"),
+                _serialize_json(info.get("coverage")),
+                _serialize_json(info.get("documentation")),
+                _serialize_json(info.get("demographics")),
+                _serialize_json(info.get("encounterTypes"), default=[]),
+                _serialize_json(info.get("specialties"), default=[]),
+                info.get("lastUpdated") or info.get("updated"),
             ),
         )
 

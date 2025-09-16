@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-"""Static code tables and validation helpers for medical coding."""
+"""Database-backed code tables and validation helpers for medical coding.
+
+This module prefers retrieving code metadata from SQLite tables populated by
+scheduled ingestion jobs. ``DEFAULT_*`` dictionaries remain as bootstrap data
+for new installations and offline unit tests.
+"""
 
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+import json
 import re
 import sqlite3
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-# Example CPT, HCPCS and ICD-10 tables. In a production system these would be
-# loaded from an external database and kept up to date via scheduled jobs. The
-# small subset here is sufficient for unit tests and demo purposes.
+# Default CPT, HCPCS and ICD-10 tables kept for seeding and offline operation.
 
-CPT_CODES: Dict[str, dict] = {
+DEFAULT_CPT_CODES: Dict[str, dict] = {
     "99213": {
         "description": "Office or other outpatient visit, established patient",
         "rvu": 1.0,
@@ -61,7 +65,7 @@ CPT_CODES: Dict[str, dict] = {
     },
 }
 
-ICD10_CODES: Dict[str, dict] = {
+DEFAULT_ICD10_CODES: Dict[str, dict] = {
     "E11.9": {
         "description": "Type 2 diabetes mellitus without complications",
         "clinicalContext": "Diabetes management",
@@ -116,7 +120,7 @@ ICD10_CODES: Dict[str, dict] = {
     },
 }
 
-HCPCS_CODES: Dict[str, dict] = {
+DEFAULT_HCPCS_CODES: Dict[str, dict] = {
     "J3490": {
         "description": "Unclassified drugs",
         "reimbursement": 10.0,
@@ -155,6 +159,132 @@ HCPCS_CODES: Dict[str, dict] = {
         ],
     },
 }
+
+
+def _resolve_connection(session: sqlite3.Connection | None) -> sqlite3.Connection | None:
+    """Return an active SQLite connection if one is available."""
+
+    if session is not None:
+        return session
+    try:  # pragma: no cover - fallback when backend.main is unavailable
+        from backend import main  # type: ignore
+
+        conn = getattr(main, "db_conn", None)
+        if isinstance(conn, sqlite3.Connection):
+            return conn
+    except Exception:
+        return None
+    return None
+
+
+def _load_json_field(raw: Any, default: Any) -> Any:
+    """Parse a JSON column from SQLite and return a Python structure."""
+
+    if raw in (None, "", b""):
+        return default
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return default
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value in (None, "", b""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, "", b""):
+            return value
+    return None
+
+
+def _deserialize_cpt_row(row: sqlite3.Row | Dict[str, Any]) -> Dict[str, Any]:
+    record = dict(row)
+    return {
+        "description": record.get("description") or "",
+        "rvu": _safe_float(
+            _first_non_empty(record.get("rvu"), record.get("base_rvu"), record.get("rvus"))
+        ),
+        "reimbursement": _safe_float(
+            _first_non_empty(record.get("reimbursement"), record.get("base_reimbursement"))
+        ),
+        "documentation": _load_json_field(record.get("documentation"), {}),
+        "icd10_prefixes": _load_json_field(record.get("icd10_prefixes"), []),
+        "demographics": _load_json_field(record.get("demographics"), {}),
+        "encounterTypes": _load_json_field(record.get("encounter_types"), []),
+        "specialties": _load_json_field(record.get("specialties"), []),
+    }
+
+
+def _deserialize_icd_row(row: sqlite3.Row | Dict[str, Any]) -> Dict[str, Any]:
+    record = dict(row)
+    return {
+        "description": record.get("description") or "",
+        "clinicalContext": record.get("clinical_context") or record.get("clinicalContext") or "",
+        "contraindications": _load_json_field(record.get("contraindications"), []),
+        "documentation": _load_json_field(record.get("documentation"), {}),
+        "demographics": _load_json_field(record.get("demographics"), {}),
+        "encounterTypes": _load_json_field(record.get("encounter_types"), []),
+        "specialties": _load_json_field(record.get("specialties"), []),
+    }
+
+
+def _deserialize_hcpcs_row(row: sqlite3.Row | Dict[str, Any]) -> Dict[str, Any]:
+    record = dict(row)
+    return {
+        "description": record.get("description") or "",
+        "rvu": _safe_float(record.get("rvu")),
+        "reimbursement": _safe_float(record.get("reimbursement")),
+        "coverage": _load_json_field(record.get("coverage"), {}),
+        "documentation": _load_json_field(record.get("documentation"), {}),
+        "demographics": _load_json_field(record.get("demographics"), {}),
+        "encounterTypes": _load_json_field(record.get("encounter_types"), []),
+        "specialties": _load_json_field(record.get("specialties"), []),
+    }
+
+
+def _get_cpt_info(code: str, *, session: sqlite3.Connection | None = None) -> Optional[Dict[str, Any]]:
+    conn = _resolve_connection(session)
+    if conn is not None:
+        try:
+            row = conn.execute("SELECT * FROM cpt_codes WHERE code = ?", (code,)).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row:
+            return _deserialize_cpt_row(row)
+    return DEFAULT_CPT_CODES.get(code)
+
+
+def _get_icd10_info(code: str, *, session: sqlite3.Connection | None = None) -> Optional[Dict[str, Any]]:
+    conn = _resolve_connection(session)
+    if conn is not None:
+        try:
+            row = conn.execute("SELECT * FROM icd10_codes WHERE code = ?", (code,)).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row:
+            return _deserialize_icd_row(row)
+    return DEFAULT_ICD10_CODES.get(code)
+
+
+def _get_hcpcs_info(code: str, *, session: sqlite3.Connection | None = None) -> Optional[Dict[str, Any]]:
+    conn = _resolve_connection(session)
+    if conn is not None:
+        try:
+            row = conn.execute("SELECT * FROM hcpcs_codes WHERE code = ?", (code,)).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row:
+            return _deserialize_hcpcs_row(row)
+    return DEFAULT_HCPCS_CODES.get(code)
 
 
 def _normalize_value(value: str) -> str:
@@ -278,6 +408,7 @@ def validate_cpt(
     gender: Optional[str] = None,
     encounter_type: Optional[str] = None,
     specialty: Optional[str] = None,
+    session: sqlite3.Connection | None = None,
 ) -> dict:
     """Validate a CPT code against pattern, table and clinical context."""
 
@@ -289,7 +420,7 @@ def validate_cpt(
             "issues": ["CPT codes must contain exactly five digits."],
         }
 
-    info = CPT_CODES.get(normalized)
+    info = _get_cpt_info(normalized, session=session)
     if not info:
         return {
             "valid": False,
@@ -306,12 +437,16 @@ def validate_cpt(
         specialty=specialty,
     )
 
+    documentation = info.get("documentation") or {}
+    if not isinstance(documentation, dict):
+        documentation = {}
+
     result = {
         "valid": not context_issues,
-        "description": info["description"],
-        "rvu": info["rvu"],
-        "reimbursement": info["reimbursement"],
-        "requirements": info["documentation"]["required"],
+        "description": info.get("description"),
+        "rvu": info.get("rvu"),
+        "reimbursement": info.get("reimbursement"),
+        "requirements": list(documentation.get("required", [])),
         "issues": context_issues,
     }
     if context_issues:
@@ -326,6 +461,7 @@ def validate_icd10(
     gender: Optional[str] = None,
     encounter_type: Optional[str] = None,
     specialty: Optional[str] = None,
+    session: sqlite3.Connection | None = None,
 ) -> dict:
     """Validate an ICD-10 code including demographic constraints."""
 
@@ -336,7 +472,7 @@ def validate_icd10(
             "reason": "pattern",
             "issues": ["ICD-10 codes must match the pattern A00 or A00.0."],
         }
-    info = ICD10_CODES.get(normalized)
+    info = _get_icd10_info(normalized, session=session)
     if not info:
         return {
             "valid": False,
@@ -355,9 +491,9 @@ def validate_icd10(
 
     result = {
         "valid": not context_issues,
-        "description": info["description"],
-        "clinicalContext": info["clinicalContext"],
-        "contraindications": info["contraindications"],
+        "description": info.get("description"),
+        "clinicalContext": info.get("clinicalContext"),
+        "contraindications": list(info.get("contraindications", [])),
         "issues": context_issues,
     }
     if context_issues:
@@ -372,6 +508,7 @@ def validate_hcpcs(
     gender: Optional[str] = None,
     encounter_type: Optional[str] = None,
     specialty: Optional[str] = None,
+    session: sqlite3.Connection | None = None,
 ) -> dict:
     """Validate an HCPCS code including coverage metadata."""
 
@@ -383,7 +520,7 @@ def validate_hcpcs(
             "issues": ["HCPCS codes must match the pattern A0000."],
         }
 
-    info = HCPCS_CODES.get(normalized)
+    info = _get_hcpcs_info(normalized, session=session)
     if not info:
         return {
             "valid": False,
@@ -400,12 +537,19 @@ def validate_hcpcs(
         specialty=specialty,
     )
 
+    coverage = info.get("coverage") or {}
+    if not isinstance(coverage, dict):
+        coverage = {}
+    documentation = info.get("documentation") or {}
+    if not isinstance(documentation, dict):
+        documentation = {}
+
     result = {
         "valid": not context_issues,
-        "description": info["description"],
+        "description": info.get("description"),
         "reimbursement": info.get("reimbursement"),
-        "coverage": info.get("coverage", {}),
-        "documentation": info.get("documentation", {}),
+        "coverage": coverage,
+        "documentation": documentation,
         "issues": context_issues,
     }
     if context_issues:
@@ -421,6 +565,7 @@ def validate_combination(
     gender: Optional[str] = None,
     encounter_type: Optional[str] = None,
     specialty: Optional[str] = None,
+    session: sqlite3.Connection | None = None,
 ) -> dict:
     """Validate CPT/ICD-10 combinations for medical necessity and context."""
 
@@ -429,7 +574,7 @@ def validate_combination(
 
     for raw_cpt in cpt_codes:
         cpt = raw_cpt.strip().upper()
-        info = CPT_CODES.get(cpt)
+        info = _get_cpt_info(cpt, session=session)
         if not info:
             conflicts.append({"code1": cpt, "code2": "", "reason": "unknown CPT"})
             continue
@@ -458,7 +603,7 @@ def validate_combination(
 
     for raw_icd in icd10_codes:
         icd = raw_icd.strip().upper()
-        info = ICD10_CODES.get(icd)
+        info = _get_icd10_info(icd, session=session)
         if not info:
             continue
         for issue in _collect_context_issues(
@@ -489,9 +634,10 @@ def calculate_billing(
 ) -> dict:
     """Calculate estimated reimbursement for CPT codes with currency validation."""
 
-    if session is not None:
+    db_conn = _resolve_connection(session)
+    if db_conn is not None:
         return _calculate_billing_from_session(
-            session,
+            db_conn,
             cpt_codes,
             payer_type,
             location,
@@ -506,7 +652,7 @@ def calculate_billing(
 
     for raw_code in cpt_codes:
         code = raw_code.strip().upper()
-        info = CPT_CODES.get(code)
+        info = DEFAULT_CPT_CODES.get(code)
         if not info:
             issues.append(f"CPT code {code} is not recognized.")
             continue
@@ -664,11 +810,18 @@ def _calculate_billing_from_session(
     }
 
 
-def get_documentation(code: str) -> dict:
+def get_documentation(code: str, *, session: sqlite3.Connection | None = None) -> dict:
     """Return documentation requirements for a code."""
-    code = code.strip().upper()
-    info = CPT_CODES.get(code) or ICD10_CODES.get(code) or HCPCS_CODES.get(code)
+
+    normalized = code.strip().upper()
+    info = (
+        _get_cpt_info(normalized, session=session)
+        or _get_icd10_info(normalized, session=session)
+        or _get_hcpcs_info(normalized, session=session)
+    )
     if not info:
-        return {"code": code, "required": [], "recommended": [], "examples": []}
-    doc = info.get("documentation", {})
-    return {"code": code, **doc}
+        return {"code": normalized, "required": [], "recommended": [], "examples": []}
+    doc = info.get("documentation") or {}
+    if not isinstance(doc, dict):
+        doc = {}
+    return {"code": normalized, **doc}
