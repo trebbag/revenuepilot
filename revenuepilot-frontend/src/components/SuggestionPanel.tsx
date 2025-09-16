@@ -1,8 +1,7 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
-import { Checkbox } from "./ui/checkbox"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible"
 import { ScrollArea } from "./ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
@@ -19,6 +18,7 @@ import {
   Plus,
   TrendingUp,
   TrendingDown,
+  ClipboardList,
   Minus,
   ExternalLink,
   TestTube,
@@ -36,29 +36,93 @@ interface SuggestionPanelProps {
   onUpdateCodes: (codes: { codes: number; prevention: number; diagnoses: number; differentials: number }) => void
   onAddCode?: (code: any) => void
   addedCodes?: string[]
+  noteContent?: string
+  selectedCodesList?: SelectedCodeItem[]
+}
+
+interface SelectedCodeItem {
+  code?: string
+  type?: string
+  category?: string
+  description?: string
+  rationale?: string
+  confidence?: number
 }
 
 interface DifferentialItem {
   diagnosis: string
   icdCode?: string
   icdDescription?: string
-  percentage: number
-  reasoning: string
-  supportingFactors: string[]
-  contradictingFactors: string[]
-  whatItIs: string
-  details: string
-  forFactors: string[]
-  againstFactors: string[]
-  confidenceFactors: string
-  learnMoreUrl: string
-  testsToConfirm: string[]
-  testsToExclude: string[]
+  confidence?: number
+  reasoning?: string
+  supportingFactors?: string[]
+  contradictingFactors?: string[]
+  whatItIs?: string
+  details?: string
+  forFactors?: string[]
+  againstFactors?: string[]
+  confidenceFactors?: string
+  learnMoreUrl?: string
+  testsToConfirm?: string[]
+  testsToExclude?: string[]
 }
 
-export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCode, addedCodes = [] }: SuggestionPanelProps) {
+interface CodeSuggestionItem {
+  code: string
+  type?: string
+  description?: string
+  rationale?: string
+  reasoning?: string
+  confidence?: number
+  whatItIs?: string
+  usageRules?: string[]
+  reasonsSuggested?: string[]
+  potentialConcerns?: string[]
+}
+
+interface ComplianceAlertItem {
+  text: string
+  category?: string
+  priority?: string
+  confidence?: number
+  reasoning?: string
+}
+
+interface PreventionSuggestionItem {
+  id: string
+  code: string
+  type: string
+  category: string
+  recommendation: string
+  priority?: string
+  source?: string
+  confidence?: number
+  reasoning?: string
+  ageRelevant?: boolean
+  description?: string
+  rationale?: string
+}
+
+export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCode, addedCodes = [], noteContent = "", selectedCodesList = [] }: SuggestionPanelProps) {
+  const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
+  const [codesLoading, setCodesLoading] = useState(false)
+  const [codesError, setCodesError] = useState<string | null>(null)
+
+  const [complianceAlerts, setComplianceAlerts] = useState<ComplianceAlertItem[]>([])
+  const [complianceLoading, setComplianceLoading] = useState(false)
+  const [complianceError, setComplianceError] = useState<string | null>(null)
+
+  const [differentialSuggestions, setDifferentialSuggestions] = useState<DifferentialItem[]>([])
+  const [differentialsLoading, setDifferentialsLoading] = useState(false)
+  const [differentialsError, setDifferentialsError] = useState<string | null>(null)
+
+  const [preventionSuggestions, setPreventionSuggestions] = useState<PreventionSuggestionItem[]>([])
+  const [preventionLoading, setPreventionLoading] = useState(false)
+  const [preventionError, setPreventionError] = useState<string | null>(null)
+
   const [expandedCards, setExpandedCards] = useState({
     codes: true,
+    compliance: true,
     prevention: false,
     differentials: true,
     followUp: false
@@ -66,6 +130,245 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
 
   const [showConfidenceWarning, setShowConfidenceWarning] = useState(false)
   const [selectedDifferential, setSelectedDifferential] = useState<DifferentialItem | null>(null)
+
+  const codesInUse = useMemo(
+    () =>
+      (selectedCodesList || [])
+        .map(item => item?.code)
+        .filter((code): code is string => Boolean(code)),
+    [selectedCodesList]
+  )
+
+  const filteredCodeSuggestions = useMemo(
+    () => codeSuggestions.filter(code => !addedCodes.includes(code.code)),
+    [codeSuggestions, addedCodes]
+  )
+
+  const filteredPreventionSuggestions = useMemo(
+    () => preventionSuggestions.filter(item => !addedCodes.includes(item.code)),
+    [preventionSuggestions, addedCodes]
+  )
+
+  const filteredDifferentialSuggestions = useMemo(
+    () =>
+      differentialSuggestions.filter(item => {
+        const identifier = item.icdCode || item.diagnosis || ""
+        return !addedCodes.includes(identifier)
+      }),
+    [differentialSuggestions, addedCodes]
+  )
+
+  useEffect(() => {
+    const trimmed = noteContent?.trim()
+
+    if (!trimmed) {
+      setCodeSuggestions([])
+      setComplianceAlerts([])
+      setDifferentialSuggestions([])
+      return
+    }
+
+    const controller = new AbortController()
+    const signal = controller.signal
+
+    const fetchCodes = async () => {
+      setCodesLoading(true)
+      setCodesError(null)
+      try {
+        const response = await fetch("/api/ai/codes/suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: trimmed, useOfflineMode: true }),
+          signal
+        })
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const data = await response.json()
+        const normalized: CodeSuggestionItem[] = (data?.suggestions || []).map((item: any) => ({
+          code: item.code,
+          type: item.type,
+          description: item.description,
+          rationale: item.reasoning || item.description,
+          reasoning: item.reasoning,
+          confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
+          whatItIs: item.whatItIs,
+          usageRules: item.usageRules || [],
+          reasonsSuggested: item.reasonsSuggested || [],
+          potentialConcerns: item.potentialConcerns || []
+        }))
+        setCodeSuggestions(normalized)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to load code suggestions", error)
+        setCodesError("Unable to load code suggestions.")
+        setCodeSuggestions([])
+      } finally {
+        setCodesLoading(false)
+      }
+    }
+
+    const fetchCompliance = async () => {
+      setComplianceLoading(true)
+      setComplianceError(null)
+      try {
+        const response = await fetch("/api/ai/compliance/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: trimmed, codes: codesInUse, useOfflineMode: true }),
+          signal
+        })
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const data = await response.json()
+        const normalized: ComplianceAlertItem[] = (data?.alerts || []).map((item: any) => ({
+          text: item.text,
+          category: item.category,
+          priority: item.priority,
+          confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
+          reasoning: item.reasoning
+        }))
+        setComplianceAlerts(normalized)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to load compliance alerts", error)
+        setComplianceError("Unable to load compliance alerts.")
+        setComplianceAlerts([])
+      } finally {
+        setComplianceLoading(false)
+      }
+    }
+
+    const fetchDifferentials = async () => {
+      setDifferentialsLoading(true)
+      setDifferentialsError(null)
+      try {
+        const response = await fetch("/api/ai/differentials/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: trimmed, useOfflineMode: true }),
+          signal
+        })
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const data = await response.json()
+        const normalized: DifferentialItem[] = (data?.differentials || []).map((item: any) => {
+          const supporting = item.supportingFactors || []
+          const contradicting = item.contradictingFactors || []
+          const testsToConfirm = item.testsToConfirm || []
+          const testsToExclude = item.testsToExclude || []
+
+          return {
+            diagnosis: item.diagnosis,
+            icdCode: item.icdCode || item.diagnosis,
+            icdDescription: item.icdDescription || item.diagnosis,
+            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
+            reasoning: item.reasoning,
+            supportingFactors: supporting,
+            contradictingFactors: contradicting,
+            forFactors: supporting,
+            againstFactors: contradicting,
+            testsToConfirm,
+            testsToExclude,
+            whatItIs: item.whatItIs,
+            details: item.details,
+            confidenceFactors: item.confidenceFactors,
+            learnMoreUrl: item.learnMoreUrl
+          }
+        })
+        setDifferentialSuggestions(normalized)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to load differentials", error)
+        setDifferentialsError("Unable to load differential suggestions.")
+        setDifferentialSuggestions([])
+      } finally {
+        setDifferentialsLoading(false)
+      }
+    }
+
+    const debounceId = window.setTimeout(() => {
+      fetchCodes()
+      fetchCompliance()
+      fetchDifferentials()
+    }, 500)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(debounceId)
+    }
+  }, [noteContent, codesInUse])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const signal = controller.signal
+
+    const fetchPrevention = async () => {
+      setPreventionLoading(true)
+      setPreventionError(null)
+      try {
+        const response = await fetch("/api/ai/prevention/suggest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ useOfflineMode: true }),
+          signal
+        })
+
+        if (!response.ok) {
+          throw new Error(`Request failed with status ${response.status}`)
+        }
+
+        const data = await response.json()
+        const normalized: PreventionSuggestionItem[] = (data?.recommendations || []).map((item: any, index: number) => {
+          const recommendation = item.recommendation || `Recommendation ${index + 1}`
+          return {
+            id: recommendation,
+            code: recommendation,
+            type: "PREVENTION",
+            category: "prevention",
+            recommendation,
+            priority: item.priority,
+            source: item.source,
+            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
+            reasoning: item.reasoning,
+            ageRelevant: item.ageRelevant,
+            description: item.reasoning || recommendation,
+            rationale: item.reasoning
+          }
+        })
+        setPreventionSuggestions(normalized)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to load prevention recommendations", error)
+        setPreventionError("Unable to load prevention recommendations.")
+        setPreventionSuggestions([])
+      } finally {
+        setPreventionLoading(false)
+      }
+    }
+
+    fetchPrevention()
+
+    return () => {
+      controller.abort()
+    }
+  }, [])
 
   const toggleCard = (cardKey: string) => {
     setExpandedCards(prev => ({
@@ -75,41 +378,52 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
   }
 
   const handleAddAsDiagnosis = (differential: DifferentialItem) => {
-    if (differential.percentage < 70) {
+    const confidenceValue = differential.confidence ?? 0
+    if (confidenceValue < 70) {
       setSelectedDifferential(differential)
       setShowConfidenceWarning(true)
-    } else {
-      // Create ICD-10 code item and add as diagnosis (purple card)
-      if (differential.icdCode && onAddCode) {
-        const icdCodeItem = {
-          code: differential.icdCode,
-          type: "ICD-10",
-          category: "diagnoses",
-          description: differential.icdDescription || differential.diagnosis,
-          rationale: `Added as diagnosis from differential: ${differential.diagnosis}. ${differential.reasoning}`,
-          confidence: differential.percentage
-        }
-        onAddCode(icdCodeItem)
-      }
+      return
     }
+
+    const codeValue = differential.icdCode || differential.diagnosis
+    if (!codeValue || !onAddCode) {
+      return
+    }
+
+    const icdCodeItem = {
+      code: codeValue,
+      type: "ICD-10",
+      category: "diagnoses",
+      description: differential.icdDescription || differential.diagnosis,
+      rationale: `Added as diagnosis from differential: ${differential.diagnosis}. ${differential.reasoning || ""}`,
+      confidence: confidenceValue
+    }
+
+    onAddCode(icdCodeItem)
   }
 
   const handleAddAsDifferential = (differential: DifferentialItem) => {
-    // Create ICD-10 code item and add as differential (green card)
-    if (differential.icdCode && onAddCode) {
-      const icdCodeItem = {
-        code: differential.icdCode,
-        type: "ICD-10", 
-        category: "differentials",
-        description: differential.icdDescription || differential.diagnosis,
-        rationale: `Added as differential consideration: ${differential.diagnosis}. ${differential.reasoning}`,
-        confidence: differential.percentage
-      }
-      onAddCode(icdCodeItem)
+    const codeValue = differential.icdCode || differential.diagnosis
+    if (!codeValue || !onAddCode) {
+      return
     }
+
+    const icdCodeItem = {
+      code: codeValue,
+      type: "ICD-10",
+      category: "differentials",
+      description: differential.icdDescription || differential.diagnosis,
+      rationale: `Added as differential consideration: ${differential.diagnosis}. ${differential.reasoning || ""}`,
+      confidence: differential.confidence
+    }
+    onAddCode(icdCodeItem)
   }
 
   const handleAddCode = (code: any) => {
+    if (!code || !code.code) {
+      return
+    }
+
     // Determine the correct category for the code
     let updatedCodes = { ...selectedCodes }
     
@@ -141,198 +455,26 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     }
   }
 
-  const suggestions = {
-    codes: [
-      { 
-        code: "99213", 
-        type: "CPT", 
-        description: "Office visit, established patient", 
-        rationale: "Based on complexity and time spent",
-        confidence: 82,
-        whatItIs: "Evaluation and Management (E/M) service for an established patient office or other outpatient visit requiring a medically appropriate history and/or examination and low level of medical decision making.",
-        usageRules: [
-          "Patient must be established (seen within past 3 years by same physician or same specialty group)",
-          "Requires medically appropriate history and/or examination", 
-          "Low level medical decision making required",
-          "Typically 20-29 minutes of total time on date of service"
-        ],
-        reasonsSuggested: [
-          "Patient is established with practice",
-          "Current visit complexity matches low-moderate level",
-          "Time spent falls within typical range for 99213",
-          "Documentation supports required elements"
-        ],
-        potentialConcerns: [
-          "May be under-coded if higher complexity work performed",
-          "Time documentation must support level if time-based coding used",
-          "Medical decision making may warrant higher level code"
-        ]
-      },
-      { 
-        code: "99214", 
-        type: "CPT", 
-        description: "Office visit, established patient (moderate complexity)", 
-        rationale: "Higher complexity visit with moderate medical decision making",
-        confidence: 67,
-        whatItIs: "Evaluation and Management (E/M) service for an established patient office visit requiring a medically appropriate history and/or examination and moderate level of medical decision making.",
-        usageRules: [
-          "Patient must be established (seen within past 3 years)",
-          "Requires medically appropriate history and/or examination",
-          "Moderate level medical decision making required", 
-          "Typically 30-39 minutes of total time on date of service"
-        ],
-        reasonsSuggested: [
-          "Multiple chronic conditions being managed",
-          "New problem with additional workup required", 
-          "Moderate complexity of medical decision making documented",
-          "Time and complexity support this level"
-        ],
-        potentialConcerns: [
-          "Documentation must clearly support moderate MDM",
-          "Higher reimbursement requires stronger documentation",
-          "May be over-coded if visit was routine/straightforward"
-        ]
-      },
-      { 
-        code: "99395", 
-        type: "CPT", 
-        description: "Preventive medicine, established patient (18-39 years)", 
-        rationale: "Patient age and visit type match preventive care criteria",
-        confidence: 91,
-        whatItIs: "Periodic comprehensive preventive medicine reevaluation and management of an individual including an age and gender appropriate history, examination, counseling/anticipatory guidance/risk factor reduction interventions, and the ordering of laboratory/diagnostic procedures, established patient; 18-39 years.",
-        usageRules: [
-          "Patient must be established and asymptomatic",
-          "Must be comprehensive preventive service, not problem-focused",
-          "Patient age must be 18-39 years",
-          "Cannot bill same day as E/M visit for same provider without modifier"
-        ],
-        reasonsSuggested: [
-          "Patient is due for annual preventive care",
-          "Age falls within 18-39 year range",
-          "Visit appears to be comprehensive preventive in nature",
-          "No acute problems being addressed primarily"
-        ],
-        potentialConcerns: [
-          "Cannot use if significant problems addressed (would need separate E/M)",
-          "Insurance may not cover if done too frequently", 
-          "Documentation must support comprehensive nature of visit"
-        ]
-      }
-    ],
-    publicHealth: [
-      { 
-        id: "flu-vaccine-2024",
-        code: "90630",
-        type: "PREVENTION",
-        category: "prevention",
-        text: "Influenza vaccination", 
-        description: "Annual influenza vaccination for current flu season",
-        reason: "Patient is due for annual flu vaccine - flu season approaching", 
-        source: "CDC", 
-        level: "Level A",
-        importance: "Prevents seasonal influenza which causes 140,000-810,000 hospitalizations and 12,000-61,000 deaths annually in the US. Vaccination reduces risk by 40-60% when vaccine is well-matched to circulating viruses.",
-        whatToDo: "Administer age-appropriate influenza vaccine (IIV4 or LAIV4). Document vaccine lot number, expiration date, administration site, and VIS date. Schedule follow-up if any adverse reactions occur.",
-        patientFlagged: "Patient is 34 years old with no documented flu vaccine in the past 12 months. Has history of seasonal allergies which may increase complications from influenza infection.",
-        recommendingBody: "CDC Advisory Committee on Immunization Practices (ACIP)",
-        guidelines: "Annual vaccination recommended for all persons ≥6 months without contraindications. Preferentially recommend IIV4 for adults ≥65 years. Give by October 31st for optimal protection.",
-        patientPercentage: 78,
-        clinicAverage: 85,
-        usAverage: 63,
-        confidence: 95
-      },
-      { 
-        id: "covid-booster-2024",
-        code: "91301",
-        type: "PREVENTION", 
-        category: "prevention",
-        text: "COVID-19 booster eligibility",
-        description: "Updated COVID-19 vaccine booster for 2024-2025 season",
-        reason: "Patient eligible for updated COVID-19 vaccine based on age and time since last dose", 
-        source: "CDC", 
-        level: "Level B",
-        importance: "Updated COVID-19 vaccines target currently circulating variants and help restore waning immunity. Reduces risk of hospitalization by 50-80% and severe disease by 70-90% in the months following vaccination.",
-        whatToDo: "Administer updated 2024-2025 COVID-19 vaccine (mRNA or protein subunit). Can be given simultaneously with other vaccines. Monitor for 15 minutes post-vaccination for immediate adverse reactions.",
-        patientFlagged: "Patient received last COVID-19 vaccine >4 months ago. Age 34 puts them in recommended group for annual vaccination. No known contraindications to mRNA vaccines.",
-        recommendingBody: "CDC Advisory Committee on Immunization Practices (ACIP) and FDA",
-        guidelines: "Updated 2024-2025 COVID-19 vaccine recommended annually for persons ≥6 months. Can be given ≥2 months after previous COVID-19 vaccine. No minimum interval with other vaccines.",
-        patientPercentage: 52,
-        clinicAverage: 71,
-        usAverage: 45,
-        confidence: 88
-      }
-    ],
-    differentials: [
-      { 
-        diagnosis: "Viral upper respiratory infection",
-        icdCode: "J06.9",
-        icdDescription: "Acute upper respiratory infection, unspecified",
-        percentage: 85,
-        reasoning: "Most common cause of URI symptoms, seasonal pattern, gradual onset",
-        supportingFactors: ["Gradual onset", "Clear rhinorrhea", "Low-grade fever", "Seasonal timing"],
-        contradictingFactors: ["No purulent discharge", "No high fever"],
-        whatItIs: "A viral infection affecting the upper respiratory tract including nose, throat, and sinuses, typically self-limiting and lasting 7-10 days.",
-        details: "Most commonly caused by rhinoviruses, coronaviruses, or adenoviruses. Presents with nasal congestion, rhinorrhea, sore throat, and mild systemic symptoms.",
-        forFactors: ["Seasonal pattern matches viral epidemiology", "Gradual onset typical of viral infections", "Low-grade fever supports viral etiology", "Clear discharge suggests viral rather than bacterial"],
-        againstFactors: ["Symptom duration >10 days might suggest bacterial superinfection", "Lack of myalgias somewhat atypical"],
-        confidenceFactors: "High confidence based on symptom pattern, seasonal timing, physical exam findings, and epidemiological factors. Viral URI accounts for 90% of acute respiratory infections.",
-        learnMoreUrl: "https://www.aafp.org/pubs/afp/issues/2012/0101/p46.html",
-        testsToConfirm: ["Usually clinical diagnosis", "Rapid viral panel if high-risk patient", "CBC if bacterial superinfection suspected"],
-        testsToExclude: ["Throat culture to rule out strep", "Sinus CT if sinusitis suspected", "Chest X-ray if pneumonia concern"]
-      },
-      { 
-        diagnosis: "Acute bacterial sinusitis",
-        icdCode: "J01.90", 
-        icdDescription: "Acute sinusitis, unspecified",
-        percentage: 35,
-        reasoning: "Possible secondary bacterial infection, symptoms lasting >10 days",
-        supportingFactors: ["Facial pressure", "Discolored discharge", "Symptom duration"],
-        contradictingFactors: ["No high fever", "No severe facial pain"],
-        whatItIs: "Bacterial infection of the paranasal sinuses, typically following a viral upper respiratory infection, characterized by purulent nasal discharge and facial pain.",
-        details: "Usually caused by S. pneumoniae, H. influenzae, or M. catarrhalis. Requires specific criteria: symptoms >10 days, severe symptoms, or worsening after improvement.",
-        forFactors: ["Symptom duration >7 days supports bacterial etiology", "Facial pressure classic for sinusitis", "Discolored discharge suggests bacterial infection"],
-        againstFactors: ["Absence of high fever reduces likelihood", "No severe facial pain", "Gradual onset less typical for bacterial"],
-        confidenceFactors: "Moderate confidence. Bacterial sinusitis only occurs in 0.5-2% of viral URI cases. Current symptoms don't fully meet IDSA criteria for bacterial sinusitis.",
-        learnMoreUrl: "https://academic.oup.com/cid/article/54/8/e72/367144",
-        testsToConfirm: ["Clinical diagnosis preferred", "Sinus CT if recurrent/chronic", "Nasal endoscopy if specialist referral"],
-        testsToExclude: ["Routine sinus X-rays not recommended", "MRI only if intracranial complications suspected"]
-      },
-      { 
-        diagnosis: "Allergic rhinitis",
-        icdCode: "J30.9",
-        icdDescription: "Allergic rhinitis, unspecified", 
-        percentage: 15,
-        reasoning: "Chronic symptoms with environmental triggers, but acute presentation less likely",
-        supportingFactors: ["Clear discharge", "Nasal congestion", "Seasonal component"],
-        contradictingFactors: ["Acute onset", "Fever present", "No known allergies"],
-        whatItIs: "An inflammatory condition of the nasal mucosa caused by IgE-mediated reaction to environmental allergens, typically seasonal or perennial.",
-        details: "Characterized by sneezing, clear rhinorrhea, nasal congestion, and itching. May be seasonal (pollen) or perennial (dust mites, pet dander).",
-        forFactors: ["Clear rhinorrhea typical of allergic response", "Nasal congestion common symptom", "Seasonal timing could suggest environmental trigger"],
-        againstFactors: ["Acute onset unusual for allergic rhinitis", "Fever not typical of allergic reaction", "No documented allergy history", "Lack of typical allergic symptoms (itching, sneezing)"],
-        confidenceFactors: "Low confidence. Acute onset with fever makes allergic rhinitis unlikely. Patient would typically have history of allergies and seasonal pattern.",
-        learnMoreUrl: "https://www.aaaai.org/tools-for-the-public/conditions-library/allergies/rhinitis",
-        testsToConfirm: ["Skin prick tests for specific allergens", "Serum specific IgE levels", "Total IgE if indicated"],
-        testsToExclude: ["CBC with eosinophil count", "Nasal smear for eosinophils", "CT scan to rule out structural abnormalities"]
-      }
-    ],
-    followUp: [
-      { interval: "2 weeks", condition: "if symptoms persist", priority: "routine" },
-      { interval: "3-5 days", condition: "if symptoms worsen", priority: "urgent" }
-    ]
-  }
+  const followUpSuggestions = [
+    { interval: "2 weeks", condition: "if symptoms persist", priority: "routine" },
+    { interval: "3-5 days", condition: "if symptoms worsen", priority: "urgent" }
+  ]
 
   const cardConfigs = [
-    { key: 'codes', title: 'Codes', icon: Code, count: suggestions.codes.filter(code => !addedCodes.includes(code.code)).length, color: 'text-blue-600' },
-    { key: 'prevention', title: 'Prevention', icon: Heart, count: suggestions.publicHealth.filter(item => !addedCodes.includes(item.id)).length, color: 'text-red-600' },
-    { key: 'differentials', title: 'Differentials', icon: Stethoscope, count: suggestions.differentials.filter(differential => !addedCodes.includes(differential.icdCode || '')).length, color: 'text-purple-600' },
-    { key: 'followUp', title: 'Follow-Up', icon: Calendar, count: suggestions.followUp.length, color: 'text-orange-600' }
+    { key: 'codes', title: 'Codes', icon: Code, count: filteredCodeSuggestions.length, color: 'text-blue-600' },
+    { key: 'compliance', title: 'Compliance', icon: Shield, count: complianceAlerts.length, color: 'text-amber-600' },
+    { key: 'prevention', title: 'Prevention', icon: Heart, count: filteredPreventionSuggestions.length, color: 'text-red-600' },
+    { key: 'differentials', title: 'Differentials', icon: Stethoscope, count: filteredDifferentialSuggestions.length, color: 'text-purple-600' },
+    { key: 'followUp', title: 'Follow-Up', icon: Calendar, count: followUpSuggestions.length, color: 'text-orange-600' }
   ]
 
   // Circular confidence indicator component
-  const ConfidenceGauge = ({ confidence, size = 20 }: { confidence: number; size?: number }) => {
+  const ConfidenceGauge = ({ confidence, size = 20 }: { confidence?: number; size?: number }) => {
+    const normalizedConfidence = typeof confidence === "number" ? Math.max(0, Math.min(100, confidence)) : 0
     const radius = (size - 4) / 2
     const circumference = 2 * Math.PI * radius
-    const strokeDashoffset = circumference - (confidence / 100) * circumference
-    
+    const strokeDashoffset = circumference - (normalizedConfidence / 100) * circumference
+
     const getColor = (conf: number) => {
       if (conf >= 70) return '#10b981'
       if (conf >= 40) return '#eab308'
@@ -358,7 +500,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
             cx={size / 2}
             cy={size / 2}
             r={radius}
-            stroke={getColor(confidence)}
+            stroke={getColor(normalizedConfidence)}
             strokeWidth="2"
             fill="none"
             strokeLinecap="round"
@@ -369,7 +511,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
           <span className="text-xs font-medium text-muted-foreground">
-            {confidence}
+            {typeof confidence === "number" ? normalizedConfidence : "–"}
           </span>
         </div>
       </div>
@@ -420,19 +562,31 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Codes Section */}
                         {config.key === 'codes' && (
                           <div className="space-y-3">
-                            {suggestions.codes.filter(code => !addedCodes.includes(code.code)).map((code, index) => {
-                              const codeTypeColors = {
+                            {codesLoading && (
+                              <p className="text-sm text-muted-foreground">Analyzing note for coding opportunities...</p>
+                            )}
+                            {codesError && (
+                              <p className="text-sm text-destructive">{codesError}</p>
+                            )}
+                            {!codesLoading && !codesError && filteredCodeSuggestions.length === 0 && (
+                              <p className="text-sm text-muted-foreground">No code suggestions yet. Start documenting to receive recommendations.</p>
+                            )}
+                            {filteredCodeSuggestions.map((code, index) => {
+                              const codeTypeColors: Record<string, string> = {
                                 CPT: "bg-blue-50 border-blue-200 text-blue-700",
-                                "ICD-10": "bg-purple-50 border-purple-200 text-purple-700"
+                                "ICD-10": "bg-purple-50 border-purple-200 text-purple-700",
+                                HCPCS: "bg-emerald-50 border-emerald-200 text-emerald-700"
                               }
+                              const codeKey = `${code.code}-${index}`
+                              const rationale = code.rationale || code.reasoning || "AI rationale unavailable."
                               return (
-                                <Tooltip key={index}>
+                                <Tooltip key={codeKey}>
                                   <TooltipTrigger asChild>
                                     <div className="p-2.5 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors">
                                       <div className="flex items-center gap-3">
-                                        <Button 
-                                          size="sm" 
-                                          variant="ghost" 
+                                        <Button
+                                          size="sm"
+                                          variant="ghost"
                                           className="h-8 w-8 p-0 flex items-center justify-center hover:bg-blue-100 hover:text-blue-700 flex-shrink-0"
                                           onClick={(e) => {
                                             e.stopPropagation()
@@ -441,25 +595,27 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                                         >
                                           <Plus className="h-4 w-4" />
                                         </Button>
-                                        
+
                                         <div className="flex-1 min-w-0 space-y-2">
                                           <div className="flex items-center justify-between">
                                             <div className="flex items-center gap-2">
-                                              <Badge 
-                                                variant="outline" 
-                                                className={`text-xs ${codeTypeColors[code.type] || 'bg-gray-50 border-gray-200 text-gray-700'}`}
+                                              <Badge
+                                                variant="outline"
+                                                className={`text-xs ${codeTypeColors[code.type || ''] || 'bg-gray-50 border-gray-200 text-gray-700'}`}
                                               >
-                                                {code.type}
+                                                {code.type || 'CODE'}
                                               </Badge>
                                               <span className="font-mono text-sm font-medium">{code.code}</span>
                                             </div>
                                             <ConfidenceGauge confidence={code.confidence} size={24} />
                                           </div>
 
-                                          <p className="text-sm font-medium">{code.description}</p>
-                                          
+                                          {code.description && (
+                                            <p className="text-sm font-medium">{code.description}</p>
+                                          )}
+
                                           <div className="text-xs text-muted-foreground">
-                                            {code.rationale}
+                                            {rationale}
                                           </div>
                                         </div>
                                       </div>
@@ -467,88 +623,94 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                                   </TooltipTrigger>
                                   <TooltipContent className="max-w-lg p-0" side="left">
                                     <div className="bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-                                      {/* Header Section with Blue Theme */}
                                       <div className="px-4 py-3 bg-blue-50 border-b border-blue-200">
                                         <div className="flex items-center justify-between">
                                           <div className="flex items-center gap-2">
                                             <Code className="h-4 w-4 text-blue-600" />
-                                            <span className="font-medium text-blue-900">{code.type} {code.code}</span>
+                                            <span className="font-medium text-blue-900">{(code.type || 'Code')} {code.code}</span>
                                           </div>
                                           <ConfidenceGauge confidence={code.confidence} size={24} />
                                         </div>
-                                        <p className="text-sm text-blue-800 mt-1">{code.description}</p>
+                                        {code.description && (
+                                          <p className="text-sm text-blue-800 mt-1">{code.description}</p>
+                                        )}
                                       </div>
 
                                       <div className="p-4 space-y-4">
-                                        {/* Definition Section */}
+                                        {code.whatItIs && (
+                                          <div>
+                                            <div className="flex items-center gap-2 mb-2">
+                                              <Shield className="h-3 w-3 text-blue-600" />
+                                              <h5 className="font-medium text-sm text-blue-700">Definition</h5>
+                                            </div>
+                                            <p className="text-xs text-gray-700 leading-relaxed pl-5">{code.whatItIs}</p>
+                                          </div>
+                                        )}
+
                                         <div>
                                           <div className="flex items-center gap-2 mb-2">
-                                            <Shield className="h-3 w-3 text-blue-600" />
-                                            <h5 className="font-medium text-sm text-blue-700">Definition</h5>
-                                          </div>
-                                          <p className="text-xs text-gray-700 leading-relaxed pl-5">{code.whatItIs}</p>
-                                        </div>
-                                        
-                                        <div className="border-t border-gray-100 pt-4">
-                                          <div className="flex items-center gap-2 mb-3">
                                             <AlertTriangle className="h-3 w-3 text-amber-600" />
-                                            <h5 className="font-medium text-sm text-amber-700">Usage Requirements</h5>
+                                            <h5 className="font-medium text-sm text-amber-700">AI Rationale</h5>
                                           </div>
-                                          <ul className="space-y-1.5 pl-5">
-                                            {code.usageRules.map((rule, ruleIndex) => (
-                                              <li key={ruleIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                <div className="w-1 h-1 bg-amber-500 rounded-full mt-2 flex-shrink-0"></div>
-                                                {rule}
-                                              </li>
-                                            ))}
-                                          </ul>
+                                          <p className="text-xs text-gray-700 leading-relaxed pl-5">{rationale}</p>
                                         </div>
 
-                                        {/* Supporting vs Concerns - Side by Side */}
-                                        <div className="border-t border-gray-100 pt-4">
-                                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                            <div>
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <TrendingUp className="h-3 w-3 text-green-600" />
-                                                <h5 className="font-medium text-sm text-green-700">Supporting Evidence</h5>
-                                              </div>
-                                              <ul className="space-y-1">
-                                                {code.reasonsSuggested.map((reason, reasonIndex) => (
-                                                  <li key={reasonIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                    <div className="w-1 h-1 bg-green-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                    {reason}
-                                                  </li>
-                                                ))}
-                                              </ul>
+                                        {code.usageRules && code.usageRules.length > 0 && (
+                                          <div className="border-t border-gray-100 pt-4">
+                                            <div className="flex items-center gap-2 mb-3">
+                                              <ClipboardList className="h-3 w-3 text-blue-600" />
+                                              <h5 className="font-medium text-sm text-blue-700">Usage Requirements</h5>
                                             </div>
+                                            <ul className="space-y-1.5 pl-5">
+                                              {code.usageRules.map((rule, ruleIndex) => (
+                                                <li key={ruleIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                  <div className="w-1 h-1 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
+                                                  {rule}
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
 
-                                            <div>
-                                              <div className="flex items-center gap-2 mb-2">
-                                                <AlertTriangle className="h-3 w-3 text-red-600" />
-                                                <h5 className="font-medium text-sm text-red-700">Potential Concerns</h5>
-                                              </div>
-                                              <ul className="space-y-1">
-                                                {code.potentialConcerns.map((concern, concernIndex) => (
-                                                  <li key={concernIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                    <div className="w-1 h-1 bg-red-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                    {concern}
-                                                  </li>
-                                                ))}
-                                              </ul>
+                                        {(code.reasonsSuggested && code.reasonsSuggested.length > 0) || (code.potentialConcerns && code.potentialConcerns.length > 0) ? (
+                                          <div className="border-t border-gray-100 pt-4">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                              {code.reasonsSuggested && code.reasonsSuggested.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <TrendingUp className="h-3 w-3 text-green-600" />
+                                                    <h5 className="font-medium text-sm text-green-700">Supporting Evidence</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {code.reasonsSuggested.map((reason, reasonIndex) => (
+                                                      <li key={reasonIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-green-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {reason}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
+
+                                              {code.potentialConcerns && code.potentialConcerns.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <AlertTriangle className="h-3 w-3 text-red-600" />
+                                                    <h5 className="font-medium text-sm text-red-700">Potential Concerns</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {code.potentialConcerns.map((concern, concernIndex) => (
+                                                      <li key={concernIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-red-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {concern}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
                                             </div>
                                           </div>
-                                        </div>
-
-                                        {/* Professional Tip - Only colored background section */}
-                                        <div className="bg-blue-50 border-l-2 border-blue-400 pl-3 pr-3 py-2 rounded-r">
-                                          <div className="flex items-center gap-2 mb-1">
-                                            <Heart className="h-3 w-3 text-blue-600" />
-                                            <h5 className="font-medium text-sm text-blue-900">Coding Best Practice</h5>
-                                          </div>
-                                          <p className="text-xs text-blue-800 leading-relaxed">
-                                            Always ensure documentation supports the level of service billed. Consider time-based coding if documentation is insufficient for medical decision making approach.
-                                          </p>
-                                        </div>
+                                        ) : null}
                                       </div>
                                     </div>
                                   </TooltipContent>
@@ -558,17 +720,69 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                           </div>
                         )}
 
+                        {/* Compliance Section */}
+                        {config.key === 'compliance' && (
+                          <div className="space-y-3">
+                            {complianceLoading && (
+                              <p className="text-sm text-muted-foreground">Reviewing documentation for compliance issues...</p>
+                            )}
+                            {complianceError && (
+                              <p className="text-sm text-destructive">{complianceError}</p>
+                            )}
+                            {!complianceLoading && !complianceError && complianceAlerts.length === 0 && (
+                              <p className="text-sm text-muted-foreground">No compliance issues detected. Keep documenting thoroughly.</p>
+                            )}
+                            {complianceAlerts.map((alert, index) => (
+                              <div key={`${alert.text}-${index}`} className="p-3 rounded-lg border bg-muted/20 space-y-2">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="space-y-2">
+                                    <p className="text-sm font-medium">{alert.text}</p>
+                                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                                      {alert.category && (
+                                        <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">
+                                          {alert.category}
+                                        </Badge>
+                                      )}
+                                      {alert.priority && (
+                                        <Badge
+                                          variant="outline"
+                                          className={`text-xs ${alert.priority === 'critical' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}
+                                        >
+                                          {alert.priority}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <ConfidenceGauge confidence={alert.confidence} size={24} />
+                                </div>
+                                {alert.reasoning && (
+                                  <p className="text-xs text-muted-foreground leading-relaxed">{alert.reasoning}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         {/* Public Health Section */}
                         {config.key === 'prevention' && (
                           <div className="space-y-2">
-                            {suggestions.publicHealth.filter(item => !addedCodes.includes(item.id)).map((item, index) => (
-                              <Tooltip key={index}>
+                            {preventionLoading && (
+                              <p className="text-sm text-muted-foreground">Loading preventive care opportunities...</p>
+                            )}
+                            {preventionError && (
+                              <p className="text-sm text-destructive">{preventionError}</p>
+                            )}
+                            {!preventionLoading && !preventionError && filteredPreventionSuggestions.length === 0 && (
+                              <p className="text-sm text-muted-foreground">No preventive care suggestions available at the moment.</p>
+                            )}
+                            {filteredPreventionSuggestions.map((item, index) => (
+                              <Tooltip key={`${item.id}-${index}`}>
                                 <TooltipTrigger asChild>
                                   <div className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors relative">
                                     <div className="flex items-center gap-3">
-                                      <Button 
-                                        size="sm" 
-                                        variant="ghost" 
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
                                         className="h-8 w-8 p-0 flex items-center justify-center hover:bg-red-100 hover:text-red-700 flex-shrink-0"
                                         onClick={(e) => {
                                           e.stopPropagation()
@@ -577,107 +791,52 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                                       >
                                         <Plus className="h-4 w-4" />
                                       </Button>
-                                      
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center justify-between mb-1">
-                                          <p className="text-sm font-medium">{item.text}</p>
-                                          <Badge variant="outline" className="text-xs bg-red-50 border-red-200 text-red-700">
-                                            {item.level}
-                                          </Badge>
+
+                                      <div className="flex-1 min-w-0 space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <p className="text-sm font-medium">{item.recommendation}</p>
+                                          <ConfidenceGauge confidence={item.confidence} size={24} />
                                         </div>
-                                        <p className="text-xs text-muted-foreground">{item.reason}</p>
-                                        <div className="flex items-center justify-between mt-2">
-                                          <p className="text-xs text-muted-foreground">Source: {item.source}</p>
+                                        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                          {item.source && <span>Source: {item.source}</span>}
+                                          {item.priority && (
+                                            <Badge variant="outline" className="bg-red-50 border-red-200 text-red-700">
+                                              {item.priority}
+                                            </Badge>
+                                          )}
                                         </div>
+                                        {item.reasoning && (
+                                          <p className="text-xs text-muted-foreground">{item.reasoning}</p>
+                                        )}
                                       </div>
                                     </div>
                                   </div>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-lg p-0" side="left">
-                                  <div className="space-y-0 max-w-lg bg-white border border-gray-200 rounded-lg shadow-lg">
-                                    {/* Header Section with Red Theme */}
+                                  <div className="bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
                                     <div className="px-4 py-3 bg-red-50 border-b border-red-200">
                                       <div className="flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                           <Heart className="h-4 w-4 text-red-600" />
-                                          <span className="font-medium text-red-900">{item.text}</span>
+                                          <span className="font-medium text-red-900">{item.recommendation}</span>
                                         </div>
-                                        <Badge variant="outline" className="text-xs bg-red-100 border-red-300 text-red-800">
-                                          {item.level}
-                                        </Badge>
+                                        <ConfidenceGauge confidence={item.confidence} size={24} />
                                       </div>
-                                      <p className="text-sm text-red-800 mt-1">{item.description}</p>
+                                      {item.source && (
+                                        <p className="text-xs text-red-800 mt-1">Source: {item.source}</p>
+                                      )}
                                     </div>
 
-                                    <div className="p-4 space-y-4">
-                                      {/* Clinical Importance */}
-                                      <div>
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <Shield className="h-3 w-3 text-red-600" />
-                                          <h5 className="font-medium text-sm text-red-700">Clinical Importance</h5>
+                                    <div className="p-4 space-y-3">
+                                      {item.reasoning && (
+                                        <p className="text-xs text-gray-700 leading-relaxed">{item.reasoning}</p>
+                                      )}
+                                      <div className="text-xs text-muted-foreground space-y-1">
+                                        <div>
+                                          <span className="font-medium text-gray-900">Priority:</span> {item.priority || 'Standard'}
                                         </div>
-                                        <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.importance}</p>
-                                      </div>
-
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="flex items-center gap-2 mb-3">
-                                          <TestTube className="h-3 w-3 text-gray-600" />
-                                          <h5 className="font-medium text-sm text-gray-900">Recommended Action</h5>
-                                        </div>
-                                        <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.whatToDo}</p>
-                                      </div>
-
-                                      {/* Patient Context - Side by Side with Guidelines */}
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                          <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <AlertTriangle className="h-3 w-3 text-amber-600" />
-                                              <h5 className="font-medium text-sm text-amber-700">Patient Context</h5>
-                                            </div>
-                                            <p className="text-xs text-gray-700 leading-relaxed">{item.patientFlagged}</p>
-                                          </div>
-
-                                          <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <ExternalLink className="h-3 w-3 text-blue-600" />
-                                              <h5 className="font-medium text-sm text-blue-700">Authority</h5>
-                                            </div>
-                                            <p className="text-xs text-blue-800 font-medium mb-1">{item.recommendingBody}</p>
-                                            <p className="text-xs text-gray-700 leading-relaxed">{item.guidelines}</p>
-                                          </div>
-                                        </div>
-                                      </div>
-
-                                      {/* Performance Metrics - Only colored background section */}
-                                      <div className="bg-gray-50 border-l-2 border-gray-400 pl-3 pr-3 py-3 rounded-r">
-                                        <div className="flex items-center gap-2 mb-3">
-                                          <TrendingUp className="h-3 w-3 text-gray-600" />
-                                          <h5 className="font-medium text-sm text-gray-900">Performance Metrics</h5>
-                                        </div>
-                                        <div className="grid grid-cols-3 gap-3">
-                                          <div className="text-center">
-                                            <div className="text-xs text-gray-600 font-medium mb-1">Your Rate</div>
-                                            <div className="text-lg font-semibold text-gray-900">{item.patientPercentage}%</div>
-                                          </div>
-                                          <div className="text-center">
-                                            <div className="text-xs text-gray-600 font-medium mb-1">Clinic Avg</div>
-                                            <div className="text-lg font-semibold text-gray-900">{item.clinicAverage}%</div>
-                                          </div>
-                                          <div className="text-center">
-                                            <div className="text-xs text-gray-600 font-medium mb-1">US Avg</div>
-                                            <div className="text-lg font-semibold text-gray-900">{item.usAverage}%</div>
-                                          </div>
-                                        </div>
-                                        <div className="mt-2 pt-2 border-t">
-                                          <p className="text-xs text-gray-600">
-                                            {item.patientPercentage < item.clinicAverage 
-                                              ? "Consider strategies to improve patient engagement for this measure."
-                                              : item.patientPercentage < item.usAverage
-                                              ? "Performance exceeds clinic average but trails national benchmarks."
-                                              : "Excellent performance - maintain current protocols."
-                                            }
-                                          </p>
+                                        <div>
+                                          <span className="font-medium text-gray-900">Age relevant:</span> {item.ageRelevant ? 'Yes' : 'General recommendation'}
                                         </div>
                                       </div>
                                     </div>
@@ -691,216 +850,221 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Differentials Section */}
                         {config.key === 'differentials' && (
                           <div className="space-y-3">
-                            {suggestions.differentials.filter(differential => !addedCodes.includes(differential.icdCode || '')).map((item, index) => (
-                              <Tooltip key={index}>
-                                <TooltipTrigger asChild>
-                                  <div className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors">
-                                    <div className="space-y-2">
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex-1">
-                                          <p className="text-sm font-medium">{item.diagnosis}</p>
-                                          {item.icdCode && (
-                                            <div className="flex items-center gap-2 mt-1">
-                                              <Badge variant="outline" className="text-xs bg-purple-50 border-purple-200 text-purple-700">
-                                                ICD-10
-                                              </Badge>
-                                              <span className="font-mono text-xs text-muted-foreground">{item.icdCode}</span>
-                                            </div>
-                                          )}
+                            {differentialsLoading && (
+                              <p className="text-sm text-muted-foreground">Generating differential diagnoses...</p>
+                            )}
+                            {differentialsError && (
+                              <p className="text-sm text-destructive">{differentialsError}</p>
+                            )}
+                            {!differentialsLoading && !differentialsError && filteredDifferentialSuggestions.length === 0 && (
+                              <p className="text-sm text-muted-foreground">No differential diagnoses suggested yet.</p>
+                            )}
+                            {filteredDifferentialSuggestions.map((item, index) => {
+                              const confidenceValue = item.confidence ?? 0
+                              return (
+                                <Tooltip key={`${item.diagnosis}-${index}`}>
+                                  <TooltipTrigger asChild>
+                                    <div className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors">
+                                      <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex-1">
+                                            <p className="text-sm font-medium">{item.diagnosis}</p>
+                                            {item.icdCode && (
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <Badge variant="outline" className="text-xs bg-purple-50 border-purple-200 text-purple-700">
+                                                  ICD-10
+                                                </Badge>
+                                                <span className="font-mono text-xs text-muted-foreground">{item.icdCode}</span>
+                                              </div>
+                                            )}
+                                          </div>
+                                          <ConfidenceGauge confidence={item.confidence} size={24} />
                                         </div>
-                                        <ConfidenceGauge confidence={item.percentage} size={24} />
-                                      </div>
 
-                                      <div className="text-xs text-muted-foreground">
-                                        {item.reasoning}
-                                      </div>
+                                        {item.reasoning && (
+                                          <div className="text-xs text-muted-foreground">
+                                            {item.reasoning}
+                                          </div>
+                                        )}
 
-                                      <div className="grid grid-cols-1 gap-2 text-xs">
-                                        <div>
-                                          <span className="text-green-700 font-medium">Supporting:</span>
-                                          <span className="text-muted-foreground ml-1">
-                                            {item.supportingFactors.join(", ")}
-                                          </span>
+                                        {(item.supportingFactors && item.supportingFactors.length > 0) || (item.contradictingFactors && item.contradictingFactors.length > 0) ? (
+                                          <div className="grid grid-cols-1 gap-2 text-xs">
+                                            {item.supportingFactors && item.supportingFactors.length > 0 && (
+                                              <div>
+                                                <span className="text-green-700 font-medium">Supporting:</span>
+                                                <span className="text-muted-foreground ml-1">
+                                                  {item.supportingFactors.join(', ')}
+                                                </span>
+                                              </div>
+                                            )}
+                                            {item.contradictingFactors && item.contradictingFactors.length > 0 && (
+                                              <div>
+                                                <span className="text-red-700 font-medium">Against:</span>
+                                                <span className="text-muted-foreground ml-1">
+                                                  {item.contradictingFactors.join(', ')}
+                                                </span>
+                                              </div>
+                                            )}
+                                          </div>
+                                        ) : null}
+
+                                        <div className="flex gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 text-xs flex-1"
+                                            onClick={() => handleAddAsDifferential(item)}
+                                          >
+                                            <Plus className="h-3 w-3 mr-1" />
+                                            Add as Differential
+                                          </Button>
+
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className={`h-6 text-xs flex-1 ${confidenceValue < 70 ? 'text-orange-600 hover:text-orange-700' : ''}`}
+                                            onClick={() => handleAddAsDiagnosis(item)}
+                                          >
+                                            {confidenceValue < 70 && <AlertTriangle className="h-3 w-3 mr-1" />}
+                                            <Plus className="h-3 w-3 mr-1" />
+                                            Add as Diagnosis
+                                          </Button>
                                         </div>
-                                        <div>
-                                          <span className="text-red-700 font-medium">Against:</span>
-                                          <span className="text-muted-foreground ml-1">
-                                            {item.contradictingFactors.join(", ")}
-                                          </span>
-                                        </div>
-                                      </div>
-
-                                      <div className="flex gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className="h-6 text-xs flex-1"
-                                          onClick={() => handleAddAsDifferential(item)}
-                                        >
-                                          <Plus className="h-3 w-3 mr-1" />
-                                          Add as Differential
-                                        </Button>
-                                        
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className={`h-6 text-xs flex-1 ${item.percentage < 70 ? 'text-orange-600 hover:text-orange-700' : ''}`}
-                                          onClick={() => handleAddAsDiagnosis(item)}
-                                        >
-                                          {item.percentage < 70 && <AlertTriangle className="h-3 w-3 mr-1" />}
-                                          <Plus className="h-3 w-3 mr-1" />
-                                          Add as Diagnosis
-                                        </Button>
                                       </div>
                                     </div>
-                                  </div>
-                                </TooltipTrigger>
-                                <TooltipContent className="max-w-lg p-0" side="left">
-                                  <div className="bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-                                    {/* Header Section with Green Theme for Differentials */}
-                                    <div className="px-4 py-3 bg-green-50 border-b border-green-200">
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                          <Stethoscope className="h-4 w-4 text-green-600" />
-                                          <span className="font-medium text-green-900">{item.diagnosis}</span>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-lg p-0" side="left">
+                                    <div className="bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                                      <div className="px-4 py-3 bg-green-50 border-b border-green-200">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-2">
+                                            <Stethoscope className="h-4 w-4 text-green-600" />
+                                            <span className="font-medium text-green-900">{item.diagnosis}</span>
+                                          </div>
+                                          <ConfidenceGauge confidence={item.confidence} size={24} />
                                         </div>
-                                        <ConfidenceGauge confidence={item.percentage} size={24} />
-                                      </div>
-                                      <p className="text-sm text-green-800 mt-1">{item.icdCode} - {item.icdDescription}</p>
-                                    </div>
-
-                                    <div className="p-4 space-y-4">
-                                      {/* Definition Section */}
-                                      <div>
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <Shield className="h-3 w-3 text-green-600" />
-                                          <h5 className="font-medium text-sm text-green-700">What It Is</h5>
-                                        </div>
-                                        <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.whatItIs}</p>
-                                      </div>
-                                      
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="flex items-center gap-2 mb-3">
-                                          <AlertTriangle className="h-3 w-3 text-amber-600" />
-                                          <h5 className="font-medium text-sm text-amber-700">Clinical Details</h5>
-                                        </div>
-                                        <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.details}</p>
+                                        {item.icdCode && (
+                                          <p className="text-sm text-green-800 mt-1">{item.icdCode}{item.icdDescription ? ` - ${item.icdDescription}` : ''}</p>
+                                        )}
                                       </div>
 
-                                      {/* Supporting vs Against - Side by Side */}
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                      <div className="p-4 space-y-4">
+                                        {item.reasoning && (
                                           <div>
                                             <div className="flex items-center gap-2 mb-2">
-                                              <TrendingUp className="h-3 w-3 text-green-600" />
-                                              <h5 className="font-medium text-sm text-green-700">Supporting Factors</h5>
+                                              <Shield className="h-3 w-3 text-green-600" />
+                                              <h5 className="font-medium text-sm text-green-700">Clinical Context</h5>
                                             </div>
-                                            <ul className="space-y-1">
-                                              {item.forFactors.map((factor, factorIndex) => (
-                                                <li key={factorIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                  <div className="w-1 h-1 bg-green-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                  {factor}
-                                                </li>
-                                              ))}
-                                            </ul>
+                                            <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.reasoning}</p>
                                           </div>
+                                        )}
 
-                                          <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <TrendingDown className="h-3 w-3 text-red-600" />
-                                              <h5 className="font-medium text-sm text-red-700">Against Factors</h5>
+                                        {(item.forFactors && item.forFactors.length > 0) || (item.againstFactors && item.againstFactors.length > 0) ? (
+                                          <div className="border-t border-gray-100 pt-4">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                              {item.forFactors && item.forFactors.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <TrendingUp className="h-3 w-3 text-green-600" />
+                                                    <h5 className="font-medium text-sm text-green-700">Supporting Factors</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {item.forFactors.map((factor, factorIndex) => (
+                                                      <li key={factorIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-green-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {factor}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
+
+                                              {item.againstFactors && item.againstFactors.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <TrendingDown className="h-3 w-3 text-red-600" />
+                                                    <h5 className="font-medium text-sm text-red-700">Against Factors</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {item.againstFactors.map((factor, factorIndex) => (
+                                                      <li key={factorIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-red-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {factor}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
                                             </div>
-                                            <ul className="space-y-1">
-                                              {item.againstFactors.map((factor, factorIndex) => (
-                                                <li key={factorIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                  <div className="w-1 h-1 bg-red-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                  {factor}
-                                                </li>
-                                              ))}
-                                            </ul>
                                           </div>
-                                        </div>
-                                      </div>
+                                        ) : null}
 
-                                      {/* Confidence Assessment */}
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="flex items-center gap-2 mb-2">
-                                          <TestTube className="h-3 w-3 text-purple-600" />
-                                          <h5 className="font-medium text-sm text-purple-700">Confidence Assessment</h5>
-                                        </div>
-                                        <p className="text-xs text-gray-700 leading-relaxed pl-5">{item.confidenceFactors}</p>
-                                      </div>
+                                        {(item.testsToConfirm && item.testsToConfirm.length > 0) || (item.testsToExclude && item.testsToExclude.length > 0) ? (
+                                          <div className="border-t border-gray-100 pt-4">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                              {item.testsToConfirm && item.testsToConfirm.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <TestTube className="h-3 w-3 text-blue-600" />
+                                                    <h5 className="font-medium text-sm text-blue-700">Tests to Confirm</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {item.testsToConfirm.map((test, testIndex) => (
+                                                      <li key={testIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-blue-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {test}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
 
-                                      {/* Testing - Side by Side */}
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                          <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <TrendingUp className="h-3 w-3 text-blue-600" />
-                                              <h5 className="font-medium text-sm text-blue-700">Tests to Confirm</h5>
+                                              {item.testsToExclude && item.testsToExclude.length > 0 && (
+                                                <div>
+                                                  <div className="flex items-center gap-2 mb-2">
+                                                    <Minus className="h-3 w-3 text-gray-600" />
+                                                    <h5 className="font-medium text-sm text-gray-700">Tests to Exclude</h5>
+                                                  </div>
+                                                  <ul className="space-y-1">
+                                                    {item.testsToExclude.map((test, testIndex) => (
+                                                      <li key={testIndex} className="text-xs text-gray-700 flex items-start gap-2">
+                                                        <div className="w-1 h-1 bg-gray-600 rounded-full mt-2 flex-shrink-0"></div>
+                                                        {test}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </div>
+                                              )}
                                             </div>
-                                            <ul className="space-y-1">
-                                              {item.testsToConfirm.map((test, testIndex) => (
-                                                <li key={testIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                  <div className="w-1 h-1 bg-blue-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                  {test}
-                                                </li>
-                                              ))}
-                                            </ul>
                                           </div>
+                                        ) : null}
 
-                                          <div>
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <Minus className="h-3 w-3 text-gray-600" />
-                                              <h5 className="font-medium text-sm text-gray-700">Tests to Exclude</h5>
-                                            </div>
-                                            <ul className="space-y-1">
-                                              {item.testsToExclude.map((test, testIndex) => (
-                                                <li key={testIndex} className="text-xs text-gray-700 flex items-start gap-2">
-                                                  <div className="w-1 h-1 bg-gray-600 rounded-full mt-2 flex-shrink-0"></div>
-                                                  {test}
-                                                </li>
-                                              ))}
-                                            </ul>
+                                        {item.learnMoreUrl && (
+                                          <div className="border-t border-gray-100 pt-4">
+                                            <a
+                                              href={item.learnMoreUrl}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex items-center gap-2 text-xs text-blue-600 hover:text-blue-800 transition-colors"
+                                            >
+                                              <ExternalLink className="h-3 w-3" />
+                                              Learn more about this condition
+                                            </a>
                                           </div>
-                                        </div>
-                                      </div>
-
-                                      {/* Clinical Best Practice - Only colored background section */}
-                                      <div className="bg-green-50 border-l-2 border-green-400 pl-3 pr-3 py-2 rounded-r">
-                                        <div className="flex items-center gap-2 mb-1">
-                                          <Stethoscope className="h-3 w-3 text-green-600" />
-                                          <h5 className="font-medium text-sm text-green-900">Clinical Best Practice</h5>
-                                        </div>
-                                        <p className="text-xs text-green-800 leading-relaxed">
-                                          Always consider differential diagnoses systematically. Document clinical reasoning for confidence levels below 70% before establishing primary diagnosis.
-                                        </p>
-                                      </div>
-
-                                      {/* Learn More */}
-                                      <div className="border-t border-gray-100 pt-4">
-                                        <a 
-                                          href={item.learnMoreUrl}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="inline-flex items-center gap-2 text-xs text-blue-600 hover:text-blue-800 transition-colors"
-                                        >
-                                          <ExternalLink className="h-3 w-3" />
-                                          Learn more about this condition
-                                        </a>
+                                        )}
                                       </div>
                                     </div>
-                                  </div>
-                                </TooltipContent>
-                              </Tooltip>
-                            ))}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )
+                            })}
                           </div>
                         )}
 
                         {/* Follow-Up Section */}
                         {config.key === 'followUp' && (
                           <div className="space-y-2">
-                            {suggestions.followUp.map((item, index) => (
+                            {followUpSuggestions.map((item, index) => (
                               <div key={index} className="p-2 rounded border space-y-1">
                                 <div className="flex items-center gap-2">
                                   <p className="text-sm flex-1">{item.interval}</p>
@@ -954,35 +1118,49 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                       <div className="flex items-center justify-between mb-2">
                         <h4 className="font-medium text-orange-900">{selectedDifferential.diagnosis}</h4>
                         <div className="flex items-center gap-2">
-                          <ConfidenceGauge confidence={selectedDifferential.percentage} size={24} />
-                          <span className="text-sm text-orange-700">{selectedDifferential.percentage}% confidence</span>
+                          <ConfidenceGauge confidence={selectedDifferential.confidence} size={24} />
+                          <span className="text-sm text-orange-700">
+                            {selectedDifferential.confidence != null
+                              ? `${selectedDifferential.confidence}% confidence`
+                              : 'Confidence unavailable'}
+                          </span>
                         </div>
                       </div>
-                      <p className="text-sm text-orange-800">{selectedDifferential.reasoning}</p>
+                      {selectedDifferential.reasoning && (
+                        <p className="text-sm text-orange-800">{selectedDifferential.reasoning}</p>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <h5 className="font-medium text-sm text-green-700">Supporting Evidence</h5>
                         <ul className="space-y-1">
-                          {selectedDifferential.forFactors.map((factor, index) => (
-                            <li key={index} className="text-xs text-muted-foreground flex items-start gap-1">
-                              <TrendingUp className="h-3 w-3 text-green-600 mt-0.5 flex-shrink-0" />
-                              {factor}
-                            </li>
-                          ))}
+                          {selectedDifferential.forFactors && selectedDifferential.forFactors.length > 0 ? (
+                            selectedDifferential.forFactors.map((factor, index) => (
+                              <li key={index} className="text-xs text-muted-foreground flex items-start gap-1">
+                                <TrendingUp className="h-3 w-3 text-green-600 mt-0.5 flex-shrink-0" />
+                                {factor}
+                              </li>
+                            ))
+                          ) : (
+                            <li className="text-xs text-muted-foreground">No supporting factors provided.</li>
+                          )}
                         </ul>
                       </div>
 
                       <div className="space-y-2">
                         <h5 className="font-medium text-sm text-red-700">Contradicting Evidence</h5>
                         <ul className="space-y-1">
-                          {selectedDifferential.againstFactors.map((factor, index) => (
-                            <li key={index} className="text-xs text-muted-foreground flex items-start gap-1">
-                              <TrendingDown className="h-3 w-3 text-red-600 mt-0.5 flex-shrink-0" />
-                              {factor}
-                            </li>
-                          ))}
+                          {selectedDifferential.againstFactors && selectedDifferential.againstFactors.length > 0 ? (
+                            selectedDifferential.againstFactors.map((factor, index) => (
+                              <li key={index} className="text-xs text-muted-foreground flex items-start gap-1">
+                                <TrendingDown className="h-3 w-3 text-red-600 mt-0.5 flex-shrink-0" />
+                                {factor}
+                              </li>
+                            ))
+                          ) : (
+                            <li className="text-xs text-muted-foreground">No contradicting factors noted.</li>
+                          )}
                         </ul>
                       </div>
                     </div>
@@ -991,7 +1169,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                       <div>
                         <h5 className="font-medium text-sm mb-1">Clinical Reasoning</h5>
                         <p className="text-xs text-muted-foreground bg-muted/50 p-3 rounded">
-                          {selectedDifferential.confidenceFactors}
+                          {selectedDifferential.confidenceFactors || selectedDifferential.reasoning || 'No additional reasoning provided.'}
                         </p>
                       </div>
 
@@ -1002,9 +1180,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                             Recommended Tests to Confirm
                           </h5>
                           <ul className="space-y-1">
-                            {selectedDifferential.testsToConfirm.map((test, index) => (
-                              <li key={index} className="text-xs text-muted-foreground">• {test}</li>
-                            ))}
+                            {selectedDifferential.testsToConfirm && selectedDifferential.testsToConfirm.length > 0 ? (
+                              selectedDifferential.testsToConfirm.map((test, index) => (
+                                <li key={index} className="text-xs text-muted-foreground">• {test}</li>
+                              ))
+                            ) : (
+                              <li className="text-xs text-muted-foreground">No confirmatory tests suggested.</li>
+                            )}
                           </ul>
                         </div>
 
@@ -1014,46 +1196,57 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                             Tests to Rule Out Alternatives
                           </h5>
                           <ul className="space-y-1">
-                            {selectedDifferential.testsToExclude.map((test, index) => (
-                              <li key={index} className="text-xs text-muted-foreground">• {test}</li>
-                            ))}
+                            {selectedDifferential.testsToExclude && selectedDifferential.testsToExclude.length > 0 ? (
+                              selectedDifferential.testsToExclude.map((test, index) => (
+                                <li key={index} className="text-xs text-muted-foreground">• {test}</li>
+                              ))
+                            ) : (
+                              <li className="text-xs text-muted-foreground">No exclusion tests recommended.</li>
+                            )}
                           </ul>
                         </div>
                       </div>
 
-                      <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                        <h5 className="font-medium text-sm text-blue-900 mb-1">Educational Resource</h5>
-                        <p className="text-xs text-blue-800 mb-2">{selectedDifferential.whatItIs}</p>
-                        <a 
-                          href={selectedDifferential.learnMoreUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
-                        >
-                          <ExternalLink className="h-3 w-3" />
-                          Learn more about this condition
-                        </a>
-                      </div>
+                      {(selectedDifferential.whatItIs || selectedDifferential.learnMoreUrl) && (
+                        <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                          <h5 className="font-medium text-sm text-blue-900 mb-1">Educational Resource</h5>
+                          {selectedDifferential.whatItIs && (
+                            <p className="text-xs text-blue-800 mb-2">{selectedDifferential.whatItIs}</p>
+                          )}
+                          {selectedDifferential.learnMoreUrl && (
+                            <a
+                              href={selectedDifferential.learnMoreUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                              Learn more about this condition
+                            </a>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </ScrollArea>
               </div>
             )}
-            
+
             <AlertDialogFooter className="flex-shrink-0">
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   if (selectedDifferential) {
                     // Create ICD-10 code item and add as diagnosis (purple card)
-                    if (selectedDifferential.icdCode && onAddCode) {
+                    const codeValue = selectedDifferential.icdCode || selectedDifferential.diagnosis
+                    if (codeValue && onAddCode) {
                       const icdCodeItem = {
-                        code: selectedDifferential.icdCode,
+                        code: codeValue,
                         type: "ICD-10",
                         category: "diagnoses",
                         description: selectedDifferential.icdDescription || selectedDifferential.diagnosis,
-                        rationale: `Added as diagnosis from differential: ${selectedDifferential.diagnosis}. ${selectedDifferential.reasoning}`,
-                        confidence: selectedDifferential.percentage
+                        rationale: `Added as diagnosis from differential: ${selectedDifferential.diagnosis}. ${selectedDifferential.reasoning || ''}`,
+                        confidence: selectedDifferential.confidence
                       }
                       onAddCode(icdCodeItem)
                     }
