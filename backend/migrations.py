@@ -1,4 +1,6 @@
+import json
 import sqlite3
+from typing import Iterable, Tuple
 
 
 def ensure_settings_table(conn: sqlite3.Connection) -> None:
@@ -488,6 +490,139 @@ def ensure_notification_counters_table(conn: sqlite3.Connection) -> None:
 
     conn.commit()
 
+
+def ensure_compliance_rule_catalog_table(conn: sqlite3.Connection) -> None:
+    """Ensure the compliance rule catalogue table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compliance_rule_catalog (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            category TEXT,
+            priority TEXT,
+            citations TEXT,
+            keywords TEXT
+        )
+        """
+    )
+
+
+def ensure_cpt_reference_table(conn: sqlite3.Connection) -> None:
+    """Ensure reference CPT pricing data table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cpt_reference (
+            code TEXT PRIMARY KEY,
+            description TEXT,
+            base_rvu REAL,
+            base_reimbursement REAL
+        )
+        """
+    )
+
+
+def ensure_payer_schedule_table(conn: sqlite3.Connection) -> None:
+    """Ensure payer-specific reimbursement schedules exist."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payer_schedules (
+            payer_type TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            code TEXT NOT NULL,
+            reimbursement REAL,
+            rvu REAL,
+            PRIMARY KEY (payer_type, location, code)
+        )
+        """
+    )
+
+
+def seed_compliance_rules(
+    conn: sqlite3.Connection,
+    rules: Iterable[dict],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Insert compliance rules into the persistent catalogue."""
+
+    if overwrite:
+        conn.execute("DELETE FROM compliance_rule_catalog")
+
+    for rule in rules:
+        rule_id = rule.get("id")
+        if not rule_id:
+            continue
+        citations = json.dumps(rule.get("references", []))
+        keywords = json.dumps(rule.get("keywords", []))
+        conn.execute(
+            "INSERT OR IGNORE INTO compliance_rule_catalog (id, name, category, priority, citations, keywords) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                rule_id,
+                rule.get("name") or rule_id,
+                rule.get("category"),
+                rule.get("severity"),
+                citations,
+                keywords,
+            ),
+        )
+
+
+def seed_cpt_reference(
+    conn: sqlite3.Connection,
+    data: Iterable[Tuple[str, dict]],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Populate CPT reference data for reimbursement calculations."""
+
+    if overwrite:
+        conn.execute("DELETE FROM cpt_reference")
+
+    for code, info in data:
+        conn.execute(
+            "INSERT OR IGNORE INTO cpt_reference (code, description, base_rvu, base_reimbursement) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                code,
+                info.get("description"),
+                info.get("rvu"),
+                info.get("reimbursement"),
+            ),
+        )
+
+
+def seed_payer_schedules(
+    conn: sqlite3.Connection,
+    schedules: Iterable[dict],
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Insert payer-specific reimbursement schedule rows."""
+
+    if overwrite:
+        conn.execute("DELETE FROM payer_schedules")
+
+    for entry in schedules:
+        payer_type = entry.get("payer_type")
+        code = entry.get("code")
+        if not payer_type or not code:
+            continue
+        location = entry.get("location") or ""
+        conn.execute(
+            "INSERT OR REPLACE INTO payer_schedules (payer_type, location, code, reimbursement, rvu) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                payer_type.lower(),
+                location,
+                entry.get("code"),
+                entry.get("reimbursement"),
+                entry.get("rvu"),
+            ),
+        )
 
 
 def ensure_note_versions_table(conn: sqlite3.Connection) -> None:  # pragma: no cover

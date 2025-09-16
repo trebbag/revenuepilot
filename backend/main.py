@@ -58,6 +58,7 @@ from pydantic import (
     validator,  # legacy import still used elsewhere
     StrictBool,
     field_validator,
+    model_validator,
 )
 import json, sqlite3
 from uuid import uuid4
@@ -123,6 +124,12 @@ from backend.migrations import (  # type: ignore
     ensure_compliance_issues_table,
     ensure_confidence_scores_table,
     ensure_notification_counters_table,
+    ensure_compliance_rule_catalog_table,
+    ensure_cpt_reference_table,
+    ensure_payer_schedule_table,
+    seed_compliance_rules,
+    seed_cpt_reference,
+    seed_payer_schedules,
 )
 from backend.templates import (
     TemplateModel,
@@ -891,6 +898,74 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
 _prune_analytics_if_needed()
 
 
+# Reference data seeding helpers ensure consistent test fixtures and sensible
+# defaults when the application starts with an empty database.
+def _seed_reference_data(conn: sqlite3.Connection) -> None:
+    try:
+        existing_rules = conn.execute(
+            "SELECT COUNT(*) FROM compliance_rule_catalog"
+        ).fetchone()[0]
+    except sqlite3.Error as exc:  # pragma: no cover - defensive
+        logger.warning("Unable to inspect compliance rules table: %s", exc)
+        return
+
+    try:
+        if existing_rules == 0:
+            seed_compliance_rules(conn, compliance_engine.get_rules())
+
+        metadata = load_code_metadata()
+        cpt_metadata = {
+            code: info
+            for code, info in metadata.items()
+            if (info.get("type") or "").upper() == "CPT"
+        }
+
+        existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
+        if existing_cpt == 0:
+            seed_cpt_reference(conn, cpt_metadata.items())
+
+        existing_schedules = conn.execute(
+            "SELECT COUNT(*) FROM payer_schedules"
+        ).fetchone()[0]
+        if existing_schedules == 0:
+            schedules = []
+            for code, info in cpt_metadata.items():
+                reimbursement = info.get("reimbursement")
+                if reimbursement in (None, ""):
+                    continue
+                rvu_value = info.get("rvu")
+                base_amount = float(reimbursement)
+                schedules.append(
+                    {
+                        "payer_type": "commercial",
+                        "location": "",
+                        "code": code,
+                        "reimbursement": base_amount,
+                        "rvu": rvu_value,
+                    }
+                )
+                schedules.append(
+                    {
+                        "payer_type": "medicare",
+                        "location": "",
+                        "code": code,
+                        "reimbursement": round(base_amount * 0.8, 2),
+                        "rvu": rvu_value,
+                    }
+                )
+            seed_payer_schedules(conn, schedules)
+
+        conn.commit()
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to seed reference data: %s", exc)
+
+
+def get_db() -> sqlite3.Connection:
+    """FastAPI dependency returning the primary SQLite connection."""
+
+    return db_conn
+
+
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     conn.execute(
@@ -916,6 +991,10 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_compliance_issues_table(conn)
     ensure_confidence_scores_table(conn)
     ensure_notification_counters_table(conn)
+    ensure_compliance_rule_catalog_table(conn)
+    ensure_cpt_reference_table(conn)
+    ensure_payer_schedule_table(conn)
+    _seed_reference_data(conn)
     conn.commit()
     patients.configure_database(conn)
 
@@ -952,6 +1031,9 @@ ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
 ensure_compliance_issues_table(db_conn)
 ensure_confidence_scores_table(db_conn)
+ensure_compliance_rule_catalog_table(db_conn)
+ensure_cpt_reference_table(db_conn)
+ensure_payer_schedule_table(db_conn)
 
 # User profile details including current view and UI preferences.
 ensure_user_profile_table(db_conn)
@@ -970,6 +1052,8 @@ ensure_session_table(db_conn)
 ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
+
+_seed_reference_data(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -2830,16 +2914,29 @@ class CodesSuggestResponse(BaseModel):
     suggestions: List[CodeSuggestItem]
 
 
+class RuleCitation(BaseModel):
+    title: Optional[str] = None
+    url: Optional[str] = None
+    citation: Optional[str] = None
+
+
+class RuleReference(BaseModel):
+    ruleId: str
+    citations: List[RuleCitation] = Field(default_factory=list)
+
+
 class ComplianceAlert(BaseModel):
     text: str
     category: Optional[str] = None
     priority: Optional[str] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
+    ruleReferences: List[RuleReference] = Field(default_factory=list)
 
 
 class ComplianceCheckResponse(BaseModel):
     alerts: List[ComplianceAlert]
+    ruleReferences: List[RuleReference] = Field(default_factory=list)
 
 
 class ComplianceMonitorIssue(BaseModel):
@@ -5925,7 +6022,148 @@ async def ws_codes_suggest(websocket: WebSocket):
     await websocket.close()
 
 
-async def _compliance_check(req: ComplianceCheckRequest) -> ComplianceCheckResponse:
+def _load_compliance_rule_index(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    try:
+        rows = conn.execute(
+            "SELECT id, name, category, priority, citations, keywords FROM compliance_rule_catalog"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+
+    catalogue: List[Dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        citations_raw = record.get("citations")
+        citations: List[Any]
+        if citations_raw:
+            try:
+                parsed = json.loads(citations_raw)
+            except Exception:
+                parsed = citations_raw
+            if isinstance(parsed, list):
+                citations = list(parsed)
+            elif isinstance(parsed, dict):
+                citations = [parsed]
+            else:
+                citations = [parsed]
+        else:
+            citations = []
+
+        keywords_raw = record.get("keywords")
+        keywords: List[str] = []
+        if keywords_raw:
+            try:
+                parsed_kw = json.loads(keywords_raw)
+            except Exception:
+                parsed_kw = keywords_raw
+            if isinstance(parsed_kw, str):
+                items = [parsed_kw]
+            else:
+                items = list(parsed_kw)
+            for item in items:
+                if not item:
+                    continue
+                keywords.append(str(item).lower())
+
+        catalogue.append(
+            {
+                "id": record.get("id"),
+                "name": record.get("name"),
+                "category": record.get("category"),
+                "priority": record.get("priority"),
+                "citations": citations,
+                "keywords": keywords,
+            }
+        )
+    return catalogue
+
+
+def _match_rule_references(
+    alert: ComplianceAlert, rule_index: List[Dict[str, Any]]
+) -> List[RuleReference]:
+    if not rule_index:
+        return []
+
+    haystack_parts = [alert.text or "", alert.reasoning or "", alert.category or "", alert.priority or ""]
+    haystack = " ".join(part for part in haystack_parts if part).lower()
+
+    matches: List[RuleReference] = []
+    seen: Set[str] = set()
+    for record in rule_index:
+        rule_id = record.get("id")
+        if not rule_id or rule_id in seen:
+            continue
+        keywords = record.get("keywords") or []
+        matched = False
+        for keyword in keywords:
+            if keyword and keyword in haystack:
+                matched = True
+                break
+        if not matched and record.get("name"):
+            name = str(record["name"]).lower()
+            if name and name in haystack:
+                matched = True
+        if not matched and alert.category and record.get("category"):
+            if alert.category.lower() == str(record["category"]).lower():
+                matched = True
+        if not matched:
+            continue
+        seen.add(rule_id)
+        citations: List[RuleCitation] = []
+        for citation in record.get("citations", []):
+            if isinstance(citation, dict):
+                citations.append(
+                    RuleCitation(
+                        title=citation.get("title"),
+                        url=citation.get("url"),
+                        citation=citation.get("citation"),
+                    )
+                )
+            elif citation:
+                citations.append(RuleCitation(title=str(citation)))
+        matches.append(RuleReference(ruleId=str(rule_id), citations=citations))
+    return matches
+
+
+def _build_compliance_response(
+    alerts: List[ComplianceAlert], conn: sqlite3.Connection
+) -> ComplianceCheckResponse:
+    if not alerts:
+        return ComplianceCheckResponse(alerts=[], ruleReferences=[])
+
+    rule_index = _load_compliance_rule_index(conn)
+    aggregated: Dict[str, RuleReference] = {}
+    enriched_alerts: List[ComplianceAlert] = []
+
+    for alert in alerts:
+        references = _match_rule_references(alert, rule_index)
+        alert_payload = alert.model_dump()
+        alert_payload["ruleReferences"] = references
+        enriched_alerts.append(ComplianceAlert(**alert_payload))
+        for reference in references:
+            existing = aggregated.get(reference.ruleId)
+            if existing is None:
+                aggregated[reference.ruleId] = RuleReference(
+                    ruleId=reference.ruleId,
+                    citations=list(reference.citations),
+                )
+                continue
+            existing_keys = {
+                (item.title, item.url, item.citation) for item in existing.citations
+            }
+            for citation in reference.citations:
+                key = (citation.title, citation.url, citation.citation)
+                if key not in existing_keys:
+                    existing.citations.append(citation)
+
+    aggregated_list = sorted(aggregated.values(), key=lambda ref: ref.ruleId)
+    return ComplianceCheckResponse(alerts=enriched_alerts, ruleReferences=aggregated_list)
+
+
+async def _compliance_check(
+    req: ComplianceCheckRequest, db: sqlite3.Connection | None = None
+) -> ComplianceCheckResponse:
+    conn = db or db_conn
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
     if offline:
@@ -5940,7 +6178,7 @@ async def _compliance_check(req: ComplianceCheckRequest) -> ComplianceCheckRespo
             )
             for item in data.get("compliance", [])
         ]
-        return ComplianceCheckResponse(alerts=alerts)
+        return _build_compliance_response(alerts, conn)
     try:
         codes = json.dumps(req.codes or [])
         messages = [
@@ -5958,17 +6196,19 @@ async def _compliance_check(req: ComplianceCheckRequest) -> ComplianceCheckRespo
         resp = call_openai(messages)
         data = json.loads(resp)
         alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
-        return ComplianceCheckResponse(alerts=alerts)
+        return _build_compliance_response(alerts, conn)
     except Exception as exc:
         logging.error("compliance check failed: %s", exc)
-        return ComplianceCheckResponse(alerts=[])
+        return ComplianceCheckResponse(alerts=[], ruleReferences=[])
 
 
 @app.post("/api/ai/compliance/check", response_model=ComplianceCheckResponse)
 async def compliance_check(
-    req: ComplianceCheckRequest, user=Depends(require_role("user"))
+    req: ComplianceCheckRequest,
+    user=Depends(require_role("user")),
+    conn: sqlite3.Connection = Depends(get_db),
 ) -> ComplianceCheckResponse:
-    return await _compliance_check(req)
+    return await _compliance_check(req, conn)
 
 
 @app.websocket("/ws/api/ai/compliance/check")
@@ -5976,7 +6216,7 @@ async def ws_compliance_check(websocket: WebSocket):
     await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
-    resp = await _compliance_check(ComplianceCheckRequest(**data))
+    resp = await _compliance_check(ComplianceCheckRequest(**data), db_conn)
     await websocket.send_json(resp.model_dump())
     await websocket.close()
 
@@ -6514,10 +6754,38 @@ async def manage_visit_state(
 class CombinationRequest(BaseModel):
     cpt: List[str] = Field(default_factory=list)
     icd10: List[str] = Field(default_factory=list)
+    codes: List[str] = Field(default_factory=list)
     age: Optional[int] = Field(default=None, ge=0, le=130)
     gender: Optional[str] = None
     encounterType: Optional[str] = None
     providerSpecialty: Optional[str] = None
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_codes(cls, values: Dict[str, Any]) -> Dict[str, Any]:  # noqa: D401
+        if not isinstance(values, dict):
+            return values
+        codes = values.get("codes") or []
+        if codes:
+            cpt = [code.strip().upper() for code in values.get("cpt", []) if code]
+            icd10 = [code.strip().upper() for code in values.get("icd10", []) if code]
+            for raw in codes:
+                if not isinstance(raw, str):
+                    continue
+                normalized = raw.strip().upper()
+                if not normalized:
+                    continue
+                if normalized[0].isdigit():
+                    if normalized not in cpt:
+                        cpt.append(normalized)
+                else:
+                    if normalized not in icd10:
+                        icd10.append(normalized)
+            values["cpt"] = cpt
+            values["icd10"] = icd10
+        return values
 
 
 @app.get("/api/codes/categorization/rules")
@@ -6611,17 +6879,37 @@ async def validate_code_combination(
 
 class BillingRequest(BaseModel):
     cpt: List[str]
+    codes: List[str] = Field(default_factory=list)
     payerType: str = "commercial"
     location: Optional[str] = None
+
+    model_config = {"populate_by_name": True, "extra": "allow"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_cpt(cls, values: Dict[str, Any]) -> Dict[str, Any]:  # noqa: D401
+        if not isinstance(values, dict):
+            return values
+        codes = values.get("codes")
+        if codes and not values.get("cpt"):
+            values["cpt"] = [code for code in codes if isinstance(code, str)]
+        return values
 
 
 @app.post("/api/billing/calculate")
 async def billing_calculate(
-    req: BillingRequest, user=Depends(require_role("user"))
+    req: BillingRequest,
+    user=Depends(require_role("user")),
+    conn: sqlite3.Connection = Depends(get_db),
 ):
     """Return estimated reimbursement for CPT codes."""
     cpt_codes = [c.upper() for c in req.cpt]
-    return code_tables.calculate_billing(cpt_codes, req.payerType, req.location)
+    return code_tables.calculate_billing(
+        cpt_codes,
+        req.payerType,
+        req.location,
+        session=conn,
+    )
 
 
 @app.get("/api/codes/documentation/{code}")
@@ -7592,29 +7880,21 @@ async def code_details_batch(
 
 @app.post("/api/billing/calculate")
 async def billing_calculate(
-    req: BillingRequest, user=Depends(require_role("user"))
+    req: BillingRequest,
+    user=Depends(require_role("user")),
+    conn: sqlite3.Connection = Depends(get_db),
 ) -> Dict[str, Any]:
     """Calculate total reimbursement and RVUs for provided codes."""
 
-    metadata = load_code_metadata()
     codes_upper = [code.upper() for code in req.codes]
-    cpt_codes = [code for code in codes_upper if code and code[0].isdigit()]
     payer_type = req.payerType or "commercial"
 
-    billing = code_tables.calculate_billing(cpt_codes, payer_type, req.location)
-
-    total_rvu = 0.0
-    breakdown = billing.get("breakdown", {})
-    for code in cpt_codes:
-        info = metadata.get(code, {})
-        rvu = float(info.get("rvu", 0.0) or 0.0)
-        total_rvu += rvu
-        entry = breakdown.setdefault(code, {"amount": 0.0, "amountFormatted": None})
-        entry["rvu"] = round(rvu, 2)
-
-    billing["totalRvu"] = round(total_rvu, 2)
-    billing["breakdown"] = breakdown
-    return billing
+    return code_tables.calculate_billing(
+        codes_upper,
+        payer_type,
+        req.location,
+        session=conn,
+    )
 
 
 @app.post("/api/codes/validate/combination")
