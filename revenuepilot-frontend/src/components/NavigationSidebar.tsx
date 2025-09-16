@@ -1,4 +1,4 @@
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from "motion/react"
 import { 
   Stethoscope,
@@ -19,7 +19,50 @@ import { Separator } from "./ui/separator"
 import { Avatar, AvatarFallback } from "./ui/avatar"
 import { getPrimaryNavItems, secondaryNavItems, bottomNavItems } from "./navigation/NavigationConfig"
 import { NotificationsPanel } from "./navigation/NotificationsPanel"
-import { mockNotifications, Notification } from "./navigation/NotificationUtils"
+import { Notification } from "./navigation/NotificationUtils"
+
+interface UIPreferences {
+  sidebarCollapsed?: boolean
+  [key: string]: unknown
+}
+
+interface CurrentViewResponse {
+  currentView: string | null
+}
+
+interface NotificationCountResponse {
+  count: number
+}
+
+interface UserProfileResponse {
+  currentView: string | null
+  clinic?: string | null
+  preferences: Record<string, unknown>
+  uiPreferences: UIPreferences
+}
+
+interface UiPreferencesResponse {
+  uiPreferences: UIPreferences
+}
+
+const NOTIFICATION_ERROR_ID = "notifications-error"
+
+async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    credentials: "include",
+    ...options,
+    headers: {
+      Accept: "application/json",
+      ...(options?.headers ?? {})
+    }
+  })
+
+  if (!response.ok) {
+    throw new Error(`Request to ${url} failed with status ${response.status}`)
+  }
+
+  return response.json() as Promise<T>
+}
 
 interface CurrentUser {
   id: string
@@ -244,47 +287,493 @@ function NavSection({ title, items, isCollapsed, currentView, onNavigate, onNoti
 }
 
 function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDraftCount = 0 }: NavigationSidebarProps) {
-  const { state } = useSidebar()
+  const { state, setOpen } = useSidebar()
   const isCollapsed = state === "collapsed"
-  
-  // Notifications state
-  const [notifications, setNotifications] = useState<Notification[]>(mockNotifications)
+
+  const [notifications, setNotifications] = useState<Notification[]>([])
+  const [notificationCount, setNotificationCount] = useState(0)
+  const [notificationsLoading, setNotificationsLoading] = useState(true)
+  const [notificationsError, setNotificationsError] = useState<string | null>(null)
   const [showNotifications, setShowNotifications] = useState(false)
   const notificationButtonRef = useRef<HTMLDivElement>(null)
 
-  const primaryNavItems = getPrimaryNavItems(userDraftCount)
-  
-  // Update notifications badge count with unread notifications
-  const unreadCount = notifications.filter(n => !n.isRead).length
-  const bottomNavItemsWithCount = bottomNavItems.map(item => 
-    item.key === 'notifications' 
-      ? { ...item, badge: unreadCount > 0 ? unreadCount.toString() : null }
-      : item
-  )
+  const [profile, setProfile] = useState<UserProfileResponse | null>(null)
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [serverCurrentView, setServerCurrentView] = useState<string | null>(null)
 
-  const handleNotificationClick = () => {
-    setShowNotifications(!showNotifications)
-  }
+  const [uiPreferences, setUiPreferences] = useState<UIPreferences>({})
+  const [uiPreferencesError, setUiPreferencesError] = useState<string | null>(null)
 
-  const handleMarkAsRead = (id: string) => {
-    setNotifications(prev => 
-      prev.map(notification => 
-        notification.id === id 
-          ? { ...notification, isRead: true }
-          : notification
-      )
-    )
-  }
+  const uiPreferencesRef = useRef<UIPreferences>({})
+  const lastPersistedPrefsRef = useRef<UIPreferences>({})
+  const isApplyingInitialPreferencesRef = useRef(true)
+  const hasLoadedUiPreferencesRef = useRef(false)
 
-  const handleMarkAllAsRead = () => {
-    setNotifications(prev => 
-      prev.map(notification => ({ ...notification, isRead: true }))
-    )
-  }
+  useEffect(() => {
+    uiPreferencesRef.current = uiPreferences
+  }, [uiPreferences])
 
-  const handleCloseNotifications = () => {
+  useEffect(() => {
+    let active = true
+
+    const loadSidebarData = async () => {
+      try {
+        setNotificationsLoading(true)
+        setProfileLoading(true)
+
+        const [viewResult, countResult, profileResult, prefsResult] = await Promise.allSettled([
+          fetchJson<CurrentViewResponse>("/api/user/current-view"),
+          fetchJson<NotificationCountResponse>("/api/notifications/count"),
+          fetchJson<UserProfileResponse>("/api/user/profile"),
+          fetchJson<UiPreferencesResponse>("/api/user/ui-preferences")
+        ])
+
+        if (!active) {
+          return
+        }
+
+        let profileMessage: string | null = null
+
+        if (viewResult.status === "fulfilled") {
+          setServerCurrentView(viewResult.value.currentView ?? null)
+        } else if (viewResult.status === "rejected") {
+          profileMessage = "Unable to load current view."
+          console.error(viewResult.reason)
+        }
+
+        if (profileResult.status === "fulfilled") {
+          setProfile(profileResult.value)
+          if (profileResult.value.currentView) {
+            setServerCurrentView(profileResult.value.currentView)
+          }
+        } else if (profileResult.status === "rejected") {
+          profileMessage = profileMessage ?? "Unable to load user profile."
+          console.error(profileResult.reason)
+        }
+
+        if (prefsResult.status === "fulfilled") {
+          const prefs = prefsResult.value.uiPreferences ?? {}
+          setUiPreferences(prefs)
+          uiPreferencesRef.current = prefs
+          lastPersistedPrefsRef.current = prefs
+        } else if (prefsResult.status === "rejected") {
+          profileMessage = profileMessage ?? "Unable to load UI preferences."
+          console.error(prefsResult.reason)
+        }
+
+        setProfileError(profileMessage)
+
+        if (countResult.status === "fulfilled") {
+          setNotificationCount(countResult.value.count ?? 0)
+          setNotificationsError(null)
+        } else {
+          setNotificationsError("Unable to load notifications.")
+          if (countResult.status === "rejected") {
+            console.error(countResult.reason)
+          }
+        }
+      } catch (error) {
+        if (!active) {
+          return
+        }
+        const message = error instanceof Error ? error.message : "Failed to load sidebar data."
+        setProfileError(message)
+        setNotificationsError(prev => prev ?? message)
+      } finally {
+        if (active) {
+          setProfileLoading(false)
+          setNotificationsLoading(false)
+          hasLoadedUiPreferencesRef.current = true
+        }
+      }
+    }
+
+    loadSidebarData()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hasLoadedUiPreferencesRef.current || !isApplyingInitialPreferencesRef.current) {
+      return
+    }
+
+    const collapsedPreference = uiPreferences.sidebarCollapsed
+    if (typeof collapsedPreference === "boolean") {
+      setOpen(!collapsedPreference)
+    }
+
+    isApplyingInitialPreferencesRef.current = false
+  }, [uiPreferences, setOpen])
+
+  const persistUiPreferences = useCallback(async (prefs: UIPreferences) => {
+    try {
+      setUiPreferencesError(null)
+      const response = await fetchJson<UiPreferencesResponse>("/api/user/ui-preferences", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ uiPreferences: prefs })
+      })
+      lastPersistedPrefsRef.current = response.uiPreferences ?? prefs
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save UI preferences."
+      setUiPreferencesError(message)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!hasLoadedUiPreferencesRef.current || isApplyingInitialPreferencesRef.current) {
+      return
+    }
+
+    const collapsed = state === "collapsed"
+    const currentPrefs = uiPreferencesRef.current
+    if (currentPrefs.sidebarCollapsed === collapsed) {
+      return
+    }
+
+    const nextPrefs: UIPreferences = { ...currentPrefs, sidebarCollapsed: collapsed }
+    uiPreferencesRef.current = nextPrefs
+    setUiPreferences(nextPrefs)
+
+    const lastPersisted = lastPersistedPrefsRef.current
+    const hasChanged = JSON.stringify(lastPersisted) !== JSON.stringify(nextPrefs)
+    if (hasChanged) {
+      persistUiPreferences(nextPrefs)
+    }
+  }, [state, persistUiPreferences])
+
+  useEffect(() => {
+    setNotifications(prev => {
+      if (!notificationsError) {
+        return prev.filter(notification => notification.id !== NOTIFICATION_ERROR_ID)
+      }
+
+      const errorNotification: Notification = {
+        id: NOTIFICATION_ERROR_ID,
+        title: "Notifications unavailable",
+        message: notificationsError,
+        type: "error",
+        timestamp: new Date().toISOString(),
+        isRead: false,
+        priority: "high"
+      }
+
+      const others = prev.filter(notification => notification.id !== NOTIFICATION_ERROR_ID)
+      return [errorNotification, ...others]
+    })
+  }, [notificationsError])
+
+  useEffect(() => {
+    if (currentView !== undefined) {
+      setServerCurrentView(currentView)
+    }
+  }, [currentView])
+
+  const normaliseNotificationPayload = useCallback((payload: Record<string, any>): Notification => {
+    const severity = typeof payload.severity === "string" ? payload.severity.toLowerCase() : undefined
+    const explicitType = typeof payload.type === "string" ? payload.type.toLowerCase() : undefined
+
+    let notificationType: Notification['type'] = 'info'
+    if (explicitType === 'error' || severity === 'critical') {
+      notificationType = 'error'
+    } else if (explicitType === 'warning' || severity === 'warning' || severity === 'high') {
+      notificationType = 'warning'
+    } else if (explicitType === 'success' || severity === 'success') {
+      notificationType = 'success'
+    }
+
+    let priority: Notification['priority'] = 'medium'
+    if (severity === 'critical' || severity === 'high') {
+      priority = 'high'
+    } else if (severity === 'low') {
+      priority = 'low'
+    }
+
+    const timestamp = typeof payload.timestamp === "string" ? payload.timestamp : new Date().toISOString()
+    const title = typeof payload.title === "string" ? payload.title : "Notification"
+
+    const descriptionCandidate =
+      typeof payload.message === "string"
+        ? payload.message
+        : typeof payload.description === "string"
+          ? payload.description
+          : typeof payload.detail === "string"
+            ? payload.detail
+            : undefined
+
+    const message =
+      descriptionCandidate ??
+      (notificationType === 'error'
+        ? 'An issue requires your attention.'
+        : notificationType === 'warning'
+          ? 'A new warning has been received.'
+          : 'You have a new notification.')
+
+    const idSource =
+      payload.eventId ??
+      payload.id ??
+      payload.notificationId ??
+      Math.random().toString(36).slice(2)
+
+    return {
+      id: String(idSource),
+      title,
+      message,
+      type: notificationType,
+      timestamp,
+      isRead: false,
+      priority
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+
+    let ws: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let pollTimer: number | null = null
+    let closed = false
+
+    const fetchCount = async () => {
+      try {
+        const data = await fetchJson<NotificationCountResponse>("/api/notifications/count")
+        if (closed) {
+          return
+        }
+        setNotificationCount(data.count ?? 0)
+        setNotificationsError(null)
+      } catch (error) {
+        if (closed) {
+          return
+        }
+        setNotificationsError(prev => prev ?? "Unable to refresh notifications.")
+      } finally {
+        if (!closed) {
+          setNotificationsLoading(false)
+        }
+      }
+    }
+
+    const startPolling = () => {
+      if (pollTimer !== null) {
+        return
+      }
+      fetchCount()
+      pollTimer = window.setInterval(fetchCount, 30000)
+    }
+
+    const stopPolling = () => {
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer)
+        pollTimer = null
+      }
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const parsed = JSON.parse(event.data)
+        if (typeof parsed.unreadCount === 'number') {
+          setNotificationCount(parsed.unreadCount)
+        } else if (typeof parsed.count === 'number') {
+          setNotificationCount(parsed.count)
+        }
+
+        if (parsed.event === 'notification' || parsed.channel === 'notifications') {
+          const notification = normaliseNotificationPayload(parsed)
+          setNotifications(prev => {
+            const withoutError = prev.filter(item => item.id !== NOTIFICATION_ERROR_ID)
+            const existingIndex = withoutError.findIndex(item => item.id === notification.id)
+            if (existingIndex !== -1) {
+              const clone = [...withoutError]
+              clone[existingIndex] = notification
+              return clone
+            }
+            return [notification, ...withoutError]
+          })
+        }
+
+        setNotificationsError(null)
+        setNotificationsLoading(false)
+      } catch (error) {
+        console.error("Failed to parse notification payload", error)
+      }
+    }
+
+    const connect = () => {
+      if (!("WebSocket" in window)) {
+        startPolling()
+        return
+      }
+
+      try {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws"
+        const url = `${protocol}://${window.location.host}/ws/notifications`
+        ws = new WebSocket(url)
+      } catch (error) {
+        setNotificationsError(prev => prev ?? "Unable to connect to notifications channel.")
+        startPolling()
+        return
+      }
+
+      if (!ws) {
+        startPolling()
+        return
+      }
+
+      ws.onopen = () => {
+        setNotificationsLoading(false)
+        setNotificationsError(null)
+        stopPolling()
+      }
+
+      ws.onmessage = handleMessage
+
+      ws.onerror = () => {
+        setNotificationsError(prev => prev ?? "Notifications connection error.")
+      }
+
+      ws.onclose = () => {
+        if (closed) {
+          return
+        }
+        setNotificationsLoading(false)
+        setNotificationsError(prev => prev ?? "Notifications connection lost. Retrying…")
+        startPolling()
+        reconnectTimer = window.setTimeout(connect, 5000)
+      }
+    }
+
+    connect()
+
+    return () => {
+      closed = true
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer)
+      }
+      if (pollTimer !== null) {
+        window.clearInterval(pollTimer)
+      }
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close()
+      }
+    }
+  }, [normaliseNotificationPayload])
+
+  const resolvedCurrentUser = useMemo<CurrentUser | undefined>(() => {
+    if (currentUser) {
+      return currentUser
+    }
+    if (!profile) {
+      return undefined
+    }
+
+    const prefs = (profile.preferences ?? {}) as Record<string, unknown>
+    const readString = (key: string) => {
+      const value = prefs[key]
+      return typeof value === "string" ? value : undefined
+    }
+
+    const name = readString("name") ?? readString("displayName")
+    if (!name) {
+      return undefined
+    }
+
+    const fullName = readString("fullName") ?? name
+    const id = readString("id") ?? "current-user"
+    const roleCandidate = readString("role")
+    const role: 'admin' | 'user' = roleCandidate === 'admin' || roleCandidate === 'user' ? roleCandidate : 'user'
+    const specialty = readString("specialty") ?? ""
+
+    return {
+      id,
+      name,
+      fullName,
+      role,
+      specialty
+    }
+  }, [currentUser, profile])
+
+  const resolvedCurrentView = currentView ?? serverCurrentView ?? undefined
+
+  const primaryNavItems = useMemo(() => getPrimaryNavItems(userDraftCount), [userDraftCount])
+
+  const bottomNavItemsWithCount = useMemo(() => {
+    const unreadFromList = notifications.reduce((acc, notification) => {
+      if (notification.id === NOTIFICATION_ERROR_ID) {
+        return acc
+      }
+      return !notification.isRead ? acc + 1 : acc
+    }, 0)
+
+    const resolvedCount = Math.max(notificationCount, unreadFromList)
+    const badge = notificationsLoading ? "…" : notificationsError ? "!" : resolvedCount > 0 ? resolvedCount.toString() : null
+
+    return bottomNavItems.map(item => {
+      if (item.key !== 'notifications') {
+        return item
+      }
+
+      const description = notificationsError ?? (notificationsLoading ? 'Loading notifications...' : item.description)
+
+      return {
+        ...item,
+        badge,
+        description
+      }
+    })
+  }, [notifications, notificationCount, notificationsLoading, notificationsError])
+
+  const handleNavigateInternal = useCallback((view: string) => {
+    setServerCurrentView(view)
+    onNavigate?.(view)
+  }, [onNavigate])
+
+  const handleNotificationClick = useCallback(() => {
+    setShowNotifications(prev => !prev)
+  }, [])
+
+  const handleMarkAsRead = useCallback((id: string) => {
+    setNotifications(prev => {
+      let shouldDecrement = false
+      const updated = prev.map(notification => {
+        if (notification.id === id) {
+          if (!notification.isRead && id !== NOTIFICATION_ERROR_ID) {
+            shouldDecrement = true
+          }
+          return { ...notification, isRead: true }
+        }
+        return notification
+      })
+
+      if (shouldDecrement) {
+        setNotificationCount(count => Math.max(0, count - 1))
+      }
+
+      return updated
+    })
+  }, [])
+
+  const handleMarkAllAsRead = useCallback(() => {
+    setNotifications(prev => {
+      const hasUnread = prev.some(notification => notification.id !== NOTIFICATION_ERROR_ID && !notification.isRead)
+      if (hasUnread) {
+        setNotificationCount(0)
+      }
+      return prev.map(notification => ({ ...notification, isRead: true }))
+    })
+  }, [])
+
+  const handleCloseNotifications = useCallback(() => {
     setShowNotifications(false)
-  }
+  }, [])
 
   return (
     <>
@@ -299,19 +788,30 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
           <div className="w-9 h-9 bg-sidebar-primary rounded-xl flex items-center justify-center shadow-sm">
             <Stethoscope className="w-4 h-4 text-sidebar-primary-foreground" />
           </div>
-          
+
           <AnimatePresence>
             {!isCollapsed && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, x: -10 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -10 }}
                 transition={{ delay: 0.1 }}
               >
                 <h2 className="font-semibold text-sidebar-foreground">RevenuePilot</h2>
-                <p className="text-xs text-sidebar-foreground/60">
-                  {currentUser ? `Welcome, ${currentUser.name}` : 'Clinical AI Assistant'}
+                <p className={`text-xs ${profileError ? 'text-red-500' : 'text-sidebar-foreground/60'}`}>
+                  {profileError
+                    ? profileError
+                    : profileLoading
+                      ? 'Loading your workspace...'
+                      : resolvedCurrentUser
+                        ? `Welcome, ${resolvedCurrentUser.name}`
+                        : 'Clinical AI Assistant'}
                 </p>
+                {uiPreferencesError && (
+                  <p className="text-[11px] text-red-500/90 mt-1">
+                    {uiPreferencesError}
+                  </p>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -321,11 +821,11 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu className="space-y-0">
-              <NavSection 
-                items={primaryNavItems} 
+              <NavSection
+                items={primaryNavItems}
                 isCollapsed={isCollapsed}
-                currentView={currentView}
-                onNavigate={onNavigate}
+                currentView={resolvedCurrentView}
+                onNavigate={handleNavigateInternal}
               />
             </SidebarMenu>
           </SidebarGroupContent>
@@ -346,19 +846,19 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu className="space-y-0">
-              <NavSection 
+              <NavSection
                 title="Tools & Resources"
-                items={secondaryNavItems} 
+                items={secondaryNavItems}
                 isCollapsed={isCollapsed}
-                currentView={currentView}
-                onNavigate={onNavigate}
+                currentView={resolvedCurrentView}
+                onNavigate={handleNavigateInternal}
               />
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
 
         {/* Bottom Navigation */}
-        <motion.div 
+        <motion.div
           className={`mt-auto pt-4 ${!isCollapsed ? 'border-t border-sidebar-border/60' : ''}`}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -367,11 +867,11 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-0">
-                <NavSection 
-                  items={bottomNavItemsWithCount} 
+                <NavSection
+                  items={bottomNavItemsWithCount}
                   isCollapsed={isCollapsed}
-                  currentView={currentView}
-                  onNavigate={onNavigate}
+                  currentView={resolvedCurrentView}
+                  onNavigate={handleNavigateInternal}
                   onNotificationClick={handleNotificationClick}
                   notificationButtonRef={notificationButtonRef}
                 />
@@ -380,7 +880,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
           </SidebarGroup>
         </motion.div>
       </SidebarContent>
-      
+
       {/* Notifications Panel */}
       <NotificationsPanel
         isOpen={showNotifications}
