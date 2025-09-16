@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView } from "./BeautifiedView"
+import { FinalizationWizard } from "./FinalizationWizard"
 
 interface ComplianceIssue {
   id: string
@@ -64,6 +65,7 @@ export function NoteEditor({
   const [pausedTime, setPausedTime] = useState(0)
   const [transcriptionIndex, setTranscriptionIndex] = useState(0)
   const [showFullTranscript, setShowFullTranscript] = useState(false)
+  const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
 
   // Mock compliance issues data
   const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([
@@ -177,8 +179,7 @@ export function NoteEditor({
   }
 
   const handleFinalize = () => {
-    console.log("Finalize action - Finalization wizard will be available separately")
-    // TODO: Connect to separate finalization component when needed
+    setShowFinalizationWizard(true)
   }
 
   const handleSaveDraft = () => {
@@ -507,6 +508,21 @@ export function NoteEditor({
         </DialogContent>
       </Dialog>
 
+
+      {showFinalizationWizard && (
+        <FinalizationWizard
+          isOpen={showFinalizationWizard}
+          onClose={() => setShowFinalizationWizard(false)}
+          selectedCodes={selectedCodes}
+          selectedCodesList={selectedCodesList}
+          complianceIssues={complianceIssues}
+          noteContent={noteContent}
+          patientInfo={{
+            patientId,
+            encounterId
+          }}
+        />
+      )}
 
     </div>
   )
