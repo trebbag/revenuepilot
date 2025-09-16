@@ -133,12 +133,14 @@ interface NoteEditorProps {
     differentials: number
   }
   selectedCodesList?: any[]
+  onNoteContentChange?: (content: string) => void
 }
 
 export function NoteEditor({
   prePopulatedPatient,
   selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 },
-  selectedCodesList = []
+  selectedCodesList = [],
+  onNoteContentChange
 }: NoteEditorProps) {
   const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(prePopulatedPatient?.patientId || "")
@@ -1251,12 +1253,17 @@ export function NoteEditor({
       
       {/* Rich Text Editor */}
       <div className="flex-1">
-        <RichTextEditor 
+        <RichTextEditor
           disabled={isEditorDisabled}
           complianceIssues={complianceIssues}
           onDismissIssue={handleDismissIssue}
           onRestoreIssue={handleRestoreIssue}
-          onContentChange={setNoteContent}
+          onContentChange={(content) => {
+            setNoteContent(content)
+            if (onNoteContentChange) {
+              onNoteContentChange(content)
+            }
+          }}
         />
       </div>
 

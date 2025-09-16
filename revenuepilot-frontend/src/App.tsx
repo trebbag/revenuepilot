@@ -203,6 +203,7 @@ export default function App() {
       confidence: 85
     }
   ])
+  const [noteContent, setNoteContent] = useState("")
 
   const handleAddCode = (code: any) => {
     // Add to the addedCodes array for filtering suggestions
@@ -860,10 +861,11 @@ export default function App() {
             <ResizablePanelGroup direction="horizontal" className="flex-1">
               <ResizablePanel defaultSize={70} minSize={50}>
                 <div className="flex flex-col h-full">
-                  <NoteEditor 
+                  <NoteEditor
                     prePopulatedPatient={prePopulatedPatient}
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
+                    onNoteContentChange={setNoteContent}
                   />
                   <SelectedCodesBar 
                     selectedCodes={selectedCodes}
@@ -879,12 +881,14 @@ export default function App() {
                 <>
                   <ResizableHandle />
                   <ResizablePanel defaultSize={30} minSize={25} maxSize={40}>
-                    <SuggestionPanel 
-                      onClose={() => setIsSuggestionPanelOpen(false)} 
+                    <SuggestionPanel
+                      onClose={() => setIsSuggestionPanelOpen(false)}
                       selectedCodes={selectedCodes}
                       onUpdateCodes={setSelectedCodes}
                       onAddCode={handleAddCode}
                       addedCodes={addedCodes}
+                      noteContent={noteContent}
+                      selectedCodesList={selectedCodesList}
                     />
                   </ResizablePanel>
                 </>
