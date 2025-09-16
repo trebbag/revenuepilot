@@ -8,10 +8,11 @@ import { Alert, AlertDescription } from "./ui/alert"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
 import { Separator } from "./ui/separator"
-import { 
-  FileText, 
-  Code2, 
-  Heart, 
+import { defaultFinalizationSteps, type FinalizationStepConfig } from "./finalizationSteps"
+import {
+  FileText,
+  Code2,
+  Heart,
   Activity, 
   Stethoscope, 
   Shield, 
@@ -43,18 +44,12 @@ interface FinalizationWizardProps {
     patientId: string
     encounterId: string
   }
+  steps?: FinalizationStepConfig[]
 }
 
-interface WizardStep {
-  id: string
-  title: string
-  description: string
-  icon: React.ComponentType<{ className?: string }>
-  color: string
-  bgColor: string
+interface WizardStep extends FinalizationStepConfig {
   completed: boolean
   hasIssues: boolean
-  required: boolean
 }
 
 export function FinalizationWizard({ 
@@ -64,86 +59,55 @@ export function FinalizationWizard({
   selectedCodesList = [], 
   complianceIssues = [],
   noteContent = "",
-  patientInfo
+  patientInfo,
+  steps: customSteps
 }: FinalizationWizardProps) {
+  const stepConfigs = customSteps ?? defaultFinalizationSteps
+  const stepsCount = stepConfigs.length
+
   const [currentStep, setCurrentStep] = useState(0)
-  const [completedSteps, setCompletedSteps] = useState<boolean[]>([false, false, false, false, false, false])
+  const [completedSteps, setCompletedSteps] = useState<boolean[]>(() =>
+    Array.from({ length: stepsCount }, () => false)
+  )
   const [stepValidation, setStepValidation] = useState<{[key: number]: { valid: boolean, issues: string[] }}>({})
   const [isFinalizationComplete, setIsFinalizationComplete] = useState(false)
   const [estimatedReimbursement, setEstimatedReimbursement] = useState(0)
 
-  const steps: WizardStep[] = [
-    {
-      id: "content-review",
-      title: "Content Review",
-      description: "Review and verify note documentation completeness",
-      icon: FileText,
-      color: "text-blue-600",
-      bgColor: "bg-blue-50",
-      completed: completedSteps[0] || false,
-      hasIssues: false,
-      required: true
-    },
-    {
-      id: "code-verification", 
-      title: "Code Verification",
-      description: "Validate selected CPT and procedure codes",
-      icon: Code2,
-      color: "text-blue-600",
-      bgColor: "bg-blue-50",
-      completed: completedSteps[1] || false,
-      hasIssues: false,
-      required: true
-    },
-    {
-      id: "prevention-items",
-      title: "Prevention Items",
-      description: "Review preventive care recommendations",
-      icon: Heart,
-      color: "text-red-600", 
-      bgColor: "bg-red-50",
-      completed: completedSteps[2] || false,
-      hasIssues: false,
-      required: false
-    },
-    {
-      id: "diagnoses-confirmation",
-      title: "Diagnoses Confirmation", 
-      description: "Confirm primary and secondary diagnoses",
-      icon: Activity,
-      color: "text-purple-600",
-      bgColor: "bg-purple-50",
-      completed: completedSteps[3] || false,
-      hasIssues: false,
-      required: true
-    },
-    {
-      id: "differentials-review",
-      title: "Differentials Review",
-      description: "Review differential diagnosis considerations",
-      icon: Stethoscope,
-      color: "text-green-600",
-      bgColor: "bg-green-50", 
-      completed: completedSteps[4] || false,
-      hasIssues: false,
-      required: false
-    },
-    {
-      id: "compliance-checks",
-      title: "Compliance Checks",
-      description: "Final compliance and billing validation",
-      icon: Shield,
-      color: "text-amber-600",
-      bgColor: "bg-amber-50",
-      completed: completedSteps[5] || false,
-      hasIssues: (complianceIssues?.filter(issue => !issue.dismissed) || []).length > 0,
-      required: true
-    }
-  ]
+  useEffect(() => {
+    setCompletedSteps(prev => {
+      if (prev.length === stepsCount) {
+        return prev
+      }
+
+      return Array.from({ length: stepsCount }, (_, index) => prev[index] ?? false)
+    })
+
+    setCurrentStep(prev => {
+      if (stepsCount === 0) {
+        return 0
+      }
+
+      return Math.min(prev, stepsCount - 1)
+    })
+  }, [stepsCount])
+
+  const activeComplianceIssues = (complianceIssues || []).filter(issue => !issue.dismissed)
+
+  const steps: WizardStep[] = stepConfigs.map((stepConfig, index) => ({
+    ...stepConfig,
+    completed: completedSteps[index] || false,
+    hasIssues:
+      stepConfig.id === "compliance-checks" ? activeComplianceIssues.length > 0 : false
+  }))
+
+  const currentStepData = steps[currentStep]
+  const CurrentStepIcon = currentStepData?.icon
 
   // Calculate progress percentage
   const totalSteps = steps.length
-  const progress = (completedSteps.filter(Boolean).length / totalSteps) * 100
+  const progress = totalSteps > 0
+    ? (completedSteps.filter(Boolean).length / totalSteps) * 100
+    : 0
 
   // Calculate estimated reimbursement from selected codes
   useEffect(() => {
@@ -164,7 +128,12 @@ export function FinalizationWizard({
 
   // Validate current step
   const validateStep = (stepIndex: number) => {
-    const stepId = steps[stepIndex].id
+    const step = steps[stepIndex]
+    if (!step) {
+      return true
+    }
+
+    const stepId = step.id
     const issues: string[] = []
     let valid = true
 
@@ -216,8 +185,8 @@ export function FinalizationWizard({
 
   const handleStepComplete = (stepIndex: number) => {
     const isValid = validateStep(stepIndex)
-    
-    if (isValid) {
+
+    if (isValid && steps[stepIndex]) {
       setCompletedSteps(prev => {
         const updated = [...prev]
         updated[stepIndex] = true
@@ -227,7 +196,9 @@ export function FinalizationWizard({
   }
 
   const canProceedToNext = () => {
-    const currentStepData = steps[currentStep]
+    if (!currentStepData) {
+      return true
+    }
     if (currentStepData.required) {
       return completedSteps[currentStep]
     }
@@ -255,6 +226,9 @@ export function FinalizationWizard({
 
   const getCurrentStepContent = () => {
     const step = steps[currentStep]
+    if (!step) {
+      return <div>Step content not available</div>
+    }
     const validation = stepValidation[currentStep]
 
     switch (step.id) {
@@ -672,13 +646,12 @@ export function FinalizationWizard({
           <div className="flex-1 flex flex-col min-w-0">
             <div className="p-6 border-b shrink-0">
               <div className="flex items-center gap-3">
-                {(() => {
-                  const IconComponent = steps[currentStep].icon
-                  return <IconComponent className={`h-5 w-5 ${steps[currentStep].color}`} />
-                })()}
+                {CurrentStepIcon && (
+                  <CurrentStepIcon className={`h-5 w-5 ${currentStepData?.color ?? ""}`} />
+                )}
                 <div>
-                  <h3 className="font-medium">{steps[currentStep].title}</h3>
-                  <p className="text-sm text-muted-foreground">{steps[currentStep].description}</p>
+                  <h3 className="font-medium">{currentStepData?.title}</h3>
+                  <p className="text-sm text-muted-foreground">{currentStepData?.description}</p>
                 </div>
               </div>
             </div>
@@ -720,7 +693,7 @@ export function FinalizationWizard({
                       </Button>
                       <Button
                         onClick={() => setCurrentStep(Math.min(steps.length - 1, currentStep + 1))}
-                        disabled={steps[currentStep].required && !canProceedToNext()}
+                        disabled={!!currentStepData?.required && !canProceedToNext()}
                       >
                         Next
                         <ArrowRight className="h-4 w-4 ml-2" />
