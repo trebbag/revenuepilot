@@ -59,6 +59,8 @@ from pydantic import (
     StrictBool,
     field_validator,
     model_validator,
+    ConfigDict,
+
 )
 import json, sqlite3
 from uuid import uuid4
@@ -122,6 +124,7 @@ from backend.migrations import (  # type: ignore
     ensure_session_state_table,
     ensure_event_aggregates_table,
     ensure_compliance_issues_table,
+    ensure_compliance_rules_table,
     ensure_confidence_scores_table,
     ensure_notification_counters_table,
     ensure_compliance_rule_catalog_table,
@@ -850,9 +853,13 @@ ensure_note_versions_table(db_conn)
 ensure_notifications_table(db_conn)
 ensure_event_aggregates_table(db_conn)
 ensure_compliance_issues_table(db_conn)
+ensure_compliance_rules_table(db_conn)
 ensure_confidence_scores_table(db_conn)
 ensure_notification_counters_table(db_conn)
 patients.configure_database(db_conn)
+
+# Keep the compliance ORM bound to the active database connection.
+compliance_engine.configure_engine(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -989,6 +996,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
     ensure_compliance_issues_table(conn)
+    ensure_compliance_rules_table(conn)
     ensure_confidence_scores_table(conn)
     ensure_notification_counters_table(conn)
     ensure_compliance_rule_catalog_table(conn)
@@ -997,6 +1005,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     _seed_reference_data(conn)
     conn.commit()
     patients.configure_database(conn)
+    compliance_engine.configure_engine(conn)
 
 
 # Proper users table creation (replacing previously malformed snippet)
@@ -1030,6 +1039,7 @@ ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
 ensure_compliance_issues_table(db_conn)
+ensure_compliance_rules_table(db_conn)
 ensure_confidence_scores_table(db_conn)
 ensure_compliance_rule_catalog_table(db_conn)
 ensure_cpt_reference_table(db_conn)
@@ -3048,6 +3058,68 @@ class ComplianceIssueRecord(BaseModel):
     updatedAt: float
     createdBy: Optional[str] = None
     assignee: Optional[str] = None
+
+
+class ComplianceRuleBase(BaseModel):
+    """Shared fields for compliance rule create/update operations."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    severity: Optional[str] = None
+    type: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    references: Optional[List[Dict[str, Any]]] = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @field_validator("metadata")
+    @classmethod
+    def validate_metadata(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:  # noqa: D401,N805
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("metadata must be an object")
+        return value
+
+    @field_validator("references")
+    @classmethod
+    def validate_references(cls, value: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:  # noqa: D401,N805
+        if value is None:
+            return None
+        cleaned = [item for item in value if isinstance(item, dict)]
+        return cleaned or None
+
+
+class ComplianceRuleCreateRequest(ComplianceRuleBase):
+    id: str
+    name: str
+    description: str
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:  # noqa: D401,N805
+        if not value or not value.strip():
+            raise ValueError("id is required")
+        return value.strip()
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:  # noqa: D401,N805
+        if not value or not value.strip():
+            raise ValueError("name is required")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:  # noqa: D401,N805
+        if not value or not value.strip():
+            raise ValueError("description is required")
+        return value
+
+
+class ComplianceRuleUpdateRequest(ComplianceRuleBase):
+    pass
 
 
 class DifferentialItem(BaseModel):
@@ -6276,10 +6348,81 @@ async def compliance_monitor(
     return response
 
 
+def _rule_payload_to_dict(
+    model: ComplianceRuleBase, include_id: bool = False
+) -> Dict[str, Any]:
+    data = model.model_dump(exclude_none=True)
+    extras = getattr(model, "model_extra", {}) or {}
+    for key, value in extras.items():
+        if key not in data:
+            data[key] = value
+    if not include_id:
+        data.pop("id", None)
+    return data
+
+
+def _sanitize_rule_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize(value: Any) -> Any:
+        if isinstance(value, str):
+            return sanitize_text(value)
+        if isinstance(value, list):
+            return [_sanitize(item) for item in value]
+        if isinstance(value, dict):
+            return {key: _sanitize(val) for key, val in value.items()}
+        return value
+
+    return {key: _sanitize(value) for key, value in payload.items()}
+
+
 @app.get("/api/compliance/rules")
 async def compliance_rules(user=Depends(require_role("user"))) -> Dict[str, Any]:
     rules = compliance_engine.get_rules()
     return {"rules": rules, "count": len(rules)}
+
+
+@app.post("/api/compliance/rules")
+async def create_compliance_rule(
+    rule: ComplianceRuleCreateRequest, user=Depends(require_role("admin"))
+) -> Dict[str, Any]:
+    payload = _rule_payload_to_dict(rule, include_id=True)
+    sanitized = _sanitize_rule_payload(payload)
+    try:
+        created = compliance_engine.create_rule(sanitized)
+    except ValueError as exc:  # pragma: no cover - validation handled in service
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return {"rule": created}
+
+
+@app.put("/api/compliance/rules/{rule_id}")
+async def update_compliance_rule(
+    rule_id: str,
+    rule: ComplianceRuleUpdateRequest,
+    user=Depends(require_role("admin")),
+) -> Dict[str, Any]:
+    cleaned_id = sanitize_text(rule_id).strip()
+    if not cleaned_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule id")
+    payload = _rule_payload_to_dict(rule)
+    sanitized = _sanitize_rule_payload(payload)
+    try:
+        updated = compliance_engine.update_rule(cleaned_id, sanitized)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if updated is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    return {"rule": updated}
+
+
+@app.delete("/api/compliance/rules/{rule_id}")
+async def delete_compliance_rule(
+    rule_id: str, user=Depends(require_role("admin"))
+) -> Dict[str, str]:
+    cleaned_id = sanitize_text(rule_id).strip()
+    if not cleaned_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid rule id")
+    if not compliance_engine.delete_rule(cleaned_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rule not found")
+    return {"status": "deleted"}
 
 
 @app.post("/api/compliance/issue-tracking", response_model=ComplianceIssueRecord)
