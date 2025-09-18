@@ -20,6 +20,8 @@ def setup_module(module):
     )
     main.ensure_settings_table(main.db_conn)
     main.ensure_error_log_table(main.db_conn)
+    main.ensure_refresh_table(main.db_conn)
+    main.ensure_session_state_table(main.db_conn)
     auth.register_user(main.db_conn, "alice", "pw")
 
 
@@ -35,11 +37,17 @@ def test_layout_preferences_roundtrip():
     # Initially empty
     resp = client.get("/api/user/layout-preferences", headers=headers)
     assert resp.status_code == 200
-    assert resp.json() == {}
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"] == {}
     payload = {"panels": [{"id": "a", "visible": True}]}
     resp = client.put("/api/user/layout-preferences", json=payload, headers=headers)
     assert resp.status_code == 200
-    assert resp.json() == payload
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"] == payload
     resp = client.get("/api/user/layout-preferences", headers=headers)
     assert resp.status_code == 200
-    assert resp.json() == payload
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"] == payload
