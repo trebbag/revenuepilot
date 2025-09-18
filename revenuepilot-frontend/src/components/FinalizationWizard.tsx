@@ -8,7 +8,7 @@ import { Alert, AlertDescription } from "./ui/alert"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
 import { Separator } from "./ui/separator"
-import { toast } from "sonner@2.0.3"
+import { toast } from "sonner"
 import { defaultFinalizationSteps, type FinalizationStepConfig } from "./finalizationSteps"
 import {
   FileText,
