@@ -17,7 +17,7 @@ import {
   AlertTriangle,
   Loader2
 } from "lucide-react"
-import { toast } from "sonner@2.0.3"
+import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView } from "./BeautifiedView"
 import {
