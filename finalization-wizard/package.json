@@ -3,6 +3,16 @@
       "name": "finalization-wizard",
       "version": "0.1.0",
       "private": true,
+      "type": "module",
+      "main": "./dist/index.js",
+      "module": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "exports": {
+          ".": {
+              "types": "./dist/index.d.ts",
+              "import": "./dist/index.js"
+          }
+      },
     "dependencies": {
         "@radix-ui/react-accordion": "^1.2.3",
         "@radix-ui/react-alert-dialog": "^1.1.6",
@@ -59,8 +69,9 @@
         "typescript": "^5.9.2",
         "vite": "6.3.5"
     },
+
       "scripts": {
           "dev": "vite",
-          "build": "vite build"
+          "build": "vite build && tsc --project tsconfig.build.json"
       }
   }

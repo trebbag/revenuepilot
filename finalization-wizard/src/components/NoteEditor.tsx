@@ -20,6 +20,13 @@ import { Button } from './ui/button';
 import { Separator } from './ui/separator';
 
 
+declare global {
+  interface Window {
+    noteEditorInsertText?: (value: string) => void;
+  }
+}
+
+
 interface HighlightRange {
   start: number;
   end: number;
