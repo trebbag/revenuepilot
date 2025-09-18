@@ -601,7 +601,7 @@ The main App.tsx component manages several critical state objects that the backe
 #### **Core Application State:**
 ```typescript
 // Navigation & View Management
-currentView: 'home' | 'app' | 'analytics' | 'settings' | 'activity' | 'drafts' | 'schedule' | 'builder' | 'style-guide' | 'figma-library' | 'finalization-demo'
+currentView: 'home' | 'app' | 'analytics' | 'settings' | 'activity' | 'drafts' | 'schedule' | 'builder' | 'style-guide' | 'figma-library'
 
 // User Context (Backend: /api/user/profile)
 currentUser: {
