@@ -2,30 +2,19 @@ import { useState } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
-import { FinalizationWizard } from "./FinalizationWizard"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from "./ui/dialog"
+import { FinalizationWizard } from "./finalization/FinalizationWizard"
 
-import type { FinalizeNoteResponse } from "./FinalizationWizard"
-import { 
-  Shield,
-  FileText,
-  Code2,
-  Heart,
-  Activity,
-  Stethoscope
-} from "lucide-react"
-import { defaultFinalizationSteps } from "./finalizationSteps"
-import { Shield, FileText } from "lucide-react"
+import { Shield, FileText, Code2, Heart, Activity } from "lucide-react"
 
 export function FinalizationWizardDemo() {
   const [showWizard, setShowWizard] = useState(false)
-
-  const handleWizardClose = (result?: FinalizeNoteResponse) => {
-    setShowWizard(false)
-
-    if (result) {
-      console.log("Finalized note data:", result)
-    }
-  }
 
   // Mock data that would typically come from the actual note editor
   const mockSelectedCodes = {
@@ -34,69 +23,6 @@ export function FinalizationWizardDemo() {
     diagnoses: 3,
     differentials: 1
   }
-
-  const mockSelectedCodesList = [
-    {
-      code: "99213",
-      type: "CPT",
-      category: "codes",
-      description: "Office visit, established patient",
-      rationale: "Moderate complexity medical decision making with established patient visit",
-      confidence: 87,
-      reimbursement: "$127.42",
-      rvu: "1.92"
-    },
-    {
-      code: "99214", 
-      type: "CPT",
-      category: "codes", 
-      description: "Office visit, established patient (moderate complexity)",
-      rationale: "High complexity decision making documented with comprehensive assessment",
-      confidence: 78,
-      reimbursement: "$184.93",
-      rvu: "2.80"
-    },
-    {
-      code: "J06.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute upper respiratory infection, unspecified",
-      rationale: "Primary diagnosis based on presenting symptoms and clinical findings",
-      confidence: 92
-    },
-    {
-      code: "J02.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute pharyngitis, unspecified",
-      rationale: "Secondary diagnosis from physical examination findings",
-      confidence: 84
-    },
-    {
-      code: "Z23",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Encounter for immunization",
-      rationale: "Patient received influenza vaccination during visit",
-      confidence: 95
-    },
-    {
-      code: "Annual Wellness Visit",
-      type: "PREVENTION",
-      category: "prevention",
-      description: "Annual wellness visit counseling",
-      rationale: "Patient counseled on preventive care measures",
-      confidence: 88
-    },
-    {
-      code: "Viral URI vs Bacterial Sinusitis",
-      type: "DIFFERENTIAL",
-      category: "differentials", 
-      description: "Primary differential diagnosis consideration",
-      rationale: "85% confidence viral, 35% bacterial based on symptom pattern",
-      confidence: 85
-    }
-  ]
 
   const mockComplianceIssues = [
     {
@@ -148,13 +74,6 @@ ASSESSMENT AND PLAN:
 
 The patient was counseled on supportive care measures including rest, hydration, and symptomatic treatment. Return if symptoms worsen or persist beyond 7-10 days.
   `
-
-  const mockPatientInfo = {
-    patientId: "PAT-12345",
-    encounterId: "ENC-67890"
-  }
-
-  const wizardSteps = defaultFinalizationSteps
 
   return (
     <div className="p-6 space-y-6">
@@ -211,30 +130,46 @@ The patient was counseled on supportive care measures including rest, hydration,
             </CardContent>
           </Card>
 
-          {/* Wizard Steps Preview */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Shield className="h-5 w-5" />
-                {`${wizardSteps.length}-Step Finalization Process`}
+                Why teams love the finalization wizard
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-3">
-                {wizardSteps.map((step, index) => {
-                  const StepIcon = step.icon
-                  return (
-                    <div key={index} className="flex items-center gap-3 p-2 rounded-lg bg-muted/30">
-                      <div className={`p-1.5 rounded-md bg-muted ${step.color}`}>
-                        <StepIcon className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium">{step.title}</div>
-                        <div className="text-xs text-muted-foreground">{step.description}</div>
-                      </div>
-                    </div>
-                  )
-                })}
+            <CardContent className="space-y-3 text-sm text-muted-foreground">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-md bg-muted p-1.5">
+                  <Code2 className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-medium text-foreground">AI-assisted coding review</div>
+                  <p>
+                    Track AI and human selections side-by-side with contextual evidence links and patient question prompts.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-md bg-muted p-1.5">
+                  <Heart className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-medium text-foreground">Patient-ready narratives</div>
+                  <p>
+                    Generate beautifully formatted summaries while preserving access to the original note content for compliance review.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-md bg-muted p-1.5">
+                  <Activity className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="font-medium text-foreground">Shared workflow intelligence</div>
+                  <p>
+                    Leverage the same production-ready wizard used across RevenuePilot properties for consistent experiences.
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -252,49 +187,39 @@ The patient was counseled on supportive care measures including rest, hydration,
           </Button>
         </div>
 
-        {/* Usage Instructions */}
         <Card>
           <CardHeader>
-            <CardTitle>Integration Instructions</CardTitle>
+            <CardTitle>Component Benefits</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <h4 className="font-medium">To integrate back into the main app:</h4>
-              <ol className="list-decimal list-inside space-y-1 text-sm text-muted-foreground">
-                <li>Import the FinalizationWizard component back into NoteEditor.tsx</li>
-                <li>Restore the showFinalizationWizard state and related handlers</li>
-                <li>Add the wizard JSX back to the bottom of the NoteEditor component</li>
-                <li>Pass the real note data, selected codes, and compliance issues as props</li>
-              </ol>
-            </div>
-            
-            <div className="space-y-2">
-              <h4 className="font-medium">Component Benefits:</h4>
-              <ul className="list-disc list-inside space-y-1 text-sm text-muted-foreground">
-                <li>Fully isolated and reusable across different parts of the application</li>
-                <li>Self-contained with its own state management and validation logic</li>
-                <li>Consistent with the established RevenuePilot design system</li>
-                <li>Complete 6-step workflow with progress tracking and validation</li>
-                <li>Handles all code categories (CPT, ICD-10, Prevention, Differentials)</li>
-              </ul>
-            </div>
+          <CardContent className="space-y-2 text-sm text-muted-foreground">
+            <p>Explore the shared finalization experience used across RevenuePilot products.</p>
+            <ul className="list-disc list-inside space-y-1">
+              <li>Rich visual workflow optimized for coding and compliance review</li>
+              <li>Interactive AI-assisted note comparison with evidence highlighting</li>
+              <li>Shared component sourced directly from the <code>finalization-wizard</code> package</li>
+            </ul>
           </CardContent>
         </Card>
       </div>
 
-      {/* Finalization Wizard */}
-      {showWizard && (
-        <FinalizationWizard
-          isOpen={showWizard}
-          onClose={handleWizardClose}
-          selectedCodes={mockSelectedCodes}
-          selectedCodesList={mockSelectedCodesList}
-          complianceIssues={mockComplianceIssues}
-          noteContent={mockNoteContent}
-          patientInfo={mockPatientInfo}
-          steps={wizardSteps}
-        />
-      )}
+      <Dialog open={showWizard} onOpenChange={setShowWizard}>
+        <DialogContent className="max-w-[calc(100vw-3rem)] w-full max-h-[90vh] p-0 overflow-hidden">
+          <DialogHeader className="flex flex-row items-center justify-between space-y-0 border-b border-border bg-background px-6 py-4">
+            <div>
+              <DialogTitle className="text-lg font-semibold">Finalization Wizard</DialogTitle>
+              <DialogDescription>
+                Review AI workflows, compliance insights, and patient-ready summaries.
+              </DialogDescription>
+            </div>
+            <Button variant="ghost" onClick={() => setShowWizard(false)}>
+              Close
+            </Button>
+          </DialogHeader>
+          <div className="h-full overflow-y-auto">
+            <FinalizationWizard />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

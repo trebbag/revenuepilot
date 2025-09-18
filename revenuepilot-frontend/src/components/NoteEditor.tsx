@@ -19,7 +19,7 @@ import {
 } from "lucide-react"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView } from "./BeautifiedView"
-import { FinalizationWizard } from "./FinalizationWizard"
+import { FinalizationWizard } from "./finalization/FinalizationWizard"
 
 interface ComplianceIssue {
   id: string
@@ -1179,8 +1179,9 @@ export function NoteEditor({
                 
                 {/* Audio Wave Animation - show when visit has ever been started */}
                 {hasEverStarted && (
-                  <TooltipProvider>
-                    <Tooltip>
+                  <>
+                    <TooltipProvider>
+                      <Tooltip>
                       <TooltipTrigger asChild>
                         <div 
                           className="flex items-center gap-0.5 h-6 cursor-pointer"
@@ -1244,6 +1245,7 @@ export function NoteEditor({
                   {transcriptionError && (
                     <p className="text-xs text-destructive">{transcriptionError}</p>
                   )}
+                  </>
                 )}
               </div>
             )}
@@ -1402,18 +1404,24 @@ export function NoteEditor({
 
 
       {showFinalizationWizard && (
-        <FinalizationWizard
-          isOpen={showFinalizationWizard}
-          onClose={() => setShowFinalizationWizard(false)}
-          selectedCodes={selectedCodes}
-          selectedCodesList={selectedCodesList}
-          complianceIssues={complianceIssues}
-          noteContent={noteContent}
-          patientInfo={{
-            patientId,
-            encounterId
-          }}
-        />
+        <Dialog open={showFinalizationWizard} onOpenChange={setShowFinalizationWizard}>
+          <DialogContent className="max-w-[calc(100vw-3rem)] w-full max-h-[90vh] p-0 overflow-hidden">
+            <div className="flex items-center justify-between border-b border-border bg-background px-6 py-4">
+              <div>
+                <DialogTitle className="text-lg font-semibold">Finalization Wizard</DialogTitle>
+                <DialogDescription>
+                  Review AI-assisted workflows and finalize your clinical note.
+                </DialogDescription>
+              </div>
+              <Button variant="ghost" onClick={() => setShowFinalizationWizard(false)}>
+                Close
+              </Button>
+            </div>
+            <div className="h-full overflow-y-auto">
+              <FinalizationWizard />
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
 
     </div>

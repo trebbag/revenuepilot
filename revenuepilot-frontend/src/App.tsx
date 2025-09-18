@@ -636,115 +636,115 @@ function AppShell() {
   return <ProtectedApp />
 }
 
-export default function App() {
   return (
+    <>
+      <AuthProvider>
+        <SessionProvider>
+          <AppShell />
+        </SessionProvider>
+      </AuthProvider>
 
-    <AuthProvider>
-      <SessionProvider>
-        <AppShell />
-      </SessionProvider>
-    </AuthProvider>
+      <TooltipProvider>
+        <SidebarProvider defaultOpen={false}>
+          <div className="flex h-screen w-full bg-background">
+            <NavigationSidebar
+              currentView="app"
+              onNavigate={handleNavigate}
+              currentUser={currentUser}
+              userDraftCount={getUserDraftCount()}
+            />
 
-    <TooltipProvider>
-      <SidebarProvider defaultOpen={false}>
-        <div className="flex h-screen w-full bg-background">
-          <NavigationSidebar 
-            currentView="app" 
-            onNavigate={handleNavigate}
-            currentUser={currentUser}
-            userDraftCount={getUserDraftCount()}
-          />
-          
-          <main className="flex-1 flex flex-col min-w-0">
-            <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-              <div className="flex items-center gap-2">
-                <SidebarTrigger />
-                <h1 className="text-lg font-medium">Clinical Documentation Assistant</h1>
-                <Badge variant="outline" className="ml-2">
-                  Active Session
-                </Badge>
-                {prePopulatedPatient && (
-                  <Badge variant="secondary" className="ml-2">
-                    Patient: {prePopulatedPatient.patientId}
+            <main className="flex-1 flex flex-col min-w-0">
+              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                <div className="flex items-center gap-2">
+                  <SidebarTrigger />
+                  <h1 className="text-lg font-medium">Clinical Documentation Assistant</h1>
+                  <Badge variant="outline" className="ml-2">
+                    Active Session
                   </Badge>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
-                  Dashboard
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('analytics')}>
-                  Analytics
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('settings')}>
-                  Settings
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('drafts')}>
-                  Drafts
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('schedule')}>
-                  Schedule
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('activity')}>
-                  Activity Log
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('style-guide')}>
-                  Style Guide
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentView('figma-library')}>
-                  Figma Library
-                </Button>
-              </div>
-            </div>
-            
-            <ResizablePanelGroup direction="horizontal" className="flex-1">
-              <ResizablePanel defaultSize={70} minSize={50}>
-                <div className="flex flex-col h-full">
-                  <NoteEditor
-                    prePopulatedPatient={prePopulatedPatient}
-                    selectedCodes={selectedCodes}
-                    selectedCodesList={selectedCodesList}
-                    onNoteContentChange={setNoteContent}
-                  />
-                  <SelectedCodesBar 
-                    selectedCodes={selectedCodes}
-                    onUpdateCodes={setSelectedCodes}
-                    selectedCodesList={selectedCodesList}
-                    onRemoveCode={handleRemoveCode}
-                    onChangeCategoryCode={handleChangeCategoryCode}
-                  />
+                  {prePopulatedPatient && (
+                    <Badge variant="secondary" className="ml-2">
+                      Patient: {prePopulatedPatient.patientId}
+                    </Badge>
+                  )}
                 </div>
-              </ResizablePanel>
-              
-              {isSuggestionPanelOpen && (
-                <>
-                  <ResizableHandle />
-                  <ResizablePanel defaultSize={30} minSize={25} maxSize={40}>
-                    <SuggestionPanel
-                      onClose={() => setIsSuggestionPanelOpen(false)}
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('home')}>
+                    Dashboard
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('analytics')}>
+                    Analytics
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('settings')}>
+                    Settings
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('drafts')}>
+                    Drafts
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('schedule')}>
+                    Schedule
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('activity')}>
+                    Activity Log
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('style-guide')}>
+                    Style Guide
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setCurrentView('figma-library')}>
+                    Figma Library
+                  </Button>
+                </div>
+              </div>
+
+              <ResizablePanelGroup direction="horizontal" className="flex-1">
+                <ResizablePanel defaultSize={70} minSize={50}>
+                  <div className="flex flex-col h-full">
+                    <NoteEditor
+                      prePopulatedPatient={prePopulatedPatient}
+                      selectedCodes={selectedCodes}
+                      selectedCodesList={selectedCodesList}
+                      onNoteContentChange={setNoteContent}
+                    />
+                    <SelectedCodesBar
                       selectedCodes={selectedCodes}
                       onUpdateCodes={setSelectedCodes}
-                      onAddCode={handleAddCode}
-                      addedCodes={addedCodes}
-                      noteContent={noteContent}
                       selectedCodesList={selectedCodesList}
+                      onRemoveCode={handleRemoveCode}
+                      onChangeCategoryCode={handleChangeCategoryCode}
                     />
-                  </ResizablePanel>
-                </>
+                  </div>
+                </ResizablePanel>
+
+                {isSuggestionPanelOpen && (
+                  <>
+                    <ResizableHandle />
+                    <ResizablePanel defaultSize={30} minSize={25} maxSize={40}>
+                      <SuggestionPanel
+                        onClose={() => setIsSuggestionPanelOpen(false)}
+                        selectedCodes={selectedCodes}
+                        onUpdateCodes={setSelectedCodes}
+                        onAddCode={handleAddCode}
+                        addedCodes={addedCodes}
+                        noteContent={noteContent}
+                        selectedCodesList={selectedCodesList}
+                      />
+                    </ResizablePanel>
+                  </>
+                )}
+              </ResizablePanelGroup>
+
+              {!isSuggestionPanelOpen && (
+                <button
+                  onClick={() => setIsSuggestionPanelOpen(true)}
+                  className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
+                >
+                  Show Suggestions
+                </button>
               )}
-            </ResizablePanelGroup>
-            
-            {!isSuggestionPanelOpen && (
-              <button
-                onClick={() => setIsSuggestionPanelOpen(true)}
-                className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
-              >
-                Show Suggestions
-              </button>
-            )}
-          </main>
-        </div>
-      </SidebarProvider>
-    </TooltipProvider>
+            </main>
+          </div>
+        </SidebarProvider>
+      </TooltipProvider>
+    </>
   )
 }
