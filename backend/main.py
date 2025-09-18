@@ -2705,7 +2705,7 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
 @app.put("/api/user/layout-preferences")
 async def put_layout_preferences(
     prefs: Dict[str, Any], user=Depends(require_role("user"))
-) -> Dict[str, Any]:
+) -> Response:
     data = json.dumps(prefs)
     row = db_conn.execute(
         "SELECT id FROM users WHERE username= ?",
@@ -2714,24 +2714,29 @@ async def put_layout_preferences(
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
 
-    db_conn.execute(
-        "INSERT OR REPLACE INTO sessions (user_id, data, updated_at) VALUES (?, ?, ?)",
-        (row["id"], json.dumps(model.data), time.time()),
-    )
-    db_conn.commit()
-    return {"status": "saved"}
-
     uid = row["id"]
     db_conn.execute(
-        "INSERT OR IGNORE INTO settings (user_id, theme) VALUES (?, 'light')",
-        (uid,),
-    )
-    db_conn.execute(
-        "UPDATE settings SET layout_prefs=? WHERE user_id=?",
-        (data, uid),
+        """
+        INSERT INTO settings (user_id, theme, layout_prefs)
+        VALUES (?, 'light', ?)
+        ON CONFLICT(user_id) DO UPDATE SET layout_prefs=excluded.layout_prefs
+        """,
+        (uid, data),
     )
     db_conn.commit()
-    return prefs
+
+    stored = db_conn.execute(
+        "SELECT layout_prefs FROM settings WHERE user_id=?",
+        (uid,),
+    ).fetchone()
+    if stored and stored["layout_prefs"]:
+        try:
+            return JSONResponse(content=json.loads(stored["layout_prefs"]))
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Failed to deserialize layout preferences for user %s", uid
+            )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class ErrorLogModel(BaseModel):
