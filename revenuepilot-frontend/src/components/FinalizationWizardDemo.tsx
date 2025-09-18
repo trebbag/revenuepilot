@@ -2,6 +2,21 @@ import { useState } from "react"
 import { Badge } from "./ui/badge"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
+
+import { Badge } from "./ui/badge"
+import { FinalizationWizard } from "./FinalizationWizard"
+
+import type { FinalizeNoteResponse } from "./FinalizationWizard"
+import {
+  Shield,
+  FileText,
+  Code2,
+  Heart,
+  Activity,
+  Stethoscope
+} from "lucide-react"
+import { defaultFinalizationSteps } from "./finalizationSteps"
+
 import {
   FinalizationWizard,
   type FinalizeResult,
@@ -10,6 +25,7 @@ import {
   type WizardComplianceItem
 } from "finalization-wizard"
 import { Activity, Code2, FileText, Heart, Shield, Stethoscope } from "lucide-react"
+
 
 type CodeCategory = "codes" | "prevention" | "diagnoses" | "differentials"
 
