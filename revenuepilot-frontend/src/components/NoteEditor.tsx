@@ -24,7 +24,7 @@ import {
   FinalizationWizardAdapter,
   type PreFinalizeCheckResponse
 } from "./FinalizationWizardAdapter"
-import type { FinalizeNoteResponse } from "./FinalizationWizard"
+import type { FinalizeResult } from "finalization-wizard"
 
 interface ComplianceIssue {
   id: string
@@ -901,7 +901,7 @@ export function NoteEditor({
   }, [])
 
   const handleFinalizationClose = useCallback(
-    (result?: FinalizeNoteResponse) => {
+    (result?: FinalizeResult) => {
       setShowFinalizationWizard(false)
       if (!result) {
         return
