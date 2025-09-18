@@ -14,7 +14,6 @@ import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
 import { StyleGuide } from "./components/StyleGuide"
 import { FigmaComponentLibrary } from "./components/FigmaComponentLibrary"
-import { FinalizationWizardDemo } from "./components/FinalizationWizardDemo"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { Button } from "./components/ui/button"
 import { Badge } from "./components/ui/badge"
@@ -33,7 +32,6 @@ type ViewKey =
   | "builder"
   | "style-guide"
   | "figma-library"
-  | "finalization-demo"
 
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
@@ -42,7 +40,6 @@ const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   drafts: "view:drafts",
   schedule: "view:schedule",
   builder: "manage:builder",
-  "finalization-demo": "view:finalization-demo",
   "figma-library": "view:design-library"
 }
 
@@ -56,8 +53,7 @@ const VIEW_LABELS: Record<ViewKey, string> = {
   schedule: "Schedule",
   builder: "Builder",
   "style-guide": "Style Guide",
-  "figma-library": "Figma Library",
-  "finalization-demo": "Finalization Demo"
+  "figma-library": "Figma Library"
 }
 
 export function ProtectedApp() {
@@ -725,46 +721,6 @@ export function ProtectedApp() {
 
               <div className="flex-1 overflow-auto">
                 <FigmaComponentLibrary />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
-    )
-  }
-
-  // Finalization Demo View
-  if (currentView === 'finalization-demo') {
-    return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="finalization-demo" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Finalization Wizard Demo</h1>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
-                    Documentation
-                  </Button>
-                </div>
-              </div>
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <FinalizationWizardDemo />
               </div>
             </main>
           </div>
