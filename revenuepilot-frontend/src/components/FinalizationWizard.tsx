@@ -42,7 +42,17 @@ export interface FinalizeNoteResponse {
   [key: string]: unknown
 }
 
-interface FinalizationWizardProps {
+export interface FinalizeNotePayload {
+  content: string
+  codes: string[]
+  prevention: string[]
+  diagnoses: string[]
+  differentials: string[]
+  compliance: string[]
+  noteId?: string | null
+}
+
+export interface FinalizationWizardProps {
   isOpen: boolean
   onClose: (result?: FinalizeNoteResponse) => void
   selectedCodes: {
@@ -59,6 +69,8 @@ interface FinalizationWizardProps {
     encounterId: string
   }
   steps?: FinalizationStepConfig[]
+  onFinalize?: (payload: FinalizeNotePayload) => Promise<FinalizeNoteResponse>
+  onError?: (message: string, error?: unknown) => void
 }
 
 interface WizardStep extends FinalizationStepConfig {
@@ -66,15 +78,17 @@ interface WizardStep extends FinalizationStepConfig {
   hasIssues: boolean
 }
 
-export function FinalizationWizard({ 
-  isOpen, 
-  onClose, 
-  selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 }, 
-  selectedCodesList = [], 
+export function FinalizationWizard({
+  isOpen,
+  onClose,
+  selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 },
+  selectedCodesList = [],
   complianceIssues = [],
   noteContent = "",
   patientInfo,
-  steps: customSteps
+  steps: customSteps,
+  onFinalize,
+  onError
 }: FinalizationWizardProps) {
   const stepConfigs = customSteps ?? defaultFinalizationSteps
   const stepsCount = stepConfigs.length
@@ -269,7 +283,7 @@ export function FinalizationWizard({
       return Array.from(new Set(matches))
     }
 
-    const payload = {
+    const payload: FinalizeNotePayload = {
       content: noteContent,
       codes: extractCodes("codes"),
       prevention: extractCodes("prevention"),
@@ -288,46 +302,59 @@ export function FinalizationWizard({
     let result: FinalizeNoteResponse | null = null
 
     try {
-      const response = await fetch("/api/notes/finalize", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      })
+      if (onFinalize) {
+        result = await onFinalize(payload)
+      } else {
+        const response = await fetch("/api/notes/finalize", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        })
 
-      if (!response.ok) {
-        let errorMessage = "Failed to finalize the note."
-        try {
-          const errorData = await response.json()
-          errorMessage =
-            (typeof errorData?.detail === "string" && errorData.detail.length > 0)
-              ? errorData.detail
-              : errorMessage
-        } catch {
-          // Ignore JSON parsing errors and fall back to default message
+        if (!response.ok) {
+          let errorMessage = "Failed to finalize the note."
+          try {
+            const errorData = await response.json()
+            errorMessage =
+              (typeof errorData?.detail === "string" && errorData.detail.length > 0)
+                ? errorData.detail
+                : errorMessage
+          } catch {
+            // Ignore JSON parsing errors and fall back to default message
+          }
+          throw new Error(errorMessage)
         }
-        throw new Error(errorMessage)
-      }
 
-      const data: FinalizeNoteResponse = await response.json()
-      result = data
-      setFinalizeResult(data)
-      setIsFinalizationComplete(true)
-      toast.success("Note finalized", {
-        description: data.exportReady
-          ? "The note has been finalized and is ready for export."
-          : "The note was finalized, but some items still require review."
-      })
+        const data: FinalizeNoteResponse = await response.json()
+        result = data
+      }
+      if (result) {
+        setFinalizeResult(result)
+        setIsFinalizationComplete(true)
+        if (!onFinalize) {
+          toast.success("Note finalized", {
+            description: result.exportReady
+              ? "The note has been finalized and is ready for export."
+              : "The note was finalized, but some items still require review."
+          })
+        }
+      }
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
           : "An unexpected error occurred while finalizing the note."
       setFinalizeError(message)
-      toast.error("Finalization failed", {
-        description: message
-      })
+      if (!onFinalize) {
+        toast.error("Finalization failed", {
+          description: message
+        })
+      }
+      if (onError) {
+        onError(message, error)
+      }
       console.error("Failed to finalize note:", error)
     } finally {
       setIsFinalizing(false)
