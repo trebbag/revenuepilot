@@ -10,6 +10,7 @@ node_modules/
 dist/
 build/
 electron/dist/
+.yarn/install-state.gz
 
 # Standalone frontend artifacts
 revenuepilot-frontend/node_modules/

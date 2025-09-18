@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import { motion, AnimatePresence } from "motion/react"
-import { 
+import {
   Stethoscope,
   ChevronRight
 } from "lucide-react"
@@ -20,6 +20,7 @@ import { Avatar, AvatarFallback } from "./ui/avatar"
 import { getPrimaryNavItems, secondaryNavItems, bottomNavItems } from "./navigation/NavigationConfig"
 import { NotificationsPanel } from "./navigation/NotificationsPanel"
 import { Notification } from "./navigation/NotificationUtils"
+import { apiFetchJson } from "../lib/api"
 
 interface UIPreferences {
   sidebarCollapsed?: boolean
@@ -46,23 +47,6 @@ interface UiPreferencesResponse {
 }
 
 const NOTIFICATION_ERROR_ID = "notifications-error"
-
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    credentials: "include",
-    ...options,
-    headers: {
-      Accept: "application/json",
-      ...(options?.headers ?? {})
-    }
-  })
-
-  if (!response.ok) {
-    throw new Error(`Request to ${url} failed with status ${response.status}`)
-  }
-
-  return response.json() as Promise<T>
-}
 
 interface CurrentUser {
   id: string
@@ -323,10 +307,10 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         setProfileLoading(true)
 
         const [viewResult, countResult, profileResult, prefsResult] = await Promise.allSettled([
-          fetchJson<CurrentViewResponse>("/api/user/current-view"),
-          fetchJson<NotificationCountResponse>("/api/notifications/count"),
-          fetchJson<UserProfileResponse>("/api/user/profile"),
-          fetchJson<UiPreferencesResponse>("/api/user/ui-preferences")
+          apiFetchJson<CurrentViewResponse>("/api/user/current-view"),
+          apiFetchJson<NotificationCountResponse>("/api/notifications/count"),
+          apiFetchJson<UserProfileResponse>("/api/user/profile"),
+          apiFetchJson<UiPreferencesResponse>("/api/user/ui-preferences")
         ])
 
         if (!active) {
@@ -336,16 +320,17 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         let profileMessage: string | null = null
 
         if (viewResult.status === "fulfilled") {
-          setServerCurrentView(viewResult.value.currentView ?? null)
+          setServerCurrentView(viewResult.value?.currentView ?? null)
         } else if (viewResult.status === "rejected") {
           profileMessage = "Unable to load current view."
           console.error(viewResult.reason)
         }
 
         if (profileResult.status === "fulfilled") {
-          setProfile(profileResult.value)
-          if (profileResult.value.currentView) {
-            setServerCurrentView(profileResult.value.currentView)
+          const profileData = profileResult.value ?? null
+          setProfile(profileData)
+          if (profileData?.currentView) {
+            setServerCurrentView(profileData.currentView)
           }
         } else if (profileResult.status === "rejected") {
           profileMessage = profileMessage ?? "Unable to load user profile."
@@ -353,7 +338,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         }
 
         if (prefsResult.status === "fulfilled") {
-          const prefs = prefsResult.value.uiPreferences ?? {}
+          const prefs = prefsResult.value?.uiPreferences ?? {}
           setUiPreferences(prefs)
           uiPreferencesRef.current = prefs
           lastPersistedPrefsRef.current = prefs
@@ -365,7 +350,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         setProfileError(profileMessage)
 
         if (countResult.status === "fulfilled") {
-          setNotificationCount(countResult.value.count ?? 0)
+          setNotificationCount(countResult.value?.count ?? 0)
           setNotificationsError(null)
         } else {
           setNotificationsError("Unable to load notifications.")
@@ -412,14 +397,11 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
   const persistUiPreferences = useCallback(async (prefs: UIPreferences) => {
     try {
       setUiPreferencesError(null)
-      const response = await fetchJson<UiPreferencesResponse>("/api/user/ui-preferences", {
+      const response = await apiFetchJson<UiPreferencesResponse>("/api/user/ui-preferences", {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ uiPreferences: prefs })
+        jsonBody: { uiPreferences: prefs }
       })
-      lastPersistedPrefsRef.current = response.uiPreferences ?? prefs
+      lastPersistedPrefsRef.current = response?.uiPreferences ?? prefs
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save UI preferences."
       setUiPreferencesError(message)
@@ -544,11 +526,11 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
 
     const fetchCount = async () => {
       try {
-        const data = await fetchJson<NotificationCountResponse>("/api/notifications/count")
+        const data = await apiFetchJson<NotificationCountResponse>("/api/notifications/count")
         if (closed) {
           return
         }
-        setNotificationCount(data.count ?? 0)
+        setNotificationCount(data?.count ?? 0)
         setNotificationsError(null)
       } catch (error) {
         if (closed) {

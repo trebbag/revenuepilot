@@ -6,14 +6,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collap
 import { ScrollArea } from "./ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
-import { 
-  X, 
-  ChevronDown, 
-  ChevronRight, 
-  Code, 
-  Shield, 
-  Heart, 
-  Stethoscope, 
+import {
+  X,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Shield,
+  Heart,
+  Stethoscope,
   Calendar,
   Plus,
   TrendingUp,
@@ -24,6 +24,7 @@ import {
   TestTube,
   AlertTriangle
 } from "lucide-react"
+import { apiFetchJson } from "../lib/api"
 
 interface SuggestionPanelProps {
   onClose: () => void
@@ -175,18 +176,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       setCodesLoading(true)
       setCodesError(null)
       try {
-        const response = await fetch("/api/ai/codes/suggest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: trimmed, useOfflineMode: true }),
-          signal
-        })
+        const data =
+          (await apiFetchJson<{ suggestions?: any[] }>("/api/ai/codes/suggest", {
+            method: "POST",
+            jsonBody: { content: trimmed, useOfflineMode: true },
+            signal
+          })) ?? {}
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const data = await response.json()
         const normalized: CodeSuggestionItem[] = (data?.suggestions || []).map((item: any) => ({
           code: item.code,
           type: item.type,
@@ -216,18 +212,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       setComplianceLoading(true)
       setComplianceError(null)
       try {
-        const response = await fetch("/api/ai/compliance/check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: trimmed, codes: codesInUse, useOfflineMode: true }),
-          signal
-        })
+        const data =
+          (await apiFetchJson<{ alerts?: any[] }>("/api/ai/compliance/check", {
+            method: "POST",
+            jsonBody: { content: trimmed, codes: codesInUse, useOfflineMode: true },
+            signal
+          })) ?? {}
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const data = await response.json()
         const normalized: ComplianceAlertItem[] = (data?.alerts || []).map((item: any) => ({
           text: item.text,
           category: item.category,
@@ -252,18 +243,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       setDifferentialsLoading(true)
       setDifferentialsError(null)
       try {
-        const response = await fetch("/api/ai/differentials/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: trimmed, useOfflineMode: true }),
-          signal
-        })
+        const data =
+          (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
+            method: "POST",
+            jsonBody: { content: trimmed, useOfflineMode: true },
+            signal
+          })) ?? {}
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const data = await response.json()
         const normalized: DifferentialItem[] = (data?.differentials || []).map((item: any) => {
           const supporting = item.supportingFactors || []
           const contradicting = item.contradictingFactors || []
@@ -321,18 +307,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       setPreventionLoading(true)
       setPreventionError(null)
       try {
-        const response = await fetch("/api/ai/prevention/suggest", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ useOfflineMode: true }),
-          signal
-        })
+        const data =
+          (await apiFetchJson<{ recommendations?: any[] }>("/api/ai/prevention/suggest", {
+            method: "POST",
+            jsonBody: { useOfflineMode: true },
+            signal
+          })) ?? {}
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`)
-        }
-
-        const data = await response.json()
         const normalized: PreventionSuggestionItem[] = (data?.recommendations || []).map((item: any, index: number) => {
           const recommendation = item.recommendation || `Recommendation ${index + 1}`
           return {

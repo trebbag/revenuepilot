@@ -15,6 +15,7 @@ import {
   CheckCircle,
   Loader2
 } from "lucide-react"
+import { apiFetchJson } from "../lib/api"
 
 interface ApiCodeDetail {
   code: string
@@ -84,42 +85,6 @@ interface CategorizationRules {
   autoCategories?: Record<string, Record<string, string>>
   userOverrides?: Record<string, Record<string, string>>
   rules?: CategorizationRule[]
-}
-
-const unwrapApiPayload = <T,>(payload: any): T => {
-  if (payload && typeof payload === "object" && "data" in payload) {
-    return payload.data as T
-  }
-  return payload as T
-}
-
-async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-  const response = await fetch(input, init)
-  let text = ""
-
-  try {
-    text = await response.text()
-  } catch (error) {
-    console.error(`Failed to read response body for ${String(input)}`, error)
-    text = ""
-  }
-
-  if (!response.ok) {
-    const message = text || response.statusText || "Request failed"
-    throw new Error(message)
-  }
-
-  if (!text) {
-    return ({} as unknown) as T
-  }
-
-  try {
-    const payload = JSON.parse(text)
-    return unwrapApiPayload<T>(payload)
-  } catch (error) {
-    console.error(`Failed to parse response from ${String(input)}`, error)
-    return ({} as unknown) as T
-  }
 }
 
 interface SelectedCodesBarProps {
@@ -218,7 +183,9 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
     const loadCategorizationRules = async () => {
       try {
-        const data = await fetchJson<CategorizationRules>("/api/codes/categorization/rules")
+        const data = await apiFetchJson<CategorizationRules>("/api/codes/categorization/rules", {
+          unwrapData: true
+        })
         if (!isCancelled && data) {
           setCategorizationRules(data)
         }
@@ -272,30 +239,30 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       setIsLoadingDetails(true)
       setFetchError(null)
 
-      const detailsPromise = fetchJson<ApiCodeDetail[]>("/api/codes/details/batch", {
+      const detailsPromise = apiFetchJson<ApiCodeDetail[]>("/api/codes/details/batch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes: uniqueCodes })
+        jsonBody: { codes: uniqueCodes },
+        unwrapData: true
       }).catch(error => {
         console.error("Failed to fetch code details", error)
         return [] as ApiCodeDetail[]
       })
 
       const billingPromise = cptCodes.length
-        ? fetchJson<BillingSummary>("/api/billing/calculate", {
+        ? apiFetchJson<BillingSummary>("/api/billing/calculate", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ codes: cptCodes })
+            jsonBody: { codes: cptCodes },
+            unwrapData: true
           }).catch(error => {
             console.error("Failed to calculate billing summary", error)
             return null
           })
         : Promise.resolve<BillingSummary | null>(null)
 
-      const combinationPromise = fetchJson<CombinationValidationResult>("/api/codes/validate/combination", {
+      const combinationPromise = apiFetchJson<CombinationValidationResult>("/api/codes/validate/combination", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codes: uniqueCodes })
+        jsonBody: { codes: uniqueCodes },
+        unwrapData: true
       }).catch(error => {
         console.error("Failed to validate code combination", error)
         return null
@@ -304,7 +271,18 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       const documentationPromise = Promise.all(
         uniqueCodes.map(async code => {
           try {
-            const documentation = await fetchJson<DocumentationInfo>(`/api/codes/documentation/${encodeURIComponent(code)}`)
+            const documentation =
+              (await apiFetchJson<DocumentationInfo>(
+                `/api/codes/documentation/${encodeURIComponent(code)}`,
+                {
+                  unwrapData: true
+                }
+              )) ?? {
+                code,
+                required: [],
+                recommended: [],
+                examples: []
+              }
             return [code, documentation] as const
           } catch (error) {
             console.error(`Failed to fetch documentation for code ${code}`, error)

@@ -25,6 +25,7 @@ import {
   type PreFinalizeCheckResponse
 } from "./FinalizationWizardAdapter"
 import type { FinalizeResult } from "finalization-wizard"
+import { apiFetch, apiFetchJson, getStoredToken, type ApiFetchOptions } from "../lib/api"
 
 interface ComplianceIssue {
   id: string
@@ -71,41 +72,6 @@ interface TranscriptEntry {
   isInterim: boolean
   timestamp: number
   speaker?: string
-}
-
-const getStoredToken = (): string | null => {
-  if (typeof window === "undefined") return null
-  const candidates: Array<Storage | undefined> = [
-    typeof window.localStorage !== "undefined" ? window.localStorage : undefined,
-    typeof window.sessionStorage !== "undefined" ? window.sessionStorage : undefined
-  ]
-  for (const storage of candidates) {
-    if (!storage) continue
-    try {
-      const token =
-        storage.getItem("token") ||
-        storage.getItem("accessToken") ||
-        storage.getItem("authToken")
-      if (token) {
-        return token
-      }
-    } catch {
-      // Ignore storage access errors (e.g. privacy mode)
-    }
-  }
-  return null
-}
-
-const buildAuthHeaders = (headers?: HeadersInit, opts: { json?: boolean } = {}) => {
-  const result = new Headers(headers ?? {})
-  if (opts.json && !result.has("Content-Type")) {
-    result.set("Content-Type", "application/json")
-  }
-  const token = getStoredToken()
-  if (token && !result.has("Authorization")) {
-    result.set("Authorization", `Bearer ${token}`)
-  }
-  return result
 }
 
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
@@ -202,14 +168,10 @@ export function NoteEditor({
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  type FetchOptions = RequestInit & { json?: boolean }
+  type FetchOptions = ApiFetchOptions
 
   const fetchWithAuth = useCallback(
-    (input: RequestInfo | URL, init: FetchOptions = {}) => {
-      const { json, headers, ...rest } = init
-      const mergedHeaders = buildAuthHeaders(headers, { json })
-      return fetch(input, { ...rest, headers: mergedHeaders })
-    },
+    (input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init),
     []
   )
 
@@ -345,8 +307,7 @@ export function NoteEditor({
       }
       const response = await fetchWithAuth("/api/notes/create", {
         method: "POST",
-        body: JSON.stringify(payload),
-        json: true
+        jsonBody: payload
       })
       if (!response.ok) {
         throw new Error(`Failed to create note (${response.status})`)
@@ -750,8 +711,7 @@ export function NoteEditor({
         }
         const response = await fetchWithAuth("/api/compliance/analyze", {
           method: "POST",
-          body: JSON.stringify(payload),
-          json: true,
+          jsonBody: payload,
           signal: controller.signal
         })
         if (!response.ok) {
@@ -802,8 +762,7 @@ export function NoteEditor({
       try {
         const response = await fetchWithAuth("/api/notes/auto-save", {
           method: "POST",
-          body: JSON.stringify({ noteId, content }),
-          json: true
+          jsonBody: { noteId, content }
         })
         if (!response.ok) {
           throw new Error(`Auto-save failed (${response.status})`)
@@ -1049,8 +1008,7 @@ export function NoteEditor({
         if (!visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "POST",
-            body: JSON.stringify({ encounter_id: encounterNumeric }),
-            json: true
+            jsonBody: { encounter_id: encounterNumeric }
           })
           if (!response.ok) {
             throw new Error(`Failed to start visit (${response.status})`)
@@ -1059,8 +1017,7 @@ export function NoteEditor({
         } else {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "PUT",
-            body: JSON.stringify({ session_id: visitSession.sessionId, action: "active" }),
-            json: true
+            jsonBody: { session_id: visitSession.sessionId, action: "active" }
           })
           if (!response.ok) {
             throw new Error(`Failed to resume visit (${response.status})`)
@@ -1099,8 +1056,7 @@ export function NoteEditor({
         if (visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "PUT",
-            body: JSON.stringify({ session_id: visitSession.sessionId, action: "paused" }),
-            json: true
+            jsonBody: { session_id: visitSession.sessionId, action: "paused" }
           })
           if (response.ok) {
             const data = await response.json().catch(() => null)
@@ -1350,71 +1306,73 @@ export function NoteEditor({
                 
                 {/* Audio Wave Animation - show when visit has ever been started */}
                 {hasEverStarted && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div 
-                          className="flex items-center gap-0.5 h-6 cursor-pointer"
-                          onClick={() => setShowFullTranscript(true)}
-                        >
-                          {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                            <div
-                              key={i}
-                              className={`w-0.5 rounded-full ${isRecording ? 'bg-destructive' : 'bg-muted-foreground'}`}
-                              style={{
-                                height: isRecording ? `${8 + (i % 4) * 3}px` : `${6 + (i % 3) * 2}px`,
-                                animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : 'none',
-                                animationDelay: isRecording ? `${i * 0.1}s` : '0s'
-                              }}
-                            />
-                          ))}
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent 
-                        side="bottom" 
-                        align="center"
-                        className="max-w-sm p-3 bg-popover border-border"
-                      >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-                            <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? 'bg-destructive animate-pulse' : 'bg-muted-foreground'}`}></div>
-                            {isRecording ? 'Live Transcription Preview' : 'Transcription Preview (Paused)'}
-                          </div>
-                          <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-1">
-                            {recentTranscription.map((entry, index) => (
+                  <>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div
+                            className="flex items-center gap-0.5 h-6 cursor-pointer"
+                            onClick={() => setShowFullTranscript(true)}
+                          >
+                            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
                               <div
-                                key={entry.id}
-                                className={`text-xs leading-relaxed ${
-                                  index === recentTranscription.length - 1
-                                    ? 'text-foreground font-medium'
-                                    : 'text-muted-foreground'
-                                }`}
+                                key={i}
+                                className={`w-0.5 rounded-full ${isRecording ? 'bg-destructive' : 'bg-muted-foreground'}`}
                                 style={{
-                                  opacity:
-                                    index === recentTranscription.length - 1
-                                      ? 1
-                                      : 0.7 - (index * 0.2)
+                                  height: isRecording ? `${8 + (i % 4) * 3}px` : `${6 + (i % 3) * 2}px`,
+                                  animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : 'none',
+                                  animationDelay: isRecording ? `${i * 0.1}s` : '0s'
                                 }}
-                              >
-                                {entry.text}
-                              </div>
+                              />
                             ))}
                           </div>
-                          <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border">
-                            Click audio wave to view full transcript
-                            {!isRecording && (
-                              <div className="mt-1 text-muted-foreground/80">
-                                Recording paused - transcript available
-                              </div>
-                            )}
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="bottom"
+                          align="center"
+                          className="max-w-sm p-3 bg-popover border-border"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+                              <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? 'bg-destructive animate-pulse' : 'bg-muted-foreground'}`}></div>
+                              {isRecording ? 'Live Transcription Preview' : 'Transcription Preview (Paused)'}
+                            </div>
+                            <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-1">
+                              {recentTranscription.map((entry, index) => (
+                                <div
+                                  key={entry.id}
+                                  className={`text-xs leading-relaxed ${
+                                    index === recentTranscription.length - 1
+                                      ? 'text-foreground font-medium'
+                                      : 'text-muted-foreground'
+                                  }`}
+                                  style={{
+                                    opacity:
+                                      index === recentTranscription.length - 1
+                                        ? 1
+                                        : 0.7 - index * 0.2
+                                  }}
+                                >
+                                  {entry.text}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border">
+                              Click audio wave to view full transcript
+                              {!isRecording && (
+                                <div className="mt-1 text-muted-foreground/80">
+                                  Recording paused - transcript available
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                  {transcriptionError && (
-                    <p className="text-xs text-destructive">{transcriptionError}</p>
-                  )}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                    {transcriptionError && (
+                      <p className="text-xs text-destructive">{transcriptionError}</p>
+                    )}
+                  </>
                 )}
               </div>
             )}
