@@ -55,7 +55,6 @@
         '@': path.resolve(__dirname, './src'),
         'finalization-wizard': path.resolve(__dirname, '../finalization-wizard/src'),
         'motion/react': resolveModule('motion/react'),
-        'lucide-react': resolveModule('lucide-react'),
       },
     },
     build: {
