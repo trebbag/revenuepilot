@@ -6,20 +6,25 @@ import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
-import { 
-  CheckCircle, 
-  Save, 
-  Play, 
-  Square, 
+import {
+  CheckCircle,
+  Save,
+  Play,
+  Square,
   Clock,
   Mic,
   MicOff,
   AlertTriangle,
   Loader2
 } from "lucide-react"
+import { toast } from "sonner@2.0.3"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView } from "./BeautifiedView"
-import { FinalizationWizard } from "./FinalizationWizard"
+import {
+  FinalizationWizardAdapter,
+  type PreFinalizeCheckResponse
+} from "./FinalizationWizardAdapter"
+import type { FinalizeNoteResponse } from "./FinalizationWizard"
 
 interface ComplianceIssue {
   id: string
@@ -175,6 +180,7 @@ export function NoteEditor({
   const [pausedTime, setPausedTime] = useState(0)
 
   const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
+  const [isFinalized, setIsFinalized] = useState(false)
 
   const [noteId, setNoteId] = useState<string | null>(null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
@@ -276,6 +282,55 @@ export function NoteEditor({
       })
       .filter((item): item is ComplianceIssue => Boolean(item))
   }, [])
+
+  const convertWizardIssuesToCompliance = useCallback(
+    (issues?: Record<string, unknown>): ComplianceIssue[] => {
+      if (!issues || typeof issues !== "object") {
+        return []
+      }
+
+      const normalized: ComplianceIssue[] = []
+      Object.entries(issues).forEach(([categoryKey, value]) => {
+        if (!Array.isArray(value)) {
+          return
+        }
+
+        value.forEach((entry, index) => {
+          if (typeof entry !== "string") {
+            return
+          }
+          const text = entry.trim()
+          if (!text) {
+            return
+          }
+
+          const category: ComplianceIssue["category"] =
+            categoryKey === "compliance"
+              ? "quality"
+              : categoryKey === "codes" ||
+                  categoryKey === "diagnoses" ||
+                  categoryKey === "differentials" ||
+                  categoryKey === "prevention"
+                ? "coding"
+                : "documentation"
+
+          normalized.push({
+            id: `wizard-${categoryKey}-${slugify(text)}-${index}`,
+            severity: severityFromText(text),
+            title: text,
+            description: text,
+            details: text,
+            suggestion: "Review and address this item before export.",
+            category,
+            dismissed: false
+          })
+        })
+      })
+
+      return normalized
+    },
+    []
+  )
 
   const ensureNoteCreated = useCallback(async () => {
     if (noteId) return noteId
@@ -737,7 +792,7 @@ export function NoteEditor({
       clearInterval(autoSaveIntervalRef.current)
       autoSaveIntervalRef.current = null
     }
-    if (!noteId || !hasEverStarted) {
+    if (!noteId || !hasEverStarted || isFinalized) {
       return
     }
 
@@ -772,7 +827,7 @@ export function NoteEditor({
         autoSaveIntervalRef.current = null
       }
     }
-  }, [noteId, hasEverStarted, fetchWithAuth])
+  }, [noteId, hasEverStarted, fetchWithAuth, isFinalized])
 
   useEffect(() => {
     return () => {
@@ -816,17 +871,89 @@ export function NoteEditor({
   }
 
   const handleRestoreIssue = (issueId: string) => {
-    setComplianceIssues(prev => 
-      prev.map(issue => 
+    setComplianceIssues(prev =>
+      prev.map(issue =>
         issue.id === issueId ? { ...issue, dismissed: false } : issue
       )
     )
   }
 
+  const applyWizardIssues = useCallback(
+    (issues?: Record<string, unknown>) => {
+      const normalized = convertWizardIssuesToCompliance(issues)
+      setComplianceIssues(normalized)
+    },
+    [convertWizardIssuesToCompliance]
+  )
+
+  const handlePreFinalizeResult = useCallback(
+    (result: PreFinalizeCheckResponse) => {
+      applyWizardIssues(result?.issues)
+    },
+    [applyWizardIssues]
+  )
+
+  const handleFinalizationError = useCallback((message: string) => {
+    if (!message) return
+    toast.error("Finalization failed", {
+      description: message
+    })
+  }, [])
+
+  const handleFinalizationClose = useCallback(
+    (result?: FinalizeNoteResponse) => {
+      setShowFinalizationWizard(false)
+      if (!result) {
+        return
+      }
+
+      setIsFinalized(true)
+      stopAudioStream()
+      setVisitStarted(false)
+      setVisitSession(prev => ({
+        ...prev,
+        status: "finalized",
+        endTime: new Date().toISOString()
+      }))
+      setVisitError(null)
+      setPausedTime(currentSessionTime)
+
+      const finalizedContent =
+        typeof result.finalizedContent === "string" && result.finalizedContent.trim().length > 0
+          ? result.finalizedContent
+          : noteContentRef.current
+
+      if (finalizedContent && finalizedContent !== noteContentRef.current) {
+        noteContentRef.current = finalizedContent
+        setNoteContent(finalizedContent)
+        if (onNoteContentChange) {
+          onNoteContentChange(finalizedContent)
+        }
+        autoSaveLastContentRef.current = finalizedContent
+        lastComplianceContentRef.current = finalizedContent
+      }
+
+      applyWizardIssues(result.issues)
+
+      toast.success("Note finalized", {
+        description: result.exportReady
+          ? "The note has been finalized and is ready for export."
+          : "The note was finalized, but some items still require review."
+      })
+    },
+    [
+      applyWizardIssues,
+      currentSessionTime,
+      onNoteContentChange,
+      stopAudioStream
+    ]
+  )
+
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
   const criticalIssues = activeIssues.filter(issue => issue.severity === 'critical')
   const hasActiveIssues = activeIssues.length > 0
+  const finalizeButtonDisabled = isFinalized || !hasRecordedTime || hasActiveIssues
   const hasCriticalIssues = criticalIssues.length > 0
 
   const recentTranscription = useMemo(() => {
@@ -861,9 +988,27 @@ export function NoteEditor({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
   }
 
-  const handleFinalize = () => {
-    setShowFinalizationWizard(true)
-  }
+  const handleFinalize = useCallback(async () => {
+    if (isFinalized) {
+      toast.info("Note already finalized", {
+        description: "Editing is locked after finalization."
+      })
+      return
+    }
+
+    try {
+      await ensureNoteCreated()
+      setShowFinalizationWizard(true)
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to open the finalization wizard."
+      toast.error("Unable to open finalization wizard", {
+        description: message
+      })
+    }
+  }, [ensureNoteCreated, isFinalized])
 
   const handleSaveDraft = () => {
     // TODO: Save draft and navigate to drafts page
@@ -871,14 +1016,21 @@ export function NoteEditor({
   }
 
   const canStartVisit = useMemo(() => {
+    if (isFinalized) {
+      return false
+    }
     return (
       patientId.trim().length > 0 &&
       encounterValidation.status === "valid"
     )
-  }, [patientId, encounterValidation.status])
+  }, [patientId, encounterValidation.status, isFinalized])
 
   const handleVisitToggle = useCallback(async () => {
     if (visitLoading) return
+    if (isFinalized) {
+      setVisitError("Note has been finalized and cannot be modified.")
+      return
+    }
     if (!visitStarted) {
       if (!canStartVisit) {
         setVisitError("Validate patient and encounter before starting a visit.")
@@ -979,11 +1131,12 @@ export function NoteEditor({
     ensureNoteCreated,
     startAudioStream,
     stopAudioStream,
-    currentSessionTime
+    currentSessionTime,
+    isFinalized
   ])
 
   const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
-  const isEditorDisabled = !visitStarted
+  const isEditorDisabled = isFinalized || !visitStarted
   const hasRecordedTime = totalDisplayTime > 0
 
   return (
@@ -1087,32 +1240,50 @@ export function NoteEditor({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button 
-                  onClick={handleFinalize}
-                  disabled={!hasRecordedTime || hasActiveIssues}
+                <Button
+                  onClick={() => {
+                    void handleFinalize()
+                  }}
+                  disabled={finalizeButtonDisabled}
                   className={`shadow-sm ${
-                    hasActiveIssues 
-                      ? 'bg-muted text-muted-foreground cursor-not-allowed' 
-                      : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                    isFinalized
+                      ? 'bg-emerald-600/10 text-emerald-700 cursor-default'
+                      : finalizeButtonDisabled
+                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
+                        : 'bg-primary hover:bg-primary/90 text-primary-foreground'
                   }`}
                 >
-                  {hasActiveIssues ? (
+                  {isFinalized ? (
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                  ) : hasActiveIssues ? (
                     <AlertTriangle className="w-4 h-4 mr-2" />
                   ) : (
                     <CheckCircle className="w-4 h-4 mr-2" />
                   )}
-                  {hasActiveIssues ? 'Issues Must Be Resolved' : 'Save & Finalize Note'}
+                  {isFinalized
+                    ? 'Note Finalized'
+                    : hasActiveIssues
+                      ? 'Issues Must Be Resolved'
+                      : 'Save & Finalize Note'}
                 </Button>
               </TooltipTrigger>
-              {hasActiveIssues && (
+              {(hasActiveIssues || isFinalized) && (
                 <TooltipContent>
-                  <div className="space-y-1">
-                    <div className="font-medium text-sm">
-                      {activeIssues.length} compliance issue{activeIssues.length !== 1 ? 's' : ''} must be resolved
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {hasCriticalIssues && `${criticalIssues.length} critical issue${criticalIssues.length !== 1 ? 's' : ''} requiring attention`}
-                    </div>
+                  <div className="space-y-1 text-xs text-muted-foreground">
+                    {isFinalized ? (
+                      <div>This note has been finalized and is now read-only.</div>
+                    ) : (
+                      <>
+                        <div className="font-medium text-sm text-foreground">
+                          {activeIssues.length} compliance issue{activeIssues.length !== 1 ? 's' : ''} must be resolved
+                        </div>
+                        {hasCriticalIssues && (
+                          <div>
+                            {criticalIssues.length} critical issue{criticalIssues.length !== 1 ? 's' : ''} requiring attention
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </TooltipContent>
               )}
@@ -1402,9 +1573,9 @@ export function NoteEditor({
 
 
       {showFinalizationWizard && (
-        <FinalizationWizard
+        <FinalizationWizardAdapter
           isOpen={showFinalizationWizard}
-          onClose={() => setShowFinalizationWizard(false)}
+          onClose={handleFinalizationClose}
           selectedCodes={selectedCodes}
           selectedCodesList={selectedCodesList}
           complianceIssues={complianceIssues}
@@ -1413,6 +1584,10 @@ export function NoteEditor({
             patientId,
             encounterId
           }}
+          fetchWithAuth={fetchWithAuth}
+          noteId={noteId}
+          onPreFinalizeResult={handlePreFinalizeResult}
+          onError={handleFinalizationError}
         />
       )}
 
