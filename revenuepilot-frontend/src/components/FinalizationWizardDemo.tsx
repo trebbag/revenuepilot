@@ -5,7 +5,7 @@ import { Badge } from "./ui/badge"
 import { FinalizationWizard } from "./FinalizationWizard"
 
 import type { FinalizeNoteResponse } from "./FinalizationWizard"
-import { 
+import {
   Shield,
   FileText,
   Code2,
@@ -14,7 +14,6 @@ import {
   Stethoscope
 } from "lucide-react"
 import { defaultFinalizationSteps } from "./finalizationSteps"
-import { Shield, FileText } from "lucide-react"
 
 export function FinalizationWizardDemo() {
   const [showWizard, setShowWizard] = useState(false)
