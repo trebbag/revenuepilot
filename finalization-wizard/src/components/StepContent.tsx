@@ -9,14 +9,17 @@ import { PatientQuestionsPopup } from './PatientQuestionsPopup';
 interface Item {
   id: number;
   title: string;
-  status: 'pending' | 'completed' | 'in-progress';
-  details: string;
-  priority: 'high' | 'medium' | 'low';
-  category: 'ICD-10' | 'CPT' | 'Public Health';
+  status?: 'pending' | 'completed' | 'in-progress' | 'confirmed';
+  details?: string;
+  priority?: 'high' | 'medium' | 'low';
+  category?: 'ICD-10' | 'CPT' | 'Public Health';
   codeType?: string;
-  why: string;
-  how: string;
-  what: string;
+  why?: string;
+  how?: string;
+  what?: string;
+  gaps?: string[];
+  evidence?: string[];
+  [key: string]: unknown;
 }
 
 interface PatientQuestion {
@@ -150,6 +153,7 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
     
     switch (status) {
       case 'completed':
+      case 'confirmed':
         return <Check size={14} className="text-emerald-600" />;
       case 'in-progress':
         return <AlertCircle size={14} className="text-amber-500" />;
@@ -240,16 +244,17 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-3">
               <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white font-medium ${
-                step.stepType === 'selected' 
-                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600' 
+                step.stepType === 'selected'
+                  ? 'bg-gradient-to-r from-emerald-500 to-teal-600'
                   : step.stepType === 'suggested'
                   ? 'bg-gradient-to-r from-violet-500 to-purple-600'
                   : 'bg-gradient-to-r from-blue-500 to-indigo-600'
               }`}>
-                {step.stepType === 'selected' ? '✓' : 
-                 step.stepType === 'selected' ? '✓' :
-                 step.stepType === 'suggested' ? <Zap size={14} className="text-white" /> : 
-                 step.id}
+                {step.stepType === 'selected'
+                  ? '✓'
+                  : step.stepType === 'suggested'
+                  ? <Zap size={14} className="text-white" />
+                  : step.id}
               </div>
               <div>
                 <div className="flex items-center gap-2">
@@ -1552,7 +1557,7 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
             <Button
               variant="outline"
               onClick={onPrevious}
-              disabled={step.id === 0}
+              disabled={step.id <= 1}
               className="flex items-center gap-2 h-11 px-5"
               size="sm"
             >
@@ -1568,7 +1573,7 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
             
             <Button
               onClick={onNext}
-              disabled={step.id === 6}
+              disabled={step.id >= 6}
               className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white h-11 px-5"
               size="sm"
             >
@@ -1591,7 +1596,7 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
             <Button
               variant="outline"
               onClick={onPrevious}
-              disabled={step.id === 0}
+              disabled={step.id <= 1}
               className="flex items-center gap-2 h-9 px-4"
               size="sm"
             >
@@ -1607,7 +1612,7 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
             
             <Button
               onClick={onNext}
-              disabled={step.id === 6}
+              disabled={step.id >= 6}
               className="flex items-center gap-2 bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white h-9 px-4"
               size="sm"
             >
