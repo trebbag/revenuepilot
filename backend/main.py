@@ -47,6 +47,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     Query,
+    Body,
 )
 import requests
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,6 +61,7 @@ from pydantic import (
     field_validator,
     model_validator,
     ConfigDict,
+    ValidationError,
 
 )
 import json, sqlite3
@@ -2051,7 +2053,7 @@ async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
     settings = UserSettings().model_dump()
-    session = SessionStateModel().model_dump()
+    session = _normalize_session_state(SessionStateModel())
     ensure_session_state_table(db_conn)
     ensure_notification_counters_table(db_conn)
     db_conn.execute(
@@ -2101,16 +2103,13 @@ async def auth_register(model: RegisterModel, request: Request):
             else None
         )
         if session_row and session_row["data"]:
-            try:
-                session = json.loads(session_row["data"])
-            except Exception:
-                session = SessionStateModel().model_dump()
+            session = _normalize_session_state(session_row["data"])
         else:
-            session = SessionStateModel().model_dump()
+            session = _normalize_session_state(SessionStateModel())
     else:
         role = "user"
         user_id = _user_id
-        session = SessionStateModel().model_dump()
+        session = _normalize_session_state(SessionStateModel())
         db_conn.execute(
             "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
             (user_id, json.dumps(session), time.time()),
@@ -2247,12 +2246,9 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
         "SELECT data FROM session_state WHERE user_id=?", (user_id,)
     ).fetchone()
     if session_row and session_row["data"]:
-        try:
-            session = json.loads(session_row["data"])
-        except Exception:
-            session = SessionStateModel().model_dump()
+        session = _normalize_session_state(session_row["data"])
     else:
-        session = SessionStateModel().model_dump()
+        session = _normalize_session_state(SessionStateModel())
 
     user_obj = {
         "id": user_id,
@@ -2786,19 +2782,160 @@ class UiPreferencesModel(BaseModel):
     uiPreferences: Dict[str, Any] = Field(default_factory=dict)
 
 
+_DEFAULT_SELECTED_CODES: Dict[str, int] = {
+    "codes": 0,
+    "prevention": 0,
+    "diagnoses": 0,
+    "differentials": 0,
+}
+
+_DEFAULT_PANEL_STATES: Dict[str, bool] = {"suggestionPanel": False}
+
+
+class SessionCodeModel(BaseModel):
+    code: str
+    type: str
+    category: str
+    description: str
+    rationale: Optional[str] = None
+    confidence: Optional[float] = None
+    reimbursement: Optional[str] = None
+    rvu: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
 class SessionStateModel(BaseModel):
     selectedCodes: Dict[str, int] = Field(
-        default_factory=lambda: {
-            "codes": 0,
-            "prevention": 0,
-            "diagnoses": 0,
-            "differentials": 0,
-        }
+        default_factory=lambda: dict(_DEFAULT_SELECTED_CODES)
     )
     panelStates: Dict[str, StrictBool] = Field(
-        default_factory=lambda: {"suggestionPanel": False}
+        default_factory=lambda: dict(_DEFAULT_PANEL_STATES)
     )
     currentNote: Optional[Dict[str, Any]] = None
+    selectedCodesList: List[SessionCodeModel] = Field(default_factory=list)
+    addedCodes: List[str] = Field(default_factory=list)
+    isSuggestionPanelOpen: bool = False
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_payload(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        data = dict(values)
+        panel_states = data.get("panelStates")
+        if "isSuggestionPanelOpen" not in data and isinstance(panel_states, dict):
+            suggestion = panel_states.get("suggestionPanel")
+            if isinstance(suggestion, bool):
+                data["isSuggestionPanelOpen"] = suggestion
+            elif isinstance(suggestion, (int, float)):
+                data["isSuggestionPanelOpen"] = bool(suggestion)
+            elif isinstance(suggestion, str):
+                lowered = suggestion.strip().lower()
+                if lowered in {"1", "true", "yes", "on"}:
+                    data["isSuggestionPanelOpen"] = True
+                elif lowered in {"0", "false", "no", "off"}:
+                    data["isSuggestionPanelOpen"] = False
+        if "selectedCodesList" not in data or not isinstance(data.get("selectedCodesList"), (list, tuple)):
+            data["selectedCodesList"] = []
+        if "addedCodes" not in data or not isinstance(data.get("addedCodes"), (list, tuple)):
+            data["addedCodes"] = []
+        return data
+
+    @field_validator("panelStates", mode="before")
+    @classmethod
+    def _normalize_panel_states(cls, value: Any) -> Dict[str, bool]:
+        if not isinstance(value, dict):
+            return dict(_DEFAULT_PANEL_STATES)
+        normalized: Dict[str, bool] = {}
+        for key, raw in value.items():
+            normalized[key] = bool(raw)
+        if "suggestionPanel" not in normalized:
+            normalized["suggestionPanel"] = False
+        return normalized
+
+    @field_validator("selectedCodes", mode="before")
+    @classmethod
+    def _normalize_selected_codes(cls, value: Any) -> Dict[str, int]:
+        result = dict(_DEFAULT_SELECTED_CODES)
+        if isinstance(value, dict):
+            for key, raw in value.items():
+                try:
+                    result[key] = int(raw)
+                except (TypeError, ValueError):
+                    continue
+        return result
+
+    @field_validator("selectedCodesList", mode="before")
+    @classmethod
+    def _ensure_list(cls, value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return []
+
+    @field_validator("addedCodes", mode="before")
+    @classmethod
+    def _normalize_added_codes(cls, value: Any) -> List[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        seen: Set[str] = set()
+        result: List[str] = []
+        for raw in value:
+            if raw is None:
+                continue
+            text = str(raw)
+            if text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    @model_validator(mode="after")
+    def _sync_fields(self) -> "SessionStateModel":
+        panel_states = {**self.panelStates}
+        panel_states["suggestionPanel"] = bool(self.isSuggestionPanelOpen)
+        self.panelStates = panel_states
+        # Ensure the canonical keys remain in selectedCodes even if omitted in payload
+        normalized_counts = dict(_DEFAULT_SELECTED_CODES)
+        for key, value in self.selectedCodes.items():
+            try:
+                normalized_counts[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        self.selectedCodes = normalized_counts
+        return self
+
+
+def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = None
+    if isinstance(payload, SessionStateModel):
+        model = payload
+    else:
+        data = payload if isinstance(payload, dict) else {}
+        try:
+            model = SessionStateModel.model_validate(data)
+        except ValidationError:
+            model = SessionStateModel()
+    normalized = model.model_dump()
+    suggestion = bool(normalized.get("isSuggestionPanelOpen", False))
+    panel_states_raw = normalized.get("panelStates")
+    if not isinstance(panel_states_raw, dict):
+        panel_states = dict(_DEFAULT_PANEL_STATES)
+    else:
+        panel_states = {key: bool(value) for key, value in panel_states_raw.items()}
+    panel_states["suggestionPanel"] = suggestion
+    normalized["panelStates"] = panel_states
+    return normalized
 
 
 @app.get("/api/user/profile")
@@ -2887,34 +3024,57 @@ async def put_ui_preferences(
 @app.get("/api/user/session")
 async def get_user_session(user=Depends(require_role("user"))):
     row = db_conn.execute(
-        "SELECT ss.data FROM session_state ss JOIN users u ON ss.user_id = u.id WHERE u.username=?",
+        "SELECT ss.user_id, ss.data FROM session_state ss JOIN users u ON ss.user_id = u.id WHERE u.username=?",
         (user["sub"],),
     ).fetchone()
-    if row and row["data"]:
-        try:
-            data = json.loads(row["data"])
-        except Exception:
-            data = SessionStateModel().model_dump()
-    else:
-        data = SessionStateModel().model_dump()
-    return data
+    if row:
+        raw_dict: Optional[Dict[str, Any]] = None
+        if row["data"]:
+            try:
+                raw_dict = json.loads(row["data"])
+            except Exception:
+                raw_dict = None
+        normalized = _normalize_session_state(raw_dict if raw_dict is not None else row["data"])
+        if row["user_id"] is not None and raw_dict != normalized:
+            db_conn.execute(
+                "UPDATE session_state SET data=?, updated_at=? WHERE user_id=?",
+                (json.dumps(normalized), time.time(), row["user_id"]),
+            )
+            db_conn.commit()
+        return normalized
+    return _normalize_session_state(SessionStateModel())
 
 
 @app.put("/api/user/session")
 async def put_user_session(
-    model: SessionStateModel, user=Depends(require_role("user"))
+    payload: Dict[str, Any] = Body(default_factory=dict),
+    user=Depends(require_role("user")),
 ) -> Dict[str, Any]:
     row = db_conn.execute(
         "SELECT id FROM users WHERE username=?", (user["sub"],),
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
+    user_id = row["id"]
+    existing_row = db_conn.execute(
+        "SELECT data FROM session_state WHERE user_id=?", (user_id,),
+    ).fetchone()
+    if existing_row and existing_row["data"]:
+        current_state = _normalize_session_state(existing_row["data"])
+    else:
+        current_state = _normalize_session_state(SessionStateModel())
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid session payload")
+    merged_state = copy.deepcopy(current_state)
+    for key, value in payload.items():
+        merged_state[key] = value
+    normalized = _normalize_session_state(merged_state)
     db_conn.execute(
         "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
-        (row["id"], json.dumps(model.model_dump()), time.time()),
+        (user_id, json.dumps(normalized), time.time()),
     )
     db_conn.commit()
-    return model.model_dump()
+    return normalized
 
 
 @app.get("/api/notifications/count")
