@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react"
+import { apiFetch, apiFetchJson } from "../lib/api"
 import { Button } from "./ui/button"
 import { Separator } from "./ui/separator"
 import { Textarea } from "./ui/textarea"
@@ -368,14 +369,11 @@ export function RichTextEditor({
       try {
         setTemplatesLoading(true)
         setTemplatesError(null)
-        const response = await fetch("/api/templates/list", {
-          method: "GET",
-          signal: controller.signal,
-        })
-        if (!response.ok) {
-          throw new Error(`Failed to load templates (${response.status})`)
-        }
-        const data = await response.json()
+        const data =
+          (await apiFetchJson<any[]>("/api/templates/list", {
+            signal: controller.signal,
+            fallbackValue: []
+          })) ?? []
         if (!isActive || !isMountedRef.current) return
         const mapped: TemplateOption[] = Array.isArray(data)
           ? data.map((tpl: any, index: number) => ({
@@ -417,14 +415,11 @@ export function RichTextEditor({
       const currentNoteId = noteIdRef.current
       if (!currentNoteId) return
       try {
-        const response = await fetch(`/api/notes/versions/${encodeURIComponent(currentNoteId)}`, {
-          method: "GET",
-          signal,
-        })
-        if (!response.ok) {
-          throw new Error(`Failed to load versions (${response.status})`)
-        }
-        const payload = await response.json()
+        const payload =
+          (await apiFetchJson<any[]>(`/api/notes/versions/${encodeURIComponent(currentNoteId)}`, {
+            signal,
+            fallbackValue: []
+          })) ?? []
         if (!isMountedRef.current) return
         const normalized: NoteVersion[] = Array.isArray(payload)
           ? payload.map((entry: any, index: number) => ({
@@ -490,12 +485,9 @@ export function RichTextEditor({
       }
 
       try {
-        const response = await fetch("/api/notes/auto-save", {
+        const response = await apiFetch("/api/notes/auto-save", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ noteId: currentNoteId, content: text }),
+          jsonBody: { noteId: currentNoteId, content: text }
         })
         if (!response.ok) {
           throw new Error(`Failed to auto-save note (${response.status})`)

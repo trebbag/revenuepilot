@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react"
+import { apiFetch, apiFetchJson } from "../lib/api"
 import { useAuth } from "./AuthContext"
 
 type CodeCategory = "codes" | "prevention" | "diagnoses" | "differentials"
@@ -292,50 +293,6 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
   }
 }
 
-async function fetchJson<T>(url: string, signal: AbortSignal): Promise<T | null> {
-  const response = await fetch(url, {
-    method: "GET",
-    credentials: "include",
-    signal
-  })
-
-  if (response.status === 204 || response.status === 404) {
-    return null
-  }
-
-  if (!response.ok) {
-    throw new Error(`Request to ${url} failed with status ${response.status}`)
-  }
-
-  const text = await response.text()
-  if (!text) {
-    return null
-  }
-
-  try {
-    return JSON.parse(text) as T
-  } catch (error) {
-    console.error(`Failed to parse response from ${url}`, error)
-    return null
-  }
-}
-
-async function persistJson(url: string, payload: unknown, signal: AbortSignal) {
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    credentials: "include",
-    body: JSON.stringify(payload),
-    signal
-  })
-
-  if (!response.ok && response.status !== 204) {
-    throw new Error(`Failed to persist data to ${url}: ${response.status}`)
-  }
-}
-
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const auth = useAuth()
   const [state, dispatch] = useReducer(sessionReducer, undefined, createInitialSessionState)
@@ -372,8 +329,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const [sessionData, layoutData] = await Promise.all([
-        fetchJson<Partial<SessionState>>("/api/user/session", controller.signal),
-        fetchJson<Partial<LayoutPreferences>>("/api/user/layout-preferences", controller.signal)
+        apiFetchJson<Partial<SessionState>>("/api/user/session", {
+          signal: controller.signal
+        }),
+        apiFetchJson<Partial<LayoutPreferences>>("/api/user/layout-preferences", {
+          signal: controller.signal
+        })
       ])
 
       dispatch({
@@ -431,7 +392,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController()
     const timeout = window.setTimeout(() => {
       startSync()
-      persistJson("/api/user/session", sessionPayload, controller.signal)
+      apiFetch("/api/user/session", {
+        method: "PUT",
+        jsonBody: sessionPayload,
+        signal: controller.signal
+      })
+        .then(response => {
+          if (!response.ok && response.status !== 204) {
+            throw new Error(`Failed to persist session state: ${response.status}`)
+          }
+        })
         .catch(error => {
           if ((error as DOMException)?.name !== "AbortError") {
             console.error("Failed to persist session state", error)
@@ -456,7 +426,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     const controller = new AbortController()
     const timeout = window.setTimeout(() => {
       startSync()
-      persistJson("/api/user/layout-preferences", layoutPayload, controller.signal)
+      apiFetch("/api/user/layout-preferences", {
+        method: "PUT",
+        jsonBody: layoutPayload,
+        signal: controller.signal
+      })
+        .then(response => {
+          if (!response.ok && response.status !== 204) {
+            throw new Error(`Failed to persist layout preferences: ${response.status}`)
+          }
+        })
         .catch(error => {
           if ((error as DOMException)?.name !== "AbortError") {
             console.error("Failed to persist layout preferences", error)

@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { apiFetch } from "../lib/api"
 
 export type AuthStatus = "authenticated" | "unauthenticated"
 
@@ -71,10 +72,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const response = await fetch("/api/auth/status", {
+        const response = await apiFetch("/api/auth/status", {
           method: "GET",
-          credentials: "include",
-          signal: controller.signal
+          signal: controller.signal,
+          // Skip automatic JSON content-type since this is a simple GET
+          json: false
         })
 
         if (response.status === 401) {
@@ -126,9 +128,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await fetch("/api/auth/logout", {
+      await apiFetch("/api/auth/logout", {
         method: "POST",
-        credentials: "include"
+        json: false
       })
     } catch (error) {
       if ((error as DOMException)?.name !== "AbortError") {
