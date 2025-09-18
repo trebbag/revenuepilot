@@ -1,5 +1,7 @@
 import { useCallback, useMemo } from "react"
 
+import "finalization-wizard/dist/style.css"
+
 import {
   FinalizationWizard,
   type FinalizeRequest,

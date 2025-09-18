@@ -11,7 +11,7 @@
   "main": "electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm --workspace finalization-wizard run build && vite build",
     "preview": "vite preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
