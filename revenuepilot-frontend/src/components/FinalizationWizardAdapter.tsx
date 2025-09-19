@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 
 import "finalization-wizard/dist/style.css"
 
@@ -14,7 +14,7 @@ import {
 
 type FetchWithAuth = (
   input: RequestInfo | URL,
-  init?: (RequestInit & { json?: boolean }) | undefined
+  init?: (RequestInit & { json?: boolean; jsonBody?: unknown }) | undefined
 ) => Promise<Response>
 
 type ComplianceLike = {
@@ -93,6 +93,56 @@ const COMPLIANCE_SEVERITY_MAP: Record<string, WizardComplianceItem["severity"]> 
   info: "low"
 }
 
+interface WorkflowStepStateLike {
+  step?: number | string | null
+  status?: string | null
+  progress?: number | null
+}
+
+interface WorkflowSessionResponsePayload {
+  sessionId: string
+  encounterId?: string | null
+  patientId?: string | null
+  noteId?: string | null
+  currentStep?: number | null
+  stepStates?: WorkflowStepStateLike[] | Record<string, WorkflowStepStateLike>
+  selectedCodes?: SessionCodeLike[]
+  complianceIssues?: ComplianceLike[]
+  patientMetadata?: Record<string, unknown>
+  noteContent?: string | null
+  reimbursementSummary?: {
+    total?: number
+    codes?: Array<Record<string, unknown>>
+  }
+  auditTrail?: Array<Record<string, unknown>>
+  patientQuestions?: Array<Record<string, unknown>>
+  blockingIssues?: string[]
+  sessionProgress?: Record<string, unknown>
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+interface NoteContentUpdateResponsePayload {
+  encounterId?: string | null
+  sessionId: string
+  noteContent: string
+  reimbursementSummary: {
+    total: number
+    codes: Array<Record<string, unknown>>
+  }
+  validation: PreFinalizeCheckResponse
+  session: WorkflowSessionResponsePayload
+}
+
+interface WorkflowAttestationResponsePayload {
+  session: WorkflowSessionResponsePayload
+}
+
+interface DispatchResponsePayload {
+  session: WorkflowSessionResponsePayload
+  result: FinalizeResult
+}
+
 const sanitizeString = (value: unknown): string | undefined => {
   if (typeof value !== "string") {
     return undefined
@@ -124,15 +174,25 @@ const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
 
     const base: WizardCodeItem = {
       id: identifier,
-      code: code,
+      code: code ?? undefined,
       title: description ?? code ?? `Code ${index + 1}`,
-      description: description,
-      details: rationale,
-      status: "confirmed",
-      codeType: type ?? (classification === "code" ? "CPT" : "ICD-10"),
-      classification,
-      category,
+      description: description ?? undefined,
+      status: sanitizeString(item.status as string | undefined) ?? "pending",
+      details: description ?? rationale ?? undefined,
+      codeType: type ?? undefined,
+      docSupport: sanitizeString(item.docSupport as string | undefined),
+      stillValid: item.stillValid as boolean | undefined,
       confidence: typeof item.confidence === "number" ? item.confidence : undefined,
+      aiReasoning: rationale ?? undefined,
+      evidence: Array.isArray(item.evidence)
+        ? item.evidence.filter(entry => typeof entry === "string" && entry.trim().length > 0)
+        : undefined,
+      gaps: Array.isArray(item.gaps)
+        ? item.gaps.filter(entry => typeof entry === "string" && entry.trim().length > 0)
+        : undefined,
+      tags: Array.isArray(item.tags)
+        ? item.tags.filter(entry => typeof entry === "string" && entry.trim().length > 0)
+        : undefined,
       reimbursement: sanitizeString(item.reimbursement),
       rvu: sanitizeString(item.rvu)
     }
@@ -208,43 +268,249 @@ export function FinalizationWizardAdapter({
   onPreFinalizeResult,
   onError
 }: FinalizationWizardAdapterProps) {
+  const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(null)
+
+  const encounterId = useMemo(() => {
+    const fromSession = sessionData?.encounterId
+    if (typeof fromSession === "string" && fromSession.trim().length > 0) {
+      return fromSession.trim()
+    }
+    if (typeof patientInfo?.encounterId === "string" && patientInfo.encounterId.trim().length > 0) {
+      return patientInfo.encounterId.trim()
+    }
+    return "draft-encounter"
+  }, [patientInfo?.encounterId, sessionData?.encounterId])
+
+  const patientMetadataPayload = useMemo(() => {
+    const payload: Record<string, unknown> = {}
+    if (typeof patientInfo?.patientId === "string" && patientInfo.patientId.trim()) {
+      payload.patientId = patientInfo.patientId.trim()
+    }
+    if (typeof patientInfo?.encounterId === "string" && patientInfo.encounterId.trim()) {
+      payload.encounterId = patientInfo.encounterId.trim()
+    }
+    if (typeof patientInfo?.name === "string" && patientInfo.name.trim()) {
+      payload.name = patientInfo.name.trim()
+    }
+    if (typeof patientInfo?.sex === "string" && patientInfo.sex.trim()) {
+      payload.sex = patientInfo.sex.trim()
+    }
+    if (typeof patientInfo?.encounterDate === "string" && patientInfo.encounterDate.trim()) {
+      payload.encounterDate = patientInfo.encounterDate.trim()
+    }
+    if (typeof patientInfo?.age === "number" && Number.isFinite(patientInfo.age)) {
+      payload.age = patientInfo.age
+    }
+    return payload
+  }, [patientInfo])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+
+    let cancelled = false
+    const initialise = async () => {
+      const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
+      const payload: Record<string, unknown> = {
+        encounterId,
+        patientId: typeof patientInfo?.patientId === "string" ? patientInfo.patientId.trim() : sessionData?.patientId ?? null,
+        noteId: trimmedNoteId || sessionData?.noteId || undefined,
+        noteContent: noteContent ?? sessionData?.noteContent ?? "",
+        selectedCodes: Array.isArray(selectedCodesList) ? selectedCodesList : [],
+        complianceIssues: Array.isArray(complianceIssues) ? complianceIssues : [],
+        patientMetadata: { ...patientMetadataPayload }
+      }
+
+      if (sessionData?.sessionId) {
+        payload.sessionId = sessionData.sessionId
+      }
+
+      try {
+        const response = await fetchWithAuth("/api/v1/workflow/sessions", {
+          method: "POST",
+          json: true,
+          body: JSON.stringify(payload)
+        })
+        if (!response.ok) {
+          throw new Error(`Failed to initialise workflow session (${response.status})`)
+        }
+        const data = (await response.json()) as WorkflowSessionResponsePayload
+        if (!cancelled) {
+          setSessionData(data)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "Unable to initialise the finalization workflow session."
+          onError?.(message, error)
+        }
+      }
+    }
+
+    void initialise()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    complianceIssues,
+    encounterId,
+    fetchWithAuth,
+    isOpen,
+    noteContent,
+    noteId,
+    onError,
+    patientInfo?.patientId,
+    patientMetadataPayload,
+    selectedCodesList,
+    sessionData?.sessionId
+  ])
+
   const selectedWizardCodes = useMemo(
-    () => toWizardCodeItems(Array.isArray(selectedCodesList) ? selectedCodesList : []),
-    [selectedCodesList]
+    () =>
+      toWizardCodeItems(
+        Array.isArray(sessionData?.selectedCodes) && sessionData.selectedCodes.length > 0
+          ? sessionData.selectedCodes
+          : Array.isArray(selectedCodesList)
+            ? selectedCodesList
+            : []
+      ),
+    [selectedCodesList, sessionData?.selectedCodes]
   )
 
   const complianceWizardItems = useMemo(
-    () => toWizardComplianceItems(Array.isArray(complianceIssues) ? complianceIssues : []),
-    [complianceIssues]
+    () =>
+      toWizardComplianceItems(
+        Array.isArray(sessionData?.complianceIssues) && sessionData.complianceIssues.length > 0
+          ? sessionData.complianceIssues
+          : Array.isArray(complianceIssues)
+            ? complianceIssues
+            : []
+      ),
+    [complianceIssues, sessionData?.complianceIssues]
   )
 
-  const patientMetadata = useMemo(() => toPatientMetadata(patientInfo), [patientInfo])
+  const patientMetadata = useMemo(() => {
+    if (sessionData?.patientMetadata && typeof sessionData.patientMetadata === "object") {
+      const metadata = sessionData.patientMetadata
+      const mapped: PatientInfoInput = {
+        patientId: typeof metadata.patientId === "string" ? metadata.patientId : undefined,
+        encounterId: typeof metadata.encounterId === "string" ? metadata.encounterId : undefined,
+        name: typeof metadata.name === "string" ? metadata.name : undefined,
+        age: typeof metadata.age === "number" ? metadata.age : undefined,
+        sex: typeof metadata.sex === "string" ? metadata.sex : undefined,
+        encounterDate: typeof metadata.encounterDate === "string" ? metadata.encounterDate : undefined
+      }
+      return toPatientMetadata(mapped)
+    }
+    return toPatientMetadata(patientInfo)
+  }, [patientInfo, sessionData?.patientMetadata])
+
+  const sessionStepOverrides = useMemo(() => {
+    const overrides: WizardStepOverride[] = []
+    const rawStates = sessionData?.stepStates
+    const listStates: WorkflowStepStateLike[] = Array.isArray(rawStates)
+      ? rawStates
+      : rawStates && typeof rawStates === "object"
+        ? Object.values(rawStates)
+        : []
+
+    listStates.forEach(state => {
+      const stepId = typeof state.step === "number" ? state.step : Number(state.step)
+      if (!Number.isFinite(stepId)) {
+        return
+      }
+      const status = typeof state.status === "string" ? state.status.toLowerCase() : ""
+      let description: string | undefined
+      if (status === "completed") {
+        description = "Step completed"
+      } else if (status === "in_progress") {
+        description = "In progress"
+      } else if (status === "blocked") {
+        description = "Attention required"
+      } else if (status === "not_started") {
+        description = "Not started"
+      }
+
+      if (typeof state.progress === "number" && Number.isFinite(state.progress)) {
+        const suffix = `${Math.max(0, Math.min(100, Math.round(state.progress)))}%`
+        description = description ? `${description} • ${suffix}` : `Progress ${suffix}`
+      }
+
+      overrides.push({ id: stepId, description })
+    })
+
+    return overrides
+  }, [sessionData?.stepStates])
+
+  const mergedStepOverrides = useMemo(() => {
+    const map = new Map<number, WizardStepOverride>()
+    if (Array.isArray(stepOverrides)) {
+      stepOverrides.forEach(override => {
+        if (override && typeof override.id === "number") {
+          map.set(override.id, { ...override })
+        }
+      })
+    }
+    sessionStepOverrides.forEach(override => {
+      if (override && typeof override.id === "number") {
+        const existing = map.get(override.id)
+        map.set(override.id, { ...existing, ...override })
+      }
+    })
+    return Array.from(map.values())
+  }, [sessionStepOverrides, stepOverrides])
 
   const handleFinalize = useCallback(
     async (request: FinalizeRequest): Promise<FinalizeResult> => {
+      const activeSessionId = sessionData?.sessionId
+      if (!activeSessionId) {
+        throw new Error("No active workflow session is available for finalization.")
+      }
+
       const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
       const payloadWithContext: FinalizeRequestWithContext = trimmedNoteId
         ? { ...request, noteId: trimmedNoteId }
         : request
 
+      const providerName =
+        sessionData?.patientMetadata && typeof sessionData.patientMetadata === "object" &&
+        typeof (sessionData.patientMetadata as Record<string, unknown>).providerName === "string"
+          ? ((sessionData.patientMetadata as Record<string, unknown>).providerName as string)
+          : undefined
+
       try {
-        const response = await fetchWithAuth("/api/notes/pre-finalize-check", {
-          method: "POST",
-          body: JSON.stringify(payloadWithContext),
-          json: true
+        const noteResponse = await fetchWithAuth(`/api/v1/notes/${encodeURIComponent(encounterId)}/content`, {
+          method: "PUT",
+          json: true,
+          body: JSON.stringify({
+            ...payloadWithContext,
+            sessionId: activeSessionId,
+            encounterId
+          })
         })
 
-        if (!response.ok) {
-          throw new Error(`Pre-finalization check failed (${response.status})`)
+        if (!noteResponse.ok) {
+          throw new Error(`Note update failed (${noteResponse.status})`)
         }
 
-        const data = (await response.json()) as PreFinalizeCheckResponse
-        onPreFinalizeResult?.(data)
+        const data = (await noteResponse.json()) as NoteContentUpdateResponsePayload
+        setSessionData(data.session)
+        const validation = data.validation ?? {
+          canFinalize: true,
+          issues: {},
+          estimatedReimbursement: data.reimbursementSummary?.total ?? 0,
+          reimbursementSummary: data.reimbursementSummary
+        }
+        onPreFinalizeResult?.(validation)
 
-        if (!data?.canFinalize) {
+        if (!validation?.canFinalize) {
           const issueMessages: string[] = []
-          if (data?.issues && typeof data.issues === "object") {
-            for (const value of Object.values(data.issues)) {
+          if (validation?.issues && typeof validation.issues === "object") {
+            for (const value of Object.values(validation.issues)) {
               if (!Array.isArray(value)) continue
               for (const entry of value) {
                 if (typeof entry === "string" && entry.trim().length > 0) {
@@ -263,33 +529,57 @@ export function FinalizationWizardAdapter({
         const message =
           error instanceof Error
             ? error.message
-            : "Unable to validate the note before finalization."
+            : "Unable to update the note before finalization."
         onError?.(message, error)
         throw error
       }
 
       try {
-        const response = await fetchWithAuth("/api/notes/finalize", {
+        const attestResponse = await fetchWithAuth(`/api/v1/workflow/${encodeURIComponent(activeSessionId)}/step5/attest`, {
           method: "POST",
-          body: JSON.stringify(payloadWithContext),
-          json: true
+          json: true,
+          body: JSON.stringify({
+            encounterId,
+            sessionId: activeSessionId,
+            attestedBy: providerName ?? undefined,
+            statement: "Attestation confirmed via finalization wizard"
+          })
         })
 
-        if (!response.ok) {
-          let errorMessage = `Finalization failed (${response.status})`
+        if (!attestResponse.ok) {
+          throw new Error(`Attestation failed (${attestResponse.status})`)
+        }
+
+        const attestData = (await attestResponse.json()) as WorkflowAttestationResponsePayload
+        setSessionData(attestData.session)
+
+        const dispatchResponse = await fetchWithAuth(`/api/v1/workflow/${encodeURIComponent(activeSessionId)}/step6/dispatch`, {
+          method: "POST",
+          json: true,
+          body: JSON.stringify({
+            encounterId,
+            sessionId: activeSessionId,
+            destination: "ehr",
+            deliveryMethod: "wizard"
+          })
+        })
+
+        if (!dispatchResponse.ok) {
+          let errorMessage = `Dispatch failed (${dispatchResponse.status})`
           try {
-            const errorBody = await response.json()
+            const errorBody = await dispatchResponse.json()
             if (typeof errorBody?.detail === "string" && errorBody.detail.trim().length > 0) {
               errorMessage = errorBody.detail
             }
           } catch {
-            // Ignore JSON parse errors and fall back to the default message
+            // Ignore JSON parsing errors.
           }
           throw new Error(errorMessage)
         }
 
-        const data = (await response.json()) as FinalizeResult
-        return data
+        const dispatchData = (await dispatchResponse.json()) as DispatchResponsePayload
+        setSessionData(dispatchData.session)
+        return dispatchData.result
       } catch (error) {
         const message =
           error instanceof Error
@@ -299,7 +589,15 @@ export function FinalizationWizardAdapter({
         throw error
       }
     },
-    [fetchWithAuth, noteId, onError, onPreFinalizeResult]
+    [
+      encounterId,
+      fetchWithAuth,
+      noteId,
+      onError,
+      onPreFinalizeResult,
+      sessionData?.patientMetadata,
+      sessionData?.sessionId
+    ]
   )
 
   const handleClose = useCallback(
@@ -324,9 +622,9 @@ export function FinalizationWizardAdapter({
           selectedCodes={selectedWizardCodes}
           suggestedCodes={[]}
           complianceItems={complianceWizardItems}
-          noteContent={noteContent ?? ""}
+          noteContent={sessionData?.noteContent ?? noteContent ?? ""}
           patientMetadata={patientMetadata}
-          stepOverrides={stepOverrides}
+          stepOverrides={mergedStepOverrides.length > 0 ? mergedStepOverrides : stepOverrides}
           onFinalize={handleFinalize}
           onClose={handleClose}
         />

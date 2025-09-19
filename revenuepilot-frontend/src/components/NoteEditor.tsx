@@ -908,6 +908,40 @@ export function NoteEditor({
     ]
   )
 
+  const patientDisplayName = useMemo(() => {
+    if (selectedPatient) {
+      if (typeof selectedPatient.name === "string" && selectedPatient.name.trim().length > 0) {
+        return selectedPatient.name.trim()
+      }
+      const combined = `${selectedPatient.firstName ?? ""} ${selectedPatient.lastName ?? ""}`.trim()
+      if (combined.length > 0) {
+        return combined
+      }
+    }
+    return patientId.trim().length > 0 ? patientId.trim() : undefined
+  }, [patientId, selectedPatient])
+
+  const patientAgeValue = useMemo(() => {
+    if (typeof selectedPatient?.age === "number" && Number.isFinite(selectedPatient.age)) {
+      return selectedPatient.age
+    }
+    return undefined
+  }, [selectedPatient?.age])
+
+  const patientSexValue = useMemo(() => {
+    if (typeof selectedPatient?.gender === "string" && selectedPatient.gender.trim().length > 0) {
+      return selectedPatient.gender.trim()
+    }
+    return undefined
+  }, [selectedPatient?.gender])
+
+  const encounterDateValue = useMemo(() => {
+    if (typeof visitSession?.startTime === "string" && visitSession.startTime.trim().length > 0) {
+      return visitSession.startTime.trim()
+    }
+    return undefined
+  }, [visitSession?.startTime])
+
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
   const criticalIssues = activeIssues.filter(issue => issue.severity === 'critical')
@@ -1539,8 +1573,12 @@ export function NoteEditor({
           complianceIssues={complianceIssues}
           noteContent={noteContent}
           patientInfo={{
-            patientId,
-            encounterId
+            patientId: patientId.trim().length > 0 ? patientId.trim() : undefined,
+            encounterId,
+            name: patientDisplayName ?? null,
+            age: patientAgeValue ?? null,
+            sex: patientSexValue ?? null,
+            encounterDate: encounterDateValue ?? null
           }}
           fetchWithAuth={fetchWithAuth}
           noteId={noteId}
