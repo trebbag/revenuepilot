@@ -1,224 +1,193 @@
-import React from 'react';
+import React from 'react'
 import {
   FinalizationWizard,
   type FinalizeResult,
-  type FinalizationWizardProps,
-} from './components/WorkflowWizard';
+  type FinalizationWizardProps
+} from './components/WorkflowWizard'
 
-const selectedCodesSample = [
-  {
-    id: 1,
-    code: 'I25.10',
-    title: 'I25.10 - Atherosclerotic heart disease',
-    status: 'confirmed',
-    details: 'Primary diagnosis confirmed with supporting documentation',
-    codeType: 'ICD-10',
-    docSupport: 'strong',
-    stillValid: true,
-    confidence: 95,
-    gaps: [],
-    evidence: ['cardiac evaluation warranted', 'smoking history', 'age'],
-    classification: 'diagnosis',
-  },
-  {
-    id: 2,
-    code: 'Z87.891',
-    title: 'Z87.891 - Personal history of nicotine dependence',
-    status: 'pending',
-    details: 'Review patient history and confirm current status',
-    codeType: 'ICD-10',
-    docSupport: 'moderate',
-    stillValid: true,
-    confidence: 78,
-    gaps: ['Current smoking status unclear', 'Pack-year history incomplete'],
-    evidence: ['smoking 1 pack per day for 30 years', 'Smoking cessation counseling'],
-    classification: ['diagnosis', 'prevention'],
-  },
-  {
-    id: 3,
-    code: 'E78.5',
-    title: 'E78.5 - Hyperlipidemia, unspecified',
-    status: 'confirmed',
-    details: 'Lab values support this diagnosis',
-    codeType: 'ICD-10',
-    docSupport: 'strong',
-    stillValid: true,
-    confidence: 88,
-    gaps: ['Specific lipid values not documented'],
-    evidence: ['lipid profile', 'Basic metabolic panel'],
-    classification: 'diagnosis',
-  },
-  {
-    id: 4,
-    code: 'I10',
-    title: 'I10 - Essential hypertension',
-    status: 'confirmed',
-    details: 'Documented with current BP readings',
-    codeType: 'ICD-10',
-    docSupport: 'strong',
-    stillValid: true,
-    confidence: 92,
-    gaps: [],
-    evidence: ['CARDIOVASCULAR:', 'Regular rate and rhythm'],
-    classification: 'diagnosis',
-  },
-];
+type FinalizeRequestInput = Parameters<NonNullable<FinalizationWizardProps['onFinalize']>>[0]
 
-const suggestedCodesSample = [
-  {
-    id: 1,
-    code: 'Z13.6',
-    title: 'Z13.6 - Encounter for screening for cardiovascular disorders',
-    status: 'pending',
-    details: 'AI suggests adding this screening code for completeness',
-    codeType: 'ICD-10',
-    docSupport: 'moderate',
-    confidence: 82,
-    aiReasoning:
-      'Patient age and risk factors indicate appropriate cardiovascular screening',
-    evidence: ['EKG to rule out cardiac abnormalities', 'stress testing'],
-    suggestedBy: 'Clinical Decision Support',
-    classification: ['prevention', 'diagnosis'],
-  },
-  {
-    id: 2,
-    code: 'F17.210',
-    title: 'F17.210 - Nicotine dependence, cigarettes, uncomplicated',
-    status: 'pending',
-    details: 'More specific than current history code - consider upgrading',
-    codeType: 'ICD-10',
-    docSupport: 'strong',
-    confidence: 91,
-    aiReasoning:
-      'Current smoking documented with specific frequency and duration',
-    evidence: ['smoking 1 pack per day for 30 years', 'Smoking cessation counseling'],
-    suggestedBy: 'Coding Optimization',
-    classification: ['diagnosis', 'prevention'],
-  },
-  {
-    id: 3,
-    code: 'Z68.36',
-    title: 'Z68.36 - Body mass index 36.0-36.9, adult',
-    status: 'pending',
-    details: 'BMI documentation supports billing and care coordination',
-    codeType: 'ICD-10',
-    docSupport: 'strong',
-    confidence: 94,
-    aiReasoning:
-      'BMI calculated from documented height/weight measurements',
-    evidence: ['PHYSICAL EXAMINATION:', 'GENERAL:'],
-    suggestedBy: 'Documentation Enhancement',
-    classification: ['diagnosis', 'prevention'],
-  },
-  {
-    id: 4,
-    code: '99213',
-    title: '99213 - Office visit, established patient, low complexity',
-    status: 'pending',
-    details: 'Appropriate E/M level based on documentation complexity',
-    codeType: 'CPT',
-    docSupport: 'strong',
-    confidence: 87,
-    aiReasoning:
-      'Documentation supports this level of medical decision making',
-    evidence: ['PLAN:', 'Consider stress testing'],
-    suggestedBy: 'Billing Optimization',
-    classification: 'code',
-  },
-  {
-    id: 5,
-    code: '80061',
-    title: '80061 - Lipid panel',
-    status: 'pending',
-    details: 'Lab work mentioned in plan should be coded',
-    codeType: 'CPT',
-    docSupport: 'moderate',
-    confidence: 76,
-    aiReasoning: 'Lab orders documented in assessment and plan',
-    evidence: ['lipid profile', 'Basic metabolic panel'],
-    suggestedBy: 'Procedure Capture',
-    classification: ['code', 'prevention'],
-  },
-  {
-    id: 6,
-    code: '93000',
-    title: '93000 - Electrocardiogram, routine ECG with interpretation',
-    status: 'pending',
-    details: 'ECG mentioned in plan should be captured for billing',
-    codeType: 'CPT',
-    docSupport: 'strong',
-    confidence: 85,
-    aiReasoning: 'ECG explicitly mentioned in treatment plan',
-    evidence: ['EKG to rule out cardiac abnormalities'],
-    suggestedBy: 'Procedure Capture',
-    classification: 'code',
-  },
-];
+type SessionCodeLike = Record<string, unknown>
 
-const complianceItemsSample = [
-  {
-    id: 1,
-    title: 'Attestation of patient counseling',
-    description: 'Document smoking cessation counseling details',
-    status: 'pending',
-    severity: 'medium',
-  },
-  {
-    id: 2,
-    title: 'Follow-up scheduling',
-    description: 'Ensure follow-up appointment within 2 weeks',
-    status: 'pending',
-    severity: 'low',
-  },
-  {
-    id: 3,
-    title: 'Quality measure: blood pressure control',
-    description: 'Confirm most recent blood pressure reading',
-    status: 'pending',
-    severity: 'high',
-  },
-];
+type SessionStateResponse = {
+  selectedCodesList?: SessionCodeLike[]
+  addedCodes?: unknown[]
+  currentNote?: Record<string, unknown> | null
+  finalizationSessions?: Record<string, unknown>
+}
 
-const patientMetadataSample = {
-  name: 'John Smith',
-  patientId: 'PT-789456',
-  encounterId: 'E-2024-0315',
-  age: 65,
-  sex: 'male',
-  encounterDate: new Date().toLocaleDateString(),
-};
+type FinalizationSnapshot = Record<string, unknown>
 
-const sampleNote = `PATIENT: John Smith, 65-year-old male
-DATE: ${new Date().toLocaleDateString()}
+const TOKEN_STORAGE_KEYS = ['token', 'accessToken', 'authToken'] as const
 
-CHIEF COMPLAINT:
-Chest pain for 2 days, described as sharp, located in the precordial region.
+function getStoredToken(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
 
-HISTORY OF PRESENT ILLNESS:
-Patient reports chest pain that began approximately 48 hours prior to this encounter. He describes the pain as sharp in character, localized to the precordial region. The pain is intermittent and worsens with physical activity. Patient has a history of smoking 1 pack per day for 30 years. No associated shortness of breath, nausea, or diaphoresis reported.
+  const storages: Array<Storage | undefined> = [
+    typeof window.localStorage !== 'undefined' ? window.localStorage : undefined,
+    typeof window.sessionStorage !== 'undefined' ? window.sessionStorage : undefined
+  ]
 
-PHYSICAL EXAMINATION:
-GENERAL: Alert, oriented, appears comfortable at rest
-CARDIOVASCULAR: Regular rate and rhythm, no murmurs appreciated, no peripheral edema
-RESPIRATORY: Clear to auscultation bilaterally
-EXTREMITIES: No cyanosis, clubbing, or edema
+  for (const storage of storages) {
+    if (!storage) {
+      continue
+    }
+    for (const key of TOKEN_STORAGE_KEYS) {
+      try {
+        const value = storage.getItem(key)
+        if (typeof value === 'string' && value) {
+          return value
+        }
+      } catch {
+        /* ignore storage access errors */
+      }
+    }
+  }
 
-ASSESSMENT:
-Chest pain, likely musculoskeletal in nature given characteristics and lack of associated symptoms. However, given patient's smoking history and age, cardiac evaluation warranted.
+  return null
+}
 
-PLAN:
-1. EKG to rule out cardiac abnormalities
-2. Basic metabolic panel and lipid profile
-3. Consider stress testing if symptoms persist
-4. Smoking cessation counseling provided`;
+async function fetchSessionState(signal?: AbortSignal): Promise<SessionStateResponse | null> {
+  const headers = new Headers({ Accept: 'application/json' })
+  const token = getStoredToken()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
 
-function simulateFinalize(request: Parameters<NonNullable<FinalizationWizardProps['onFinalize']>>[0]): FinalizeResult {
+  const response = await fetch('/api/user/session', {
+    method: 'GET',
+    headers,
+    credentials: 'include',
+    signal
+  })
+
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(text || `Failed to load session state (${response.status})`)
+  }
+  if (!text) {
+    return null
+  }
+
+  try {
+    return JSON.parse(text) as SessionStateResponse
+  } catch (error) {
+    console.error('Unable to parse session payload', error)
+    return null
+  }
+}
+
+function getFirstFinalizationSession(session: SessionStateResponse | null): FinalizationSnapshot | null {
+  if (!session?.finalizationSessions || typeof session.finalizationSessions !== 'object') {
+    return null
+  }
+  for (const value of Object.values(session.finalizationSessions)) {
+    if (value && typeof value === 'object') {
+      return value as FinalizationSnapshot
+    }
+  }
+  return null
+}
+
+function extractObjectArray(value: unknown): SessionCodeLike[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter(item => item && typeof item === 'object') as SessionCodeLike[]
+}
+
+function sanitizeString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function deriveNoteContent(
+  session: SessionStateResponse | null,
+  snapshot: FinalizationSnapshot | null
+): string {
+  const snapshotContent = snapshot?.noteContent
+  if (typeof snapshotContent === 'string' && snapshotContent.trim().length > 0) {
+    return snapshotContent
+  }
+
+  const note = session?.currentNote
+  if (note && typeof note === 'object') {
+    const candidate =
+      (note as Record<string, unknown>).content ??
+      (note as Record<string, unknown>).text ??
+      (note as Record<string, unknown>).note
+    if (typeof candidate === 'string') {
+      return candidate
+    }
+  }
+
+  return ''
+}
+
+function derivePatientMetadata(
+  session: SessionStateResponse | null,
+  snapshot: FinalizationSnapshot | null
+): FinalizationWizardProps['patientMetadata'] | undefined {
+  const snapshotMetadata = snapshot?.patientMetadata
+  if (snapshotMetadata && typeof snapshotMetadata === 'object') {
+    return snapshotMetadata as FinalizationWizardProps['patientMetadata']
+  }
+
+  const note = session?.currentNote
+  if (!note || typeof note !== 'object') {
+    return undefined
+  }
+
+  const patient = (note as Record<string, unknown>).patient
+  const source = patient && typeof patient === 'object' ? (patient as Record<string, unknown>) : (note as Record<string, unknown>)
+
+  const name =
+    sanitizeString(source.name) ??
+    sanitizeString(source.fullName) ??
+    sanitizeString(source.displayName) ??
+    [sanitizeString(source.firstName), sanitizeString(source.lastName)].filter(Boolean).join(' ')
+
+  const patientId =
+    sanitizeString(source.patientId) ??
+    sanitizeString(source.id) ??
+    sanitizeString((note as Record<string, unknown>).patientId)
+
+  const encounterId =
+    sanitizeString(source.encounterId) ??
+    sanitizeString((note as Record<string, unknown>).encounterId)
+
+  const encounterDate =
+    sanitizeString(source.encounterDate) ??
+    sanitizeString(source.date) ??
+    sanitizeString((note as Record<string, unknown>).date)
+
+  const sex = sanitizeString(source.sex) ?? sanitizeString(source.gender)
+  const ageValue = (source.age ?? (note as Record<string, unknown>).age) as unknown
+  const age = typeof ageValue === 'number' && Number.isFinite(ageValue) ? ageValue : undefined
+
+  const metadata: Record<string, unknown> = {}
+  if (name) metadata.name = name
+  if (patientId) metadata.patientId = patientId
+  if (encounterId) metadata.encounterId = encounterId
+  if (encounterDate) metadata.encounterDate = encounterDate
+  if (sex) metadata.sex = sex
+  if (typeof age === 'number') metadata.age = age
+
+  return Object.keys(metadata).length > 0 ? (metadata as FinalizationWizardProps['patientMetadata']) : undefined
+}
+
+function simulateFinalize(request: FinalizeRequestInput): FinalizeResult {
   return {
     finalizedContent: request.content.trim(),
     codesSummary: request.codes.map(code => ({ code })),
     reimbursementSummary: {
       total: request.codes.length * 85,
-      codes: request.codes.map(code => ({ code, amount: 85 })),
+      codes: request.codes.map(code => ({ code, amount: 85 }))
     },
     exportReady: request.compliance.length === 0,
     issues: {
@@ -229,24 +198,92 @@ function simulateFinalize(request: Parameters<NonNullable<FinalizationWizardProp
       differentials: request.differentials.length
         ? []
         : ['Consider documenting differential diagnoses for risk adjustment'],
-      compliance: request.compliance,
-    },
-  };
+      compliance: request.compliance
+    }
+  }
 }
 
 export default function App() {
-  const handleFinalize = React.useCallback(async (request: Parameters<NonNullable<FinalizationWizardProps['onFinalize']>>[0]) => {
-    return simulateFinalize(request);
-  }, []);
+  const [sessionState, setSessionState] = React.useState<SessionStateResponse | null>(null)
+  const [error, setError] = React.useState<string | null>(null)
+
+  React.useEffect(() => {
+    let active = true
+    const controller = new AbortController()
+
+    const loadSession = async () => {
+      try {
+        const data = await fetchSessionState(controller.signal)
+        if (!active) {
+          return
+        }
+        setSessionState(data)
+        setError(null)
+      } catch (err) {
+        if (!active) {
+          return
+        }
+        console.error('Failed to load session state for finalization wizard', err)
+        setError(err instanceof Error ? err.message : 'Unable to load session state.')
+      }
+    }
+
+    loadSession().catch(err => console.error('Unexpected session load error', err))
+
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [])
+
+  const finalizationSnapshot = React.useMemo(() => getFirstFinalizationSession(sessionState), [sessionState])
+
+  const selectedCodes = React.useMemo(() => {
+    const primary = extractObjectArray(sessionState?.selectedCodesList)
+    if (primary.length > 0) {
+      return primary
+    }
+    return extractObjectArray(finalizationSnapshot?.selectedCodes)
+  }, [sessionState?.selectedCodesList, finalizationSnapshot])
+
+  const suggestedCodes = React.useMemo(
+    () => extractObjectArray(finalizationSnapshot?.suggestedCodes),
+    [finalizationSnapshot]
+  )
+
+  const complianceItems = React.useMemo(
+    () => extractObjectArray(finalizationSnapshot?.complianceIssues),
+    [finalizationSnapshot]
+  )
+
+  const noteContent = React.useMemo(
+    () => deriveNoteContent(sessionState, finalizationSnapshot),
+    [sessionState, finalizationSnapshot]
+  )
+
+  const patientMetadata = React.useMemo(
+    () => derivePatientMetadata(sessionState, finalizationSnapshot),
+    [sessionState, finalizationSnapshot]
+  )
+
+  React.useEffect(() => {
+    if (error) {
+      console.warn('Finalization wizard is running without session context:', error)
+    }
+  }, [error])
+
+  const handleFinalize = React.useCallback(async (request: FinalizeRequestInput) => {
+    return simulateFinalize(request)
+  }, [])
 
   return (
     <FinalizationWizard
-      selectedCodes={selectedCodesSample}
-      suggestedCodes={suggestedCodesSample}
-      complianceItems={complianceItemsSample}
-      noteContent={sampleNote}
-      patientMetadata={patientMetadataSample}
+      selectedCodes={selectedCodes}
+      suggestedCodes={suggestedCodes}
+      complianceItems={complianceItems}
+      noteContent={noteContent}
+      patientMetadata={patientMetadata}
       onFinalize={handleFinalize}
     />
-  );
+  )
 }

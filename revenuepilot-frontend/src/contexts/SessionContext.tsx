@@ -122,74 +122,11 @@ function countCodes(list: SessionCode[]): SelectedCodesCounts {
 }
 
 function createInitialSessionState(): SessionState {
-  const initialCodes: SessionCode[] = [
-    {
-      code: "99213",
-      type: "CPT",
-      category: "codes",
-      description: "Office visit, established patient",
-      rationale: "Moderate complexity medical decision making with established patient visit",
-      confidence: 87,
-      reimbursement: "$127.42",
-      rvu: "1.92"
-    },
-    {
-      code: "99214",
-      type: "CPT",
-      category: "codes",
-      description: "Office visit, established patient (moderate complexity)",
-      rationale: "High complexity decision making documented with comprehensive assessment",
-      confidence: 78,
-      reimbursement: "$184.93",
-      rvu: "2.80"
-    },
-    {
-      code: "J06.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute upper respiratory infection, unspecified",
-      rationale: "Primary diagnosis based on presenting symptoms and clinical findings",
-      confidence: 92
-    },
-    {
-      code: "J02.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute pharyngitis, unspecified",
-      rationale: "Secondary diagnosis from physical examination findings",
-      confidence: 84
-    },
-    {
-      code: "Z23",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Encounter for immunization",
-      rationale: "Patient received influenza vaccination during visit",
-      confidence: 95
-    },
-    {
-      code: "M25.50",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Pain in unspecified joint",
-      rationale: "Patient reports joint discomfort as secondary concern",
-      confidence: 78
-    },
-    {
-      code: "Viral URI vs Bacterial Sinusitis",
-      type: "DIFFERENTIAL",
-      category: "differentials",
-      description: "Primary differential diagnosis consideration",
-      rationale: "85% confidence viral, 35% bacterial based on symptom pattern",
-      confidence: 85
-    }
-  ]
-
   return {
-    selectedCodes: countCodes(initialCodes),
-    selectedCodesList: initialCodes,
+    selectedCodes: { ...EMPTY_COUNTS },
+    selectedCodesList: [],
     addedCodes: [],
-    isSuggestionPanelOpen: true,
+    isSuggestionPanelOpen: false,
     layout: {
       noteEditor: 70,
       suggestionPanel: 30

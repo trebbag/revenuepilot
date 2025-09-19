@@ -21,6 +21,7 @@ import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
 import { apiFetch, apiFetchJson } from "./lib/api"
+import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 
 interface RawScheduleAppointment {
   id: number
@@ -71,18 +72,6 @@ interface DraftAnalyticsSummary {
   drafts: number
 }
 
-type ViewKey =
-  | "home"
-  | "app"
-  | "analytics"
-  | "settings"
-  | "activity"
-  | "drafts"
-  | "schedule"
-  | "builder"
-  | "style-guide"
-  | "figma-library"
-
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
   settings: "manage:settings",
@@ -116,6 +105,7 @@ export function ProtectedApp() {
   } = useSession()
 
   const [currentView, setCurrentView] = useState<ViewKey>('home')
+  const [viewHydrated, setViewHydrated] = useState(false)
   const [prePopulatedPatient, setPrePopulatedPatient] = useState<{
     patientId: string
     encounterId: string
@@ -472,6 +462,55 @@ export function ProtectedApp() {
   )
 
   useEffect(() => {
+    if (viewHydrated) {
+      return
+    }
+
+    let active = true
+    const controller = new AbortController()
+
+    const hydrateView = async () => {
+      try {
+        const response = await apiFetchJson<{ currentView?: string }>("/api/user/current-view", {
+          signal: controller.signal,
+          returnNullOnEmpty: true
+        })
+
+        if (!active) {
+          return
+        }
+
+        const serverView = response?.currentView
+        if (!serverView) {
+          setViewHydrated(true)
+          return
+        }
+
+        const resolved = mapServerViewToViewKey(serverView)
+        setCurrentView(prev => {
+          const allowed = canAccessView(resolved) ? resolved : "home"
+          return prev === allowed ? prev : allowed
+        })
+      } catch (error) {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to load current view", error)
+        }
+      } finally {
+        if (active) {
+          setViewHydrated(true)
+        }
+      }
+    }
+
+    hydrateView()
+
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [viewHydrated, canAccessView])
+
+  useEffect(() => {
     if (!canAccessView(currentView)) {
       setCurrentView('home')
     }
@@ -491,6 +530,7 @@ export function ProtectedApp() {
         setAccessDeniedMessage(`You do not have permission to access ${VIEW_LABELS[view] ?? view}.`)
         return
       }
+      setViewHydrated(true)
       setCurrentView(view)
     },
     [canAccessView]
