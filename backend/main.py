@@ -2821,6 +2821,7 @@ class SessionStateModel(BaseModel):
     selectedCodesList: List[SessionCodeModel] = Field(default_factory=list)
     addedCodes: List[str] = Field(default_factory=list)
     isSuggestionPanelOpen: bool = False
+    finalizationSessions: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")
 
@@ -2847,6 +2848,8 @@ class SessionStateModel(BaseModel):
             data["selectedCodesList"] = []
         if "addedCodes" not in data or not isinstance(data.get("addedCodes"), (list, tuple)):
             data["addedCodes"] = []
+        if "finalizationSessions" not in data or not isinstance(data.get("finalizationSessions"), dict):
+            data["finalizationSessions"] = {}
         return data
 
     @field_validator("panelStates", mode="before")
@@ -2940,7 +2943,397 @@ def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
         panel_states = {key: bool(value) for key, value in panel_states_raw.items()}
     panel_states["suggestionPanel"] = suggestion
     normalized["panelStates"] = panel_states
+    sessions = normalized.get("finalizationSessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    normalized["finalizationSessions"] = sessions
     return normalized
+
+
+_FINALIZATION_STEPS = tuple(range(1, 7))
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _default_step_states() -> Dict[str, Dict[str, Any]]:
+    now = _utc_now_iso()
+    states: Dict[str, Dict[str, Any]] = {}
+    for step in _FINALIZATION_STEPS:
+        status = "in_progress" if step == 1 else "not_started"
+        states[str(step)] = {
+            "step": step,
+            "status": status,
+            "progress": 0,
+            "startedAt": now if step == 1 else None,
+            "completedAt": None,
+            "updatedAt": now,
+            "notes": None,
+            "blockingIssues": [],
+        }
+    return states
+
+
+def _normalize_code_entry(raw: Dict[str, Any], index: int) -> Dict[str, Any]:
+    base: Dict[str, Any]
+    try:
+        base = SessionCodeModel.model_validate(raw).model_dump()
+    except ValidationError:
+        base = {
+            "code": str(raw.get("code") or f"code-{index + 1}"),
+            "type": str(raw.get("type") or "CPT"),
+            "category": str(raw.get("category") or "codes"),
+            "description": str(raw.get("description") or ""),
+            "rationale": raw.get("rationale"),
+            "confidence": raw.get("confidence"),
+            "reimbursement": raw.get("reimbursement"),
+            "rvu": raw.get("rvu"),
+        }
+    identifier = raw.get("id") or base.get("code") or f"code-{index + 1}"
+    try:
+        numeric_identifier = int(identifier)
+        identifier = numeric_identifier
+    except Exception:
+        identifier = str(identifier)
+    reimbursement = base.get("reimbursement")
+    if not reimbursement and base.get("code"):
+        revenue_value = CPT_REVENUE.get(str(base["code"]))
+        if revenue_value is not None:
+            reimbursement = f"${revenue_value:0.2f}"
+    entry = {
+        **base,
+        "id": identifier,
+        "status": raw.get("status") or "pending",
+        "docSupport": raw.get("docSupport"),
+        "gaps": [str(g).strip() for g in raw.get("gaps", []) if isinstance(g, str) and g.strip()],
+        "evidence": [str(e).strip() for e in raw.get("evidence", []) if isinstance(e, str) and e.strip()],
+        "tags": [str(t).strip() for t in raw.get("tags", []) if isinstance(t, str) and t.strip()],
+        "aiReasoning": raw.get("aiReasoning") or raw.get("rationale"),
+        "reimbursement": reimbursement,
+    }
+    return entry
+
+
+def _normalize_compliance_entry(raw: Dict[str, Any], index: int) -> Dict[str, Any]:
+    identifier = raw.get("id") or f"issue-{index + 1}"
+    try:
+        identifier = int(identifier)
+    except Exception:
+        identifier = str(identifier)
+    severity = str(raw.get("severity") or "medium").lower()
+    if severity not in {"critical", "high", "medium", "low", "warning", "info"}:
+        severity = "medium"
+    normalized_severity = {
+        "critical": "critical",
+        "high": "critical",
+        "warning": "warning",
+        "info": "info",
+        "medium": "warning",
+        "low": "info",
+    }[severity]
+    title = raw.get("title") or raw.get("description") or f"Issue {index + 1}"
+    return {
+        "id": identifier,
+        "title": str(title),
+        "description": str(raw.get("description") or title),
+        "severity": normalized_severity,
+        "category": raw.get("category") or "documentation",
+        "code": raw.get("code"),
+        "dismissed": bool(raw.get("dismissed", False)),
+        "details": raw.get("details") or raw.get("description"),
+    }
+
+
+def _compute_reimbursement_summary(selected_codes: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = 0.0
+    codes_summary: List[Dict[str, Any]] = []
+    for code in selected_codes:
+        code_value = str(code.get("code") or "")
+        amount = CPT_REVENUE.get(code_value)
+        if amount is None:
+            amount = 0.0
+        total += amount
+        codes_summary.append(
+            {
+                "code": code_value,
+                "amount": amount,
+                "description": code.get("description"),
+                "category": code.get("category"),
+            }
+        )
+    return {"total": total, "codes": codes_summary}
+
+
+def _generate_patient_questions(
+    selected_codes: List[Dict[str, Any]],
+    compliance_issues: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    questions: List[Dict[str, Any]] = []
+    counter = 1
+    for code in selected_codes:
+        gaps = code.get("gaps") if isinstance(code, dict) else None
+        if not isinstance(gaps, list):
+            continue
+        for gap in gaps:
+            if not isinstance(gap, str) or not gap.strip():
+                continue
+            normalized_gap = gap.strip()
+            lower = normalized_gap.lower()
+            if lower.endswith("?"):
+                question_text = normalized_gap
+            else:
+                question_text = f"Please document: {normalized_gap}?"
+            priority = "medium"
+            if any(keyword in lower for keyword in ("smok", "sepsis", "allergy")):
+                priority = "high"
+            elif any(keyword in lower for keyword in ("lab", "follow", "screen")):
+                priority = "medium"
+            else:
+                priority = "low"
+            questions.append(
+                {
+                    "id": counter,
+                    "question": question_text,
+                    "source": f"Code Gap: {code.get('code') or code.get('description') or 'Code'}",
+                    "priority": priority,
+                    "codeRelated": code.get("code") or code.get("description"),
+                    "category": "clinical",
+                    "status": "open",
+                }
+            )
+            counter += 1
+    if not questions:
+        for issue in compliance_issues:
+            details = issue.get("details") or issue.get("description")
+            if not isinstance(details, str) or not details.strip():
+                continue
+            text = details.strip()
+            priority = "high" if issue.get("severity") == "critical" else "medium"
+            questions.append(
+                {
+                    "id": counter,
+                    "question": text if text.endswith("?") else f"Address compliance: {text}",
+                    "source": f"Compliance: {issue.get('title') or 'Item'}",
+                    "priority": priority,
+                    "codeRelated": issue.get("code"),
+                    "category": "documentation",
+                    "status": "open",
+                }
+            )
+            counter += 1
+    return questions
+
+
+def _recalculate_current_step(session: Dict[str, Any]) -> None:
+    states = session.get("stepStates") or {}
+    for step in _FINALIZATION_STEPS:
+        entry = states.get(str(step)) or {}
+        if entry.get("status") != "completed":
+            session["currentStep"] = step
+            break
+    else:
+        session["currentStep"] = 6
+
+
+def _update_session_progress(session: Dict[str, Any]) -> None:
+    states = session.get("stepStates") or {}
+    completed = sum(1 for step in _FINALIZATION_STEPS if states.get(str(step), {}).get("status") == "completed")
+    session["sessionProgress"] = {
+        "completedSteps": completed,
+        "totalSteps": len(_FINALIZATION_STEPS),
+        "percentage": int((completed / len(_FINALIZATION_STEPS)) * 100) if _FINALIZATION_STEPS else 0,
+    }
+
+
+def _append_audit_event(session: Dict[str, Any], action: str, details: Dict[str, Any] | None = None) -> None:
+    audit = session.setdefault("auditTrail", [])
+    if not isinstance(audit, list):
+        audit = []
+    event = {
+        "id": uuid4().hex,
+        "timestamp": _utc_now_iso(),
+        "action": action,
+        "details": details or {},
+    }
+    audit.append(event)
+    session["auditTrail"] = audit
+
+
+def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    data = copy.deepcopy(session) if isinstance(session, dict) else {}
+    if "stepStates" not in data or not isinstance(data.get("stepStates"), dict):
+        data["stepStates"] = _default_step_states()
+    else:
+        normalized_states: Dict[str, Dict[str, Any]] = {}
+        now = _utc_now_iso()
+        for step in _FINALIZATION_STEPS:
+            key = str(step)
+            entry = data["stepStates"].get(key) or {}
+            status = entry.get("status") or ("in_progress" if step == 1 else "not_started")
+            if status not in {"not_started", "in_progress", "completed", "blocked"}:
+                status = "not_started"
+            normalized_states[key] = {
+                "step": step,
+                "status": status,
+                "progress": int(entry.get("progress", 0) or 0),
+                "startedAt": entry.get("startedAt") or (now if step == 1 else None),
+                "completedAt": entry.get("completedAt"),
+                "updatedAt": entry.get("updatedAt") or now,
+                "notes": entry.get("notes"),
+                "blockingIssues": entry.get("blockingIssues") if isinstance(entry.get("blockingIssues"), list) else [],
+            }
+        data["stepStates"] = normalized_states
+    codes_input = data.get("selectedCodes") or []
+    if not isinstance(codes_input, list):
+        codes_input = []
+    normalized_codes = [_normalize_code_entry(item, idx) for idx, item in enumerate(codes_input)]
+    data["selectedCodes"] = normalized_codes
+    compliance_input = data.get("complianceIssues") or []
+    if not isinstance(compliance_input, list):
+        compliance_input = []
+    data["complianceIssues"] = [
+        _normalize_compliance_entry(item, idx)
+        for idx, item in enumerate(compliance_input)
+        if isinstance(item, dict)
+    ]
+    if "reimbursementSummary" not in data or not isinstance(data.get("reimbursementSummary"), dict):
+        data["reimbursementSummary"] = _compute_reimbursement_summary(normalized_codes)
+    data.setdefault("noteContent", "")
+    data.setdefault("patientMetadata", {})
+    data.setdefault("blockingIssues", [])
+    questions_input = data.get("patientQuestions")
+    if not isinstance(questions_input, list) or not questions_input:
+        data["patientQuestions"] = _generate_patient_questions(normalized_codes, data["complianceIssues"])
+    else:
+        normalized_questions: List[Dict[str, Any]] = []
+        for item in questions_input:
+            if not isinstance(item, dict):
+                continue
+            identifier = item.get("id")
+            try:
+                identifier = int(identifier)
+            except Exception:
+                identifier = uuid4().int % 100000
+            normalized_questions.append(
+                {
+                    "id": identifier,
+                    "question": item.get("question") or "Clarify patient information",
+                    "source": item.get("source") or "Documentation",
+                    "priority": item.get("priority") or "medium",
+                    "codeRelated": item.get("codeRelated") or item.get("code"),
+                    "category": item.get("category") or "clinical",
+                    "status": item.get("status") or "open",
+                    "answer": item.get("answer"),
+                    "answeredAt": item.get("answeredAt"),
+                }
+            )
+        data["patientQuestions"] = normalized_questions
+    data.setdefault("createdAt", _utc_now_iso())
+    data.setdefault("updatedAt", data["createdAt"])
+    _recalculate_current_step(data)
+    _update_session_progress(data)
+    return data
+
+
+def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_finalization_session(session)
+    step_states = [normalized["stepStates"][str(step)] for step in _FINALIZATION_STEPS]
+    return {
+        "sessionId": normalized.get("sessionId"),
+        "encounterId": normalized.get("encounterId"),
+        "patientId": normalized.get("patientId"),
+        "noteId": normalized.get("noteId"),
+        "currentStep": normalized.get("currentStep", 1),
+        "stepStates": step_states,
+        "selectedCodes": normalized.get("selectedCodes", []),
+        "complianceIssues": normalized.get("complianceIssues", []),
+        "patientMetadata": normalized.get("patientMetadata") or {},
+        "noteContent": normalized.get("noteContent", ""),
+        "reimbursementSummary": normalized.get("reimbursementSummary", {}),
+        "auditTrail": normalized.get("auditTrail", []),
+        "patientQuestions": normalized.get("patientQuestions", []),
+        "blockingIssues": normalized.get("blockingIssues", []),
+        "sessionProgress": normalized.get("sessionProgress", {}),
+        "createdAt": normalized.get("createdAt"),
+        "updatedAt": normalized.get("updatedAt"),
+    }
+
+
+def _get_user_id_and_session_state(username: str) -> Tuple[int, Dict[str, Any]]:
+    row = db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="User not found")
+    user_id = row["id"]
+    session_row = db_conn.execute(
+        "SELECT data FROM session_state WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if session_row and session_row["data"]:
+        session_state = _normalize_session_state(session_row["data"])
+    else:
+        session_state = _normalize_session_state(SessionStateModel())
+    return user_id, session_state
+
+
+def _get_finalization_sessions(username: str) -> Tuple[int, Dict[str, Any], Dict[str, Any]]:
+    user_id, session_state = _get_user_id_and_session_state(username)
+    sessions = session_state.get("finalizationSessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+    return user_id, session_state, sessions
+
+
+def _persist_session_state(user_id: int, session_state: Dict[str, Any]) -> None:
+    db_conn.execute(
+        "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
+        (user_id, json.dumps(session_state), time.time()),
+    )
+    db_conn.commit()
+
+
+def _persist_finalization_sessions(
+    user_id: int,
+    session_state: Dict[str, Any],
+    sessions: Dict[str, Any],
+) -> None:
+    session_state = copy.deepcopy(session_state)
+    session_state["finalizationSessions"] = sessions
+    _persist_session_state(user_id, session_state)
+
+
+def _collect_blocking_issues(issues: Dict[str, Any]) -> List[str]:
+    blocking: List[str] = []
+    for value in issues.values():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                blocking.append(item.strip())
+    return blocking
+
+
+def _sync_selected_codes_to_session_state(
+    session_state: Dict[str, Any], normalized_session: Dict[str, Any]
+) -> None:
+    codes = normalized_session.get("selectedCodes") or []
+    if not isinstance(codes, list):
+        codes = []
+    session_state["selectedCodesList"] = codes
+    counts = dict(_DEFAULT_SELECTED_CODES)
+    for code in codes:
+        category = str(code.get("category") or "").lower()
+        if category in counts:
+            counts[category] += 1
+        elif "prevent" in category:
+            counts["prevention"] += 1
+        elif "differ" in category:
+            counts["differentials"] += 1
+        elif "diagn" in category:
+            counts["diagnoses"] += 1
+        else:
+            counts["codes"] += 1
+    session_state["selectedCodes"] = counts
 
 
 @app.get("/api/user/profile")
@@ -3290,6 +3683,133 @@ class PreFinalizeCheckRequest(BaseModel):
 class FinalizeNoteRequest(PreFinalizeCheckRequest):
     """Request payload for completing note finalization."""
     pass
+
+
+class WorkflowSessionCreateRequest(BaseModel):
+    encounterId: str
+    patientId: Optional[str] = None
+    noteId: Optional[str] = None
+    noteContent: Optional[str] = None
+    sessionId: Optional[str] = None
+    selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
+    complianceIssues: List[Dict[str, Any]] = Field(default_factory=list)
+    patientMetadata: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowStepUpdateRequest(BaseModel):
+    step: int
+    status: Literal["not_started", "in_progress", "completed", "blocked"]
+    progress: Optional[int] = Field(None, ge=0, le=100)
+    notes: Optional[str] = None
+    blockingIssues: Optional[List[str]] = None
+
+
+class WorkflowSessionResponse(BaseModel):
+    sessionId: str
+    encounterId: Optional[str] = None
+    patientId: Optional[str] = None
+    noteId: Optional[str] = None
+    currentStep: int = 1
+    stepStates: List[Dict[str, Any]] = Field(default_factory=list)
+    selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
+    complianceIssues: List[Dict[str, Any]] = Field(default_factory=list)
+    patientMetadata: Dict[str, Any] = Field(default_factory=dict)
+    noteContent: Optional[str] = None
+    reimbursementSummary: Dict[str, Any] = Field(default_factory=dict)
+    auditTrail: List[Dict[str, Any]] = Field(default_factory=list)
+    patientQuestions: List[Dict[str, Any]] = Field(default_factory=list)
+    blockingIssues: List[str] = Field(default_factory=list)
+    sessionProgress: Dict[str, Any] = Field(default_factory=dict)
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
+
+
+class NoteContentUpdateRequest(PreFinalizeCheckRequest):
+    sessionId: str
+    encounterId: Optional[str] = None
+    noteId: Optional[str] = None
+
+
+class NoteContentUpdateResponse(BaseModel):
+    encounterId: Optional[str] = None
+    sessionId: str
+    noteContent: str
+    reimbursementSummary: Dict[str, Any]
+    validation: Dict[str, Any]
+    session: WorkflowSessionResponse
+
+
+class FinalizeResult(BaseModel):
+    finalizedContent: str
+    codesSummary: List[Dict[str, Any]] = Field(default_factory=list)
+    reimbursementSummary: Dict[str, Any] = Field(default_factory=dict)
+    exportReady: bool = False
+    issues: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AttestationRequest(BaseModel):
+    encounterId: Optional[str] = None
+    sessionId: Optional[str] = None
+    attestedBy: Optional[str] = None
+    statement: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class WorkflowAttestationResponse(BaseModel):
+    session: WorkflowSessionResponse
+
+
+class DispatchRequest(BaseModel):
+    encounterId: Optional[str] = None
+    sessionId: Optional[str] = None
+    destination: Optional[str] = None
+    deliveryMethod: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class DispatchResponse(BaseModel):
+    session: WorkflowSessionResponse
+    result: FinalizeResult
+
+
+class SelectedCodeBase(BaseModel):
+    code: str
+    type: Optional[str] = None
+    category: Optional[str] = None
+    description: Optional[str] = None
+    rationale: Optional[str] = None
+    confidence: Optional[float] = None
+    reimbursement: Optional[str] = None
+    rvu: Optional[str] = None
+    status: Optional[str] = None
+    gaps: Optional[List[str]] = None
+    evidence: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+
+class SelectedCodeCreateRequest(SelectedCodeBase):
+    encounterId: str
+    sessionId: Optional[str] = None
+
+
+class SelectedCodeUpdateRequest(SelectedCodeBase):
+    encounterId: Optional[str] = None
+    sessionId: Optional[str] = None
+
+
+class QuestionAnswerRequest(BaseModel):
+    sessionId: Optional[str] = None
+    answer: str
+    answeredBy: Optional[str] = None
+    timestamp: Optional[str] = None
+
+
+class QuestionStatusUpdateRequest(BaseModel):
+    sessionId: Optional[str] = None
+    status: Literal["open", "in_progress", "resolved", "dismissed"]
+    updatedBy: Optional[str] = None
+    timestamp: Optional[str] = None
 
 class CodeSuggestItem(BaseModel):
     code: str
@@ -6386,6 +6906,610 @@ def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], 
     return issues, details, total
 
 
+@app.post("/api/v1/workflow/sessions", response_model=WorkflowSessionResponse)
+async def create_workflow_session_v1(
+    req: WorkflowSessionCreateRequest, user=Depends(require_role("user"))
+) -> WorkflowSessionResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    existing = None
+    if session_id and session_id in sessions:
+        existing = copy.deepcopy(sessions[session_id])
+    else:
+        for sid, payload in sessions.items():
+            if payload.get("encounterId") == req.encounterId:
+                existing = copy.deepcopy(payload)
+                session_id = sid
+                break
+    if existing is None:
+        session_id = session_id or uuid4().hex
+        existing = {
+            "sessionId": session_id,
+            "encounterId": req.encounterId,
+            "patientId": req.patientId,
+            "noteId": req.noteId,
+            "createdAt": _utc_now_iso(),
+            "auditTrail": [],
+        }
+        _append_audit_event(existing, "session_created", {"encounterId": req.encounterId})
+    existing.update(
+        {
+            "sessionId": session_id,
+            "encounterId": req.encounterId or existing.get("encounterId"),
+            "patientId": req.patientId or existing.get("patientId"),
+            "noteId": req.noteId or existing.get("noteId"),
+        }
+    )
+    existing["noteContent"] = (
+        req.noteContent if req.noteContent is not None else existing.get("noteContent", "")
+    )
+    metadata = existing.get("patientMetadata") or {}
+    if req.patientMetadata:
+        metadata.update({k: v for k, v in req.patientMetadata.items() if v is not None})
+    existing["patientMetadata"] = metadata
+    codes_payload = req.selectedCodes or existing.get("selectedCodes") or session_state.get("selectedCodesList") or []
+    existing["selectedCodes"] = codes_payload
+    issues_payload = req.complianceIssues or existing.get("complianceIssues") or []
+    existing["complianceIssues"] = issues_payload
+    existing["updatedAt"] = _utc_now_iso()
+    normalized = _normalize_finalization_session(existing)
+    normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
+    normalized["patientQuestions"] = _generate_patient_questions(
+        normalized["selectedCodes"], normalized["complianceIssues"]
+    )
+    normalized["updatedAt"] = _utc_now_iso()
+    _recalculate_current_step(normalized)
+    _update_session_progress(normalized)
+    sessions[session_id] = normalized
+    _sync_selected_codes_to_session_state(session_state, normalized)
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    response_payload = _session_to_response(normalized)
+    return WorkflowSessionResponse(**response_payload)
+
+
+@app.get("/api/v1/workflow/sessions/{session_id}", response_model=WorkflowSessionResponse)
+async def get_workflow_session_v1(
+    session_id: str, user=Depends(require_role("user"))
+) -> WorkflowSessionResponse:
+    _user_id, _state, sessions = _get_finalization_sessions(user["sub"])
+    payload = sessions.get(session_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return WorkflowSessionResponse(**_session_to_response(payload))
+
+
+@app.put("/api/v1/workflow/sessions/{session_id}/step", response_model=WorkflowSessionResponse)
+async def update_workflow_session_step_v1(
+    session_id: str,
+    req: WorkflowStepUpdateRequest,
+    user=Depends(require_role("user")),
+) -> WorkflowSessionResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    payload = sessions.get(session_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    states = session.get("stepStates") or {}
+    key = str(req.step)
+    if key not in states:
+        states[key] = _default_step_states()[key]
+    entry = states[key]
+    entry["status"] = req.status
+    entry["updatedAt"] = _utc_now_iso()
+    if req.progress is not None:
+        entry["progress"] = int(req.progress)
+    if entry["status"] == "in_progress" and not entry.get("startedAt"):
+        entry["startedAt"] = entry["updatedAt"]
+    if entry["status"] == "completed":
+        entry["completedAt"] = entry["updatedAt"]
+        entry["progress"] = max(entry.get("progress", 0), 100)
+    if req.notes is not None:
+        entry["notes"] = req.notes
+    if req.blockingIssues is not None:
+        entry["blockingIssues"] = [
+            str(item).strip()
+            for item in req.blockingIssues
+            if isinstance(item, str) and item.strip()
+        ]
+        session["blockingIssues"] = entry["blockingIssues"]
+    states[key] = entry
+    session["stepStates"] = states
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "step_updated", {"step": req.step, "status": req.status})
+    normalized = _normalize_finalization_session(session)
+    normalized["updatedAt"] = session["updatedAt"]
+    _recalculate_current_step(normalized)
+    _update_session_progress(normalized)
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowSessionResponse(**_session_to_response(normalized))
+
+
+@app.delete("/api/v1/workflow/sessions/{session_id}")
+async def delete_workflow_session_v1(
+    session_id: str, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    payload = sessions.pop(session_id, None)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return {"status": "ended", "sessionId": session_id}
+
+
+@app.get("/api/v1/codes/selected/{encounter_id}")
+async def get_selected_codes_v1(
+    encounter_id: str, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    _user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    found_session = None
+    found_id = None
+    for sid, payload in sessions.items():
+        if payload.get("encounterId") == encounter_id:
+            found_session = payload
+            found_id = sid
+            break
+    if not found_session:
+        codes = session_state.get("selectedCodesList") or []
+        if not isinstance(codes, list):
+            codes = []
+        summary = _compute_reimbursement_summary(
+            [_normalize_code_entry(item, idx) for idx, item in enumerate(codes)]
+        )
+        return {
+            "encounterId": encounter_id,
+            "sessionId": None,
+            "codes": codes,
+            "reimbursementSummary": summary,
+            "complianceIssues": [],
+        }
+    normalized = _normalize_finalization_session(found_session)
+    return {
+        "encounterId": encounter_id,
+        "sessionId": found_id,
+        "codes": normalized.get("selectedCodes", []),
+        "reimbursementSummary": normalized.get("reimbursementSummary", {}),
+        "complianceIssues": normalized.get("complianceIssues", []),
+    }
+
+
+@app.post("/api/v1/codes/selected", response_model=WorkflowSessionResponse)
+async def add_selected_code_v1(
+    req: SelectedCodeCreateRequest, user=Depends(require_role("user"))
+) -> WorkflowSessionResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if entry.get("encounterId") == req.encounterId:
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    codes = session.get("selectedCodes") or []
+    codes.append(req.model_dump(exclude={"encounterId", "sessionId"}, exclude_none=True))
+    session["selectedCodes"] = codes
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "code_added", {"code": req.code})
+    normalized = _normalize_finalization_session(session)
+    normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
+    normalized["updatedAt"] = session["updatedAt"]
+    sessions[session_id] = normalized
+    _sync_selected_codes_to_session_state(session_state, normalized)
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowSessionResponse(**_session_to_response(normalized))
+
+
+@app.put("/api/v1/codes/selected/{code_id}", response_model=WorkflowSessionResponse)
+async def update_selected_code_v1(
+    code_id: str,
+    req: SelectedCodeUpdateRequest,
+    user=Depends(require_role("user")),
+) -> WorkflowSessionResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if req.encounterId and entry.get("encounterId") != req.encounterId:
+                continue
+            if any(str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id) for item in entry.get("selectedCodes", [])):
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    updated = False
+    codes = session.get("selectedCodes") or []
+    for item in codes:
+        if str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id):
+            item.update({k: v for k, v in req.model_dump(exclude_none=True).items() if k not in {"sessionId", "encounterId"}})
+            updated = True
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="Code not found")
+    session["selectedCodes"] = codes
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "code_updated", {"codeId": code_id})
+    normalized = _normalize_finalization_session(session)
+    normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
+    normalized["updatedAt"] = session["updatedAt"]
+    sessions[session_id] = normalized
+    _sync_selected_codes_to_session_state(session_state, normalized)
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowSessionResponse(**_session_to_response(normalized))
+
+
+@app.delete("/api/v1/codes/selected/{code_id}", response_model=WorkflowSessionResponse)
+async def delete_selected_code_v1(
+    code_id: str,
+    encounterId: Optional[str] = None,
+    sessionId: Optional[str] = None,
+    user=Depends(require_role("user")),
+) -> WorkflowSessionResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if encounterId and entry.get("encounterId") != encounterId:
+                continue
+            if any(str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id) for item in entry.get("selectedCodes", [])):
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    codes = [
+        item
+        for item in session.get("selectedCodes", [])
+        if not (str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id))
+    ]
+    session["selectedCodes"] = codes
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "code_removed", {"codeId": code_id})
+    normalized = _normalize_finalization_session(session)
+    normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
+    normalized["updatedAt"] = session["updatedAt"]
+    sessions[session_id] = normalized
+    _sync_selected_codes_to_session_state(session_state, normalized)
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowSessionResponse(**_session_to_response(normalized))
+
+
+@app.put(
+    "/api/v1/notes/{encounter_id}/content",
+    response_model=NoteContentUpdateResponse,
+)
+async def update_note_content_v1(
+    encounter_id: str,
+    req: NoteContentUpdateRequest,
+    user=Depends(require_role("user")),
+) -> NoteContentUpdateResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if entry.get("encounterId") == encounter_id:
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    session["noteContent"] = req.content
+    session["updatedAt"] = _utc_now_iso()
+    step_states = session.get("stepStates") or {}
+    if "3" in step_states:
+        compose_step = step_states["3"]
+    else:
+        compose_step = _default_step_states()["3"]
+    compose_step.update(
+        {
+            "status": "completed",
+            "progress": 100,
+            "completedAt": session["updatedAt"],
+            "updatedAt": session["updatedAt"],
+        }
+    )
+    if not compose_step.get("startedAt"):
+        compose_step["startedAt"] = session["updatedAt"]
+    step_states["3"] = compose_step
+    if "4" in step_states:
+        compare_step = step_states["4"]
+    else:
+        compare_step = _default_step_states()["4"]
+    if compare_step.get("status") == "not_started":
+        compare_step["status"] = "in_progress"
+        compare_step["startedAt"] = session["updatedAt"]
+    compare_step["updatedAt"] = session["updatedAt"]
+    step_states["4"] = compare_step
+    session["stepStates"] = step_states
+    normalized = _normalize_finalization_session(session)
+    codes = [str(item.get("code")) for item in normalized.get("selectedCodes", []) if item.get("code")]
+    precheck = PreFinalizeCheckRequest(
+        content=req.content,
+        codes=req.codes or codes,
+        prevention=req.prevention or [],
+        diagnoses=req.diagnoses or [],
+        differentials=req.differentials or [],
+        compliance=req.compliance or [],
+    )
+    issues, details, total = _validate_note(precheck)
+    validation = {
+        "canFinalize": all(len(v) == 0 for v in issues.values()),
+        "issues": issues,
+        "estimatedReimbursement": total,
+        "reimbursementSummary": {"total": total, "codes": details},
+    }
+    normalized["reimbursementSummary"] = validation["reimbursementSummary"]
+    normalized["blockingIssues"] = _collect_blocking_issues(issues)
+    normalized["lastValidation"] = validation
+    _append_audit_event(normalized, "note_updated", {"encounterId": encounter_id})
+    _recalculate_current_step(normalized)
+    _update_session_progress(normalized)
+    sessions[session_id] = normalized
+    _sync_selected_codes_to_session_state(session_state, normalized)
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    response_payload = NoteContentUpdateResponse(
+        encounterId=encounter_id,
+        sessionId=session_id,
+        noteContent=req.content,
+        reimbursementSummary=validation["reimbursementSummary"],
+        validation=validation,
+        session=WorkflowSessionResponse(**_session_to_response(normalized)),
+    )
+    return response_payload
+
+
+@app.post(
+    "/api/v1/workflow/{session_id}/step5/attest",
+    response_model=WorkflowAttestationResponse,
+)
+async def attest_workflow_session_v1(
+    session_id: str,
+    req: AttestationRequest,
+    user=Depends(require_role("user")),
+) -> WorkflowAttestationResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    payload = sessions.get(session_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    attestation_timestamp = req.timestamp or _utc_now_iso()
+    session["attestation"] = {
+        "attestedBy": req.attestedBy or user.get("sub"),
+        "statement": req.statement or "Provider attestation recorded",
+        "timestamp": attestation_timestamp,
+    }
+    step_states = session.get("stepStates") or {}
+    attest_step = step_states.get("5") or _default_step_states()["5"]
+    attest_step.update(
+        {
+            "status": "completed",
+            "progress": 100,
+            "completedAt": attestation_timestamp,
+            "updatedAt": attestation_timestamp,
+        }
+    )
+    if not attest_step.get("startedAt"):
+        attest_step["startedAt"] = attestation_timestamp
+    step_states["5"] = attest_step
+    dispatch_step = step_states.get("6") or _default_step_states()["6"]
+    if dispatch_step.get("status") == "not_started":
+        dispatch_step["status"] = "in_progress"
+        dispatch_step["startedAt"] = attestation_timestamp
+    dispatch_step["updatedAt"] = attestation_timestamp
+    step_states["6"] = dispatch_step
+    session["stepStates"] = step_states
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "attestation_submitted", session["attestation"])
+    normalized = _normalize_finalization_session(session)
+    normalized["attestation"] = session["attestation"]
+    normalized["updatedAt"] = session["updatedAt"]
+    _recalculate_current_step(normalized)
+    _update_session_progress(normalized)
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowAttestationResponse(session=WorkflowSessionResponse(**_session_to_response(normalized)))
+
+
+@app.post(
+    "/api/v1/workflow/{session_id}/step6/dispatch",
+    response_model=DispatchResponse,
+)
+async def dispatch_workflow_session_v1(
+    session_id: str,
+    req: DispatchRequest,
+    user=Depends(require_role("user")),
+) -> DispatchResponse:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    payload = sessions.get(session_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    dispatch_timestamp = req.timestamp or _utc_now_iso()
+    session["dispatch"] = {
+        "destination": req.destination or "ehr",
+        "deliveryMethod": req.deliveryMethod or "internal",
+        "timestamp": dispatch_timestamp,
+    }
+    step_states = session.get("stepStates") or {}
+    dispatch_step = step_states.get("6") or _default_step_states()["6"]
+    dispatch_step.update(
+        {
+            "status": "completed",
+            "progress": 100,
+            "completedAt": dispatch_timestamp,
+            "updatedAt": dispatch_timestamp,
+        }
+    )
+    if not dispatch_step.get("startedAt"):
+        dispatch_step["startedAt"] = dispatch_timestamp
+    step_states["6"] = dispatch_step
+    session["stepStates"] = step_states
+    session["updatedAt"] = _utc_now_iso()
+    normalized = _normalize_finalization_session(session)
+    normalized["dispatch"] = session["dispatch"]
+    validation = normalized.get("lastValidation")
+    if not isinstance(validation, dict):
+        validation = {
+            "issues": {},
+            "reimbursementSummary": normalized.get("reimbursementSummary", {}),
+            "canFinalize": True,
+        }
+    issues = validation.get("issues") or {}
+    reimbursement_summary = validation.get("reimbursementSummary") or normalized.get("reimbursementSummary") or {
+        "total": 0.0,
+        "codes": [],
+    }
+    blocking = _collect_blocking_issues(issues)
+    normalized["blockingIssues"] = blocking
+    export_ready = not blocking
+    finalized_content = (normalized.get("noteContent") or "").strip()
+    _append_audit_event(normalized, "dispatch_completed", normalized["dispatch"])
+    _recalculate_current_step(normalized)
+    _update_session_progress(normalized)
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    result = FinalizeResult(
+        finalizedContent=finalized_content,
+        codesSummary=reimbursement_summary.get("codes", []),
+        reimbursementSummary=reimbursement_summary,
+        exportReady=export_ready,
+        issues=issues,
+    )
+    return DispatchResponse(
+        session=WorkflowSessionResponse(**_session_to_response(normalized)),
+        result=result,
+    )
+
+
+@app.get("/api/v1/questions/{encounter_id}")
+async def get_patient_questions_v1(
+    encounter_id: str, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    _user_id, _state, sessions = _get_finalization_sessions(user["sub"])
+    for sid, payload in sessions.items():
+        if payload.get("encounterId") == encounter_id:
+            normalized = _normalize_finalization_session(payload)
+            return {
+                "encounterId": encounter_id,
+                "sessionId": sid,
+                "questions": normalized.get("patientQuestions", []),
+            }
+    return {"encounterId": encounter_id, "sessionId": None, "questions": []}
+
+
+@app.post("/api/v1/questions/{question_id}/answer")
+async def answer_patient_question_v1(
+    question_id: str,
+    req: QuestionAnswerRequest,
+    user=Depends(require_role("user")),
+) -> Dict[str, Any]:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if any(str(item.get("id")) == str(question_id) for item in entry.get("patientQuestions", [])):
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found for question")
+    session = copy.deepcopy(payload)
+    questions = session.get("patientQuestions") or []
+    updated = None
+    for item in questions:
+        if str(item.get("id")) == str(question_id):
+            item["answer"] = req.answer
+            item["answeredBy"] = req.answeredBy or user.get("sub")
+            item["answeredAt"] = req.timestamp or _utc_now_iso()
+            item["status"] = "resolved"
+            updated = item
+            break
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    session["patientQuestions"] = questions
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "question_answered", {"questionId": question_id})
+    normalized = _normalize_finalization_session(session)
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    question_payload = next(
+        (item for item in normalized.get("patientQuestions", []) if str(item.get("id")) == str(question_id)),
+        updated,
+    )
+    return {
+        "question": question_payload,
+        "session": WorkflowSessionResponse(**_session_to_response(normalized)),
+    }
+
+
+@app.put("/api/v1/questions/{question_id}/status")
+async def update_patient_question_status_v1(
+    question_id: str,
+    req: QuestionStatusUpdateRequest,
+    user=Depends(require_role("user")),
+) -> Dict[str, Any]:
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    session_id = req.sessionId
+    payload = None
+    if session_id and session_id in sessions:
+        payload = sessions[session_id]
+    else:
+        for sid, entry in sessions.items():
+            if any(str(item.get("id")) == str(question_id) for item in entry.get("patientQuestions", [])):
+                payload = entry
+                session_id = sid
+                break
+    if not payload:
+        raise HTTPException(status_code=404, detail="Session not found for question")
+    session = copy.deepcopy(payload)
+    questions = session.get("patientQuestions") or []
+    updated = None
+    for item in questions:
+        if str(item.get("id")) == str(question_id):
+            item["status"] = req.status
+            item["updatedBy"] = req.updatedBy or user.get("sub")
+            item["updatedAt"] = req.timestamp or _utc_now_iso()
+            updated = item
+            break
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    session["patientQuestions"] = questions
+    session["updatedAt"] = _utc_now_iso()
+    _append_audit_event(session, "question_status_updated", {"questionId": question_id, "status": req.status})
+    normalized = _normalize_finalization_session(session)
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    question_payload = next(
+        (item for item in normalized.get("patientQuestions", []) if str(item.get("id")) == str(question_id)),
+        updated,
+    )
+    return {
+        "question": question_payload,
+        "session": WorkflowSessionResponse(**_session_to_response(normalized)),
+    }
+
+
 @app.post("/api/notes/pre-finalize-check")
 async def pre_finalize_check(
     req: PreFinalizeCheckRequest, user=Depends(require_role("user"))
@@ -8375,7 +9499,8 @@ async def list_draft_notes(user=Depends(require_role("user"))):
     cur = db_conn.execute(
         "SELECT id, content, status, created_at, updated_at FROM notes WHERE status = 'draft' ORDER BY id"
     )
-    return [dict(row) for row in cur.fetchall()]
+    data = [dict(row) for row in cur.fetchall()]
+    return JSONResponse(content=data, headers={"X-Bypass-Envelope": "1"})
 
 
 @app.get("/api/notes/search")
@@ -8390,7 +9515,8 @@ async def search_notes(
         query += " AND status = ?"
         params.append(status)
     cur = db_conn.execute(query, params)
-    return [dict(row) for row in cur.fetchall()]
+    data = [dict(row) for row in cur.fetchall()]
+    return JSONResponse(content=data, headers={"X-Bypass-Envelope": "1"})
 
 
 @app.get("/api/analytics/drafts")
