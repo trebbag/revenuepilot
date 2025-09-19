@@ -485,12 +485,32 @@ export function RichTextEditor({
       }
 
       try {
+        const numericId = Number(currentNoteId)
+        const payload: Record<string, unknown> = {
+          note_id: Number.isFinite(numericId) ? numericId : currentNoteId,
+          content: text
+        }
         const response = await apiFetch("/api/notes/auto-save", {
-          method: "POST",
-          jsonBody: { noteId: currentNoteId, content: text }
+          method: "PUT",
+          jsonBody: payload
         })
         if (!response.ok) {
-          throw new Error(`Failed to auto-save note (${response.status})`)
+          let message = `Failed to auto-save note (${response.status})`
+          try {
+            const err = await response.json()
+            const detail =
+              typeof err?.message === "string" && err.message.trim().length > 0
+                ? err.message
+                : typeof err?.detail === "string" && err.detail.trim().length > 0
+                  ? err.detail
+                  : ""
+            if (detail) {
+              message = detail
+            }
+          } catch {
+            // ignore body parsing issues
+          }
+          throw new Error(message)
         }
         await response.json().catch(() => ({}))
         if (!isMountedRef.current) return

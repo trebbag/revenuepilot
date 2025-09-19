@@ -25,7 +25,8 @@ import {
   type PreFinalizeCheckResponse
 } from "./FinalizationWizardAdapter"
 import type { FinalizeResult } from "finalization-wizard"
-import { apiFetch, apiFetchJson, getStoredToken, type ApiFetchOptions } from "../lib/api"
+import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFetchOptions } from "../lib/api"
+import { useAuth } from "../contexts/AuthContext"
 
 interface ComplianceIssue {
   id: string
@@ -48,7 +49,29 @@ interface PatientSuggestion {
   mrn?: string
   age?: number
   gender?: string
+  insurance?: string
+  lastVisit?: string
+  allergies?: string[]
+  medications?: string[]
   source: 'local' | 'external'
+}
+
+interface PatientDetailsResponse {
+  demographics?: {
+    patientId?: string | number | null
+    mrn?: string | null
+    name?: string | null
+    firstName?: string | null
+    lastName?: string | null
+    dob?: string | null
+    age?: number | null
+    gender?: string | null
+    insurance?: string | null
+    lastVisit?: string | null
+  }
+  allergies?: unknown
+  medications?: unknown
+  encounters?: unknown
 }
 
 interface EncounterValidationState {
@@ -113,6 +136,7 @@ export function NoteEditor({
   selectedCodesList = [],
   onNoteContentChange
 }: NoteEditorProps) {
+  const auth = useAuth()
   const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
@@ -120,11 +144,50 @@ export function NoteEditor({
   const [patientSearchLoading, setPatientSearchLoading] = useState(false)
   const [patientSearchError, setPatientSearchError] = useState<string | null>(null)
   const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false)
+  const [patientDetails, setPatientDetails] = useState<PatientDetailsResponse | null>(null)
 
   const [encounterId, setEncounterId] = useState(prePopulatedPatient?.encounterId || "")
   const [encounterValidation, setEncounterValidation] = useState<EncounterValidationState>({
     status: prePopulatedPatient?.encounterId ? 'loading' : 'idle'
   })
+
+  const specialty = useMemo(() => {
+    const userSpecialty = typeof auth.user?.specialty === "string" ? auth.user.specialty.trim() : ""
+    if (userSpecialty) {
+      return userSpecialty
+    }
+    const encounterType = encounterValidation.encounter?.type
+    if (typeof encounterType === "string" && encounterType.trim().length > 0) {
+      return encounterType.trim()
+    }
+    return null
+  }, [auth.user?.specialty, encounterValidation.encounter?.type])
+
+  const payer = useMemo(() => {
+    const encounterPatient = encounterValidation.encounter?.patient as
+      | { insurance?: string | null; payer?: string | null }
+      | undefined
+    const encounterInsurance = encounterPatient?.insurance
+    if (typeof encounterInsurance === "string" && encounterInsurance.trim().length > 0) {
+      return encounterInsurance.trim()
+    }
+    const encounterPayer = encounterPatient?.payer
+    if (typeof encounterPayer === "string" && encounterPayer.trim().length > 0) {
+      return encounterPayer.trim()
+    }
+    const detailInsurance = patientDetails?.demographics?.insurance
+    if (typeof detailInsurance === "string" && detailInsurance.trim().length > 0) {
+      return detailInsurance.trim()
+    }
+    if (typeof selectedPatient?.insurance === "string" && selectedPatient.insurance.trim().length > 0) {
+      return selectedPatient.insurance.trim()
+    }
+    const userPayer = (auth.user as { payer?: unknown } | null)?.payer
+    if (typeof userPayer === "string" && userPayer.trim().length > 0) {
+      return userPayer.trim()
+    }
+    return null
+  }, [encounterValidation.encounter, patientDetails?.demographics?.insurance, selectedPatient?.insurance, auth.user])
 
   const [noteContent, setNoteContent] = useState("")
   const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([])
@@ -156,12 +219,14 @@ export function NoteEditor({
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const encounterValidationAbortRef = useRef<AbortController | null>(null)
   const encounterValidationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const patientDetailsAbortRef = useRef<AbortController | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
   const lastComplianceContentRef = useRef<string>("")
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const autoSaveLastContentRef = useRef<string>("")
+  const noteCreatePromiseRef = useRef<Promise<string> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
@@ -294,39 +359,61 @@ export function NoteEditor({
     []
   )
 
-  const ensureNoteCreated = useCallback(async () => {
-    if (noteId) return noteId
-    if (!patientId || patientId.trim().length === 0) {
-      throw new Error("Patient ID is required before creating a note")
-    }
-    try {
+  const ensureNoteCreated = useCallback(
+    async (contentOverride?: string) => {
+      if (noteId) return noteId
+      if (noteCreatePromiseRef.current) {
+        return noteCreatePromiseRef.current
+      }
+      const trimmedPatientId = patientId.trim()
+      if (!trimmedPatientId) {
+        throw new Error("Patient ID is required before creating a note")
+      }
+
       const payload = {
-        patientId: patientId.trim(),
+        patientId: trimmedPatientId,
         encounterId: encounterId.trim().length > 0 ? encounterId.trim() : undefined,
-        content: noteContentRef.current
+        content:
+          typeof contentOverride === "string" ? contentOverride : noteContentRef.current
       }
-      const response = await fetchWithAuth("/api/notes/create", {
-        method: "POST",
-        jsonBody: payload
-      })
-      if (!response.ok) {
-        throw new Error(`Failed to create note (${response.status})`)
-      }
-      const data = await response.json()
-      const createdId = data?.noteId ? String(data.noteId) : null
-      if (!createdId) {
-        throw new Error("Note identifier missing from response")
-      }
-      setNoteId(createdId)
-      setAutoSaveError(null)
-      return createdId
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unable to create a draft note"
-      setAutoSaveError(message)
-      throw error
-    }
-  }, [noteId, patientId, encounterId, fetchWithAuth])
+
+      const createPromise = (async () => {
+        try {
+          const response = await fetchWithAuth("/api/notes/create", {
+            method: "POST",
+            jsonBody: payload
+          })
+          if (!response.ok) {
+            throw new Error(`Failed to create note (${response.status})`)
+          }
+          const data = await response.json()
+          const createdId =
+            data?.noteId != null
+              ? String(data.noteId)
+              : data?.note_id != null
+                ? String(data.note_id)
+                : null
+          if (!createdId) {
+            throw new Error("Note identifier missing from response")
+          }
+          setNoteId(createdId)
+          setAutoSaveError(null)
+          return createdId
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Unable to create a draft note"
+          setAutoSaveError(message)
+          throw error
+        } finally {
+          noteCreatePromiseRef.current = null
+        }
+      })()
+
+      noteCreatePromiseRef.current = createPromise
+      return createPromise
+    },
+    [noteId, patientId, encounterId, fetchWithAuth],
+  )
 
   const stopAudioStream = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -380,15 +467,14 @@ export function NoteEditor({
       queuedAudioChunksRef.current = []
 
       const token = getStoredToken()
-      const protocol =
-        typeof window !== "undefined" && window.location.protocol === "https:" ? "wss" : "ws"
-      const host = typeof window !== "undefined" ? window.location.host : "localhost"
-      const url = `${protocol}://${host}/api/transcribe/stream${
-        token ? `?token=${encodeURIComponent(token)}` : ""
-      }`
-      const ws = token
-        ? new WebSocket(url, ["authorization", `Bearer ${token}`])
-        : new WebSocket(url)
+      const wsTarget = new URL(resolveWebsocketUrl("/api/transcribe/stream"))
+      if (token) {
+        wsTarget.searchParams.set("token", token)
+      }
+      const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
+      const ws = protocols
+        ? new WebSocket(wsTarget.toString(), protocols)
+        : new WebSocket(wsTarget.toString())
       websocketRef.current = ws
 
       ws.onopen = () => {
@@ -480,6 +566,8 @@ export function NoteEditor({
     setPatientInputValue(value)
     setPatientId(value.trim())
     setSelectedPatient(null)
+    setPatientDetails(null)
+    patientDetailsAbortRef.current?.abort()
   }, [])
 
   const handleSelectPatient = useCallback((suggestion: PatientSuggestion) => {
@@ -487,6 +575,8 @@ export function NoteEditor({
     setPatientId(suggestion.patientId)
     setPatientInputValue(suggestion.patientId)
     setIsPatientDropdownOpen(false)
+    setPatientDetails(null)
+    patientDetailsAbortRef.current?.abort()
   }, [])
 
   const openPatientDropdown = useCallback(() => {
@@ -509,6 +599,16 @@ export function NoteEditor({
   useEffect(() => {
     noteContentRef.current = noteContent
   }, [noteContent])
+
+  useEffect(() => {
+    if (
+      !noteId &&
+      patientId.trim().length > 0 &&
+      (noteContentRef.current?.trim()?.length ?? 0) > 0
+    ) {
+      void ensureNoteCreated(noteContentRef.current).catch(() => {})
+    }
+  }, [patientId, noteId, ensureNoteCreated])
 
   useEffect(() => {
     if (prePopulatedPatient?.patientId) {
@@ -559,6 +659,36 @@ export function NoteEditor({
               mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
               age: typeof patient?.age === "number" ? patient.age : undefined,
               gender: typeof patient?.gender === "string" ? patient.gender : undefined,
+              insurance:
+                typeof patient?.insurance === "string" && patient.insurance.trim().length > 0
+                  ? patient.insurance.trim()
+                  : undefined,
+              lastVisit:
+                typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0
+                  ? patient.lastVisit.trim()
+                  : undefined,
+              allergies: Array.isArray(patient?.allergies)
+                ? patient.allergies
+                    .map((item: unknown) =>
+                      typeof item === "string"
+                        ? item.trim()
+                        : typeof item === "number"
+                          ? String(item)
+                          : ""
+                    )
+                    .filter((item: string) => item.length > 0)
+                : undefined,
+              medications: Array.isArray(patient?.medications)
+                ? patient.medications
+                    .map((item: unknown) =>
+                      typeof item === "string"
+                        ? item.trim()
+                        : typeof item === "number"
+                          ? String(item)
+                          : ""
+                    )
+                    .filter((item: string) => item.length > 0)
+                : undefined,
               source: "local"
             }))
           : []
@@ -572,6 +702,36 @@ export function NoteEditor({
               mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
               age: typeof patient?.age === "number" ? patient.age : undefined,
               gender: typeof patient?.gender === "string" ? patient.gender : undefined,
+              insurance:
+                typeof patient?.insurance === "string" && patient.insurance.trim().length > 0
+                  ? patient.insurance.trim()
+                  : undefined,
+              lastVisit:
+                typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0
+                  ? patient.lastVisit.trim()
+                  : undefined,
+              allergies: Array.isArray(patient?.allergies)
+                ? patient.allergies
+                    .map((item: unknown) =>
+                      typeof item === "string"
+                        ? item.trim()
+                        : typeof item === "number"
+                          ? String(item)
+                          : ""
+                    )
+                    .filter((item: string) => item.length > 0)
+                : undefined,
+              medications: Array.isArray(patient?.medications)
+                ? patient.medications
+                    .map((item: unknown) =>
+                      typeof item === "string"
+                        ? item.trim()
+                        : typeof item === "number"
+                          ? String(item)
+                          : ""
+                    )
+                    .filter((item: string) => item.length > 0)
+                : undefined,
               source: "external"
             }))
           : []
@@ -596,6 +756,133 @@ export function NoteEditor({
       controller.abort()
     }
   }, [patientInputValue, fetchWithAuth])
+
+  useEffect(() => {
+    const trimmed = patientId.trim()
+    patientDetailsAbortRef.current?.abort()
+
+    if (!trimmed) {
+      setPatientDetails(null)
+      return
+    }
+
+    const numericId = Number(trimmed)
+    if (!Number.isFinite(numericId)) {
+      setPatientDetails(null)
+      return
+    }
+
+    const controller = new AbortController()
+    patientDetailsAbortRef.current = controller
+
+    const parseStringList = (value: unknown): string[] => {
+      if (!value) {
+        return []
+      }
+      if (Array.isArray(value)) {
+        return value
+          .map(item => {
+            if (typeof item === "string") {
+              return item.trim()
+            }
+            if (typeof item === "number") {
+              return String(item)
+            }
+            return ""
+          })
+          .filter((item): item is string => item.length > 0)
+      }
+      return []
+    }
+
+    const loadPatientDetails = async () => {
+      try {
+        const data = await apiFetchJson<PatientDetailsResponse>(`/api/patients/${numericId}`, {
+          signal: controller.signal,
+          returnNullOnEmpty: true
+        })
+        if (controller.signal.aborted) {
+          return
+        }
+        if (!data) {
+          setPatientDetails(null)
+          return
+        }
+
+        setPatientDetails(data)
+
+        setSelectedPatient(prev => {
+          const demographics = data.demographics ?? {}
+          const allergies = parseStringList(data.allergies)
+          const medications = parseStringList(data.medications)
+          const resolvedId =
+            demographics.patientId != null && `${demographics.patientId}`.trim().length > 0
+              ? `${demographics.patientId}`.trim()
+              : prev?.patientId ?? trimmed
+          return {
+            patientId: resolvedId,
+            name:
+              typeof demographics.name === "string" && demographics.name.trim().length > 0
+                ? demographics.name.trim()
+                : prev?.name,
+            firstName:
+              typeof demographics.firstName === "string" && demographics.firstName.trim().length > 0
+                ? demographics.firstName.trim()
+                : prev?.firstName,
+            lastName:
+              typeof demographics.lastName === "string" && demographics.lastName.trim().length > 0
+                ? demographics.lastName.trim()
+                : prev?.lastName,
+            dob:
+              typeof demographics.dob === "string" && demographics.dob.trim().length > 0
+                ? demographics.dob.trim()
+                : prev?.dob,
+            mrn:
+              typeof demographics.mrn === "string" && demographics.mrn.trim().length > 0
+                ? demographics.mrn.trim()
+                : prev?.mrn,
+            age:
+              typeof demographics.age === "number" && Number.isFinite(demographics.age)
+                ? demographics.age
+                : prev?.age,
+            gender:
+              typeof demographics.gender === "string" && demographics.gender.trim().length > 0
+                ? demographics.gender.trim()
+                : prev?.gender,
+            insurance:
+              typeof demographics.insurance === "string" && demographics.insurance.trim().length > 0
+                ? demographics.insurance.trim()
+                : prev?.insurance,
+            lastVisit:
+              typeof demographics.lastVisit === "string" && demographics.lastVisit.trim().length > 0
+                ? demographics.lastVisit.trim()
+                : prev?.lastVisit,
+            allergies: allergies.length > 0 ? allergies : prev?.allergies,
+            medications: medications.length > 0 ? medications : prev?.medications,
+            source: prev?.source ?? "local"
+          }
+        })
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return
+        }
+        console.error("Failed to load patient details", error)
+        setPatientDetails(null)
+      }
+    }
+
+    void loadPatientDetails()
+
+    return () => {
+      controller.abort()
+    }
+  }, [patientId])
+
+  useEffect(() => {
+    return () => {
+      patientDetailsAbortRef.current?.abort()
+    }
+  }, [])
 
   useEffect(() => {
     if (!encounterId || encounterId.trim().length === 0) {
@@ -752,7 +1039,12 @@ export function NoteEditor({
       clearInterval(autoSaveIntervalRef.current)
       autoSaveIntervalRef.current = null
     }
-    if (!noteId || !hasEverStarted || isFinalized) {
+    if (isFinalized) {
+      return
+    }
+
+    const trimmedPatientId = patientId.trim()
+    if (!trimmedPatientId) {
       return
     }
 
@@ -760,19 +1052,48 @@ export function NoteEditor({
       const content = noteContentRef.current
       if (content === autoSaveLastContentRef.current) return
       try {
+        const ensuredId = noteId ?? (await ensureNoteCreated(content))
+        if (!ensuredId) {
+          return
+        }
+        const numericId = Number(ensuredId)
+        const payload: Record<string, unknown> = {
+          note_id: Number.isFinite(numericId) ? numericId : ensuredId,
+          content
+        }
         const response = await fetchWithAuth("/api/notes/auto-save", {
-          method: "POST",
-          jsonBody: { noteId, content }
+          method: "PUT",
+          jsonBody: payload
         })
         if (!response.ok) {
-          throw new Error(`Auto-save failed (${response.status})`)
+          let message = `Auto-save failed (${response.status})`
+          try {
+            const errBody = await response.json()
+            const detail =
+              typeof errBody?.message === "string" && errBody.message.trim().length > 0
+                ? errBody.message
+                : typeof errBody?.detail === "string" && errBody.detail.trim().length > 0
+                  ? errBody.detail
+                  : ""
+            if (detail) {
+              message = detail
+            }
+          } catch {
+            // ignore body parsing errors
+          }
+          throw new Error(message)
+        } else {
+          await response.json().catch(() => ({}))
         }
         autoSaveLastContentRef.current = content
         setLastAutoSaveTime(new Date().toISOString())
         setAutoSaveError(null)
+        if (!noteId) {
+          setNoteId(String(ensuredId))
+        }
       } catch (error) {
         setAutoSaveError(
-          error instanceof Error ? error.message : "Unable to auto-save note"
+          error instanceof Error ? error.message : "Unable to auto-save note",
         )
       }
     }
@@ -786,7 +1107,7 @@ export function NoteEditor({
         autoSaveIntervalRef.current = null
       }
     }
-  }, [noteId, hasEverStarted, fetchWithAuth, isFinalized])
+  }, [noteId, patientId, fetchWithAuth, ensureNoteCreated, isFinalized])
 
   useEffect(() => {
     return () => {
@@ -799,6 +1120,7 @@ export function NoteEditor({
       if (autoSaveIntervalRef.current) {
         clearInterval(autoSaveIntervalRef.current)
       }
+      noteCreatePromiseRef.current = null
       stopAudioStream()
     }
   }, [stopAudioStream])
@@ -1425,6 +1747,9 @@ export function NoteEditor({
             setNoteContent(content)
             if (onNoteContentChange) {
               onNoteContentChange(content)
+            }
+            if (!noteId && patientId.trim().length > 0) {
+              void ensureNoteCreated(content).catch(() => {})
             }
           }}
         />

@@ -179,7 +179,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
         const data =
           (await apiFetchJson<{ suggestions?: any[] }>("/api/ai/codes/suggest", {
             method: "POST",
-            jsonBody: { content: trimmed, useOfflineMode: true },
+            jsonBody: { content: trimmed },
             signal
           })) ?? {}
 
@@ -215,7 +215,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
         const data =
           (await apiFetchJson<{ alerts?: any[] }>("/api/ai/compliance/check", {
             method: "POST",
-            jsonBody: { content: trimmed, codes: codesInUse, useOfflineMode: true },
+            jsonBody: { content: trimmed, codes: codesInUse },
             signal
           })) ?? {}
 
@@ -246,7 +246,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
         const data =
           (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
             method: "POST",
-            jsonBody: { content: trimmed, useOfflineMode: true },
+            jsonBody: { content: trimmed },
             signal
           })) ?? {}
 
@@ -310,7 +310,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
         const data =
           (await apiFetchJson<{ recommendations?: any[] }>("/api/ai/prevention/suggest", {
             method: "POST",
-            jsonBody: { useOfflineMode: true },
+            jsonBody: {},
             signal
           })) ?? {}
 
