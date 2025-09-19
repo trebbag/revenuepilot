@@ -20,6 +20,56 @@ import { Badge } from "./components/ui/badge"
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
+import { apiFetch, apiFetchJson } from "./lib/api"
+
+interface RawScheduleAppointment {
+  id: number
+  patient: string
+  reason: string
+  start: string
+  end: string
+  provider?: string | null
+  status?: string | null
+}
+
+interface ScheduleAppointmentView {
+  id: string
+  patientId: string
+  encounterId: string
+  patientName: string
+  patientPhone: string
+  patientEmail: string
+  appointmentTime: string
+  duration: number
+  appointmentType: 'Wellness' | 'Follow-up' | 'New Patient' | 'Urgent' | 'Consultation'
+  provider: string
+  location: string
+  status: 'Scheduled' | 'Checked In' | 'In Progress' | 'Completed' | 'No Show' | 'Cancelled'
+  notes?: string
+  fileUpToDate: boolean
+  priority: 'low' | 'medium' | 'high'
+  isVirtual: boolean
+  sourceStatus: string
+}
+
+interface ScheduleDataState {
+  data: ScheduleAppointmentView[] | null
+  loading: boolean
+  error: string | null
+}
+
+interface ScheduleFiltersSnapshot {
+  provider: string
+  status: string
+  appointmentType: string
+  viewMode: string
+  date: string
+  search: string
+}
+
+interface DraftAnalyticsSummary {
+  drafts: number
+}
 
 type ViewKey =
   | "home"
@@ -100,99 +150,317 @@ export function ProtectedApp() {
 
   const { selectedCodes, selectedCodesList, addedCodes, isSuggestionPanelOpen, layout } = sessionState
 
-  // Shared appointment state between Builder and Schedule components
-  const [sharedAppointments, setSharedAppointments] = useState([
-    {
-      id: 'apt-001',
-      patientId: 'PT-2024-0156',
-      encounterId: 'ENC-240314-001',
-      patientName: 'Sarah Chen',
-      patientPhone: '(555) 123-4567',
-      patientEmail: 'sarah.chen@email.com',
-      appointmentTime: '2024-03-14T09:00:00Z',
-      duration: 30,
-      appointmentType: 'Wellness',
-      provider: 'Dr. Johnson',
-      location: 'Room 101',
-      status: 'Scheduled',
-      notes: 'Annual wellness visit',
-      fileUpToDate: true,
-      priority: 'medium',
-      isVirtual: false
-    },
-    {
-      id: 'apt-002',
-      patientId: 'PT-2024-0143',
-      encounterId: 'ENC-240314-002',
-      patientName: 'Michael Rodriguez',
-      patientPhone: '(555) 987-6543',
-      patientEmail: 'michael.r@email.com',
-      appointmentTime: '2024-03-14T09:30:00Z',
-      duration: 45,
-      appointmentType: 'Follow-up',
-      provider: 'Dr. Johnson',
-      location: 'Room 101',
-      status: 'Checked In',
-      notes: 'Diabetes follow-up',
-      fileUpToDate: false,
-      priority: 'high',
-      isVirtual: false
-    },
-    {
-      id: 'apt-003',
-      patientId: 'PT-2024-0089',
-      encounterId: 'ENC-240314-003',
-      patientName: 'Emily Johnson',
-      patientPhone: '(555) 456-7890',
-      patientEmail: 'emily.j@email.com',
-      appointmentTime: '2024-03-14T10:15:00Z',
-      duration: 60,
-      appointmentType: 'New Patient',
-      provider: 'Dr. Johnson',
-      location: 'Room 102',
-      status: 'Scheduled',
-      notes: 'Initial consultation',
-      fileUpToDate: false,
-      priority: 'medium',
-      isVirtual: false
-    },
-    {
-      id: 'apt-004',
-      patientId: 'PT-2024-0067',
-      encounterId: 'ENC-240314-004',
-      patientName: 'Robert Davis',
-      patientPhone: '(555) 234-5678',
-      patientEmail: 'robert.davis@email.com',
-      appointmentTime: '2024-03-14T11:30:00Z',
-      duration: 30,
-      appointmentType: 'Urgent',
-      provider: 'Dr. Johnson',
-      location: 'Virtual',
-      status: 'Scheduled',
-      notes: 'Urgent care - chest pain',
-      fileUpToDate: true,
-      priority: 'high',
-      isVirtual: true
-    },
-    {
-      id: 'apt-005',
-      patientId: 'PT-2024-0234',
-      encounterId: 'ENC-240314-005',
-      patientName: 'Lisa Thompson',
-      patientPhone: '(555) 345-6789',
-      patientEmail: 'lisa.t@email.com',
-      appointmentTime: '2024-03-14T14:00:00Z',
-      duration: 45,
-      appointmentType: 'Consultation',
-      provider: 'Dr. Smith',
-      location: 'Room 201',
-      status: 'Scheduled',
-      notes: 'Cardiology consultation',
-      fileUpToDate: true,
-      priority: 'medium',
-      isVirtual: false
+  const [appointmentsState, setAppointmentsState] = useState<ScheduleDataState>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0)
+  const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
+  const [draftCount, setDraftCount] = useState<number | null>(null)
+
+  const normalizeText = useCallback((value?: string | null, fallback = "") => {
+    if (!value) {
+      return fallback
     }
-  ])
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : fallback
+  }, [])
+
+  const mapScheduleStatus = useCallback((status?: string | null): ScheduleAppointmentView['status'] => {
+    switch ((status ?? '').toLowerCase()) {
+      case 'checked in':
+      case 'check-in':
+        return 'Checked In'
+      case 'in-progress':
+      case 'in progress':
+      case 'start':
+        return 'In Progress'
+      case 'completed':
+        return 'Completed'
+      case 'cancelled':
+      case 'canceled':
+        return 'Cancelled'
+      case 'no show':
+      case 'no-show':
+        return 'No Show'
+      default:
+        return 'Scheduled'
+    }
+  }, [])
+
+  const determineVisitType = useCallback((reason: string): ScheduleAppointmentView['appointmentType'] => {
+    const lower = reason.toLowerCase()
+    if (lower.includes('wellness')) return 'Wellness'
+    if (lower.includes('follow')) return 'Follow-up'
+    if (lower.includes('urgent') || lower.includes('emergency')) return 'Urgent'
+    if (lower.includes('new')) return 'New Patient'
+    if (lower.includes('consult')) return 'Consultation'
+    return 'Consultation'
+  }, [])
+
+  const determinePriority = useCallback((start: Date, status: ScheduleAppointmentView['status'], reason: string): ScheduleAppointmentView['priority'] => {
+    if (status === 'Cancelled') {
+      return 'low'
+    }
+    if (/urgent|emergency|stat/.test(reason.toLowerCase())) {
+      return 'high'
+    }
+    const diffHours = (start.getTime() - Date.now()) / (1000 * 60 * 60)
+    if (diffHours <= 1) {
+      return 'high'
+    }
+    if (diffHours <= 4) {
+      return 'medium'
+    }
+    return 'low'
+  }, [])
+
+  const buildPatientEmail = useCallback((name: string, id: number) => {
+    const base = name.toLowerCase().replace(/[^a-z0-9]/g, '.') || `patient${id}`
+    return `${base}@example.com`
+  }, [])
+
+  const transformAppointment = useCallback(
+    (raw: RawScheduleAppointment): ScheduleAppointmentView => {
+      const start = new Date(raw.start)
+      const end = new Date(raw.end)
+      const durationMinutes = Math.max(15, Math.round((end.getTime() - start.getTime()) / (1000 * 60)) || 30)
+      const patientName = normalizeText(raw.patient, `Patient ${raw.id}`)
+      const provider = normalizeText(raw.provider, 'Unassigned')
+      const reason = normalizeText(raw.reason, 'Scheduled visit')
+      const status = mapScheduleStatus(raw.status)
+      const isVirtual = /virtual|telehealth|telemedicine/.test(reason.toLowerCase())
+      const location = isVirtual ? 'Virtual' : 'Main Clinic'
+
+      return {
+        id: String(raw.id),
+        patientId: `PT-${String(raw.id).padStart(4, '0')}`,
+        encounterId: `ENC-${String(raw.id).padStart(4, '0')}`,
+        patientName,
+        patientPhone: '(555) 000-0000',
+        patientEmail: buildPatientEmail(patientName, raw.id),
+        appointmentTime: start.toISOString(),
+        duration: durationMinutes,
+        appointmentType: determineVisitType(reason),
+        provider,
+        location,
+        status,
+        notes: reason,
+        fileUpToDate: status === 'Completed',
+        priority: determinePriority(start, status, reason),
+        isVirtual,
+        sourceStatus: normalizeText(raw.status, 'scheduled')
+      }
+    },
+    [buildPatientEmail, determinePriority, determineVisitType, mapScheduleStatus, normalizeText]
+  )
+
+  const statusToAction = useCallback((status: ScheduleAppointmentView['status']): string | null => {
+    switch (status) {
+      case 'Scheduled':
+        return 'scheduled'
+      case 'Checked In':
+        return 'check-in'
+      case 'In Progress':
+        return 'start'
+      case 'Completed':
+        return 'complete'
+      case 'Cancelled':
+      case 'No Show':
+        return 'cancelled'
+      default:
+        return null
+    }
+  }, [])
+
+  const deriveScheduleOperations = useCallback(
+    (previous: ScheduleAppointmentView[], next: ScheduleAppointmentView[]) => {
+      const operations: Array<{ id: string; action: string; time?: string }> = []
+      const previousMap = new Map(previous.map(item => [item.id, item]))
+
+      next.forEach(appointment => {
+        const prior = previousMap.get(appointment.id)
+        if (!prior) {
+          return
+        }
+        if (appointment.appointmentTime !== prior.appointmentTime) {
+          operations.push({ id: appointment.id, action: 'reschedule', time: appointment.appointmentTime })
+        }
+        if (appointment.status !== prior.status) {
+          const action = statusToAction(appointment.status)
+          if (action) {
+            operations.push({ id: appointment.id, action })
+          }
+        }
+      })
+
+      return operations
+    },
+    [statusToAction]
+  )
+
+  const triggerScheduleRefresh = useCallback(() => {
+    setScheduleRefreshKey(prev => prev + 1)
+  }, [])
+
+  const applyScheduleOperations = useCallback(
+    async (operations: Array<{ id: string; action: string; time?: string }>) => {
+      if (!operations.length) {
+        return
+      }
+
+      const updates = operations
+        .map(operation => {
+          const numericId = Number(operation.id)
+          if (!Number.isFinite(numericId)) {
+            return null
+          }
+          const payload: { id: number; action: string; time?: string } = {
+            id: numericId,
+            action: operation.action
+          }
+          if (operation.time) {
+            payload.time = new Date(operation.time).toISOString()
+          }
+          return payload
+        })
+        .filter((item): item is { id: number; action: string; time?: string } => Boolean(item))
+
+      if (!updates.length) {
+        return
+      }
+
+      setAppointmentsState(prev => ({ ...prev, loading: true }))
+
+      try {
+        const result = await apiFetchJson<{ succeeded?: number; failed?: number }>(
+          '/api/schedule/bulk-operations',
+          {
+            method: 'POST',
+            jsonBody: {
+              updates,
+              provider: normalizeText(currentUser?.name)
+            },
+            returnNullOnEmpty: true
+          }
+        )
+
+        if (result?.failed && result.failed > 0) {
+          setAppointmentsState(prev => ({
+            ...prev,
+            loading: false,
+            error: `Unable to update ${result.failed} appointment${result.failed === 1 ? '' : 's'}.`
+          }))
+        } else {
+          setAppointmentsState(prev => ({ ...prev, error: null }))
+        }
+        triggerScheduleRefresh()
+      } catch (error) {
+        if ((error as DOMException)?.name === 'AbortError') {
+          return
+        }
+        setAppointmentsState(prev => ({
+          ...prev,
+          loading: false,
+          error: error instanceof Error ? error.message : 'Unable to update schedule.'
+        }))
+      }
+    },
+    [currentUser?.name, normalizeText, triggerScheduleRefresh]
+  )
+
+  const handleAppointmentsChange = useCallback(
+    (updater: ScheduleAppointmentView[] | ((prev: ScheduleAppointmentView[]) => ScheduleAppointmentView[])) => {
+      setAppointmentsState(prev => {
+        const current = prev.data ?? []
+        const next = typeof updater === 'function'
+          ? (updater as (prev: ScheduleAppointmentView[]) => ScheduleAppointmentView[])(current)
+          : updater
+
+        if (!Array.isArray(next)) {
+          return prev
+        }
+
+        const operations = deriveScheduleOperations(current, next)
+        if (operations.length > 0) {
+          applyScheduleOperations(operations).catch(error => {
+            if ((error as DOMException)?.name !== 'AbortError') {
+              console.error('Failed to apply schedule operations', error)
+            }
+          })
+        }
+
+        return { ...prev, data: next }
+      })
+    },
+    [applyScheduleOperations, deriveScheduleOperations]
+  )
+
+  const handleScheduleFiltersChange = useCallback((filters: ScheduleFiltersSnapshot) => {
+    setScheduleFilters(prev => {
+      if (prev && JSON.stringify(prev) === JSON.stringify(filters)) {
+        return prev
+      }
+      return filters
+    })
+  }, [])
+
+  const loadAppointments = useCallback(
+    async (signal?: AbortSignal) => {
+      setAppointmentsState(prev => ({ ...prev, loading: true, error: null }))
+
+      try {
+        const response = await apiFetchJson<{ appointments?: RawScheduleAppointment[] }>(
+          '/api/schedule/appointments',
+          { signal, returnNullOnEmpty: true }
+        )
+        if (signal?.aborted) {
+          return
+        }
+        const transformed = (response?.appointments ?? []).map(transformAppointment)
+        setAppointmentsState({ data: transformed, loading: false, error: null })
+      } catch (error) {
+        if ((error as DOMException)?.name === 'AbortError') {
+          return
+        }
+        setAppointmentsState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: error instanceof Error ? error.message : 'Unable to load schedule.'
+        }))
+      }
+    },
+    [transformAppointment]
+  )
+
+  const filtersKey = useMemo(() => (scheduleFilters ? JSON.stringify(scheduleFilters) : 'base'), [scheduleFilters])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadAppointments(controller.signal).catch(error => {
+      if ((error as DOMException)?.name !== 'AbortError') {
+        console.error('Unexpected schedule load error', error)
+      }
+    })
+    return () => controller.abort()
+  }, [loadAppointments, scheduleRefreshKey, filtersKey])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    apiFetchJson<DraftAnalyticsSummary>('/api/analytics/drafts', { signal: controller.signal })
+      .then(summary => {
+        if (summary && typeof summary.drafts === 'number') {
+          setDraftCount(summary.drafts)
+        }
+      })
+      .catch(error => {
+        if ((error as DOMException)?.name !== 'AbortError') {
+          console.error('Failed to load draft analytics summary', error)
+        }
+      })
+    return () => controller.abort()
+  }, [])
 
   const canAccessView = useCallback(
     (view: ViewKey) => {
@@ -285,13 +553,24 @@ export function ProtectedApp() {
     handleNavigate('app')
   }
 
-  const handleStartVisit = (patientId: string, encounterId: string) => {
-    console.log(`Starting visit for patient ${patientId}, encounter ${encounterId}`)
-    // Set the patient information to pre-populate in the note editor
-    setPrePopulatedPatient({ patientId, encounterId })
-    // Navigate to the documentation screen
-    handleNavigate('app')
-  }
+  const handleStartVisit = useCallback(
+    async (appointmentId: string, patientId: string, encounterId: string) => {
+      try {
+        await applyScheduleOperations([{ id: appointmentId, action: 'start' }])
+      } catch (error) {
+        if ((error as DOMException)?.name !== 'AbortError') {
+          console.error('Failed to update appointment status', error)
+        }
+      }
+      setPrePopulatedPatient({ patientId, encounterId })
+      handleNavigate('app')
+    },
+    [applyScheduleOperations, handleNavigate]
+  )
+
+  const handleDraftSummaryUpdate = useCallback((summary: { total: number }) => {
+    setDraftCount(summary.total)
+  }, [])
 
   const handleUploadChart = (patientId: string) => {
     console.log(`Uploading chart for patient ${patientId}`)
@@ -302,19 +581,10 @@ export function ProtectedApp() {
 
   // Calculate user's draft count for navigation badge
   const getUserDraftCount = () => {
-    // This would typically come from an API call or state management
-    // For demo purposes, using mock data from Drafts component
-    const mockDrafts = [
-      { provider: 'Dr. Johnson' },
-      { provider: 'Dr. Smith' },
-      { provider: 'NP Williams' },
-      { provider: 'Dr. Johnson' },
-      { provider: 'Dr. Brown' },
-      { provider: 'NP Williams' },
-      { provider: 'Dr. Smith' },
-      { provider: 'Dr. Johnson' }
-    ]
-    return mockDrafts.filter(draft => draft.provider === currentUser.name).length
+    if (typeof draftCount === 'number') {
+      return draftCount
+    }
+    return 0
   }
 
   // Home Dashboard View
@@ -515,7 +785,7 @@ export function ProtectedApp() {
                   <SidebarTrigger />
                   <h1 className="text-lg font-medium">Draft Notes Management</h1>
                   <Badge variant="outline" className="ml-2">
-                    {getUserDraftCount()} My Drafts
+                    {getUserDraftCount()} Drafts Available
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
@@ -534,6 +804,7 @@ export function ProtectedApp() {
                 <Drafts
                   onEditDraft={handleEditDraft}
                   currentUser={currentUser}
+                  onDraftsSummaryUpdate={handleDraftSummaryUpdate}
                 />
               </div>
             </main>
@@ -588,7 +859,11 @@ export function ProtectedApp() {
                   currentUser={currentUser}
                   onStartVisit={handleStartVisit}
                   onUploadChart={handleUploadChart}
-                  appointments={sharedAppointments}
+                  appointments={appointmentsState.data ?? []}
+                  loading={appointmentsState.loading}
+                  error={appointmentsState.error}
+                  onRefresh={triggerScheduleRefresh}
+                  onFiltersChange={handleScheduleFiltersChange}
                 />
               </div>
             </main>
@@ -638,8 +913,8 @@ export function ProtectedApp() {
               <div className="flex-1 overflow-auto">
                 <Builder
                   currentUser={currentUser}
-                  appointments={sharedAppointments}
-                  onAppointmentsChange={setSharedAppointments}
+                  appointments={appointmentsState.data ?? []}
+                  onAppointmentsChange={handleAppointmentsChange}
                 />
               </div>
             </main>

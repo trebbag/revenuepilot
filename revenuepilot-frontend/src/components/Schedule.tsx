@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, useRef } from "react"
 import { motion } from "motion/react"
 import { 
   Calendar as CalendarIcon, 
@@ -16,6 +16,7 @@ import {
   CheckCircle,
   Play,
   Upload,
+  RefreshCw,
   Search,
   Grid3x3,
   List,
@@ -64,12 +65,32 @@ interface Appointment {
 
 interface ScheduleProps {
   currentUser?: CurrentUser
-  onStartVisit?: (patientId: string, encounterId: string) => void
+  onStartVisit?: (appointmentId: string, patientId: string, encounterId: string) => void
   onUploadChart?: (patientId: string) => void
   appointments?: Appointment[]
+  loading?: boolean
+  error?: string | null
+  onRefresh?: () => void
+  onFiltersChange?: (filters: {
+    provider: string
+    status: string
+    appointmentType: string
+    viewMode: 'day' | 'week' | 'month'
+    date: string
+    search: string
+  }) => void
 }
 
-export function Schedule({ currentUser, onStartVisit, onUploadChart, appointments: propAppointments }: ScheduleProps) {
+export function Schedule({
+  currentUser,
+  onStartVisit,
+  onUploadChart,
+  appointments: propAppointments,
+  loading = false,
+  error = null,
+  onRefresh,
+  onFiltersChange
+}: ScheduleProps) {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<'day' | 'week' | 'month'>('day')
   const [providerFilter, setProviderFilter] = useState('me') // 'me', 'everyone', specific provider
@@ -208,6 +229,28 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, appointment
   }
 
   const uniqueProviders = Array.from(new Set(appointments.map(apt => apt.provider)))
+
+  const filtersRef = useRef<string>("")
+  const filterPayload = useMemo(() => ({
+    provider: providerFilter,
+    status: statusFilter,
+    appointmentType: appointmentTypeFilter,
+    viewMode,
+    date: currentDate.toISOString(),
+    search: searchTerm
+  }), [providerFilter, statusFilter, appointmentTypeFilter, viewMode, currentDate, searchTerm])
+
+  useEffect(() => {
+    if (!onFiltersChange) {
+      return
+    }
+    const serialized = JSON.stringify(filterPayload)
+    if (filtersRef.current === serialized) {
+      return
+    }
+    filtersRef.current = serialized
+    onFiltersChange(filterPayload)
+  }, [filterPayload, onFiltersChange])
 
   // Navigation functions
   const navigateDate = (direction: 'prev' | 'next') => {
@@ -357,10 +400,10 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, appointment
             )}
             
             {canStartVisit(appointment) && (
-              <Button 
-                variant="default" 
+              <Button
+                variant="default"
                 size="sm"
-                onClick={() => onStartVisit?.(appointment.patientId, appointment.encounterId)}
+                onClick={() => onStartVisit?.(appointment.id, appointment.patientId, appointment.encounterId)}
                 className="shadow-sm hover:shadow-md transition-shadow"
               >
                 <Play className="w-4 h-4 mr-2" />
@@ -554,7 +597,7 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, appointment
                         <div
                           key={appointment.id}
                           className={`text-xs p-1 rounded border-l-2 ${getPriorityColor(appointment.priority).replace('border-l-', 'border-l-')} bg-blue-50 text-blue-700 cursor-pointer hover:bg-blue-100 transition-colors`}
-                          onClick={() => onStartVisit?.(appointment.patientId, appointment.encounterId)}
+                          onClick={() => onStartVisit?.(appointment.id, appointment.patientId, appointment.encounterId)}
                         >
                           <div className="font-medium truncate">{appointment.patientName}</div>
                           <div className="text-[10px] opacity-75">{formatTime(appointment.appointmentTime)}</div>
@@ -673,6 +716,12 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, appointment
           </div>
 
           <div className="flex items-center gap-2">
+            {onRefresh && (
+              <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Refresh
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={handleScheduleSettings}>
               <Settings className="w-4 h-4 mr-2" />
               Schedule Settings
@@ -680,6 +729,19 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, appointment
           </div>
         </div>
       </div>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/40 border border-muted/60 rounded-md px-3 py-2">
+          <Clock className="w-4 h-4" />
+          Updating schedule…
+        </div>
+      )}
+
+      {error && (
+        <div className="border border-destructive/40 bg-destructive/10 text-destructive px-4 py-2 rounded-md text-sm">
+          {error}
+        </div>
+      )}
 
       {/* Calendar Content */}
       <div className="min-h-[600px]">

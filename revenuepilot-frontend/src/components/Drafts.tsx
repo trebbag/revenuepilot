@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from "react"
+import { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { motion } from "motion/react"
-import { 
-  FilePlus, 
-  Calendar, 
+import {
+  FilePlus,
+  Calendar,
   Clock, 
   User, 
   Search, 
@@ -27,6 +27,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu"
 import { Avatar, AvatarFallback } from "./ui/avatar"
 import { Separator } from "./ui/separator"
+import { Skeleton } from "./ui/skeleton"
+import { apiFetch, apiFetchJson } from "../lib/api"
 
 interface CurrentUser {
   id: string
@@ -52,12 +54,45 @@ interface DraftNote {
   lastEditor: string
 }
 
+interface DraftAnalyticsResponse {
+  drafts: number
+}
+
+interface DraftApiNote {
+  id: number
+  content?: string | null
+  status?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+interface DraftsPreferences {
+  provider?: string
+  visitType?: string
+  urgency?: string
+  ageFilter?: string
+  sortBy?: 'visitDate' | 'lastEdit' | 'daysOld' | 'urgency'
+  sortOrder?: 'asc' | 'desc'
+  searchTerm?: string
+}
+
+interface DataState<T> {
+  data: T | null
+  loading: boolean
+  error: string | null
+}
+
+interface DraftsSessionPayload {
+  draftsPreferences?: DraftsPreferences
+}
+
 interface DraftsProps {
   onEditDraft?: (draftId: string) => void
   currentUser?: CurrentUser
+  onDraftsSummaryUpdate?: (summary: { total: number }) => void
 }
 
-export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
+export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: DraftsProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedProvider, setSelectedProvider] = useState('all')
   const [selectedVisitType, setSelectedVisitType] = useState('all')
@@ -65,150 +100,358 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
   const [sortBy, setSortBy] = useState<'visitDate' | 'lastEdit' | 'daysOld' | 'urgency'>('daysOld')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [ageFilter, setAgeFilter] = useState('all')
+  const [draftsState, setDraftsState] = useState<DataState<DraftNote[]>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [searchState, setSearchState] = useState<DataState<DraftNote[]>>({
+    data: null,
+    loading: false,
+    error: null
+  })
+  const [analyticsState, setAnalyticsState] = useState<DataState<DraftAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [refreshCounter, setRefreshCounter] = useState(0)
+  const [preferencesHydrated, setPreferencesHydrated] = useState(false)
+  const [appliedDefaultProvider, setAppliedDefaultProvider] = useState(false)
+  const lastSearchRef = useRef<string>('')
 
-  // Mock draft notes data
-  const [drafts] = useState<DraftNote[]>([
-    {
-      id: 'draft-001',
-      patientId: 'PT-2024-0156',
-      encounterId: 'ENC-240312-001',
-      patientName: 'Sarah Chen',
-      visitDate: '2024-03-12',
-      lastEditDate: '2024-03-12T14:30:00Z',
-      daysOld: 2,
-      provider: 'Dr. Johnson',
-      visitType: 'Wellness',
-      completionStatus: 75,
-      urgency: 'medium',
-      noteLength: 342,
-      lastEditor: 'Dr. Johnson'
-    },
-    {
-      id: 'draft-002',
-      patientId: 'PT-2024-0143',
-      encounterId: 'ENC-240311-005',
-      patientName: 'Michael Rodriguez',
-      visitDate: '2024-03-11',
-      lastEditDate: '2024-03-11T16:45:00Z',
-      daysOld: 3,
-      provider: 'Dr. Smith',
-      visitType: 'Follow-up',
-      completionStatus: 60,
-      urgency: 'high',
-      noteLength: 287,
-      lastEditor: 'Dr. Smith'
-    },
-    {
-      id: 'draft-003',
-      patientId: 'PT-2024-0089',
-      encounterId: 'ENC-240310-012',
-      patientName: 'Emily Johnson',
-      visitDate: '2024-03-10',
-      lastEditDate: '2024-03-13T09:15:00Z',
-      daysOld: 4,
-      provider: 'NP Williams',
-      visitType: 'SOAP',
-      completionStatus: 85,
-      urgency: 'low',
-      noteLength: 456,
-      lastEditor: 'NP Williams'
-    },
-    {
-      id: 'draft-004',
-      patientId: 'PT-2024-0067',
-      encounterId: 'ENC-240309-008',
-      patientName: 'Robert Davis',
-      visitDate: '2024-03-09',
-      lastEditDate: '2024-03-09T11:20:00Z',
-      daysOld: 5,
-      provider: 'Dr. Johnson',
-      visitType: 'Consultation',
-      completionStatus: 45,
-      urgency: 'high',
-      noteLength: 189,
-      lastEditor: 'Dr. Johnson'
-    },
-    {
-      id: 'draft-005',
-      patientId: 'PT-2024-0234',
-      encounterId: 'ENC-240307-003',
-      patientName: 'Lisa Thompson',
-      visitDate: '2024-03-07',
-      lastEditDate: '2024-03-08T13:50:00Z',
-      daysOld: 7,
-      provider: 'Dr. Brown',
-      visitType: 'SOAP',
-      completionStatus: 70,
-      urgency: 'medium',
-      noteLength: 398,
-      lastEditor: 'Dr. Brown'
-    },
-    {
-      id: 'draft-006',
-      patientId: 'PT-2024-0198',
-      encounterId: 'ENC-240306-015',
-      patientName: 'David Wilson',
-      visitDate: '2024-03-06',
-      lastEditDate: '2024-03-06T15:30:00Z',
-      daysOld: 8,
-      provider: 'NP Williams',
-      visitType: 'Follow-up',
-      completionStatus: 90,
-      urgency: 'low',
-      noteLength: 523,
-      lastEditor: 'NP Williams'
-    },
-    {
-      id: 'draft-007',
-      patientId: 'PT-2024-0045',
-      encounterId: 'ENC-240304-009',
-      patientName: 'Amanda Miller',
-      visitDate: '2024-03-04',
-      lastEditDate: '2024-03-04T10:15:00Z',
-      daysOld: 10,
-      provider: 'Dr. Smith',
-      visitType: 'Wellness',
-      completionStatus: 55,
-      urgency: 'medium',
-      noteLength: 234,
-      lastEditor: 'Dr. Smith'
-    },
-    {
-      id: 'draft-008',
-      patientId: 'PT-2024-0172',
-      encounterId: 'ENC-240301-007',
-      patientName: 'James Garcia',
-      visitDate: '2024-03-01',
-      lastEditDate: '2024-03-02T08:45:00Z',
-      daysOld: 13,
-      provider: 'Dr. Johnson',
-      visitType: 'SOAP',
-      completionStatus: 80,
-      urgency: 'low',
-      noteLength: 467,
-      lastEditor: 'Dr. Johnson'
+  const normalizeProvider = useCallback((value?: string | null) => {
+    if (!value) return 'Unassigned'
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : 'Unassigned'
+  }, [])
+
+  const determineVisitType = useCallback((content: string) => {
+    const lower = content.toLowerCase()
+    if (lower.includes('wellness')) return 'Wellness'
+    if (lower.includes('follow-up') || lower.includes('follow up')) return 'Follow-up'
+    if (lower.includes('consult')) return 'Consultation'
+    if (lower.includes('soap')) return 'SOAP'
+    if (lower.includes('initial') || lower.includes('new patient')) return 'Consultation'
+    return 'SOAP'
+  }, [])
+
+  const extractField = useCallback((content: string, label: RegExp) => {
+    const match = content.match(label)
+    if (!match) return undefined
+    const value = match[1]?.trim()
+    return value && value.length > 0 ? value : undefined
+  }, [])
+
+  const deriveUrgency = useCallback((daysOld: number, content: string) => {
+    const lower = content.toLowerCase()
+    if (lower.includes('urgent') || lower.includes('critical') || daysOld >= 14) {
+      return 'high'
     }
-  ])
+    if (daysOld >= 7 || lower.includes('follow')) {
+      return 'medium'
+    }
+    return 'low'
+  }, [])
 
-  // Set default provider filter to current user if they match
+  const calculateCompletion = useCallback((content: string) => {
+    const sections = content.split(/\n\n+/).filter(Boolean)
+    const base = Math.min(95, Math.max(35, Math.round((sections.length / 6) * 100)))
+    return base
+  }, [])
+
+  const transformDraft = useCallback((raw: DraftApiNote): DraftNote => {
+    const content = raw.content ?? ''
+    const createdAt = raw.created_at ? new Date(raw.created_at) : new Date()
+    const updatedAt = raw.updated_at ? new Date(raw.updated_at) : createdAt
+    const now = new Date()
+    const daysOld = Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
+
+    const patientName =
+      extractField(content, /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i) ||
+      extractField(content, /name\s*[:\-]\s*([^\n]+)/i) ||
+      `Note ${raw.id}`
+
+    const provider =
+      normalizeProvider(extractField(content, /provider\s*[:\-]\s*([^\n]+)/i)) ||
+      normalizeProvider(extractField(content, /author\s*[:\-]\s*([^\n]+)/i))
+
+    const patientId =
+      extractField(content, /patient\s*id\s*[:\-]\s*([^\n]+)/i) ||
+      `PT-${String(raw.id).padStart(4, '0')}`
+
+    const encounterId =
+      extractField(content, /encounter\s*id\s*[:\-]\s*([^\n]+)/i) ||
+      `ENC-${String(raw.id).padStart(4, '0')}`
+
+    const visitType = determineVisitType(content)
+    const urgency = deriveUrgency(daysOld, content)
+    const noteLength = content.split(/\s+/).filter(Boolean).length
+    const completionStatus = calculateCompletion(content)
+
+    const lastEditor =
+      extractField(content, /last\s*edited\s*by\s*[:\-]\s*([^\n]+)/i) ||
+      provider ||
+      'Unassigned'
+
+    return {
+      id: `draft-${raw.id}`,
+      patientId,
+      encounterId,
+      patientName,
+      visitDate: createdAt.toISOString(),
+      lastEditDate: updatedAt.toISOString(),
+      daysOld,
+      provider: provider || 'Unassigned',
+      visitType: visitType as DraftNote['visitType'],
+      completionStatus,
+      urgency,
+      noteLength,
+      lastEditor
+    }
+  }, [calculateCompletion, deriveUrgency, determineVisitType, extractField, normalizeProvider])
+
+  const loadDraftData = useCallback(
+    async (signal?: AbortSignal) => {
+      setDraftsState(prev => ({ ...prev, loading: true, error: null }))
+      setAnalyticsState(prev => ({ ...prev, loading: true, error: null }))
+
+      const toMessage = (reason: unknown): string => {
+        if (reason instanceof DOMException && reason.name === 'AbortError') {
+          return ''
+        }
+        if (reason instanceof Error) {
+          return reason.message || 'Unable to load drafts.'
+        }
+        return 'Unable to load drafts.'
+      }
+
+      const [draftsResult, analyticsResult] = await Promise.allSettled([
+        apiFetchJson<DraftApiNote[]>(
+          '/api/notes/drafts',
+          { signal, returnNullOnEmpty: true, fallbackValue: [] }
+        ),
+        apiFetchJson<DraftAnalyticsResponse>(
+          '/api/analytics/drafts',
+          { signal, returnNullOnEmpty: true }
+        )
+      ])
+
+      if (signal?.aborted) {
+        return
+      }
+
+      if (draftsResult.status === 'fulfilled') {
+        const transformed = (draftsResult.value ?? []).map(transformDraft)
+        setDraftsState({ data: transformed, loading: false, error: null })
+      } else {
+        const message = toMessage(draftsResult.reason)
+        if (message) {
+          console.error('Failed to load drafts', draftsResult.reason)
+        }
+        setDraftsState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || 'Unable to load draft notes.'
+        }))
+      }
+
+      if (analyticsResult.status === 'fulfilled') {
+        setAnalyticsState({ data: analyticsResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(analyticsResult.reason)
+        if (message) {
+          console.error('Failed to load draft analytics', analyticsResult.reason)
+        }
+        setAnalyticsState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || 'Unable to load draft analytics.'
+        }))
+      }
+    },
+    [transformDraft]
+  )
+
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter(prev => prev + 1)
+  }, [])
+
   useEffect(() => {
-    if (currentUser?.name && uniqueProviders.includes(currentUser.name)) {
+    const controller = new AbortController()
+    loadDraftData(controller.signal).catch(error => {
+      if ((error as DOMException)?.name !== 'AbortError') {
+        console.error('Unexpected drafts load error', error)
+      }
+    })
+    return () => controller.abort()
+  }, [loadDraftData, refreshCounter])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    apiFetchJson<DraftsSessionPayload>('/api/user/session', { signal: controller.signal })
+      .then(payload => {
+        const prefs = payload?.draftsPreferences
+        if (!prefs) {
+          if (currentUser?.name) {
+            setSelectedProvider(currentUser.name)
+          }
+          return
+        }
+        if (prefs.provider) setSelectedProvider(prefs.provider)
+        const validVisitTypes: DraftNote['visitType'][] = ['SOAP', 'Wellness', 'Follow-up', 'Consultation']
+        if (prefs.visitType && validVisitTypes.includes(prefs.visitType as DraftNote['visitType'])) {
+          setSelectedVisitType(prefs.visitType as DraftNote['visitType'] | 'all')
+        }
+        const validUrgencies: Array<DraftNote['urgency']> = ['low', 'medium', 'high']
+        if (prefs.urgency && validUrgencies.includes(prefs.urgency as DraftNote['urgency'])) {
+          setSelectedUrgency(prefs.urgency as DraftNote['urgency'] | 'all')
+        }
+        if (prefs.ageFilter) setAgeFilter(prefs.ageFilter)
+        const validSortBy: Array<typeof sortBy> = ['visitDate', 'lastEdit', 'daysOld', 'urgency']
+        if (prefs.sortBy && validSortBy.includes(prefs.sortBy as typeof sortBy)) {
+          setSortBy(prefs.sortBy as typeof sortBy)
+        }
+        const validSortOrder: Array<typeof sortOrder> = ['asc', 'desc']
+        if (prefs.sortOrder && validSortOrder.includes(prefs.sortOrder as typeof sortOrder)) {
+          setSortOrder(prefs.sortOrder as typeof sortOrder)
+        }
+        if (prefs.searchTerm) {
+          setSearchTerm(prefs.searchTerm)
+          lastSearchRef.current = prefs.searchTerm
+        }
+      })
+      .catch(error => {
+        if ((error as DOMException)?.name !== 'AbortError') {
+          console.error('Failed to load drafts preferences', error)
+        }
+      })
+      .finally(() => {
+        setPreferencesHydrated(true)
+      })
+
+    return () => controller.abort()
+  }, [currentUser?.name])
+
+  useEffect(() => {
+    if (!preferencesHydrated || !currentUser?.name || appliedDefaultProvider) {
+      return
+    }
+    if (selectedProvider === 'all') {
       setSelectedProvider(currentUser.name)
     }
-  }, [currentUser])
+    setAppliedDefaultProvider(true)
+  }, [preferencesHydrated, currentUser?.name, selectedProvider, appliedDefaultProvider])
 
-  // Filtered and sorted drafts
+  useEffect(() => {
+    if (!preferencesHydrated) {
+      return
+    }
+
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => {
+      apiFetch('/api/user/session', {
+        method: 'PUT',
+        jsonBody: {
+          draftsPreferences: {
+            provider: selectedProvider,
+            visitType: selectedVisitType,
+            urgency: selectedUrgency,
+            ageFilter,
+            sortBy,
+            sortOrder,
+            searchTerm
+          }
+        },
+        signal: controller.signal
+      }).catch(error => {
+        if ((error as DOMException)?.name !== 'AbortError') {
+          console.error('Failed to persist drafts preferences', error)
+        }
+      })
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [selectedProvider, selectedVisitType, selectedUrgency, ageFilter, sortBy, sortOrder, searchTerm, preferencesHydrated])
+
+  useEffect(() => {
+    const term = searchTerm.trim()
+    if (term.length < 3) {
+      setSearchState({ data: null, loading: false, error: null })
+      lastSearchRef.current = term
+      return
+    }
+
+    if (lastSearchRef.current === term && searchState.data) {
+      return
+    }
+
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => {
+      setSearchState(prev => ({ ...prev, loading: true, error: null }))
+      apiFetchJson<DraftApiNote[]>(
+        `/api/notes/search?q=${encodeURIComponent(term)}&status=draft`,
+        { signal: controller.signal, returnNullOnEmpty: true, fallbackValue: [] }
+      )
+        .then(results => {
+          const transformed = (results ?? []).map(transformDraft)
+          setSearchState({ data: transformed, loading: false, error: null })
+          lastSearchRef.current = term
+        })
+        .catch(error => {
+          if ((error as DOMException)?.name === 'AbortError') {
+            return
+          }
+          console.error('Failed to search drafts', error)
+          setSearchState(prev => ({
+            data: prev.data,
+            loading: false,
+            error: error instanceof Error ? error.message : 'Unable to search drafts.'
+          }))
+        })
+    }, 300)
+
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [searchTerm, transformDraft])
+
+  const baseDrafts = draftsState.data ?? []
+  const activeDrafts = useMemo(() => {
+    const term = searchTerm.trim()
+    if (term.length >= 3) {
+      return searchState.data ?? []
+    }
+    return baseDrafts
+  }, [baseDrafts, searchTerm, searchState.data])
+
+  useEffect(() => {
+    if (!onDraftsSummaryUpdate) {
+      return
+    }
+    if (analyticsState.data && typeof analyticsState.data.drafts === 'number') {
+      onDraftsSummaryUpdate({ total: analyticsState.data.drafts })
+      return
+    }
+    onDraftsSummaryUpdate({ total: baseDrafts.length })
+  }, [onDraftsSummaryUpdate, analyticsState.data, baseDrafts.length])
+
   const filteredDrafts = useMemo(() => {
-    let filtered = drafts.filter(draft => {
-      const matchesSearch = draft.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           draft.patientId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           draft.encounterId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           draft.provider.toLowerCase().includes(searchTerm.toLowerCase())
-      
+    let filtered = activeDrafts.filter(draft => {
+      const matchesSearch = searchTerm.trim().length === 0 ||
+        draft.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        draft.patientId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        draft.encounterId.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        draft.provider.toLowerCase().includes(searchTerm.toLowerCase())
+
       const matchesProvider = selectedProvider === 'all' || draft.provider === selectedProvider
       const matchesVisitType = selectedVisitType === 'all' || draft.visitType === selectedVisitType
       const matchesUrgency = selectedUrgency === 'all' || draft.urgency === selectedUrgency
-      
+
       let matchesAge = true
       if (ageFilter === '1-3') matchesAge = draft.daysOld >= 1 && draft.daysOld <= 3
       else if (ageFilter === '4-7') matchesAge = draft.daysOld >= 4 && draft.daysOld <= 7
@@ -218,10 +461,9 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
       return matchesSearch && matchesProvider && matchesVisitType && matchesUrgency && matchesAge
     })
 
-    // Sort filtered results
     filtered.sort((a, b) => {
       let comparison = 0
-      
+
       switch (sortBy) {
         case 'visitDate':
           comparison = new Date(a.visitDate).getTime() - new Date(b.visitDate).getTime()
@@ -237,12 +479,12 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
           comparison = urgencyOrder[a.urgency] - urgencyOrder[b.urgency]
           break
       }
-      
+
       return sortOrder === 'asc' ? comparison : -comparison
     })
 
     return filtered
-  }, [drafts, searchTerm, selectedProvider, selectedVisitType, selectedUrgency, ageFilter, sortBy, sortOrder])
+  }, [activeDrafts, searchTerm, selectedProvider, selectedVisitType, selectedUrgency, ageFilter, sortBy, sortOrder])
 
   const getUrgencyColor = (urgency: string) => {
     switch (urgency) {
@@ -290,7 +532,20 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
     return provider.split(' ').map(name => name[0]).join('').toUpperCase()
   }
 
-  const uniqueProviders = Array.from(new Set(drafts.map(draft => draft.provider)))
+  const uniqueProviders = useMemo(() => {
+    const providers = new Set<string>()
+    baseDrafts.forEach(draft => providers.add(draft.provider))
+    searchState.data?.forEach(draft => providers.add(draft.provider))
+    if (currentUser?.name) {
+      providers.add(currentUser.name)
+    }
+    return Array.from(providers).sort((a, b) => a.localeCompare(b))
+  }, [baseDrafts, searchState.data, currentUser?.name])
+
+  const searchEnabled = searchTerm.trim().length >= 3
+  const listState = searchEnabled ? searchState : draftsState
+  const isLoading = listState.loading || (!searchEnabled && draftsState.loading)
+  const listError = listState.error || (!searchEnabled ? draftsState.error : null)
 
   const handleCardClick = (draftId: string) => {
     onEditDraft?.(draftId)
@@ -313,13 +568,21 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
           <h1 className="text-2xl font-semibold text-foreground">Draft Notes</h1>
           <p className="text-muted-foreground mt-1">
             Manage and continue working on unfinished clinical documentation
-            {currentUser && ` • Showing drafts for ${currentUser.name}`}
+            {currentUser && ` • Preferences synced for ${currentUser.name}`}
           </p>
+          {analyticsState.error && (
+            <p className="text-xs text-destructive mt-2">
+              {analyticsState.error}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <Badge variant="outline" className="text-sm">
-            {filteredDrafts.length} of {drafts.length} drafts
+            {filteredDrafts.length} of {baseDrafts.length} drafts
           </Badge>
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
+            Refresh
+          </Button>
           <Button size="sm" onClick={() => onEditDraft?.('new')}>
             <FilePlus className="w-4 h-4 mr-2" />
             New Draft
@@ -445,7 +708,31 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
 
       {/* Draft Notes List */}
       <div className="space-y-4">
-        {filteredDrafts.length === 0 ? (
+        {isLoading ? (
+          Array.from({ length: 3 }).map((_, index) => (
+            <Card key={`draft-skeleton-${index}`} className="shadow-sm">
+              <CardContent className="p-6 space-y-4">
+                <Skeleton className="h-6 w-1/3" />
+                <Skeleton className="h-4 w-2/3" />
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Skeleton className="h-24" />
+                  <Skeleton className="h-24" />
+                  <Skeleton className="h-24" />
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        ) : listError ? (
+          <Card className="shadow-sm border-destructive/40">
+            <CardContent className="py-8 text-center space-y-3">
+              <AlertTriangle className="w-10 h-10 text-destructive mx-auto" />
+              <div className="text-lg font-medium text-destructive">{listError}</div>
+              <Button variant="outline" size="sm" onClick={handleRefresh}>
+                Retry
+              </Button>
+            </CardContent>
+          </Card>
+        ) : filteredDrafts.length === 0 ? (
           <Card className="shadow-sm">
             <CardContent className="text-center py-12">
               <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
@@ -652,6 +939,11 @@ export function Drafts({ onEditDraft, currentUser }: DraftsProps) {
                 <div className="text-sm text-muted-foreground font-medium">Over 7 Days Old</div>
               </div>
             </div>
+            {analyticsState.data && (
+              <div className="mt-4 text-sm text-muted-foreground text-center">
+                System-wide draft count: {analyticsState.data.drafts}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
