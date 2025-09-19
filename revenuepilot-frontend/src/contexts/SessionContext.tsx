@@ -122,9 +122,13 @@ function countCodes(list: SessionCode[]): SelectedCodesCounts {
 }
 
 function createInitialSessionState(): SessionState {
+
+  const initialCodes: SessionCode[] = []
+
   return {
     selectedCodes: { ...EMPTY_COUNTS },
-    selectedCodesList: [],
+    selectedCodesList: initialCodes,
+
     addedCodes: [],
     isSuggestionPanelOpen: false,
     layout: {

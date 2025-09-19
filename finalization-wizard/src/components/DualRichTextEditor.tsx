@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Wand2, 
@@ -26,11 +26,21 @@ import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import { Checkbox } from './ui/checkbox';
 import { Textarea } from './ui/textarea';
+import type {
+  PatientMetadata,
+  VisitTranscriptEntry,
+  WizardCodeItem,
+} from './WorkflowWizard';
 
 interface DualRichTextEditorProps {
   originalContent: string;
   aiEnhancedContent: string;
   patientSummaryContent: string;
+  patientMetadata?: PatientMetadata;
+  transcriptEntries?: VisitTranscriptEntry[];
+  selectedCodes?: WizardCodeItem[];
+  suggestedCodes?: WizardCodeItem[];
+  reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> };
   onAcceptAllChanges?: () => void;
   onReBeautify?: () => void;
   onContentChange?: (content: string, version: 'original' | 'enhanced' | 'summary') => void;
@@ -44,6 +54,11 @@ export function DualRichTextEditor({
   originalContent,
   aiEnhancedContent,
   patientSummaryContent,
+  patientMetadata,
+  transcriptEntries,
+  selectedCodes,
+  suggestedCodes,
+  reimbursementSummary,
   onAcceptAllChanges,
   onReBeautify,
   onContentChange,
@@ -153,6 +168,582 @@ export function DualRichTextEditor({
     }
   };
 
+  const formatTimestamp = (value?: number | string) => {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const totalSeconds = Math.max(0, Math.round(value));
+      const minutes = Math.floor(totalSeconds / 60)
+        .toString()
+        .padStart(2, '0');
+      const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+      return `${minutes}:${seconds}`;
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+    return null;
+  };
+
+  const patientName = useMemo(() => {
+    if (patientMetadata?.name && String(patientMetadata.name).trim().length > 0) {
+      return String(patientMetadata.name).trim();
+    }
+    return 'Patient';
+  }, [patientMetadata?.name]);
+
+  const patientSubtitle = useMemo(() => {
+    const parts: string[] = [];
+    if (patientMetadata?.patientId && String(patientMetadata.patientId).trim().length > 0) {
+      parts.push(`ID ${String(patientMetadata.patientId).trim()}`);
+    }
+    if (patientMetadata?.encounterDate && String(patientMetadata.encounterDate).trim().length > 0) {
+      parts.push(new Date(String(patientMetadata.encounterDate)).toLocaleDateString());
+    }
+    return parts.length ? parts.join(' • ') : 'Encounter details pending';
+  }, [patientMetadata?.patientId, patientMetadata?.encounterDate]);
+
+  const providerName = useMemo(() => {
+    if (patientMetadata?.providerName && String(patientMetadata.providerName).trim().length > 0) {
+      return String(patientMetadata.providerName).trim();
+    }
+    return 'Assigned Provider';
+  }, [patientMetadata?.providerName]);
+
+  const transcriptTimeline = useMemo(() => {
+    const entries = Array.isArray(transcriptEntries) ? transcriptEntries : [];
+    return entries
+      .filter(entry => typeof entry?.text === 'string' && entry.text.trim().length > 0)
+      .slice(-8)
+      .map((entry, index) => {
+        const speaker =
+          typeof entry?.speaker === 'string' && entry.speaker.trim().length > 0
+            ? entry.speaker.trim()
+            : index % 2 === 0
+            ? 'Provider'
+            : 'Patient';
+        const timestampLabel = formatTimestamp(entry?.timestamp);
+        const text = String(entry?.text ?? '').trim();
+        const confidence =
+          typeof entry?.confidence === 'number' && Number.isFinite(entry.confidence)
+            ? Math.round(Math.max(0, Math.min(1, entry.confidence)) * 100)
+            : null;
+        return {
+          id: entry?.id ?? index,
+          speaker,
+          text,
+          timestamp: timestampLabel,
+          confidence,
+          isProvider: speaker.toLowerCase().includes('doctor') || speaker.toLowerCase().includes('provider'),
+        };
+      });
+  }, [transcriptEntries]);
+
+  const selectedCodeList = useMemo(() => {
+    if (!Array.isArray(selectedCodes)) return [] as WizardCodeItem[];
+    return selectedCodes.filter(item => (item?.code || item?.title));
+  }, [selectedCodes]);
+
+  const reimbursementDetails = useMemo(() => {
+    const total =
+      typeof reimbursementSummary?.total === 'number'
+        ? reimbursementSummary.total
+        : selectedCodeList.length * 0;
+    const codes = Array.isArray(reimbursementSummary?.codes)
+      ? reimbursementSummary!.codes
+      : [];
+    return {
+      total,
+      codes,
+      formattedTotal: new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        maximumFractionDigits: 0,
+      }).format(Math.max(0, total || 0)),
+    };
+  }, [reimbursementSummary, selectedCodeList.length]);
+
+  const primaryCode = useMemo(() => {
+    if (!selectedCodeList.length) return 'N/A';
+    return selectedCodeList[0]?.code || selectedCodeList[0]?.title || 'Code';
+  }, [selectedCodeList]);
+
+  const primaryCodeDisplayLabel = useMemo(() => {
+    if (!selectedCodeList.length) {
+      return 'Primary Code';
+    }
+    const type = getCodeTypeLabel(selectedCodeList[0]);
+    if (type === 'CPT') {
+      return 'Primary CPT Code';
+    }
+    if (type === 'ICD-10') {
+      return 'Primary Diagnosis Code';
+    }
+    return 'Primary Code';
+  }, [selectedCodeList]);
+
+  const selectedCodeSet = useMemo(() => {
+    return new Set(
+      selectedCodeList
+        .map(item => (item?.code || item?.title || '').toString().toUpperCase())
+        .filter(Boolean),
+    );
+  }, [selectedCodeList]);
+
+  const suggestionGroups = useMemo(() => {
+    const result = { high: [] as WizardCodeItem[], medium: [] as WizardCodeItem[], low: [] as WizardCodeItem[] };
+    if (!Array.isArray(suggestedCodes)) {
+      return result;
+    }
+    suggestedCodes.forEach(item => {
+      const identifier = (item?.code || item?.title || '').toString().toUpperCase();
+      if (!identifier || selectedCodeSet.has(identifier)) {
+        return;
+      }
+      const rawConfidence = typeof item?.confidence === 'number' ? item.confidence : 0;
+      const percent = rawConfidence > 1 ? rawConfidence : rawConfidence * 100;
+      if (percent >= 80) {
+        result.high.push(item);
+      } else if (percent >= 50) {
+        result.medium.push(item);
+      } else {
+        result.low.push(item);
+      }
+    });
+    return result;
+  }, [suggestedCodes, selectedCodeSet]);
+
+  const icdCodeList = useMemo(() => {
+    return selectedCodeList.filter(
+      item => (item?.codeType || item?.category || '').toString().toUpperCase() !== 'CPT',
+    );
+  }, [selectedCodeList]);
+
+  const cptCodeList = useMemo(() => {
+    return selectedCodeList.filter(
+      item => (item?.codeType || item?.category || '').toString().toUpperCase() === 'CPT',
+    );
+  }, [selectedCodeList]);
+
+  type SuggestionPriority = 'high' | 'medium' | 'low';
+
+  const formatConfidence = (value?: number | null): string | null => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return null;
+    }
+    const percent = value > 1 ? value : value * 100;
+    const normalized = Math.max(0, Math.min(100, Math.round(percent)));
+    return `${normalized}%`;
+  };
+
+  const getCodeTypeLabel = (item?: WizardCodeItem): string => {
+    const explicit = typeof item?.codeType === 'string' ? item.codeType.trim() : '';
+    if (explicit) {
+      return explicit.toUpperCase();
+    }
+    const rawCode = typeof item?.code === 'string' ? item.code.trim() : '';
+    if (/^\d{4,5}$/.test(rawCode)) {
+      return 'CPT';
+    }
+    if (rawCode) {
+      return 'ICD-10';
+    }
+    return 'CODE';
+  };
+
+  const getCodeTypeBadgeClass = (codeType: string): string => {
+    if (codeType.toUpperCase() === 'CPT') {
+      return 'bg-green-50 text-green-700 border border-green-200 text-xs flex-shrink-0';
+    }
+    return 'bg-blue-50 text-blue-700 border border-blue-200 text-xs flex-shrink-0';
+  };
+
+  const getCodeBadgeProps = (item: WizardCodeItem, index: number) => {
+    if (item.stillValid === false) {
+      return { text: 'Needs Update', className: 'bg-red-100 text-red-700 text-xs' };
+    }
+    const status = typeof item.status === 'string' ? item.status.toLowerCase() : '';
+    if (status === 'completed' || status === 'confirmed') {
+      return {
+        text: index === 0 ? 'Primary' : 'Confirmed',
+        className: 'bg-emerald-100 text-emerald-700 text-xs',
+      };
+    }
+    if (status === 'in-progress') {
+      return { text: 'In Progress', className: 'bg-amber-100 text-amber-700 text-xs' };
+    }
+    return {
+      text: index === 0 ? 'Primary' : 'Pending Review',
+      className: index === 0 ? 'bg-green-100 text-green-800 text-xs' : 'bg-slate-100 text-slate-700 text-xs',
+    };
+  };
+
+  const formatTagLabel = (value: string): string => {
+    const cleaned = value.replace(/[\-_]+/g, ' ').trim();
+    if (!cleaned) {
+      return value;
+    }
+    return cleaned.replace(/\b\w/g, char => char.toUpperCase());
+  };
+
+  const getCodeTagList = (item: WizardCodeItem): string[] => {
+    const tags = new Set<string>();
+    const addTag = (value?: string | null) => {
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed) {
+          tags.add(trimmed);
+        }
+      }
+    };
+
+    if (Array.isArray(item.tags)) {
+      item.tags.forEach(entry => addTag(typeof entry === 'string' ? entry : String(entry)));
+    }
+
+    if (Array.isArray(item.classification)) {
+      item.classification.forEach(entry => addTag(typeof entry === 'string' ? entry : String(entry)));
+    } else if (typeof item.classification === 'string') {
+      addTag(item.classification);
+    }
+
+    addTag(typeof item.category === 'string' ? item.category : undefined);
+
+    return Array.from(tags.values()).slice(0, 4);
+  };
+
+  const getSupportingText = (item: WizardCodeItem): string | undefined => {
+    const candidates = [item.docSupport, item.details, item.aiReasoning];
+    for (const entry of candidates) {
+      if (typeof entry === 'string') {
+        const trimmed = entry.trim();
+        if (trimmed) {
+          return trimmed;
+        }
+      }
+    }
+
+    if (Array.isArray(item.evidence)) {
+      const evidence = item.evidence
+        .filter(value => typeof value === 'string' && value.trim().length > 0)
+        .map(value => value.trim());
+      if (evidence.length) {
+        return `Evidence: ${evidence.slice(0, 2).join('; ')}`;
+      }
+    }
+
+    if (Array.isArray(item.gaps)) {
+      const gaps = item.gaps
+        .filter(value => typeof value === 'string' && value.trim().length > 0)
+        .map(value => value.trim());
+      if (gaps.length) {
+        return `Gaps: ${gaps.slice(0, 2).join('; ')}`;
+      }
+    }
+
+    return undefined;
+  };
+
+  const getCodeMetaLine = (item: WizardCodeItem): string[] => {
+    const parts: string[] = [];
+    const confidence = formatConfidence(item.confidence);
+    if (confidence) {
+      parts.push(`Confidence ${confidence}`);
+    }
+
+    if (typeof item.reimbursement === 'number' && Number.isFinite(item.reimbursement)) {
+      parts.push(`Est. reimbursement $${item.reimbursement.toLocaleString()}`);
+    } else if (typeof item.reimbursement === 'string') {
+      const numeric = Number(item.reimbursement.replace(/[^0-9.-]/g, ''));
+      if (Number.isFinite(numeric) && numeric !== 0) {
+        parts.push(`Est. reimbursement $${Math.abs(numeric).toLocaleString()}`);
+      }
+    }
+
+    if (typeof item.rvu === 'number' && Number.isFinite(item.rvu)) {
+      parts.push(`RVU ${item.rvu.toFixed(2)}`);
+    } else if (typeof item.rvu === 'string') {
+      const trimmed = item.rvu.trim();
+      if (trimmed) {
+        parts.push(`RVU ${trimmed}`);
+      }
+    }
+
+    return parts;
+  };
+
+  const renderSelectedCodeEntry = (item: WizardCodeItem, index: number) => {
+    const codeLabel = (item.code || item.title || `Code ${index + 1}`).toString();
+    const description = item.title || item.description || 'No description provided.';
+    const supportingText = getSupportingText(item);
+    const badge = getCodeBadgeProps(item, index);
+    const codeType = getCodeTypeLabel(item);
+    const tagList = getCodeTagList(item);
+    const metaLine = getCodeMetaLine(item);
+
+    return (
+      <div key={`${item.id ?? codeLabel}-${index}`} className="bg-white p-4 rounded-lg border border-slate-200">
+        <div className="flex items-center justify-between mb-2 gap-3">
+          <span className="font-medium text-sm text-slate-800">{codeLabel}</span>
+          <div className="flex items-center gap-2">
+            <Badge className={badge.className}>{badge.text}</Badge>
+            <Badge className={`${getCodeTypeBadgeClass(codeType)} text-xs`}>{codeType}</Badge>
+          </div>
+        </div>
+        <p className="text-sm text-slate-700 mb-1">{description}</p>
+        {supportingText && <p className="text-xs text-slate-600">{supportingText}</p>}
+        {tagList.length > 0 && (
+          <div className="flex flex-wrap gap-2 pt-2">
+            {tagList.map(tag => (
+              <Badge key={tag} variant="outline" className="text-[10px] uppercase tracking-wide">
+                {formatTagLabel(tag)}
+              </Badge>
+            ))}
+          </div>
+        )}
+        {metaLine.length > 0 && (
+          <div className="flex flex-wrap gap-2 pt-2 text-[11px] text-slate-500">
+            {metaLine.map(entry => (
+              <span key={entry} className="bg-slate-100 px-2 py-1 rounded-full">
+                {entry}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const suggestionStats = useMemo(() => {
+    const allGroups: SuggestionPriority[] = ['high', 'medium', 'low'];
+    let total = 0;
+    let totalConfidence = 0;
+    let confidenceCount = 0;
+    let revenueTotal = 0;
+    let hasRevenue = false;
+
+    allGroups.forEach(priority => {
+      const list = suggestionGroups[priority];
+      total += list.length;
+      list.forEach(item => {
+        if (typeof item.confidence === 'number' && Number.isFinite(item.confidence)) {
+          const normalized = item.confidence > 1 ? item.confidence : item.confidence * 100;
+          totalConfidence += Math.max(0, Math.min(100, normalized));
+          confidenceCount += 1;
+        }
+
+        if (typeof item.reimbursement === 'number' && Number.isFinite(item.reimbursement)) {
+          revenueTotal += item.reimbursement;
+          hasRevenue = true;
+        } else if (typeof item.reimbursement === 'string') {
+          const numeric = Number(item.reimbursement.replace(/[^0-9.-]/g, ''));
+          if (Number.isFinite(numeric) && numeric !== 0) {
+            revenueTotal += numeric;
+            hasRevenue = true;
+          }
+        }
+      });
+    });
+
+    return {
+      total,
+      high: suggestionGroups.high.length,
+      medium: suggestionGroups.medium.length,
+      low: suggestionGroups.low.length,
+      averageConfidence: confidenceCount ? totalConfidence / confidenceCount : null,
+      revenueTotal,
+      hasRevenue,
+    };
+  }, [suggestionGroups]);
+
+  const formattedSuggestionRevenue = useMemo(() => {
+    if (!suggestionStats.hasRevenue) {
+      return '—';
+    }
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 0,
+    }).format(Math.max(0, suggestionStats.revenueTotal));
+  }, [suggestionStats.hasRevenue, suggestionStats.revenueTotal]);
+
+  const averageSuggestionConfidence = useMemo(() => {
+    if (suggestionStats.averageConfidence === null) {
+      return '—';
+    }
+    return `${Math.round(suggestionStats.averageConfidence)}%`;
+  }, [suggestionStats.averageConfidence]);
+
+  const renderSuggestionCard = (item: WizardCodeItem, priority: SuggestionPriority, index: number) => {
+    const codeLabel = (item.code || item.title || `Suggestion ${index + 1}`).toString();
+    const title = item.title || item.description || codeLabel;
+    const description = item.details || item.aiReasoning || item.description;
+    const supportingText = getSupportingText(item);
+    const codeType = getCodeTypeLabel(item);
+    const confidence = formatConfidence(item.confidence);
+    const cardKey = `${priority}-${item.id ?? codeLabel}-${index}`;
+
+    if (priority === 'low') {
+      return (
+        <Card
+          key={cardKey}
+          className="group hover:shadow-md transition-all duration-300 border border-slate-200 bg-white hover:bg-slate-50/50"
+        >
+          <div className="p-6 h-full flex flex-col">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <span className="font-bold text-slate-800 font-mono">{codeLabel}</span>
+              <Badge className={`${getCodeTypeBadgeClass(codeType)} text-xs`}>{codeType}</Badge>
+            </div>
+            <div className="flex-1 space-y-2 mb-4">
+              <h6 className="font-semibold text-slate-800">{title}</h6>
+              {description && <p className="text-sm text-slate-600 leading-relaxed">{description}</p>}
+              {supportingText && <p className="text-xs text-slate-500">{supportingText}</p>}
+            </div>
+            <div className="flex gap-3 mt-auto">
+              <Button size="sm" variant="outline" className="flex-1" type="button">
+                Apply Code
+              </Button>
+              <Button size="sm" variant="ghost" className="flex-1" type="button">
+                Dismiss
+              </Button>
+            </div>
+            {confidence && (
+              <div className="text-xs text-slate-500 mt-3 text-right">
+                AI Confidence: {confidence}
+              </div>
+            )}
+          </div>
+        </Card>
+      );
+    }
+
+    const cardClassName =
+      priority === 'high'
+        ? 'group hover:shadow-xl transition-all duration-300 border-0 bg-gradient-to-br from-white via-red-50/20 to-rose-50/30 shadow-lg shadow-red-500/5 hover:shadow-red-500/10'
+        : index % 2 === 0
+        ? 'group hover:shadow-lg transition-all duration-300 border-0 bg-gradient-to-br from-white via-amber-50/20 to-yellow-50/30 shadow-md shadow-amber-500/5 hover:shadow-amber-500/10'
+        : 'group hover:shadow-lg transition-all duration-300 border-0 bg-gradient-to-br from-white via-orange-50/20 to-red-50/30 shadow-md shadow-orange-500/5 hover:shadow-orange-500/10';
+
+    const iconWrapperClass =
+      priority === 'high'
+        ? 'w-12 h-12 bg-gradient-to-br from-red-500 to-rose-600 rounded-2xl flex items-center justify-center shadow-lg shadow-red-500/25 group-hover:scale-105 transition-transform duration-200'
+        : 'w-10 h-10 bg-gradient-to-br from-amber-500 to-yellow-600 rounded-xl flex items-center justify-center shadow-md shadow-amber-500/25';
+
+    const primaryButtonClass =
+      priority === 'high'
+        ? 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white border-0 shadow-lg shadow-red-500/25 hover:shadow-red-500/40 transition-all duration-200'
+        : codeType === 'CPT'
+        ? 'border-orange-300 text-orange-700 hover:bg-orange-50'
+        : 'border-amber-300 text-amber-700 hover:bg-amber-50';
+
+    return (
+      <Card key={cardKey} className={cardClassName}>
+        <div className="p-6">
+          <div className="flex items-start gap-4">
+            <div className={iconWrapperClass}>
+              <Plus size={priority === 'high' ? 16 : 14} className={priority === 'high' ? 'text-white' : 'text-white'} />
+            </div>
+            <div className="flex-1 space-y-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-3">
+                    <span className="font-bold text-lg text-slate-800 font-mono">{codeLabel}</span>
+                    {priority === 'high' && (
+                      <Badge className="bg-gradient-to-r from-red-500 to-rose-600 text-white border-0 shadow-sm">
+                        High Priority
+                      </Badge>
+                    )}
+                  </div>
+                  <h5 className="font-semibold text-slate-800">{title}</h5>
+                </div>
+                <Badge className={`${getCodeTypeBadgeClass(codeType)} whitespace-nowrap text-xs`}>{codeType}</Badge>
+              </div>
+
+              {description && <p className="text-slate-600 leading-relaxed">{description}</p>}
+              {supportingText && <p className="text-xs text-slate-600 bg-white/70 px-3 py-2 rounded-lg border border-slate-200/60">
+                {supportingText}
+              </p>}
+
+              <div className="flex items-center gap-3 pt-2">
+                <Button
+                  className={priority === 'high' ? primaryButtonClass : undefined}
+                  variant={priority === 'high' ? 'default' : 'outline'}
+                  size={priority === 'high' ? 'default' : 'sm'}
+                  type="button"
+                >
+                  {priority === 'high' ? 'Apply Code' : codeType === 'CPT' ? 'Order Test' : 'Apply'}
+                </Button>
+                <Button variant="outline" className="border-slate-300 hover:bg-slate-50" size={priority === 'high' ? 'default' : 'sm'} type="button">
+                  Dismiss
+                </Button>
+                <div className="flex-1" />
+                {confidence && (
+                  <div className="text-xs text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
+                    AI Confidence: {confidence}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
+  const renderSuggestionSection = (priority: SuggestionPriority) => {
+    const sectionConfig: Record<SuggestionPriority, { title: string; badgeText: string; badgeClass: string; dotClass: string; lineClass: string; gridClass: string; emptyText: string; }> = {
+      high: {
+        title: 'High Priority Recommendations',
+        badgeText: 'Requires Review',
+        badgeClass: 'bg-red-50 text-red-700 border border-red-200',
+        dotClass: 'bg-gradient-to-r from-red-500 to-rose-600',
+        lineClass: 'bg-gradient-to-r from-red-200 to-transparent',
+        gridClass: 'grid gap-4',
+        emptyText: 'No high priority recommendations available.',
+      },
+      medium: {
+        title: 'Worth Considering',
+        badgeText: 'Consider',
+        badgeClass: 'bg-amber-50 text-amber-700 border border-amber-200',
+        dotClass: 'bg-gradient-to-r from-amber-500 to-yellow-600',
+        lineClass: 'bg-gradient-to-r from-amber-200 to-transparent',
+        gridClass: 'grid gap-4 lg:grid-cols-2',
+        emptyText: 'No medium priority recommendations available.',
+      },
+      low: {
+        title: 'Additional Opportunities',
+        badgeText: 'Optional',
+        badgeClass: 'bg-slate-50 text-slate-700 border border-slate-200',
+        dotClass: 'bg-gradient-to-r from-slate-400 to-slate-500',
+        lineClass: 'bg-gradient-to-r from-slate-200 to-transparent',
+        gridClass: 'grid gap-6 lg:grid-cols-2 max-w-4xl',
+        emptyText: 'No additional opportunities detected.',
+      },
+    };
+
+    const items = suggestionGroups[priority];
+    const config = sectionConfig[priority];
+
+    return (
+      <div className="space-y-4" key={priority}>
+        <div className="flex items-center gap-3 px-1">
+          <div className={`w-2 h-2 ${config.dotClass} rounded-full shadow-sm`} />
+          <h4 className="font-semibold text-slate-800">{config.title}</h4>
+          <div className={`flex-1 h-px ${config.lineClass}`} />
+          <Badge className={config.badgeClass}>{config.badgeText}</Badge>
+        </div>
+
+        <div className={config.gridClass}>
+          {items.length > 0 ? (
+            items.map((item, index) => renderSuggestionCard(item, priority, index))
+          ) : (
+            <Card className="border border-dashed border-slate-200 bg-white/80 p-6 text-center text-sm text-slate-500 shadow-none">
+              {config.emptyText}
+            </Card>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
     <div className="flex h-full w-full">
@@ -183,11 +774,9 @@ export function DualRichTextEditor({
                     <User size={12} className="text-white" />
                   </div>
                   <div className="text-xs">
-                    <div className="font-medium text-slate-800">John Smith</div>
+                    <div className="font-medium text-slate-800">{patientName}</div>
                     <div className="text-slate-600 flex items-center gap-2">
-                      <span>ID: PT-789456</span>
-                      <span className="w-1 h-1 bg-slate-400 rounded-full"></span>
-                      <span>Enc: E-2024-0315</span>
+                      <span>{patientSubtitle}</span>
                     </div>
                   </div>
                 </div>
@@ -545,8 +1134,8 @@ export function DualRichTextEditor({
                     <User size={28} className="text-white" />
                   </div>
                   <div>
-                    <h1 className="text-2xl font-semibold">John Smith</h1>
-                    <p className="text-blue-100">Patient ID: PT-789456 • March 15, 2024</p>
+                    <h1 className="text-2xl font-semibold">{patientName}</h1>
+                    <p className="text-blue-100">{patientSubtitle}</p>
                   </div>
                 </div>
               </div>
@@ -557,28 +1146,28 @@ export function DualRichTextEditor({
                   <div className="w-8 h-8 bg-gradient-to-br from-emerald-100 to-green-100 rounded-lg flex items-center justify-center shadow-sm">
                     <Stethoscope size={16} className="text-emerald-600" />
                   </div>
-                  <h3 className="font-semibold text-slate-800">Current Vital Signs</h3>
+                  <h3 className="font-semibold text-slate-800">Visit Snapshot</h3>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="text-center p-3 bg-blue-50 rounded-lg border border-blue-200">
-                    <div className="text-xl font-bold text-blue-800">142/88</div>
-                    <div className="text-xs text-blue-600 mt-1">Blood Pressure</div>
-                    <div className="text-xs text-blue-500">mmHg</div>
+                    <div className="text-xl font-bold text-blue-800">{selectedCodeList.length}</div>
+                    <div className="text-xs text-blue-600 mt-1">Codes Reviewed</div>
+                    <div className="text-xs text-blue-500">Selected</div>
                   </div>
                   <div className="text-center p-3 bg-green-50 rounded-lg border border-green-200">
-                    <div className="text-2xl font-bold text-green-800">78</div>
-                    <div className="text-xs text-green-600 mt-1">Heart Rate</div>
-                    <div className="text-xs text-green-500">bpm</div>
+                    <div className="text-2xl font-bold text-green-800">{suggestionGroups.high.length + suggestionGroups.medium.length + suggestionGroups.low.length}</div>
+                    <div className="text-xs text-green-600 mt-1">AI Suggestions</div>
+                    <div className="text-xs text-green-500">Unused</div>
                   </div>
                   <div className="text-center p-3 bg-indigo-50 rounded-lg border border-indigo-200">
-                    <div className="text-2xl font-bold text-indigo-800">97%</div>
-                    <div className="text-xs text-indigo-600 mt-1">O2 Saturation</div>
-                    <div className="text-xs text-indigo-500">SpO2</div>
+                    <div className="text-2xl font-bold text-indigo-800">{reimbursementDetails.formattedTotal}</div>
+                    <div className="text-xs text-indigo-600 mt-1">Estimated Reimbursement</div>
+                    <div className="text-xs text-indigo-500">USD</div>
                   </div>
                   <div className="text-center p-3 bg-purple-50 rounded-lg border border-purple-200">
-                    <div className="text-2xl font-bold text-purple-800">98.6°</div>
-                    <div className="text-xs text-purple-600 mt-1">Temperature</div>
-                    <div className="text-xs text-purple-500">Fahrenheit</div>
+                    <div className="text-2xl font-bold text-purple-800">{primaryCode}</div>
+                    <div className="text-xs text-purple-600 mt-1">Primary Focus</div>
+                    <div className="text-xs text-purple-500">Provider: {providerName}</div>
                   </div>
                 </div>
               </Card>
@@ -617,123 +1206,55 @@ export function DualRichTextEditor({
                       <div className="w-8 h-8 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-lg flex items-center justify-center shadow-sm">
                         <FileText size={16} className="text-blue-600" />
                       </div>
-                      <h3 className="font-semibold text-slate-800">Visit Transcript - March 15, 2024</h3>
-                      <Badge className="bg-blue-100 text-blue-800 text-xs">45 min duration</Badge>
+                      <h3 className="font-semibold text-slate-800">Visit Transcript</h3>
+                      <Badge className="bg-blue-100 text-blue-800 text-xs">{`${transcriptTimeline.length} entries captured`}</Badge>
                     </div>
                     <div className="space-y-3">
-                      <div className="bg-white p-4 rounded-lg border border-slate-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                      {transcriptTimeline.length ? (
+                        transcriptTimeline.map(entry => {
+                          const isProvider = entry.isProvider;
+                          const wrapperClass = isProvider
+                            ? 'bg-white p-4 rounded-lg border border-slate-200'
+                            : 'bg-blue-50 p-4 rounded-lg border border-blue-200';
+                          const iconWrapper = isProvider
+                            ? 'w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5'
+                            : 'w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5';
+                          const icon = isProvider ? (
                             <Stethoscope size={12} className="text-blue-600" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-slate-500 mb-1">09:15 AM - Dr. Johnson</div>
-                            <p className="text-sm text-slate-700">"Good morning, Mr. Smith. What brings you in today?"</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                          ) : (
                             <User size={12} className="text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-blue-600 mb-1">09:15 AM - Patient</div>
-                            <p className="text-sm text-slate-700">"I've been having chest pain for the past 3 days. It started gradually but has been getting worse. It feels like pressure or squeezing, especially when I walk up stairs or exert myself."</p>
-                          </div>
+                          );
+                          return (
+                            <div key={entry.id} className={wrapperClass}>
+                              <div className="flex items-start gap-3">
+                                <div className={iconWrapper}>{icon}</div>
+                                <div className="flex-1 space-y-1">
+                                  <div className={`text-xs ${isProvider ? 'text-slate-500' : 'text-blue-600'} flex items-center gap-2`}>
+                                    <span>
+                                      {entry.timestamp ? `${entry.timestamp} • ${entry.speaker}` : entry.speaker}
+                                    </span>
+                                    {entry.confidence !== null && (
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                                        Confidence {entry.confidence}%
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-slate-700">{entry.text}</p>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="bg-white p-4 rounded-lg border border-slate-200 text-sm text-slate-600">
+                          No transcript entries captured during this visit.
                         </div>
-                      </div>
-                      
-                      <div className="bg-white p-4 rounded-lg border border-slate-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <Stethoscope size={12} className="text-blue-600" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-slate-500 mb-1">09:16 AM - Dr. Johnson</div>
-                            <p className="text-sm text-slate-700">"Can you describe the pain more specifically? Where exactly do you feel it, and does it radiate anywhere?"</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <User size={12} className="text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-blue-600 mb-1">09:17 AM - Patient</div>
-                            <p className="text-sm text-slate-700">"The pain is in the center of my chest, sometimes radiating to my left arm. I've also noticed some shortness of breath, especially when the pain is worse. No nausea or vomiting. Pain scale is about 6-7 out of 10 when it's bad."</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-white p-4 rounded-lg border border-slate-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <Stethoscope size={12} className="text-blue-600" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-slate-500 mb-1">09:19 AM - Dr. Johnson</div>
-                            <p className="text-sm text-slate-700">"Tell me about your medical history. Do you have any chronic conditions or take any medications?"</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <User size={12} className="text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-blue-600 mb-1">09:20 AM - Patient</div>
-                            <p className="text-sm text-slate-700">"I have diabetes and high blood pressure. Taking metformin and lisinopril. My dad had a heart attack when he was 55, but I don't know much about my mom's side of the family."</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-white p-4 rounded-lg border border-slate-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <Stethoscope size={12} className="text-blue-600" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-slate-500 mb-1">09:25 AM - Dr. Johnson</div>
-                            <p className="text-sm text-slate-700">"I'm going to examine you now. Your vital signs look stable. Heart rate is regular, no murmurs. Lungs are clear. No chest wall tenderness on palpation."</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <User size={12} className="text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-blue-600 mb-1">09:30 AM - Patient</div>
-                            <p className="text-sm text-slate-700">"I'm really worried this might be my heart. With my family history and having diabetes, I know I'm at higher risk. Should I be going to the ER? Will I need surgery?"</p>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="bg-white p-4 rounded-lg border border-slate-200">
-                        <div className="flex items-start gap-3">
-                          <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                            <Stethoscope size={12} className="text-blue-600" />
-                          </div>
-                          <div className="flex-1">
-                            <div className="text-xs text-slate-500 mb-1">09:32 AM - Dr. Johnson</div>
-                            <p className="text-sm text-slate-700">"We're going to do some tests today to rule out any serious heart problems. I'll order an ECG, some blood work, and a chest X-ray. Based on your symptoms and risk factors, we'll also arrange for you to see a cardiologist within the next week or two."</p>
-                          </div>
-                        </div>
-                      </div>
+                      )}
                     </div>
                   </Card>
                 </TabsContent>
                 
                 <TabsContent value="codes" className="mt-0 space-y-6">
-                  {/* Applied Diagnostic Codes */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <Card className="p-6 border-l-4 border-l-green-500 bg-gradient-to-r from-green-50/60 via-emerald-50/40 to-white shadow-sm border border-slate-200/50">
                       <div className="flex items-center gap-3 mb-4">
@@ -744,53 +1265,16 @@ export function DualRichTextEditor({
                         <Badge className="bg-green-100 text-green-800 text-xs">Billable</Badge>
                       </div>
                       <div className="space-y-3">
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">R06.02</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Primary</Badge>
+                        {icdCodeList.length > 0 ? (
+                          icdCodeList.map((item, index) => renderSelectedCodeEntry(item, index))
+                        ) : (
+                          <div className="bg-white p-4 rounded-lg border border-dashed border-slate-200 text-sm text-slate-600 text-center">
+                            No ICD-10 codes have been applied yet.
                           </div>
-                          <p className="text-sm text-slate-700 mb-1">Shortness of breath</p>
-                          <p className="text-xs text-slate-600">Dyspnea on exertion with chest discomfort</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">R50.9</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Primary</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Chest pain, unspecified</p>
-                          <p className="text-xs text-slate-600">Central chest pain with radiation to left arm</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">E11.9</span>
-                            <Badge className="bg-blue-100 text-blue-800 text-xs">Secondary</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Type 2 diabetes mellitus</p>
-                          <p className="text-xs text-slate-600">Without complications, well-controlled</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">I10</span>
-                            <Badge className="bg-blue-100 text-blue-800 text-xs">Secondary</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Essential hypertension</p>
-                          <p className="text-xs text-slate-600">Managed with ACE inhibitor therapy</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">Z87.891</span>
-                            <Badge className="bg-purple-100 text-purple-800 text-xs">History</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Personal history of nicotine dependence</p>
-                          <p className="text-xs text-slate-600">Family history of CAD - paternal MI at age 55</p>
-                        </div>
+                        )}
                       </div>
                     </Card>
-                    
+
                     <Card className="p-6 border-l-4 border-l-blue-500 bg-gradient-to-r from-blue-50/60 via-indigo-50/40 to-white shadow-sm border border-slate-200/50">
                       <div className="flex items-center gap-3 mb-4">
                         <div className="w-8 h-8 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-lg flex items-center justify-center shadow-sm">
@@ -800,64 +1284,17 @@ export function DualRichTextEditor({
                         <Badge className="bg-blue-100 text-blue-800 text-xs">Billable</Badge>
                       </div>
                       <div className="space-y-3">
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">99214</span>
-                            <Badge className="bg-orange-100 text-orange-800 text-xs">E&M</Badge>
+                        {cptCodeList.length > 0 ? (
+                          cptCodeList.map((item, index) => renderSelectedCodeEntry(item, index))
+                        ) : (
+                          <div className="bg-white p-4 rounded-lg border border-dashed border-slate-200 text-sm text-slate-600 text-center">
+                            No CPT codes have been applied yet.
                           </div>
-                          <p className="text-sm text-slate-700 mb-1">Office visit - established patient</p>
-                          <p className="text-xs text-slate-600">Moderate complexity, 30-39 minutes</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">93000</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Procedure</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Electrocardiogram, routine</p>
-                          <p className="text-xs text-slate-600">12-lead ECG with interpretation</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">71020</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Radiology</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Chest X-ray, 2 views</p>
-                          <p className="text-xs text-slate-600">PA and lateral views</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">80053</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Lab</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Comprehensive metabolic panel</p>
-                          <p className="text-xs text-slate-600">Including glucose and electrolytes</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">83735</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Lab</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Troponin I</p>
-                          <p className="text-xs text-slate-600">Cardiac enzyme for MI evaluation</p>
-                        </div>
-                        
-                        <div className="bg-white p-4 rounded-lg border border-slate-200">
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-sm text-slate-800">85025</span>
-                            <Badge className="bg-green-100 text-green-800 text-xs">Lab</Badge>
-                          </div>
-                          <p className="text-sm text-slate-700 mb-1">Complete blood count</p>
-                          <p className="text-xs text-slate-600">CBC with automated differential</p>
-                        </div>
+                        )}
                       </div>
                     </Card>
                   </div>
-                  
-                  {/* Billing Summary */}
+
                   <Card className="p-6 border-l-4 border-l-emerald-500 bg-gradient-to-r from-emerald-50/60 via-green-50/40 to-white shadow-sm border border-slate-200/50">
                     <div className="flex items-center gap-3 mb-4">
                       <div className="w-8 h-8 bg-gradient-to-br from-emerald-100 to-green-100 rounded-lg flex items-center justify-center shadow-sm">
@@ -867,28 +1304,25 @@ export function DualRichTextEditor({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-emerald-700">6</div>
+                        <div className="text-2xl font-bold text-emerald-700">{selectedCodeList.length}</div>
                         <p className="text-sm text-slate-600 mt-1">Total Codes Applied</p>
                       </div>
-                      
+
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-blue-700">$487</div>
+                        <div className="text-2xl font-bold text-blue-700">{reimbursementDetails.formattedTotal}</div>
                         <p className="text-sm text-slate-600 mt-1">Estimated Charges</p>
                       </div>
-                      
+
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-purple-700">99214</div>
-                        <p className="text-sm text-slate-600 mt-1">Primary E&M Code</p>
+                        <div className="text-2xl font-bold text-purple-700">{primaryCode}</div>
+                        <p className="text-sm text-slate-600 mt-1">{primaryCodeDisplayLabel}</p>
                       </div>
                     </div>
                   </Card>
                 </TabsContent>
-                
+
                 <TabsContent value="unused-suggestions" className="mt-0 space-y-6">
-                  {/* Unused CPT/ICD Codes */}
-                  {/* Completely redesigned unused codes section with premium layout */}
                   <div className="space-y-8">
-                    {/* Section Header with sophisticated styling */}
                     <div className="text-center space-y-3">
                       <div className="inline-flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-slate-50 via-blue-50/50 to-purple-50/30 border border-slate-200/60 rounded-2xl shadow-sm">
                         <div className="w-10 h-10 bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/20">
@@ -896,7 +1330,10 @@ export function DualRichTextEditor({
                         </div>
                         <div className="text-left">
                           <h3 className="font-semibold text-slate-800">AI-Suggested Unused Codes</h3>
-                          <p className="text-xs text-slate-600">Additional opportunities identified by clinical AI</p>
+                          <p className="text-xs text-slate-600">
+                            Additional opportunities identified by clinical AI • {suggestionStats.total}{' '}
+                            {suggestionStats.total === 1 ? 'suggestion' : 'suggestions'} pending review
+                          </p>
                         </div>
                         <Badge className="bg-gradient-to-r from-blue-500 to-purple-600 text-white border-0 shadow-lg shadow-blue-500/25 px-3 py-1">
                           AI Insights
@@ -904,195 +1341,26 @@ export function DualRichTextEditor({
                       </div>
                     </div>
 
-                    {/* High Priority Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 px-1">
-                        <div className="w-2 h-2 bg-gradient-to-r from-red-500 to-rose-600 rounded-full shadow-sm"></div>
-                        <h4 className="font-semibold text-slate-800">High Priority Recommendations</h4>
-                        <div className="flex-1 h-px bg-gradient-to-r from-red-200 to-transparent"></div>
-                        <Badge className="bg-red-50 text-red-700 border border-red-200">Requires Review</Badge>
-                      </div>
-                      
-                      <div className="grid gap-4">
-                        <Card className="group hover:shadow-xl transition-all duration-300 border-0 bg-gradient-to-br from-white via-red-50/20 to-rose-50/30 shadow-lg shadow-red-500/5 hover:shadow-red-500/10">
-                          <div className="p-6">
-                            <div className="flex items-start gap-4">
-                              <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-rose-600 rounded-2xl flex items-center justify-center shadow-lg shadow-red-500/25 group-hover:scale-105 transition-transform duration-200">
-                                <Plus size={16} className="text-white" />
-                              </div>
-                              <div className="flex-1 space-y-3">
-                                <div className="flex items-start justify-between gap-4">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-3">
-                                      <span className="font-bold text-lg text-slate-800 font-mono">I20.9</span>
-                                      <Badge className="bg-gradient-to-r from-red-500 to-rose-600 text-white border-0 shadow-sm">
-                                        High Priority
-                                      </Badge>
-                                    </div>
-                                    <h5 className="font-semibold text-slate-800">Angina pectoris, unspecified</h5>
-                                  </div>
-                                  <Badge className="bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">ICD-10</Badge>
-                                </div>
-                                
-                                <p className="text-slate-600 leading-relaxed">
-                                  Consider if chest pain pattern suggests angina. The patient's presentation may warrant additional cardiovascular evaluation.
-                                </p>
-                                
-                                <div className="flex items-center gap-3 pt-2">
-                                  <Button className="bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white border-0 shadow-lg shadow-red-500/25 hover:shadow-red-500/40 transition-all duration-200">
-                                    Apply Code
-                                  </Button>
-                                  <Button variant="outline" className="border-slate-300 hover:bg-slate-50">
-                                    Dismiss
-                                  </Button>
-                                  <div className="flex-1"></div>
-                                  <div className="text-xs text-slate-500 bg-slate-100 px-3 py-1 rounded-full">
-                                    AI Confidence: 95%
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </Card>
-                      </div>
-                    </div>
+                    {renderSuggestionSection('high')}
+                    {renderSuggestionSection('medium')}
+                    {renderSuggestionSection('low')}
 
-                    {/* Medium Priority Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 px-1">
-                        <div className="w-2 h-2 bg-gradient-to-r from-amber-500 to-yellow-600 rounded-full shadow-sm"></div>
-                        <h4 className="font-semibold text-slate-800">Worth Considering</h4>
-                        <div className="flex-1 h-px bg-gradient-to-r from-amber-200 to-transparent"></div>
-                        <Badge className="bg-amber-50 text-amber-700 border border-amber-200">Consider</Badge>
-                      </div>
-                      
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        <Card className="group hover:shadow-lg transition-all duration-300 border-0 bg-gradient-to-br from-white via-amber-50/20 to-yellow-50/30 shadow-md shadow-amber-500/5 hover:shadow-amber-500/10">
-                          <div className="p-5">
-                            <div className="flex items-start gap-3">
-                              <div className="w-10 h-10 bg-gradient-to-br from-amber-500 to-yellow-600 rounded-xl flex items-center justify-center shadow-md shadow-amber-500/25">
-                                <Plus size={14} className="text-white" />
-                              </div>
-                              <div className="flex-1 space-y-2">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-bold text-slate-800 font-mono">F41.9</span>
-                                      <Badge className="bg-blue-50 text-blue-700 border border-blue-200 text-xs">ICD-10</Badge>
-                                    </div>
-                                    <h6 className="font-medium text-slate-800">Anxiety disorder, unspecified</h6>
-                                  </div>
-                                </div>
-                                
-                                <p className="text-sm text-slate-600 leading-relaxed">
-                                  Patient expressed anxiety about cardiac symptoms during evaluation.
-                                </p>
-                                
-                                <div className="flex gap-2 pt-1">
-                                  <Button size="sm" variant="outline" className="border-amber-300 text-amber-700 hover:bg-amber-50">
-                                    Apply
-                                  </Button>
-                                  <Button size="sm" variant="ghost" className="text-slate-600">
-                                    Dismiss
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </Card>
-
-                        <Card className="group hover:shadow-lg transition-all duration-300 border-0 bg-gradient-to-br from-white via-orange-50/20 to-red-50/30 shadow-md shadow-orange-500/5 hover:shadow-orange-500/10">
-                          <div className="p-5">
-                            <div className="flex items-start gap-3">
-                              <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-red-600 rounded-xl flex items-center justify-center shadow-md shadow-orange-500/25">
-                                <Plus size={14} className="text-white" />
-                              </div>
-                              <div className="flex-1 space-y-2">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-bold text-slate-800 font-mono">93015</span>
-                                      <Badge className="bg-green-50 text-green-700 border border-green-200 text-xs">CPT</Badge>
-                                    </div>
-                                    <h6 className="font-medium text-slate-800">Cardiovascular stress test</h6>
-                                  </div>
-                                </div>
-                                
-                                <p className="text-sm text-slate-600 leading-relaxed">
-                                  Exercise stress test with ECG monitoring for comprehensive cardiac assessment.
-                                </p>
-                                
-                                <div className="flex gap-2 pt-1">
-                                  <Button size="sm" variant="outline" className="border-orange-300 text-orange-700 hover:bg-orange-50">
-                                    Order Test
-                                  </Button>
-                                  <Button size="sm" variant="ghost" className="text-slate-600">
-                                    Dismiss
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </Card>
-                      </div>
-                    </div>
-
-                    {/* Optional/Low Priority Section */}
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 px-1">
-                        <div className="w-2 h-2 bg-gradient-to-r from-slate-400 to-slate-500 rounded-full shadow-sm"></div>
-                        <h4 className="font-semibold text-slate-800">Additional Opportunities</h4>
-                        <div className="flex-1 h-px bg-gradient-to-r from-slate-200 to-transparent"></div>
-                        <Badge className="bg-slate-50 text-slate-700 border border-slate-200">Optional</Badge>
-                      </div>
-                      
-                      <div className="grid gap-6 lg:grid-cols-2 max-w-4xl">
-                        <Card className="group hover:shadow-md transition-all duration-300 border border-slate-200 bg-white hover:bg-slate-50/50">
-                          <div className="p-6 h-full flex flex-col">
-                            <div className="flex items-center justify-between gap-3 mb-4">
-                              <span className="font-bold text-slate-800 font-mono">Z51.81</span>
-                              <Badge className="bg-blue-50 text-blue-700 border border-blue-200 text-xs flex-shrink-0">ICD-10</Badge>
-                            </div>
-                            <div className="flex-1 space-y-2 mb-4">
-                              <h6 className="font-semibold text-slate-800">Drug level monitoring</h6>
-                              <p className="text-sm text-slate-600 leading-relaxed">For diabetes/HTN medication management and therapeutic optimization</p>
-                            </div>
-                            <div className="flex gap-3 mt-auto">
-                              <Button size="sm" variant="outline" className="flex-1">Apply Code</Button>
-                              <Button size="sm" variant="ghost" className="flex-1">Dismiss</Button>
-                            </div>
-                          </div>
-                        </Card>
-
-                        <Card className="group hover:shadow-md transition-all duration-300 border border-slate-200 bg-white hover:bg-slate-50/50">
-                          <div className="p-6 h-full flex flex-col">
-                            <div className="flex items-center justify-between gap-3 mb-4">
-                              <span className="font-bold text-slate-800 font-mono">83718</span>
-                              <Badge className="bg-green-50 text-green-700 border border-green-200 text-xs flex-shrink-0">CPT</Badge>
-                            </div>
-                            <div className="flex-1 space-y-2 mb-4">
-                              <h6 className="font-semibold text-slate-800">Lipoprotein, direct LDL</h6>
-                              <p className="text-sm text-slate-600 leading-relaxed">Direct LDL cholesterol measurement for cardiovascular risk assessment</p>
-                            </div>
-                            <div className="flex gap-3 mt-auto">
-                              <Button size="sm" variant="outline" className="flex-1">Order Lab</Button>
-                              <Button size="sm" variant="ghost" className="flex-1">Dismiss</Button>
-                            </div>
-                          </div>
-                        </Card>
-                      </div>
-                    </div>
-
-                    {/* Summary Footer */}
                     <div className="text-center pt-4 border-t border-slate-200">
                       <p className="text-sm text-slate-600">
-                        Total unused opportunities: <span className="font-semibold text-slate-800">5 codes</span> • 
-                        Potential additional revenue: <span className="font-semibold text-emerald-700">$1,920</span>
+                        Total unused opportunities: <span className="font-semibold text-slate-800">{suggestionStats.total}</span>{' '}
+                        {suggestionStats.total === 1 ? 'code' : 'codes'} • Potential additional revenue:{' '}
+                        <span className="font-semibold text-emerald-700">{formattedSuggestionRevenue}</span>
+                        {averageSuggestionConfidence !== '—' && (
+                          <>
+                            {' '}
+                            • Average confidence:{' '}
+                            <span className="font-semibold text-blue-700">{averageSuggestionConfidence}</span>
+                          </>
+                        )}
                       </p>
                     </div>
                   </div>
-                  
-                  {/* Summary */}
+
                   <Card className="p-6 border-l-4 border-l-purple-500 bg-gradient-to-r from-purple-50/60 via-violet-50/40 to-white shadow-sm border border-slate-200/50">
                     <div className="flex items-center gap-3 mb-4">
                       <div className="w-8 h-8 bg-gradient-to-br from-purple-100 to-violet-100 rounded-lg flex items-center justify-center shadow-sm">
@@ -1102,17 +1370,17 @@ export function DualRichTextEditor({
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-amber-700">7</div>
+                        <div className="text-2xl font-bold text-amber-700">{suggestionStats.total}</div>
                         <p className="text-sm text-slate-600 mt-1">Total Unused Codes</p>
                       </div>
-                      
+
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-orange-700">$312</div>
+                        <div className="text-2xl font-bold text-orange-700">{formattedSuggestionRevenue}</div>
                         <p className="text-sm text-slate-600 mt-1">Potential Additional Revenue</p>
                       </div>
-                      
+
                       <div className="bg-white p-4 rounded-lg border border-slate-200 text-center">
-                        <div className="text-2xl font-bold text-purple-700">3</div>
+                        <div className="text-2xl font-bold text-purple-700">{suggestionStats.high}</div>
                         <p className="text-sm text-slate-600 mt-1">High Priority Suggestions</p>
                       </div>
                     </div>

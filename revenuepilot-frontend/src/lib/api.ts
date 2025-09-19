@@ -1,6 +1,9 @@
 export type AuthTokenStorageKey = "token" | "accessToken" | "authToken"
 
 const TOKEN_STORAGE_KEYS: AuthTokenStorageKey[] = ["token", "accessToken", "authToken"]
+const ABSOLUTE_URL_RE = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//
+
+let cachedApiBaseUrl: string | null | undefined
 
 type MaybeStorage = Pick<Storage, "getItem"> | undefined
 
@@ -34,6 +37,133 @@ export function getStoredToken(): string | null {
   }
 
   return null
+}
+
+function normalizeBaseUrl(rawBase: string | null | undefined): string | null {
+  if (!rawBase) {
+    return null
+  }
+
+  let base = rawBase.trim()
+  if (!base) {
+    return null
+  }
+
+  if (base.startsWith("//")) {
+    const protocol = typeof window !== "undefined" ? window.location.protocol : "https:"
+    base = `${protocol}${base}`
+  }
+
+  if (!ABSOLUTE_URL_RE.test(base)) {
+    if (typeof window === "undefined") {
+      return null
+    }
+    try {
+      base = new URL(base, window.location.origin).toString()
+    } catch {
+      return null
+    }
+  }
+
+  return base.replace(/\/+$/, "")
+}
+
+export function resolveApiBaseUrl(): string | null {
+  if (cachedApiBaseUrl !== undefined) {
+    return cachedApiBaseUrl
+  }
+
+  let candidate: string | null = null
+
+  if (typeof window !== "undefined") {
+    const globalBase = (window as unknown as { __BACKEND_URL__?: unknown })?.__BACKEND_URL__
+    if (typeof globalBase === "string" && globalBase.trim().length > 0) {
+      candidate = globalBase
+    }
+  }
+
+  if (!candidate && typeof import.meta !== "undefined" && (import.meta as any)?.env) {
+    const envBase = (import.meta as any).env.VITE_API_URL
+    if (typeof envBase === "string" && envBase.trim().length > 0) {
+      candidate = envBase
+    }
+  }
+
+  cachedApiBaseUrl = normalizeBaseUrl(candidate)
+  return cachedApiBaseUrl ?? null
+}
+
+function withApiBase(path: string): string | null {
+  if (!path) {
+    return path
+  }
+
+  if (ABSOLUTE_URL_RE.test(path) || path.startsWith("data:") || path.startsWith("blob:")) {
+    return path
+  }
+
+  const base = resolveApiBaseUrl()
+  if (!base) {
+    return typeof window !== "undefined"
+      ? new URL(path, window.location.origin).toString()
+      : path
+  }
+
+  try {
+    const baseHref = base.endsWith("/") ? base : `${base}/`
+    const relative = path.startsWith("/") ? path.slice(1) : path
+    return new URL(relative, baseHref).toString()
+  } catch {
+    return path
+  }
+}
+
+function resolveRequestInfo(input: RequestInfo | URL): RequestInfo | URL {
+  if (typeof input === "string") {
+    const resolved = withApiBase(input)
+    return resolved ?? input
+  }
+
+  if (input instanceof URL) {
+    const resolved = withApiBase(input.toString())
+    return resolved ? new URL(resolved) : input
+  }
+
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    const resolved = withApiBase(input.url)
+    if (!resolved) {
+      return input
+    }
+    const cloned = input.clone()
+    return new Request(resolved, cloned)
+  }
+
+  return input
+}
+
+export function resolveWebsocketUrl(path: string): string {
+  const base = resolveApiBaseUrl()
+  if (base) {
+    try {
+      const baseUrl = new URL(base)
+      const baseHref = baseUrl.href.endsWith("/") ? baseUrl.href : `${baseUrl.href}/`
+      const relative = path.startsWith("/") ? path.slice(1) : path
+      const wsUrl = new URL(relative, baseHref)
+      wsUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:"
+      return wsUrl.toString()
+    } catch {
+      // fall through to origin resolution
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    const origin = window.location.origin
+    const wsUrl = new URL(path, origin)
+    wsUrl.protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+    return wsUrl.toString()
+  }
+
+  return path
 }
 
 export interface BuildAuthHeadersOptions {
@@ -100,8 +230,9 @@ export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOption
 
   const finalBody = jsonBody !== undefined ? JSON.stringify(jsonBody) : body
   const mergedHeaders = buildAuthHeaders(headers, { json, acceptJson, skipAuth })
+  const requestInfo = resolveRequestInfo(input)
 
-  return fetch(input, {
+  return fetch(requestInfo, {
     ...rest,
     body: finalBody ?? undefined,
     headers: mergedHeaders,
@@ -136,8 +267,9 @@ export async function apiFetchJson<T = unknown>(
   options: ApiFetchJsonOptions<T> = {}
 ): Promise<T | null> {
   const { unwrapData = false, returnNullOnEmpty = true, fallbackValue, ...fetchOptions } = options
-  const response = await apiFetch(input, fetchOptions)
-  const requestLabel = describeRequest(input)
+  const requestInfo = resolveRequestInfo(input)
+  const response = await apiFetch(requestInfo, fetchOptions)
+  const requestLabel = describeRequest(requestInfo)
 
   if (returnNullOnEmpty && (response.status === 204 || response.status === 404)) {
     return (fallbackValue ?? null) as T | null
