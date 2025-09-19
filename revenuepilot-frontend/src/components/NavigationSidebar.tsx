@@ -20,7 +20,9 @@ import { Avatar, AvatarFallback } from "./ui/avatar"
 import { getPrimaryNavItems, secondaryNavItems, bottomNavItems } from "./navigation/NavigationConfig"
 import { NotificationsPanel } from "./navigation/NotificationsPanel"
 import { Notification } from "./navigation/NotificationUtils"
-import { apiFetchJson } from "../lib/api"
+import { apiFetch, apiFetchJson } from "../lib/api"
+import { isViewKey, mapServerViewToViewKey, mapViewKeyToServerView } from "../lib/navigation"
+import type { ViewKey } from "../lib/navigation"
 
 interface UIPreferences {
   sidebarCollapsed?: boolean
@@ -57,7 +59,7 @@ interface CurrentUser {
 }
 
 interface NavigationSidebarProps {
-  currentView?: string
+  currentView?: ViewKey
   onNavigate?: (view: string) => void
   currentUser?: CurrentUser
   userDraftCount?: number
@@ -210,7 +212,7 @@ interface NavSectionProps {
   title?: string
   items: ReturnType<typeof getPrimaryNavItems>
   isCollapsed: boolean
-  currentView?: string
+  currentView?: ViewKey
   onNavigate?: (view: string) => void
   onNotificationClick?: () => void
   notificationButtonRef?: React.RefObject<HTMLDivElement>
@@ -284,7 +286,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
   const [profile, setProfile] = useState<UserProfileResponse | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileError, setProfileError] = useState<string | null>(null)
-  const [serverCurrentView, setServerCurrentView] = useState<string | null>(null)
+  const [serverCurrentView, setServerCurrentView] = useState<ViewKey | null>(null)
 
   const [uiPreferences, setUiPreferences] = useState<UIPreferences>({})
   const [uiPreferencesError, setUiPreferencesError] = useState<string | null>(null)
@@ -293,6 +295,14 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
   const lastPersistedPrefsRef = useRef<UIPreferences>({})
   const isApplyingInitialPreferencesRef = useRef(true)
   const hasLoadedUiPreferencesRef = useRef(false)
+  const lastPersistedViewRef = useRef<string | null>(null)
+
+  const normalizedCurrentView = useMemo(() => {
+    if (!currentView) {
+      return undefined
+    }
+    return isViewKey(currentView) ? currentView : mapServerViewToViewKey(currentView)
+  }, [currentView])
 
   useEffect(() => {
     uiPreferencesRef.current = uiPreferences
@@ -320,7 +330,15 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         let profileMessage: string | null = null
 
         if (viewResult.status === "fulfilled") {
-          setServerCurrentView(viewResult.value?.currentView ?? null)
+          const fetchedView = viewResult.value?.currentView
+          if (fetchedView) {
+            const mappedView = mapServerViewToViewKey(fetchedView)
+            setServerCurrentView(mappedView)
+            lastPersistedViewRef.current = mapViewKeyToServerView(mappedView)
+          } else {
+            setServerCurrentView(null)
+            lastPersistedViewRef.current = null
+          }
         } else if (viewResult.status === "rejected") {
           profileMessage = "Unable to load current view."
           console.error(viewResult.reason)
@@ -330,7 +348,9 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
           const profileData = profileResult.value ?? null
           setProfile(profileData)
           if (profileData?.currentView) {
-            setServerCurrentView(profileData.currentView)
+            const mappedView = mapServerViewToViewKey(profileData.currentView)
+            setServerCurrentView(mappedView)
+            lastPersistedViewRef.current = mapViewKeyToServerView(mappedView)
           }
         } else if (profileResult.status === "rejected") {
           profileMessage = profileMessage ?? "Unable to load user profile."
@@ -402,11 +422,80 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         jsonBody: { uiPreferences: prefs }
       })
       lastPersistedPrefsRef.current = response?.uiPreferences ?? prefs
+      setProfile(prev => {
+        if (!prev) {
+          return prev
+        }
+        return {
+          ...prev,
+          uiPreferences: response?.uiPreferences ?? prefs
+        }
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to save UI preferences."
       setUiPreferencesError(message)
     }
   }, [])
+
+  const persistCurrentView = useCallback(
+    async (view: ViewKey) => {
+      if (profileLoading) {
+        return
+      }
+
+      const serverView = mapViewKeyToServerView(view)
+      if (lastPersistedViewRef.current === serverView) {
+        return
+      }
+
+      const payload = {
+        currentView: serverView,
+        clinic: profile?.clinic ?? null,
+        preferences: profile?.preferences ?? {},
+        uiPreferences: {
+          ...(profile?.uiPreferences ?? {}),
+          ...uiPreferencesRef.current
+        }
+      }
+
+      try {
+        setProfileError(prev => (prev && prev.startsWith("Unable to save current view") ? null : prev))
+        const response = await apiFetch("/api/user/profile", {
+          method: "PUT",
+          jsonBody: payload
+        })
+        if (!response.ok) {
+          throw new Error(`Failed to persist current view: ${response.status}`)
+        }
+        lastPersistedViewRef.current = serverView
+        setProfile(prev => {
+          if (!prev) {
+            return {
+              currentView: payload.currentView,
+              clinic: payload.clinic,
+              preferences: payload.preferences,
+              uiPreferences: payload.uiPreferences
+            } as UserProfileResponse
+          }
+          return {
+            ...prev,
+            currentView: payload.currentView,
+            clinic: payload.clinic,
+            preferences: payload.preferences,
+            uiPreferences: payload.uiPreferences
+          }
+        })
+        setProfileError(prev => (prev && prev.startsWith("Unable to save current view") ? null : prev))
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return
+        }
+        console.error("Failed to persist current view", error)
+        setProfileError(prev => prev ?? "Unable to save current view.")
+      }
+    },
+    [profile, profileLoading]
+  )
 
   useEffect(() => {
     if (!hasLoadedUiPreferencesRef.current || isApplyingInitialPreferencesRef.current) {
@@ -452,10 +541,12 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
   }, [notificationsError])
 
   useEffect(() => {
-    if (currentView !== undefined) {
-      setServerCurrentView(currentView)
+    if (!normalizedCurrentView || profileLoading) {
+      return
     }
-  }, [currentView])
+    setServerCurrentView(normalizedCurrentView)
+    persistCurrentView(normalizedCurrentView)
+  }, [normalizedCurrentView, persistCurrentView, profileLoading])
 
   const normaliseNotificationPayload = useCallback((payload: Record<string, any>): Notification => {
     const severity = typeof payload.severity === "string" ? payload.severity.toLowerCase() : undefined
@@ -683,7 +774,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
     }
   }, [currentUser, profile])
 
-  const resolvedCurrentView = currentView ?? serverCurrentView ?? undefined
+  const resolvedCurrentView = normalizedCurrentView ?? serverCurrentView ?? undefined
 
   const primaryNavItems = useMemo(() => getPrimaryNavItems(userDraftCount), [userDraftCount])
 
@@ -713,10 +804,16 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
     })
   }, [notifications, notificationCount, notificationsLoading, notificationsError])
 
-  const handleNavigateInternal = useCallback((view: string) => {
-    setServerCurrentView(view)
-    onNavigate?.(view)
-  }, [onNavigate])
+  const handleNavigateInternal = useCallback(
+    (view: string) => {
+      if (isViewKey(view)) {
+        setServerCurrentView(view)
+        persistCurrentView(view)
+      }
+      onNavigate?.(view)
+    },
+    [onNavigate, persistCurrentView]
+  )
 
   const handleNotificationClick = useCallback(() => {
     setShowNotifications(prev => !prev)
