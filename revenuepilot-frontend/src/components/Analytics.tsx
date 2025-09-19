@@ -1,8 +1,8 @@
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { motion } from "motion/react"
-import { 
-  TrendingUp, 
-  TrendingDown, 
+import {
+  TrendingUp,
+  TrendingDown,
   Calendar, 
   Download, 
   Filter,
@@ -28,6 +28,91 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select"
 import { DatePickerWithRange } from "./ui/date-picker-with-range"
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
+import { Skeleton } from "./ui/skeleton"
+import { apiFetch, apiFetchJson } from "../lib/api"
+
+interface UsageTrendPoint {
+  day: string
+  total_notes: number
+  beautify: number
+  suggest: number
+  summary: number
+  chart_upload: number
+  audio: number
+}
+
+interface UsageAnalyticsResponse {
+  total_notes: number
+  beautify: number
+  suggest: number
+  summary: number
+  chart_upload: number
+  audio: number
+  avg_note_length: number
+  daily_trends: UsageTrendPoint[]
+  projected_totals: Record<string, number>
+  event_distribution: Record<string, number>
+}
+
+interface CodingAccuracyTrendPoint {
+  day: string
+  total_notes: number
+  denials: number
+  deficiencies: number
+  accuracy: number
+}
+
+interface CodingAccuracyAnalyticsResponse {
+  total_notes: number
+  denials: number
+  deficiencies: number
+  accuracy: number
+  coding_distribution: Record<string, number>
+  outcome_distribution: Record<string, number>
+  accuracy_trend: CodingAccuracyTrendPoint[]
+  projections: Record<string, number>
+}
+
+interface RevenueTrendPoint {
+  day: string
+  total_revenue: number
+  average_revenue: number
+}
+
+interface RevenueAnalyticsResponse {
+  total_revenue: number
+  average_revenue: number
+  revenue_by_code: Record<string, number>
+  revenue_trend: RevenueTrendPoint[]
+  projections: Record<string, number>
+  revenue_distribution: Record<string, number>
+}
+
+interface ComplianceTrendPoint {
+  day: string
+  notes_with_flags: number
+  total_flags: number
+}
+
+interface ComplianceAnalyticsResponse {
+  compliance_counts: Record<string, number>
+  notes_with_flags: number
+  total_flags: number
+  flagged_rate: number
+  compliance_trend: ComplianceTrendPoint[]
+  projections: Record<string, number>
+  compliance_distribution: Record<string, number>
+}
+
+interface DraftAnalyticsResponse {
+  drafts: number
+}
+
+interface DataState<T> {
+  data: T | null
+  loading: boolean
+  error: string | null
+}
 
 interface MetricCardProps {
   title: string
@@ -39,6 +124,22 @@ interface MetricCardProps {
   icon: any
   description?: string
   color?: string
+}
+
+interface BillingCodingDashboardProps {
+  revenueState: DataState<RevenueAnalyticsResponse>
+  codingState: DataState<CodingAccuracyAnalyticsResponse>
+  usageState: DataState<UsageAnalyticsResponse>
+  currencyFormatter: Intl.NumberFormat
+  onRefresh: () => void
+}
+
+interface NoteQualityDashboardProps {
+  usageState: DataState<UsageAnalyticsResponse>
+  complianceState: DataState<ComplianceAnalyticsResponse>
+  codingState: DataState<CodingAccuracyAnalyticsResponse>
+  draftState: DataState<DraftAnalyticsResponse>
+  onRefresh: () => void
 }
 
 function MetricCard({ title, value, baseline, change, changeType, trend, icon: Icon, description, color = "blue" }: MetricCardProps) {
@@ -128,154 +229,232 @@ function DashboardFilters({ onDateRangeChange, onClinicianChange, onExport }: Da
   )
 }
 
-function BillingCodingDashboard() {
-  const revenueData = [
-    { name: 'Mon', value: 2400, baseline: 2200 },
-    { name: 'Tue', value: 2800, baseline: 2300 },
-    { name: 'Wed', value: 3200, baseline: 2400 },
-    { name: 'Thu', value: 2900, baseline: 2500 },
-    { name: 'Fri', value: 3400, baseline: 2600 },
-    { name: 'Sat', value: 1800, baseline: 1500 },
-    { name: 'Sun', value: 1200, baseline: 1000 }
-  ]
-  
-  const denialData = [
-    { name: 'Week 1', denials: 12, total: 340 },
-    { name: 'Week 2', denials: 8, total: 356 },
-    { name: 'Week 3', denials: 15, total: 389 },
-    { name: 'Week 4', denials: 6, total: 412 }
-  ]
+function BillingCodingDashboard({ revenueState, codingState, usageState, currencyFormatter, onRefresh }: BillingCodingDashboardProps) {
+  const palette = useMemo(() => ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#6b7280', '#0ea5e9', '#f97316'], [])
 
-  const codeDistribution = [
-    { name: '99213', value: 35, color: '#3b82f6' },
-    { name: '99214', value: 28, color: '#10b981' },
-    { name: '99215', value: 20, color: '#8b5cf6' },
-    { name: '99212', value: 12, color: '#f59e0b' },
-    { name: 'Other', value: 5, color: '#6b7280' }
-  ]
+  const revenueLineData = useMemo(() => {
+    return (revenueState.data?.revenue_trend ?? []).map(point => ({
+      name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      value: Number(point.total_revenue ?? 0),
+      baseline: Number(point.average_revenue ?? 0)
+    }))
+  }, [revenueState.data?.revenue_trend])
+
+  const codeDistribution = useMemo(() => {
+    const entries = Object.entries(revenueState.data?.revenue_by_code ?? {})
+    if (entries.length === 0) {
+      return [] as Array<{ name: string; value: number; color: string }>
+    }
+    return entries.map(([code, amount], index) => ({
+      name: code,
+      value: Number(amount ?? 0),
+      color: palette[index % palette.length]
+    }))
+  }, [palette, revenueState.data?.revenue_by_code])
+
+  const denialData = useMemo(() => {
+    return (codingState.data?.accuracy_trend ?? []).map(point => ({
+      name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      denials: point.denials,
+      total: point.total_notes
+    }))
+  }, [codingState.data?.accuracy_trend])
+
+  const latestRevenue = revenueLineData.length > 0 ? revenueLineData[revenueLineData.length - 1].value : 0
+  const previousRevenue = revenueLineData.length > 1 ? revenueLineData[revenueLineData.length - 2].value : latestRevenue
+  const revenueChange = previousRevenue ? ((latestRevenue - previousRevenue) / Math.max(previousRevenue, 1)) * 100 : 0
+  const revenueTrendDirection: 'up' | 'down' = revenueChange >= 0 ? 'up' : 'down'
+
+  const claimsTrend = codingState.data?.accuracy_trend ?? []
+  const latestClaims = claimsTrend.length > 0 ? claimsTrend[claimsTrend.length - 1].total_notes : codingState.data?.total_notes ?? 0
+  const previousClaims = claimsTrend.length > 1 ? claimsTrend[claimsTrend.length - 2].total_notes : latestClaims
+  const claimsChange = previousClaims ? ((latestClaims - previousClaims) / Math.max(previousClaims, 1)) * 100 : 0
+  const claimsTrendDirection: 'up' | 'down' = claimsChange >= 0 ? 'up' : 'down'
+
+  const latestDenialRatePoint = claimsTrend.length > 0 ? claimsTrend[claimsTrend.length - 1] : null
+  const previousDenialRatePoint = claimsTrend.length > 1 ? claimsTrend[claimsTrend.length - 2] : latestDenialRatePoint
+  const latestDenialRate = latestDenialRatePoint && latestDenialRatePoint.total_notes
+    ? (latestDenialRatePoint.denials / Math.max(latestDenialRatePoint.total_notes, 1)) * 100
+    : (codingState.data?.denials ?? 0) / Math.max(codingState.data?.total_notes ?? 1, 1) * 100
+  const previousDenialRate = previousDenialRatePoint && previousDenialRatePoint.total_notes
+    ? (previousDenialRatePoint.denials / Math.max(previousDenialRatePoint.total_notes, 1)) * 100
+    : latestDenialRate
+  const denialChange = previousDenialRate ? ((latestDenialRate - previousDenialRate) / Math.max(Math.abs(previousDenialRate), 1)) * 100 : 0
+  const denialTrendDirection: 'up' | 'down' = denialChange >= 0 ? 'up' : 'down'
+
+  const usageTrend = usageState.data?.daily_trends ?? []
+  const latestUsageNotes = usageTrend.length > 0 ? usageTrend[usageTrend.length - 1].total_notes : usageState.data?.total_notes ?? 0
+  const previousUsageNotes = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].total_notes : latestUsageNotes
+  const latestRevenuePerVisit = latestUsageNotes ? latestRevenue / Math.max(latestUsageNotes, 1) : 0
+  const previousRevenuePerVisit = previousUsageNotes ? previousRevenue / Math.max(previousUsageNotes, 1) : latestRevenuePerVisit
+  const revenuePerVisitChange = previousRevenuePerVisit ? ((latestRevenuePerVisit - previousRevenuePerVisit) / Math.max(previousRevenuePerVisit, 1)) * 100 : 0
+  const revenuePerVisitTrend: 'up' | 'down' = revenuePerVisitChange >= 0 ? 'up' : 'down'
+
+  const revenuePerVisitDescription = usageState.data?.avg_note_length
+    ? `Avg note length ${Math.round(usageState.data.avg_note_length)} words`
+    : 'Average note length unavailable'
+
+  const showEmptyRevenueChart = revenueLineData.length === 0
+  const showEmptyDistribution = codeDistribution.length === 0
+  const showEmptyDenialChart = denialData.length === 0
 
   return (
     <div className="space-y-6">
-      <DashboardFilters 
+      <DashboardFilters
         onDateRangeChange={() => {}}
         onClinicianChange={() => {}}
         onExport={() => console.log('Export billing dashboard')}
       />
-      
-      {/* Metrics Grid */}
+
+      {(revenueState.error || codingState.error || usageState.error) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">
+          {revenueState.error || codingState.error || usageState.error}
+        </div>
+      )}
+
+      {(revenueState.loading || codingState.loading || usageState.loading) && (
+        <Badge variant="outline" className="text-xs">
+          Loading analytics…
+        </Badge>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
-          title="Revenue This Month"
-          value="$47,320"
-          baseline="$42,150"
-          change={12.3}
+          title="Daily Revenue"
+          value={currencyFormatter.format(latestRevenue)}
+          baseline={currencyFormatter.format(previousRevenue)}
+          change={Math.round(Math.abs(revenueChange))}
           changeType="increase"
-          trend="up"
+          trend={revenueTrendDirection}
           icon={DollarSign}
           color="green"
-          description="Target: $50,000"
+          description={`Period total: ${currencyFormatter.format(revenueState.data?.total_revenue ?? 0)}`}
         />
         <MetricCard
           title="Claims Processed"
-          value="1,247"
-          baseline="1,180"
-          change={5.7}
+          value={latestClaims.toLocaleString()}
+          baseline={previousClaims.toLocaleString()}
+          change={Math.round(Math.abs(claimsChange))}
           changeType="increase"
-          trend="up"
+          trend={claimsTrendDirection}
           icon={FileText}
           color="blue"
-          description="Avg processing time: 2.3 days"
+          description="Latest documented day"
         />
         <MetricCard
           title="Denial Rate"
-          value="2.8%"
-          baseline="4.2%"
-          change={33.3}
+          value={`${latestDenialRate.toFixed(1)}%`}
+          baseline={`${previousDenialRate.toFixed(1)}%`}
+          change={Math.round(Math.abs(denialChange))}
           changeType="decrease"
-          trend="down"
+          trend={denialTrendDirection}
           icon={AlertTriangle}
           color="orange"
-          description="Industry avg: 5.1%"
+          description="Lower is better"
         />
         <MetricCard
           title="Revenue Per Visit"
-          value="$187"
-          baseline="$172"
-          change={8.7}
+          value={currencyFormatter.format(latestRevenuePerVisit)}
+          baseline={currencyFormatter.format(previousRevenuePerVisit)}
+          change={Math.round(Math.abs(revenuePerVisitChange))}
           changeType="increase"
-          trend="up"
+          trend={revenuePerVisitTrend}
           icon={Target}
           color="purple"
-          description="Target: $195"
+          description={revenuePerVisitDescription}
         />
       </div>
 
-      {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
             <CardTitle>Daily Revenue Trend</CardTitle>
-            <CardDescription>Current vs Baseline Performance</CardDescription>
+            <CardDescription>Current vs average performance</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={revenueData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} />
-                <Line type="monotone" dataKey="baseline" stroke="#94a3b8" strokeDasharray="5 5" />
-              </LineChart>
-            </ResponsiveContainer>
+            {showEmptyRevenueChart ? (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No revenue data available.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={revenueLineData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip formatter={(value: number) => currencyFormatter.format(value)} />
+                  <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={2} name="Revenue" />
+                  <Line type="monotone" dataKey="baseline" stroke="#94a3b8" strokeDasharray="5 5" name="Average" />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>CPT Code Distribution</CardTitle>
-            <CardDescription>Most frequently used codes</CardDescription>
+            <CardTitle>Code Revenue Distribution</CardTitle>
+            <CardDescription>Revenue contribution by code</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={codeDistribution}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={120}
-                  paddingAngle={5}
-                  dataKey="value"
-                  label={({ name, value }) => `${name}: ${value}%`}
-                >
-                  {codeDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            {showEmptyDistribution ? (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No billing data available.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={codeDistribution}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={120}
+                    paddingAngle={5}
+                    dataKey="value"
+                    label={({ name, value }) => `${name}: ${currencyFormatter.format(value)}`}
+                  >
+                    {codeDistribution.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value: number) => currencyFormatter.format(value as number)} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Claims Denial Analysis</CardTitle>
-            <CardDescription>Weekly denial rates and total claims</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Claims Denial Analysis</CardTitle>
+                <CardDescription>Daily denials versus total claims</CardDescription>
+              </div>
+              <Button variant="outline" size="sm" onClick={onRefresh}>
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={denialData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis yAxisId="left" orientation="left" />
-                <YAxis yAxisId="right" orientation="right" />
-                <Tooltip />
-                <Bar yAxisId="right" dataKey="total" fill="#94a3b8" name="Total Claims" />
-                <Bar yAxisId="left" dataKey="denials" fill="#ef4444" name="Denials" />
-              </BarChart>
-            </ResponsiveContainer>
+            {showEmptyDenialChart ? (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No claims data available.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={denialData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis yAxisId="left" orientation="left" />
+                  <YAxis yAxisId="right" orientation="right" />
+                  <Tooltip />
+                  <Bar yAxisId="right" dataKey="total" fill="#94a3b8" name="Total Claims" />
+                  <Bar yAxisId="left" dataKey="denials" fill="#ef4444" name="Denials" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -389,104 +568,190 @@ function HealthOutcomesDashboard() {
   )
 }
 
-function NoteQualityDashboard() {
-  const qualityData = [
-    { name: 'Week 1', completeness: 82, accuracy: 89, beauty: 156 },
-    { name: 'Week 2', completeness: 85, accuracy: 91, beauty: 178 },
-    { name: 'Week 3', completeness: 88, accuracy: 93, beauty: 194 },
-    { name: 'Week 4', completeness: 90, accuracy: 95, beauty: 203 }
-  ]
+function NoteQualityDashboard({ usageState, complianceState, codingState, draftState, onRefresh }: NoteQualityDashboardProps) {
+  const usageTrend = usageState.data?.daily_trends ?? []
+  const complianceTrendMap = useMemo(() => {
+    const map = new Map<string, ComplianceTrendPoint>()
+    for (const point of complianceState.data?.compliance_trend ?? []) {
+      map.set(point.day, point)
+    }
+    return map
+  }, [complianceState.data?.compliance_trend])
+
+  const accuracyTrendMap = useMemo(() => {
+    const map = new Map<string, CodingAccuracyTrendPoint>()
+    for (const point of codingState.data?.accuracy_trend ?? []) {
+      map.set(point.day, point)
+    }
+    return map
+  }, [codingState.data?.accuracy_trend])
+
+  const qualityData = useMemo(() => {
+    return usageTrend.map(point => {
+      const compliancePoint = complianceTrendMap.get(point.day)
+      const accuracyPoint = accuracyTrendMap.get(point.day)
+      const completeness = compliancePoint
+        ? 100 - Math.min(100, (compliancePoint.notes_with_flags / Math.max(point.total_notes, 1)) * 100)
+        : 100 - Math.min(100, (complianceState.data?.flagged_rate ?? 0) * 100)
+      const accuracy = accuracyPoint
+        ? Math.max(0, Math.round(accuracyPoint.accuracy * 100))
+        : Math.max(0, Math.round((codingState.data?.accuracy ?? 0) * 100))
+      return {
+        name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        completeness: Number(completeness.toFixed(1)),
+        accuracy,
+        beauty: point.beautify
+      }
+    })
+  }, [accuracyTrendMap, codingState.data?.accuracy, complianceState.data?.flagged_rate, complianceTrendMap, usageTrend])
+
+  const totalNotes = usageState.data?.total_notes ?? 0
+  const previousNotes = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].total_notes : totalNotes
+  const notesChange = previousNotes ? ((totalNotes - previousNotes) / Math.max(previousNotes, 1)) * 100 : 0
+  const notesTrend: 'up' | 'down' = notesChange >= 0 ? 'up' : 'down'
+
+  const beautifyTotal = usageState.data?.beautify ?? 0
+  const previousBeautify = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].beautify : beautifyTotal
+  const beautifyChange = previousBeautify ? ((beautifyTotal - previousBeautify) / Math.max(previousBeautify, 1)) * 100 : 0
+  const beautifyTrend: 'up' | 'down' = beautifyChange >= 0 ? 'up' : 'down'
+
+  const completenessRate = complianceState.data
+    ? 100 - Math.min(100, (complianceState.data.notes_with_flags / Math.max(totalNotes, 1)) * 100)
+    : 100
+  const latestCompleteness = qualityData.length > 0 ? qualityData[qualityData.length - 1].completeness : completenessRate
+  const previousCompleteness = qualityData.length > 1 ? qualityData[qualityData.length - 2].completeness : latestCompleteness
+  const completenessChange = previousCompleteness ? ((latestCompleteness - previousCompleteness) / Math.max(previousCompleteness, 1)) * 100 : 0
+  const completenessTrend: 'up' | 'down' = completenessChange >= 0 ? 'up' : 'down'
+
+  const avgNoteLength = usageState.data?.avg_note_length ?? 0
+  const projectedAvg = usageState.data?.projected_totals?.expected_avg_note_length ?? avgNoteLength
+  const avgChange = projectedAvg ? ((avgNoteLength - projectedAvg) / Math.max(projectedAvg, 1)) * 100 : 0
+  const avgTrend: 'up' | 'down' = avgChange >= 0 ? 'up' : 'down'
+
+  const draftsCount = draftState.data?.drafts ?? 0
+  const showQualityChart = qualityData.length > 0
 
   return (
     <div className="space-y-6">
-      <DashboardFilters 
+      <DashboardFilters
         onDateRangeChange={() => {}}
         onClinicianChange={() => {}}
         onExport={() => console.log('Export note quality dashboard')}
       />
-      
+
+      {(usageState.error || complianceState.error || draftState.error) && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">
+          {usageState.error || complianceState.error || draftState.error}
+        </div>
+      )}
+
+      {(usageState.loading || complianceState.loading || draftState.loading) && (
+        <Badge variant="outline" className="text-xs">
+          Loading note metrics…
+        </Badge>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
           title="Total Notes"
-          value="1,423"
-          baseline="1,287"
-          change={10.6}
+          value={totalNotes.toLocaleString()}
+          baseline={previousNotes.toLocaleString()}
+          change={Math.round(Math.abs(notesChange))}
           changeType="increase"
-          trend="up"
+          trend={notesTrend}
           icon={FileText}
           color="blue"
-          description="This month"
+          description={draftsCount ? `${draftsCount} active drafts` : 'Draft analytics unavailable'}
         />
         <MetricCard
           title="Beautify Actions"
-          value="731"
-          baseline="645"
-          change={13.3}
+          value={beautifyTotal.toLocaleString()}
+          baseline={previousBeautify.toLocaleString()}
+          change={Math.round(Math.abs(beautifyChange))}
           changeType="increase"
-          trend="up"
+          trend={beautifyTrend}
           icon={Zap}
           color="green"
-          description="51% of all notes"
+          description={totalNotes ? `${Math.round((beautifyTotal / Math.max(totalNotes, 1)) * 100)}% of notes` : 'Usage data unavailable'}
         />
         <MetricCard
           title="Note Completeness"
-          value="90.2%"
-          baseline="82.4%"
-          change={9.5}
+          value={`${latestCompleteness.toFixed(1)}%`}
+          baseline={`${previousCompleteness.toFixed(1)}%`}
+          change={Math.round(Math.abs(completenessChange))}
           changeType="increase"
-          trend="up"
+          trend={completenessTrend}
           icon={CheckCircle}
           color="purple"
-          description="Target: 95%"
+          description="Target: ≥95%"
         />
         <MetricCard
           title="Avg Note Length"
-          value="284 words"
-          baseline="231 words"
-          change={22.9}
+          value={`${Math.round(avgNoteLength)} words`}
+          baseline={`${Math.round(projectedAvg)} words`}
+          change={Math.round(Math.abs(avgChange))}
           changeType="increase"
-          trend="up"
+          trend={avgTrend}
           icon={Brain}
           color="orange"
-          description="Industry avg: 195"
+          description="Projected average based on recent usage"
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Note Quality Metrics</CardTitle>
-            <CardDescription>Weekly completeness and accuracy scores</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>Note Quality Metrics</CardTitle>
+                <CardDescription>Daily completeness and accuracy</CardDescription>
+              </div>
+              <Button variant="outline" size="sm" onClick={onRefresh}>
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={qualityData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Line type="monotone" dataKey="completeness" stroke="#3b82f6" strokeWidth={2} name="Completeness %" />
-                <Line type="monotone" dataKey="accuracy" stroke="#10b981" strokeWidth={2} name="Accuracy %" />
-              </LineChart>
-            </ResponsiveContainer>
+            {!showQualityChart ? (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No quality trend data available.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={qualityData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis domain={[0, 100]} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="completeness" stroke="#3b82f6" strokeWidth={2} name="Completeness %" />
+                  <Line type="monotone" dataKey="accuracy" stroke="#10b981" strokeWidth={2} name="Accuracy %" />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
             <CardTitle>Beautify Usage</CardTitle>
-            <CardDescription>Weekly beautify actions performed</CardDescription>
+            <CardDescription>Daily beautify actions performed</CardDescription>
           </CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={qualityData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="beauty" fill="#8b5cf6" />
-              </BarChart>
-            </ResponsiveContainer>
+            {!showQualityChart ? (
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
+                No usage data available.
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={qualityData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip />
+                  <Bar dataKey="beauty" fill="#8b5cf6" name="Beautify Actions" />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -597,6 +862,197 @@ interface AnalyticsProps {
 
 export function Analytics({ userRole = 'user' }: AnalyticsProps) {
   const [activeTab, setActiveTab] = useState('billing')
+  const [usageState, setUsageState] = useState<DataState<UsageAnalyticsResponse>>({ data: null, loading: true, error: null })
+  const [codingAccuracyState, setCodingAccuracyState] = useState<DataState<CodingAccuracyAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [revenueState, setRevenueState] = useState<DataState<RevenueAnalyticsResponse>>({ data: null, loading: true, error: null })
+  const [complianceState, setComplianceState] = useState<DataState<ComplianceAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [draftAnalyticsState, setDraftAnalyticsState] = useState<DataState<DraftAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [sessionHydrated, setSessionHydrated] = useState(false)
+  const [refreshCounter, setRefreshCounter] = useState(0)
+
+  const loadAnalyticsData = useCallback(
+    async (signal?: AbortSignal) => {
+      setUsageState(prev => ({ ...prev, loading: true, error: null }))
+      setCodingAccuracyState(prev => ({ ...prev, loading: true, error: null }))
+      setRevenueState(prev => ({ ...prev, loading: true, error: null }))
+      setComplianceState(prev => ({ ...prev, loading: true, error: null }))
+      setDraftAnalyticsState(prev => ({ ...prev, loading: true, error: null }))
+
+      const toMessage = (reason: unknown): string => {
+        if (reason instanceof DOMException && reason.name === "AbortError") {
+          return ""
+        }
+        if (reason instanceof Error) {
+          return reason.message || "Unable to load analytics."
+        }
+        return "Unable to load analytics."
+      }
+
+      const [usageResult, codingResult, revenueResult, complianceResult, draftsResult] = await Promise.allSettled([
+        apiFetchJson<UsageAnalyticsResponse>("/api/analytics/usage", { signal }),
+        apiFetchJson<CodingAccuracyAnalyticsResponse>("/api/analytics/coding-accuracy", { signal }),
+        apiFetchJson<RevenueAnalyticsResponse>("/api/analytics/revenue", { signal }),
+        apiFetchJson<ComplianceAnalyticsResponse>("/api/analytics/compliance", { signal }),
+        apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal })
+      ])
+
+      if (signal?.aborted) {
+        return
+      }
+
+      if (usageResult.status === "fulfilled") {
+        setUsageState({ data: usageResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(usageResult.reason)
+        if (message) {
+          console.error("Failed to load usage analytics", usageResult.reason)
+        }
+        setUsageState(prev => ({ data: prev.data, loading: false, error: message || prev.error || "Unable to load usage analytics." }))
+      }
+
+      if (codingResult.status === "fulfilled") {
+        setCodingAccuracyState({ data: codingResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(codingResult.reason)
+        if (message) {
+          console.error("Failed to load coding accuracy analytics", codingResult.reason)
+        }
+        setCodingAccuracyState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load coding analytics."
+        }))
+      }
+
+      if (revenueResult.status === "fulfilled") {
+        setRevenueState({ data: revenueResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(revenueResult.reason)
+        if (message) {
+          console.error("Failed to load revenue analytics", revenueResult.reason)
+        }
+        setRevenueState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load revenue analytics."
+        }))
+      }
+
+      if (complianceResult.status === "fulfilled") {
+        setComplianceState({ data: complianceResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(complianceResult.reason)
+        if (message) {
+          console.error("Failed to load compliance analytics", complianceResult.reason)
+        }
+        setComplianceState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load compliance analytics."
+        }))
+      }
+
+      if (draftsResult.status === "fulfilled") {
+        setDraftAnalyticsState({ data: draftsResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(draftsResult.reason)
+        if (message) {
+          console.error("Failed to load draft analytics", draftsResult.reason)
+        }
+        setDraftAnalyticsState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load draft analytics."
+        }))
+      }
+    },
+    []
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadAnalyticsData(controller.signal).catch(error => {
+      if ((error as DOMException)?.name !== "AbortError") {
+        console.error("Unexpected analytics load error", error)
+      }
+    })
+    return () => controller.abort()
+  }, [loadAnalyticsData, refreshCounter])
+
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter(prev => prev + 1)
+  }, [])
+
+  const currencyFormatter = useMemo(
+    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }),
+    []
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    let mounted = true
+
+    apiFetchJson<{ analyticsPreferences?: { activeTab?: string } }>("/api/user/session", { signal: controller.signal })
+      .then(data => {
+        if (!mounted || !data?.analyticsPreferences?.activeTab) {
+          return
+        }
+        setActiveTab(data.analyticsPreferences.activeTab)
+      })
+      .catch(error => {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to load analytics preferences", error)
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setSessionHydrated(true)
+        }
+      })
+
+    return () => {
+      mounted = false
+      controller.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!sessionHydrated) {
+      return
+    }
+
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => {
+      apiFetch("/api/user/session", {
+        method: "PUT",
+        jsonBody: {
+          analyticsPreferences: { activeTab }
+        },
+        signal: controller.signal
+      }).catch(error => {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to persist analytics preferences", error)
+        }
+      })
+    }, 400)
+
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [activeTab, sessionHydrated])
 
   return (
     <div className="p-6 space-y-6">
@@ -638,7 +1094,13 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         </TabsList>
 
         <TabsContent value="billing" className="space-y-6">
-          <BillingCodingDashboard />
+          <BillingCodingDashboard
+            revenueState={revenueState}
+            codingState={codingAccuracyState}
+            usageState={usageState}
+            currencyFormatter={currencyFormatter}
+            onRefresh={handleRefresh}
+          />
         </TabsContent>
 
         <TabsContent value="outcomes" className="space-y-6">
@@ -646,7 +1108,13 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         </TabsContent>
 
         <TabsContent value="quality" className="space-y-6">
-          <NoteQualityDashboard />
+          <NoteQualityDashboard
+            usageState={usageState}
+            complianceState={complianceState}
+            codingState={codingAccuracyState}
+            draftState={draftAnalyticsState}
+            onRefresh={handleRefresh}
+          />
         </TabsContent>
 
         <TabsContent value="staff" className="space-y-6">

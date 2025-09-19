@@ -1,8 +1,9 @@
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { motion } from "motion/react"
-import { 
-  Home, 
-  FileText, 
-  FilePlus, 
+import {
+  Home,
+  FileText,
+  FilePlus,
   BarChart3, 
   Calendar, 
   Users, 
@@ -35,6 +36,44 @@ import { Badge } from "./ui/badge"
 import { Progress } from "./ui/progress"
 import { Avatar, AvatarFallback, AvatarInitials } from "./ui/avatar"
 import { Separator } from "./ui/separator"
+import { Skeleton } from "./ui/skeleton"
+import { apiFetchJson } from "../lib/api"
+
+interface DailyOverviewResponse {
+  todaysNotes: number
+  completedVisits: number
+  pendingReviews: number
+  complianceScore: number
+  revenueToday: number
+}
+
+interface QuickActionsResponse {
+  draftCount: number
+  upcomingAppointments: number
+  urgentReviews: number
+  systemAlerts?: Array<{ type?: string; message?: string }>
+}
+
+interface ActivityFeedItem {
+  id: number
+  type: string
+  timestamp: string
+  description?: string | null
+  userId?: string | null
+  metadata?: Record<string, unknown>
+}
+
+interface SystemStatusResponse {
+  aiServicesStatus: string
+  ehrConnectionStatus: string
+  lastSyncTime?: string | null
+}
+
+interface DataState<T> {
+  data: T | null
+  loading: boolean
+  error: string | null
+}
 
 interface DashboardProps {
   onNavigate: (view: string) => void
@@ -45,12 +84,209 @@ export function Dashboard({ onNavigate }: DashboardProps) {
   const currentHour = currentTime.getHours()
   const greeting = currentHour < 12 ? "Good morning" : currentHour < 17 ? "Good afternoon" : "Good evening"
 
-  const todaysStats = {
-    notesCompleted: 8,
-    patientsScheduled: 12,
-    avgConfidence: 92,
-    revenueGenerated: 2847.50
-  }
+  const [dailyOverviewState, setDailyOverviewState] = useState<DataState<DailyOverviewResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [quickActionsState, setQuickActionsState] = useState<DataState<QuickActionsResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [activityState, setActivityState] = useState<DataState<ActivityFeedItem[]>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [systemStatusState, setSystemStatusState] = useState<DataState<SystemStatusResponse>>({
+    data: null,
+    loading: true,
+    error: null
+  })
+  const [refreshCounter, setRefreshCounter] = useState(0)
+
+  const loadDashboardData = useCallback(
+    async (signal?: AbortSignal) => {
+      setDailyOverviewState(prev => ({ ...prev, loading: true, error: null }))
+      setQuickActionsState(prev => ({ ...prev, loading: true, error: null }))
+      setActivityState(prev => ({ ...prev, loading: true, error: null }))
+      setSystemStatusState(prev => ({ ...prev, loading: true, error: null }))
+
+      const handleError = (reason: unknown): string => {
+        if (reason instanceof DOMException && reason.name === "AbortError") {
+          return ""
+        }
+        if (reason instanceof Error) {
+          return reason.message || "Unexpected error occurred."
+        }
+        return "Unable to load data."
+      }
+
+      const [dailyResult, quickResult, activityResult, systemResult] = await Promise.allSettled([
+        apiFetchJson<DailyOverviewResponse>("/api/dashboard/daily-overview", { signal }),
+        apiFetchJson<QuickActionsResponse>("/api/dashboard/quick-actions", { signal }),
+        apiFetchJson<ActivityFeedItem[]>("/api/dashboard/activity", { signal }),
+        apiFetchJson<SystemStatusResponse>("/api/system/status", { signal })
+      ])
+
+      if (signal?.aborted) {
+        return
+      }
+
+      if (dailyResult.status === "fulfilled") {
+        setDailyOverviewState({ data: dailyResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = handleError(dailyResult.reason)
+        if (message) {
+          console.error("Failed to load daily overview", dailyResult.reason)
+        }
+        setDailyOverviewState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load daily overview."
+        }))
+      }
+
+      if (quickResult.status === "fulfilled") {
+        setQuickActionsState({ data: quickResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = handleError(quickResult.reason)
+        if (message) {
+          console.error("Failed to load quick actions", quickResult.reason)
+        }
+        setQuickActionsState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load quick actions."
+        }))
+      }
+
+      if (activityResult.status === "fulfilled") {
+        setActivityState({ data: activityResult.value ?? [], loading: false, error: null })
+      } else {
+        const message = handleError(activityResult.reason)
+        if (message) {
+          console.error("Failed to load activity feed", activityResult.reason)
+        }
+        setActivityState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load activity feed."
+        }))
+      }
+
+      if (systemResult.status === "fulfilled") {
+        setSystemStatusState({ data: systemResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = handleError(systemResult.reason)
+        if (message) {
+          console.error("Failed to load system status", systemResult.reason)
+        }
+        setSystemStatusState(prev => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load system status."
+        }))
+      }
+    },
+    []
+  )
+
+  useEffect(() => {
+    const controller = new AbortController()
+    loadDashboardData(controller.signal).catch(error => {
+      if ((error as DOMException)?.name !== "AbortError") {
+        console.error("Unexpected dashboard load error", error)
+      }
+    })
+    return () => controller.abort()
+  }, [loadDashboardData, refreshCounter])
+
+  const handleRefresh = useCallback(() => {
+    setRefreshCounter(prev => prev + 1)
+  }, [])
+
+  const currencyFormatter = useMemo(
+    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }),
+    []
+  )
+
+  const todaysStats = useMemo(
+    () => {
+      const overview = dailyOverviewState.data
+      return {
+        notesCompleted: overview?.completedVisits ?? 0,
+        patientsScheduled: overview?.todaysNotes ?? 0,
+        avgConfidence: overview?.complianceScore ?? 0,
+        revenueGenerated: overview?.revenueToday ?? 0
+      }
+    },
+    [dailyOverviewState.data]
+  )
+
+  const completionRate = useMemo(() => {
+    if (!todaysStats.patientsScheduled) {
+      return 0
+    }
+    const rate = (todaysStats.notesCompleted / Math.max(todaysStats.patientsScheduled, 1)) * 100
+    return Number.isFinite(rate) ? Math.max(0, Math.round(rate)) : 0
+  }, [todaysStats.notesCompleted, todaysStats.patientsScheduled])
+
+  const formatActivityTimestamp = useCallback((value: string | null | undefined) => {
+    if (!value) {
+      return "Unknown time"
+    }
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+      return "Unknown time"
+    }
+    return parsed.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    })
+  }, [])
+
+  const formatActivityType = useCallback((value: string | null | undefined) => {
+    if (!value) {
+      return "Event"
+    }
+    return value
+      .replace(/[_-]+/g, " ")
+      .replace(/\b\w/g, letter => letter.toUpperCase())
+  }, [])
+
+  const formatSystemTimestamp = useCallback((value: string | null | undefined) => {
+    if (!value) {
+      return "Not available"
+    }
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) {
+      return "Not available"
+    }
+    return parsed.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit"
+    })
+  }, [])
+
+  const getStatusBadgeClasses = useCallback((status: string | null | undefined) => {
+    const normalized = status?.toLowerCase?.() ?? ""
+    if (normalized === "online" || normalized === "connected") {
+      return "bg-emerald-100 text-emerald-700 border-emerald-200"
+    }
+    if (normalized === "degraded") {
+      return "bg-amber-100 text-amber-700 border-amber-200"
+    }
+    if (normalized === "offline" || normalized === "disconnected") {
+      return "bg-rose-100 text-rose-700 border-rose-200"
+    }
+    return "bg-stone-100 text-stone-600 border-stone-200"
+  }, [])
 
   const qualityMeasures = [
     {
@@ -148,44 +384,77 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     }
   ]
 
-  const quickActions = [
-    {
-      title: "New Note",
-      description: "Start Documentation",
-      icon: FilePlus,
-      action: () => onNavigate('app'),
-      primary: true,
-      stats: "~3 min avg",
-      theme: "indigo"
+  const quickActions = useMemo(
+    () => {
+      const quickData = quickActionsState.data
+      const alertsCount = quickData?.systemAlerts?.length ?? 0
+
+      const formatStat = (value: string) => {
+        if (quickActionsState.loading) {
+          return "Loading..."
+        }
+        if (quickActionsState.error) {
+          return "Unavailable"
+        }
+        return value
+      }
+
+      const revenueStat = dailyOverviewState.loading
+        ? "Syncing..."
+        : dailyOverviewState.error
+          ? "Unavailable"
+          : currencyFormatter.format(dailyOverviewState.data?.revenueToday ?? 0)
+
+      return [
+        {
+          title: "New Note",
+          description: "Start Documentation",
+          icon: FilePlus,
+          action: () => onNavigate('app'),
+          primary: true,
+          stats: formatStat(`${quickData?.draftCount ?? 0} drafts ready`),
+          theme: "indigo"
+        },
+        {
+          title: "Schedule Builder",
+          description: "Manage Appointments",
+          icon: Calendar,
+          action: () => onNavigate('builder'),
+          primary: false,
+          stats: formatStat(`${quickData?.upcomingAppointments ?? 0} upcoming`),
+          theme: "teal"
+        },
+        {
+          title: "Admin Panel",
+          description: "System Controls",
+          icon: Settings,
+          action: () => onNavigate('settings'),
+          primary: false,
+          stats: formatStat(`${alertsCount} system alerts`),
+          theme: "rose"
+        },
+        {
+          title: "Billing & Coding",
+          description: "Revenue Reports",
+          icon: CreditCard,
+          action: () => console.log("Navigate to Billing"),
+          primary: false,
+          stats: revenueStat,
+          theme: "amber"
+        }
+      ]
     },
-    {
-      title: "Schedule Builder",
-      description: "Manage Appointments",
-      icon: Calendar,
-      action: () => onNavigate('builder'),
-      primary: false,
-      stats: `${todaysSchedule.filter(apt => apt.status === 'scheduled').length} pending`,
-      theme: "teal"
-    },
-    {
-      title: "Admin Panel",
-      description: "System Controls",
-      icon: Settings,
-      action: () => onNavigate('settings'),
-      primary: false,
-      stats: "2 alerts",
-      theme: "rose"
-    },
-    {
-      title: "Billing & Coding",
-      description: "Revenue Reports",
-      icon: CreditCard,
-      action: () => console.log("Navigate to Billing"),
-      primary: false,
-      stats: "$2.8k today",
-      theme: "amber"
-    }
-  ]
+    [
+      currencyFormatter,
+      dailyOverviewState.data,
+      dailyOverviewState.error,
+      dailyOverviewState.loading,
+      onNavigate,
+      quickActionsState.data,
+      quickActionsState.error,
+      quickActionsState.loading
+    ]
+  )
 
   const getColorClasses = (color: string, type: 'bg' | 'text' | 'border' | 'hover') => {
     const colorMap = {
@@ -296,21 +565,37 @@ export function Dashboard({ onNavigate }: DashboardProps) {
               </div>
             </motion.div>
 
-            <motion.div 
+            <motion.div
               className="flex items-center gap-6"
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.5, delay: 0.2 }}
             >
-              <div className="text-right">
-                <div className="text-3xl font-bold text-stone-800">
-                  {todaysStats.notesCompleted}/{todaysStats.patientsScheduled}
-                </div>
-                <div className="text-sm text-stone-600">Notes Completed</div>
-                <div className="flex items-center gap-1 mt-1">
-                  <TrendingUp className="w-3 h-3 text-emerald-500" />
-                  <span className="text-xs text-emerald-600 font-medium">+15% vs yesterday</span>
-                </div>
+              <div className="text-right min-w-[160px]">
+                {dailyOverviewState.loading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-8 w-24 ml-auto" />
+                    <Skeleton className="h-4 w-20 ml-auto" />
+                    <Skeleton className="h-3 w-24 ml-auto" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-3xl font-bold text-stone-800">
+                      {todaysStats.notesCompleted}/{todaysStats.patientsScheduled}
+                    </div>
+                    <div className="text-sm text-stone-600">Notes Completed</div>
+                    {dailyOverviewState.error ? (
+                      <div className="mt-1 text-xs text-rose-600">
+                        {dailyOverviewState.error}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1 mt-1 justify-end text-emerald-600">
+                        <TrendingUp className="w-3 h-3" />
+                        <span className="text-xs font-medium">{completionRate}% completion today</span>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
               <Avatar className="w-12 h-12 border-2 border-stone-200/50 shadow-sm">
                 <AvatarFallback className="bg-white text-stone-600 font-medium">
@@ -330,11 +615,30 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         className="bg-blue-50/30 border-b border-blue-100/40 shadow-sm"
       >
         <div className="max-w-7xl mx-auto px-6 py-8">
-          <div className="mb-6">
-            <h2 className="text-xl font-semibold text-stone-800 mb-2">Quick Actions</h2>
-            <p className="text-stone-600">Jump into your most important tasks</p>
+          <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-semibold text-stone-800 mb-2">Quick Actions</h2>
+              <p className="text-stone-600">Jump into your most important tasks</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {quickActionsState.loading && (
+                <Badge variant="outline" className="text-xs">
+                  Syncing…
+                </Badge>
+              )}
+              <Button variant="outline" size="sm" onClick={handleRefresh}>
+                Refresh
+              </Button>
+            </div>
           </div>
-          
+
+          {quickActionsState.error && (
+            <div className="mb-4 flex items-center gap-2 text-sm text-rose-600">
+              <AlertTriangle className="w-4 h-4" />
+              <span>{quickActionsState.error}</span>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
             {quickActions.map((action, index) => (
               <motion.div
@@ -487,6 +791,93 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 </div>
               </div>
             </motion.section>
+
+            <motion.section
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.9, duration: 0.5 }}
+            >
+              <div className="mt-6 bg-white rounded-2xl border border-stone-200/40 p-6 shadow-md">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Activity className="w-5 h-5 text-blue-600" />
+                    <h3 className="font-semibold text-stone-800 text-lg">Recent Activity</h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {activityState.loading && (
+                      <Badge variant="outline" className="text-xs">
+                        Updating…
+                      </Badge>
+                    )}
+                    <Button variant="ghost" size="sm" onClick={handleRefresh}>
+                      Refresh
+                    </Button>
+                  </div>
+                </div>
+
+                {activityState.error && (
+                  <div className="mb-3 flex items-center justify-between gap-2 rounded-lg border border-rose-100 bg-rose-50/70 p-3 text-sm text-rose-700">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      <span>{activityState.error}</span>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={handleRefresh}>
+                      Retry
+                    </Button>
+                  </div>
+                )}
+
+                {activityState.loading ? (
+                  <div className="space-y-3">
+                    {Array.from({ length: 4 }).map((_, index) => (
+                      <div key={index} className="flex items-center gap-3">
+                        <Skeleton className="h-10 w-full" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                    {(activityState.data ?? []).length === 0 ? (
+                      <div className="py-6 text-center text-sm text-stone-500">No recent activity recorded.</div>
+                    ) : (
+                      (activityState.data ?? []).map(item => {
+                        const initials = (item.userId || "System")
+                          .split(/\s+/)
+                          .map(segment => segment.charAt(0))
+                          .join("")
+                          .slice(0, 2)
+
+                        return (
+                          <div
+                            key={`${item.id}-${item.timestamp}`}
+                            className="flex items-start gap-3 rounded-lg border border-stone-200/50 bg-stone-50/40 p-3"
+                          >
+                            <Avatar className="w-8 h-8 border border-stone-200/70 bg-white">
+                              <AvatarInitials className="text-xs font-medium text-stone-600">
+                                {initials || "RP"}
+                              </AvatarInitials>
+                            </Avatar>
+                            <div className="flex-1">
+                              <div className="flex items-center justify-between">
+                                <span className="text-sm font-medium text-stone-800">
+                                  {formatActivityType(item.type)}
+                                </span>
+                                <span className="text-xs text-stone-500">
+                                  {formatActivityTimestamp(item.timestamp)}
+                                </span>
+                              </div>
+                              <p className="text-xs text-stone-600 mt-1">
+                                {item.description || "Activity recorded"}
+                              </p>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
+            </motion.section>
           </div>
 
           {/* Right Column - Toned Down Background Colors */}
@@ -565,14 +956,80 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 </div>
                 <div className="grid grid-cols-1 gap-4">
                   <div className="text-center p-3 bg-white rounded-lg border border-emerald-200/30 shadow-sm">
-                    <div className="text-2xl font-bold text-emerald-700">{todaysStats.avgConfidence}%</div>
+                    {dailyOverviewState.loading ? (
+                      <Skeleton className="h-6 w-16 mx-auto" />
+                    ) : (
+                      <div className="text-2xl font-bold text-emerald-700">{Math.round(todaysStats.avgConfidence)}%</div>
+                    )}
                     <div className="text-xs text-stone-600">Avg Confidence</div>
                   </div>
                   <div className="text-center p-3 bg-white rounded-lg border border-emerald-200/30 shadow-sm">
-                    <div className="text-xl font-bold text-emerald-700">${todaysStats.revenueGenerated.toLocaleString()}</div>
+                    {dailyOverviewState.loading ? (
+                      <Skeleton className="h-6 w-20 mx-auto" />
+                    ) : (
+                      <div className="text-xl font-bold text-emerald-700">
+                        {currencyFormatter.format(todaysStats.revenueGenerated)}
+                      </div>
+                    )}
                     <div className="text-xs text-stone-600">Revenue Today</div>
                   </div>
                 </div>
+              </div>
+            </motion.section>
+
+            <motion.section
+              initial={{ opacity: 0, x: 30 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 1.3, duration: 0.5 }}
+            >
+              <div className="bg-blue-50/60 rounded-2xl border border-blue-200/40 p-5 shadow-md">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-blue-600" />
+                    <span className="font-semibold text-stone-800 text-sm">System Status</span>
+                  </div>
+                  {systemStatusState.loading && (
+                    <Badge variant="outline" className="text-xs">
+                      Checking…
+                    </Badge>
+                  )}
+                </div>
+
+                {systemStatusState.error ? (
+                  <div className="rounded-lg border border-rose-100 bg-rose-50/70 p-3 text-sm text-rose-700">
+                    {systemStatusState.error}
+                  </div>
+                ) : systemStatusState.loading ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-5/6" />
+                    <Skeleton className="h-4 w-3/4" />
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-stone-600">AI Services</span>
+                      <Badge
+                        variant="outline"
+                        className={`text-xs capitalize border ${getStatusBadgeClasses(systemStatusState.data?.aiServicesStatus)}`}
+                      >
+                        {systemStatusState.data?.aiServicesStatus ?? "Unknown"}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-stone-600">EHR Connection</span>
+                      <Badge
+                        variant="outline"
+                        className={`text-xs capitalize border ${getStatusBadgeClasses(systemStatusState.data?.ehrConnectionStatus)}`}
+                      >
+                        {systemStatusState.data?.ehrConnectionStatus ?? "Unknown"}
+                      </Badge>
+                    </div>
+                    <div className="text-xs text-stone-600">
+                      Last sync: <span className="font-medium text-stone-700">{formatSystemTimestamp(systemStatusState.data?.lastSyncTime)}</span>
+                    </div>
+                  </div>
+                )}
               </div>
             </motion.section>
 
