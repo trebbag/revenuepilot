@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from "react"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
 import {
   CheckCircle,
@@ -15,7 +15,8 @@ import {
   Mic,
   MicOff,
   AlertTriangle,
-  Loader2
+  Loader2,
+  UploadCloud
 } from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
@@ -26,6 +27,7 @@ import {
 } from "./FinalizationWizardAdapter"
 import type { FinalizeResult } from "finalization-wizard"
 import { apiFetch, apiFetchJson, getStoredToken, type ApiFetchOptions } from "../lib/api"
+import { useSession } from "../contexts/SessionContext"
 
 interface ComplianceIssue {
   id: string
@@ -74,6 +76,15 @@ interface TranscriptEntry {
   speaker?: string
 }
 
+interface VisitSessionState {
+  sessionId?: string
+  status?: string
+  startTime?: string
+  endTime?: string
+  totalDurationSeconds?: number | null
+  pausedDurationSeconds?: number | null
+}
+
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
   const lower = text.toLowerCase()
   if (lower.includes("critical") || lower.includes("violation") || lower.includes("missing")) {
@@ -91,6 +102,81 @@ const slugify = (value: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
+
+const COMPLIANCE_REFRESH_INTERVAL = 2_000
+const COMPLIANCE_MAX_BACKOFF = 30_000
+
+const parseDurationSeconds = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 86_400 ? Math.round(value / 1_000) : Math.round(value)
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseFloat(value)
+    if (Number.isFinite(parsed)) {
+      return parsed > 86_400 ? Math.round(parsed / 1_000) : Math.round(parsed)
+    }
+  }
+  return null
+}
+
+const parseRetryAfterMs = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value >= 1_000 ? Math.round(value) : Math.round(value * 1_000)
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseFloat(value)
+    if (Number.isFinite(parsed)) {
+      return parsed >= 1_000 ? Math.round(parsed) : Math.round(parsed * 1_000)
+    }
+  }
+  return null
+}
+
+const normalizeVisitSessionPayload = (raw: unknown): VisitSessionState => {
+  if (!raw || typeof raw !== "object") {
+    return {}
+  }
+
+  const data = raw as Record<string, unknown>
+  const sessionIdRaw = data.sessionId ?? data.session_id ?? data.id
+  const statusRaw = data.status ?? data.state ?? data.sessionStatus
+  const startRaw = data.startTime ?? data.startedAt ?? data.start_timestamp
+  const endRaw = data.endTime ?? data.completedAt ?? data.end_timestamp
+  const totalDurationRaw =
+    data.totalDuration ??
+    data.total_duration ??
+    data.totalDurationSeconds ??
+    data.durationSeconds ??
+    data.duration ??
+    data.elapsedSeconds
+  const pausedDurationRaw = data.pausedDuration ?? data.pauseDuration ?? data.pausedSeconds
+
+  const normalized: VisitSessionState = {}
+  if (sessionIdRaw != null) {
+    normalized.sessionId = String(sessionIdRaw)
+  }
+  if (typeof statusRaw === "string" && statusRaw.trim().length > 0) {
+    normalized.status = statusRaw
+  }
+  if (typeof startRaw === "string" && startRaw.trim().length > 0) {
+    normalized.startTime = startRaw
+  }
+  if (typeof endRaw === "string" && endRaw.trim().length > 0) {
+    normalized.endTime = endRaw
+  }
+
+  const durationSeconds = parseDurationSeconds(totalDurationRaw)
+  if (durationSeconds !== null) {
+    normalized.totalDurationSeconds = durationSeconds
+  }
+
+  const pausedSeconds = parseDurationSeconds(pausedDurationRaw)
+  if (pausedSeconds !== null) {
+    normalized.pausedDurationSeconds = pausedSeconds
+  }
+
+  return normalized
+}
 
 interface NoteEditorProps {
   prePopulatedPatient?: {
@@ -113,6 +199,7 @@ export function NoteEditor({
   selectedCodesList = [],
   onNoteContentChange
 }: NoteEditorProps) {
+  const { state: sessionState, hydrated: sessionHydrated, actions: sessionActions } = useSession()
   const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
@@ -140,7 +227,7 @@ export function NoteEditor({
   const [visitStarted, setVisitStarted] = useState(false)
   const [visitLoading, setVisitLoading] = useState(false)
   const [visitError, setVisitError] = useState<string | null>(null)
-  const [visitSession, setVisitSession] = useState<{ sessionId?: number; status?: string; startTime?: string; endTime?: string }>({})
+  const [visitSession, setVisitSession] = useState<VisitSessionState>({})
   const [hasEverStarted, setHasEverStarted] = useState(false)
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
   const [pausedTime, setPausedTime] = useState(0)
@@ -149,8 +236,21 @@ export function NoteEditor({
   const [isFinalized, setIsFinalized] = useState(false)
 
   const [noteId, setNoteId] = useState<string | null>(null)
+  const [noteVersion, setNoteVersion] = useState<number | null>(null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
+  const [autoSaveConflict, setAutoSaveConflict] = useState<{
+    message: string
+    serverContent?: string
+    serverVersion?: number | null
+    updatedAt?: string | null
+  } | null>(null)
+  const [chartUploadStatus, setChartUploadStatus] = useState<"idle" | "uploading" | "processing" | "complete" | "error">("idle")
+  const [chartUploadError, setChartUploadError] = useState<string | null>(null)
+  const [chartUploadMetadata, setChartUploadMetadata] = useState<{ filename: string; size?: number } | null>(null)
+  const [complianceServiceStatus, setComplianceServiceStatus] = useState<"online" | "degraded">("online")
+  const [complianceRetrySeconds, setComplianceRetrySeconds] = useState<number | null>(null)
+  const [sessionActiveStart, setSessionActiveStart] = useState<number | null>(null)
 
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -158,21 +258,54 @@ export function NoteEditor({
   const encounterValidationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
+  const complianceRetryAttemptRef = useRef(0)
+  const complianceRetryCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastComplianceContentRef = useRef<string>("")
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const autoSaveLastContentRef = useRef<string>("")
+  const autoSaveBlockedRef = useRef(false)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const chartFileInputRef = useRef<HTMLInputElement | null>(null)
 
   type FetchOptions = ApiFetchOptions
 
   const fetchWithAuth = useCallback(
     (input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init),
     []
+  )
+
+  const clearComplianceRetryCountdown = useCallback(() => {
+    if (complianceRetryCountdownRef.current) {
+      clearInterval(complianceRetryCountdownRef.current)
+      complianceRetryCountdownRef.current = null
+    }
+    setComplianceRetrySeconds(null)
+  }, [])
+
+  const startComplianceRetryCountdown = useCallback(
+    (delayMs: number) => {
+      clearComplianceRetryCountdown()
+      if (delayMs <= 0) {
+        setComplianceRetrySeconds(null)
+        return
+      }
+      const endTime = Date.now() + delayMs
+      setComplianceRetrySeconds(Math.ceil(delayMs / 1_000))
+      complianceRetryCountdownRef.current = window.setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((endTime - Date.now()) / 1_000))
+        setComplianceRetrySeconds(remaining > 0 ? remaining : null)
+        if (remaining <= 0 && complianceRetryCountdownRef.current) {
+          clearInterval(complianceRetryCountdownRef.current)
+          complianceRetryCountdownRef.current = null
+        }
+      }, 1_000)
+    },
+    [clearComplianceRetryCountdown]
   )
 
   const convertComplianceResponse = useCallback((raw: any): ComplianceIssue[] => {
@@ -312,12 +445,36 @@ export function NoteEditor({
       if (!response.ok) {
         throw new Error(`Failed to create note (${response.status})`)
       }
-      const data = await response.json()
+      const data = await response
+        .json()
+        .catch(() => ({} as Record<string, unknown>))
       const createdId = data?.noteId ? String(data.noteId) : null
       if (!createdId) {
         throw new Error("Note identifier missing from response")
       }
       setNoteId(createdId)
+      const versionRaw = (data as Record<string, unknown>).version ?? (data as Record<string, unknown>).noteVersion
+      let initialVersion: number | null = null
+      if (typeof versionRaw === "number" && Number.isFinite(versionRaw)) {
+        initialVersion = versionRaw
+      } else if (typeof versionRaw === "string") {
+        const parsed = Number.parseInt(versionRaw, 10)
+        if (Number.isFinite(parsed)) {
+          initialVersion = parsed
+        }
+      }
+      if (initialVersion !== null) {
+        setNoteVersion(initialVersion)
+      }
+      const savedAtRaw = (data as Record<string, unknown>).lastSavedAt ?? (data as Record<string, unknown>).updatedAt
+      const createdTimestamp = typeof savedAtRaw === "string" ? savedAtRaw : new Date().toISOString()
+      setLastAutoSaveTime(createdTimestamp)
+      sessionActions.setCurrentNote({
+        id: createdId,
+        version: initialVersion,
+        lastSavedAt: createdTimestamp
+      })
+      autoSaveBlockedRef.current = false
       setAutoSaveError(null)
       return createdId
     } catch (error) {
@@ -326,7 +483,127 @@ export function NoteEditor({
       setAutoSaveError(message)
       throw error
     }
-  }, [noteId, patientId, encounterId, fetchWithAuth])
+  }, [noteId, patientId, encounterId, fetchWithAuth, sessionActions])
+
+  const handleChartUploadClick = useCallback(() => {
+    chartFileInputRef.current?.click()
+  }, [])
+
+  const handleChartFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0]
+      if (!file) {
+        return
+      }
+
+      const input = event.target
+      setChartUploadError(null)
+      setChartUploadStatus("uploading")
+      setChartUploadMetadata({ filename: file.name, size: file.size })
+
+      try {
+        if (!patientId || patientId.trim().length === 0) {
+          throw new Error("Select a patient before uploading charts")
+        }
+
+        const currentNoteId = noteId ?? (await ensureNoteCreated())
+
+        const formData = new FormData()
+        formData.append("file", file)
+        formData.append("patient_id", patientId.trim())
+        if (encounterId && encounterId.trim().length > 0) {
+          formData.append("encounter_id", encounterId.trim())
+        }
+        if (currentNoteId) {
+          formData.append("note_id", currentNoteId)
+        }
+
+        const response = await fetchWithAuth("/api/charts/upload", {
+          method: "POST",
+          body: formData
+        })
+
+        const data = await response.json().catch(() => ({} as Record<string, unknown>))
+
+        if (response.status === 202) {
+          setChartUploadStatus("processing")
+        } else if (!response.ok) {
+          const message =
+            typeof (data as Record<string, unknown>).message === "string"
+              ? String((data as Record<string, unknown>).message)
+              : `Chart upload failed (${response.status})`
+          throw new Error(message)
+        } else {
+          setChartUploadStatus("complete")
+          toast.success("Chart uploaded", {
+            description: "The document was uploaded successfully."
+          })
+        }
+
+        const filename =
+          typeof (data as Record<string, unknown>).filename === "string"
+            ? String((data as Record<string, unknown>).filename)
+            : undefined
+        const sizeRaw =
+          (data as Record<string, unknown>).size ??
+          (data as Record<string, unknown>).bytes ??
+          (data as Record<string, unknown>).fileSize
+        const sizeValue =
+          typeof sizeRaw === "number" && Number.isFinite(sizeRaw)
+            ? sizeRaw
+            : typeof sizeRaw === "string"
+              ? Number.parseInt(sizeRaw, 10)
+              : undefined
+
+        setChartUploadMetadata(prev => ({
+          filename: filename ?? prev?.filename ?? file.name,
+          size: sizeValue ?? prev?.size ?? file.size
+        }))
+      } catch (error) {
+        setChartUploadStatus("error")
+        const message = error instanceof Error ? error.message : "Unable to upload chart"
+        setChartUploadError(message)
+        toast.error("Chart upload failed", { description: message })
+      } finally {
+        input.value = ""
+      }
+    },
+    [encounterId, ensureNoteCreated, fetchWithAuth, noteId, patientId]
+  )
+
+  const syncVisitSessionFromPayload = useCallback(
+    (payload: unknown) => {
+      const normalized = normalizeVisitSessionPayload(payload)
+      if (Object.keys(normalized).length === 0) {
+        return normalized
+      }
+
+      setVisitSession(prev => ({ ...prev, ...normalized }))
+
+      if (typeof normalized.totalDurationSeconds === "number") {
+        setCurrentSessionTime(normalized.totalDurationSeconds)
+        setPausedTime(normalized.totalDurationSeconds)
+        setSessionActiveStart(Date.now() - normalized.totalDurationSeconds * 1_000)
+      } else if (typeof normalized.pausedDurationSeconds === "number") {
+        setPausedTime(normalized.pausedDurationSeconds)
+        setCurrentSessionTime(prev =>
+          normalized.status === "paused" ? normalized.pausedDurationSeconds : prev
+        )
+        if (normalized.status === "paused") {
+          setSessionActiveStart(null)
+        }
+      } else if (typeof normalized.status === "string") {
+        if (normalized.status === "active") {
+          setSessionActiveStart(prev => (prev ?? Date.now() - currentSessionTime * 1_000))
+        } else {
+          setSessionActiveStart(null)
+        }
+      }
+
+      return normalized
+    },
+    [currentSessionTime]
+  )
 
   const stopAudioStream = useCallback(() => {
     const recorder = mediaRecorderRef.current
@@ -511,6 +788,25 @@ export function NoteEditor({
   }, [noteContent])
 
   useEffect(() => {
+    const current = sessionState.currentNote
+    if (current && current.id) {
+      if (!noteId) {
+        setNoteId(current.id)
+      }
+      if (typeof current.version === "number" && current.version !== noteVersion) {
+        setNoteVersion(current.version)
+      }
+      if (typeof current.lastSavedAt === "string" && current.lastSavedAt !== lastAutoSaveTime) {
+        setLastAutoSaveTime(current.lastSavedAt)
+      }
+    } else if (sessionHydrated && !current) {
+      setNoteId(null)
+      setNoteVersion(null)
+      setLastAutoSaveTime(null)
+    }
+  }, [sessionState.currentNote, sessionHydrated, noteId, noteVersion, lastAutoSaveTime])
+
+  useEffect(() => {
     if (prePopulatedPatient?.patientId) {
       setPatientId(prePopulatedPatient.patientId)
       setPatientInputValue(prePopulatedPatient.patientId)
@@ -681,71 +977,302 @@ export function NoteEditor({
     }
   }, [encounterId, patientId, fetchWithAuth])
 
+  const performComplianceAnalysis = useCallback(async () => {
+    const content = noteContentRef.current.trim()
+    if (!content) {
+      lastComplianceContentRef.current = ""
+      setComplianceIssues([])
+      setComplianceError(null)
+      setComplianceLoading(false)
+      setComplianceServiceStatus("online")
+      clearComplianceRetryCountdown()
+      return
+    }
+
+    if (complianceTimeoutRef.current) {
+      clearTimeout(complianceTimeoutRef.current)
+      complianceTimeoutRef.current = null
+    }
+
+    complianceAbortRef.current?.abort()
+    const controller = new AbortController()
+    complianceAbortRef.current = controller
+
+    const attempt = complianceRetryAttemptRef.current
+    if (attempt === 0) {
+      setComplianceLoading(true)
+      setComplianceError(null)
+    }
+
+    let nextDelay = COMPLIANCE_REFRESH_INTERVAL
+    let explicitRetryDelay: number | null = null
+
+    try {
+      const payload: Record<string, unknown> = {
+        text: content
+      }
+      if (noteId) {
+        payload.note_id = noteId
+        payload.noteId = noteId
+      }
+      if (patientId) {
+        payload.patientId = patientId
+      }
+      if (encounterId) {
+        payload.encounterId = encounterId
+      }
+
+      const response = await fetchWithAuth("/api/compliance/analyze", {
+        method: "POST",
+        jsonBody: payload,
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        let message = `Compliance analysis failed (${response.status})`
+        const retryAfterHeader = response.headers.get("Retry-After")
+        explicitRetryDelay = parseRetryAfterMs(retryAfterHeader)
+
+        try {
+          const body = await response.json()
+          if (body && typeof body === "object") {
+            if (typeof (body as Record<string, unknown>).message === "string") {
+              message = String((body as Record<string, unknown>).message)
+            }
+            const retryField =
+              (body as Record<string, unknown>).retryAfter ??
+              (body as Record<string, unknown>).retry_after ??
+              (body as Record<string, unknown>).retry_delay
+            const parsedRetry = parseRetryAfterMs(retryField)
+            if (parsedRetry !== null) {
+              explicitRetryDelay = parsedRetry
+            }
+          }
+        } catch (parseError) {
+          console.debug("Failed to parse compliance error payload", parseError)
+        }
+
+        if (explicitRetryDelay !== null) {
+          nextDelay = explicitRetryDelay
+        }
+
+        throw new Error(message)
+      }
+
+      const data = await response.json().catch(() => ({} as Record<string, unknown>))
+      const normalized = convertComplianceResponse(
+        Array.isArray((data as Record<string, unknown>).compliance)
+          ? (data as Record<string, unknown>).compliance
+          : (data as Record<string, unknown>).issues ??
+              (data as Record<string, unknown>).results ??
+              data
+      )
+
+      setComplianceIssues(prev => {
+        const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
+        return normalized.map(issue => ({
+          ...issue,
+          dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
+        }))
+      })
+      lastComplianceContentRef.current = content
+      complianceRetryAttemptRef.current = 0
+      setComplianceError(null)
+      setComplianceServiceStatus("online")
+      clearComplianceRetryCountdown()
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      const message = error instanceof Error ? error.message : "Compliance analysis unavailable"
+      setComplianceError(message)
+      setComplianceServiceStatus("degraded")
+
+      const nextAttempt = complianceRetryAttemptRef.current + 1
+      complianceRetryAttemptRef.current = nextAttempt
+      if (explicitRetryDelay !== null) {
+        nextDelay = explicitRetryDelay
+      } else {
+        nextDelay = Math.min(COMPLIANCE_REFRESH_INTERVAL * 2 ** nextAttempt, COMPLIANCE_MAX_BACKOFF)
+      }
+      startComplianceRetryCountdown(nextDelay)
+    } finally {
+      if (!controller.signal.aborted) {
+        setComplianceLoading(false)
+      }
+
+      if (!controller.signal.aborted) {
+        const hasContent = noteContentRef.current.trim().length > 0 && !isFinalized
+        if (hasContent) {
+          if (complianceTimeoutRef.current) {
+            clearTimeout(complianceTimeoutRef.current)
+          }
+          complianceTimeoutRef.current = window.setTimeout(() => {
+            void performComplianceAnalysis()
+          }, nextDelay)
+        }
+      }
+    }
+  }, [
+    clearComplianceRetryCountdown,
+    convertComplianceResponse,
+    encounterId,
+    fetchWithAuth,
+    isFinalized,
+    noteId,
+    patientId,
+    startComplianceRetryCountdown
+  ])
+
   useEffect(() => {
     if (complianceTimeoutRef.current) {
       clearTimeout(complianceTimeoutRef.current)
+      complianceTimeoutRef.current = null
     }
+    complianceAbortRef.current?.abort()
 
     if (!noteContent || noteContent.trim().length === 0) {
       lastComplianceContentRef.current = ""
       setComplianceIssues([])
       setComplianceError(null)
+      setComplianceLoading(false)
+      setComplianceServiceStatus("online")
+      clearComplianceRetryCountdown()
       return
     }
 
-    complianceTimeoutRef.current = window.setTimeout(async () => {
-      if (noteContentRef.current === lastComplianceContentRef.current) return
-      const controller = new AbortController()
-      complianceAbortRef.current?.abort()
-      complianceAbortRef.current = controller
-      setComplianceLoading(true)
-      setComplianceError(null)
-      try {
-        const payload: Record<string, unknown> = {
-          text: noteContentRef.current,
-          specialty: specialty ?? undefined,
-          payer: payer ?? undefined
-        }
-        if (noteId) {
-          payload.note_id = noteId
-        }
-        const response = await fetchWithAuth("/api/compliance/analyze", {
-          method: "POST",
-          jsonBody: payload,
-          signal: controller.signal
-        })
-        if (!response.ok) {
-          throw new Error(`Compliance analysis failed (${response.status})`)
-        }
-        const data = await response.json()
-        const normalized = convertComplianceResponse(
-          Array.isArray(data?.compliance) ? data.compliance : data?.issues ?? data?.results ?? data
-        )
-        setComplianceIssues((prev) => {
-          const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
-          return normalized.map((issue) => ({
-            ...issue,
-            dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
-          }))
-        })
-        lastComplianceContentRef.current = noteContentRef.current
-      } catch (error) {
-        if ((error as DOMException)?.name === "AbortError") return
-        setComplianceError(
-          error instanceof Error ? error.message : "Compliance analysis unavailable"
-        )
-      } finally {
-        setComplianceLoading(false)
-      }
-    }, 2000)
+    complianceRetryAttemptRef.current = 0
+    clearComplianceRetryCountdown()
+
+    complianceTimeoutRef.current = window.setTimeout(() => {
+      void performComplianceAnalysis()
+    }, COMPLIANCE_REFRESH_INTERVAL)
 
     return () => {
       if (complianceTimeoutRef.current) {
         clearTimeout(complianceTimeoutRef.current)
+        complianceTimeoutRef.current = null
       }
       complianceAbortRef.current?.abort()
     }
-  }, [noteContent, specialty, payer, noteId, fetchWithAuth, convertComplianceResponse])
+  }, [
+    clearComplianceRetryCountdown,
+    noteContent,
+    performComplianceAnalysis
+  ])
+
+  const performAutoSave = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (!noteId || !hasEverStarted || isFinalized) {
+        return
+      }
+
+      const content = noteContentRef.current
+      if (!options?.force && (content === autoSaveLastContentRef.current || autoSaveBlockedRef.current)) {
+        return
+      }
+
+      try {
+        const response = await fetchWithAuth("/api/notes/auto-save", {
+          method: "PUT",
+          jsonBody: {
+            note_id: noteId,
+            noteId,
+            content,
+            version: noteVersion ?? undefined,
+            force: options?.force ? true : undefined
+          }
+        })
+
+        if (response.status === 409) {
+          const conflict = await response
+            .json()
+            .catch(() => ({} as Record<string, unknown>))
+          autoSaveBlockedRef.current = true
+          const message =
+            typeof conflict.message === "string"
+              ? conflict.message
+              : "Auto-save detected another active editor. Review the latest changes."
+          const serverContent =
+            typeof conflict.serverContent === "string"
+              ? conflict.serverContent
+              : typeof conflict.content === "string"
+                ? conflict.content
+                : undefined
+          let serverVersion: number | null = null
+          const versionRaw = conflict.version ?? conflict.noteVersion
+          if (typeof versionRaw === "number" && Number.isFinite(versionRaw)) {
+            serverVersion = versionRaw
+          } else if (typeof versionRaw === "string") {
+            const parsed = Number.parseInt(versionRaw, 10)
+            if (Number.isFinite(parsed)) {
+              serverVersion = parsed
+            }
+          }
+          const updatedAt =
+            typeof conflict.lastSavedAt === "string"
+              ? conflict.lastSavedAt
+              : typeof conflict.updatedAt === "string"
+                ? conflict.updatedAt
+                : undefined
+          setAutoSaveConflict({
+            message,
+            serverContent,
+            serverVersion,
+            updatedAt: updatedAt ?? null
+          })
+          setAutoSaveError("Auto-save conflict detected")
+          return
+        }
+
+        if (!response.ok) {
+          throw new Error(`Auto-save failed (${response.status})`)
+        }
+
+        const data = await response
+          .json()
+          .catch(() => ({} as Record<string, unknown>))
+        let nextVersion: number | null = noteVersion
+        const versionRaw = data.version ?? data.noteVersion
+        if (typeof versionRaw === "number" && Number.isFinite(versionRaw)) {
+          nextVersion = versionRaw
+        } else if (typeof versionRaw === "string") {
+          const parsed = Number.parseInt(versionRaw, 10)
+          if (Number.isFinite(parsed)) {
+            nextVersion = parsed
+          }
+        }
+        setNoteVersion(nextVersion)
+        const savedAtRaw = data.lastSavedAt ?? data.updatedAt ?? data.timestamp
+        const savedAt = typeof savedAtRaw === "string" ? savedAtRaw : new Date().toISOString()
+        setLastAutoSaveTime(savedAt)
+        sessionActions.setCurrentNote({
+          id: noteId,
+          version: nextVersion,
+          lastSavedAt: savedAt
+        })
+        autoSaveLastContentRef.current = content
+        autoSaveBlockedRef.current = false
+        setAutoSaveConflict(null)
+        setAutoSaveError(null)
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return
+        }
+        setAutoSaveError(
+          error instanceof Error ? error.message : "Unable to auto-save note"
+        )
+      }
+    },
+    [
+      noteId,
+      hasEverStarted,
+      isFinalized,
+      fetchWithAuth,
+      noteVersion,
+      sessionActions
+    ]
+  )
 
   useEffect(() => {
     if (autoSaveIntervalRef.current) {
@@ -756,29 +1283,10 @@ export function NoteEditor({
       return
     }
 
-    const performAutoSave = async () => {
-      const content = noteContentRef.current
-      if (content === autoSaveLastContentRef.current) return
-      try {
-        const response = await fetchWithAuth("/api/notes/auto-save", {
-          method: "POST",
-          jsonBody: { noteId, content }
-        })
-        if (!response.ok) {
-          throw new Error(`Auto-save failed (${response.status})`)
-        }
-        autoSaveLastContentRef.current = content
-        setLastAutoSaveTime(new Date().toISOString())
-        setAutoSaveError(null)
-      } catch (error) {
-        setAutoSaveError(
-          error instanceof Error ? error.message : "Unable to auto-save note"
-        )
-      }
-    }
-
     void performAutoSave()
-    autoSaveIntervalRef.current = window.setInterval(performAutoSave, 30_000)
+    autoSaveIntervalRef.current = window.setInterval(() => {
+      void performAutoSave()
+    }, 30_000)
 
     return () => {
       if (autoSaveIntervalRef.current) {
@@ -786,7 +1294,56 @@ export function NoteEditor({
         autoSaveIntervalRef.current = null
       }
     }
-  }, [noteId, hasEverStarted, fetchWithAuth, isFinalized])
+  }, [noteId, hasEverStarted, isFinalized, performAutoSave])
+
+  const resolveAutoSaveConflict = useCallback(
+    async (resolution: "acceptServer" | "overwrite") => {
+      if (!noteId) {
+        setAutoSaveConflict(null)
+        autoSaveBlockedRef.current = false
+        return
+      }
+
+      if (resolution === "acceptServer") {
+        if (autoSaveConflict?.serverContent) {
+          noteContentRef.current = autoSaveConflict.serverContent
+          setNoteContent(autoSaveConflict.serverContent)
+          autoSaveLastContentRef.current = autoSaveConflict.serverContent
+          lastComplianceContentRef.current = autoSaveConflict.serverContent
+          if (onNoteContentChange) {
+            onNoteContentChange(autoSaveConflict.serverContent)
+          }
+        }
+        if (autoSaveConflict?.serverVersion != null) {
+          setNoteVersion(autoSaveConflict.serverVersion)
+        }
+        const updatedTimestamp = autoSaveConflict?.updatedAt ?? new Date().toISOString()
+        setLastAutoSaveTime(updatedTimestamp)
+        sessionActions.setCurrentNote({
+          id: noteId,
+          version: autoSaveConflict?.serverVersion ?? noteVersion,
+          lastSavedAt: updatedTimestamp
+        })
+        setAutoSaveConflict(null)
+        autoSaveBlockedRef.current = false
+        setAutoSaveError(null)
+        await performAutoSave()
+        return
+      }
+
+      autoSaveBlockedRef.current = false
+      await performAutoSave({ force: true })
+      setAutoSaveConflict(null)
+    },
+    [
+      noteId,
+      autoSaveConflict,
+      onNoteContentChange,
+      performAutoSave,
+      sessionActions,
+      noteVersion
+    ]
+  )
 
   useEffect(() => {
     return () => {
@@ -799,19 +1356,28 @@ export function NoteEditor({
       if (autoSaveIntervalRef.current) {
         clearInterval(autoSaveIntervalRef.current)
       }
+      if (complianceRetryCountdownRef.current) {
+        clearInterval(complianceRetryCountdownRef.current)
+        complianceRetryCountdownRef.current = null
+      }
       stopAudioStream()
     }
   }, [stopAudioStream])
 
   useEffect(() => {
-    if (!visitStarted || !isRecording) return
-    const interval = window.setInterval(() => {
-      setCurrentSessionTime(time => time + 1)
-    }, 1000)
+    if (!visitStarted || sessionActiveStart === null) {
+      return
+    }
+    const updateTime = () => {
+      const elapsed = Math.max(0, Math.floor((Date.now() - sessionActiveStart) / 1_000))
+      setCurrentSessionTime(elapsed)
+    }
+    updateTime()
+    const interval = window.setInterval(updateTime, 1_000)
     return () => {
       clearInterval(interval)
     }
-  }, [visitStarted, isRecording])
+  }, [visitStarted, sessionActiveStart])
 
   useEffect(() => {
     if (!transcriptEntries.length) {
@@ -866,9 +1432,21 @@ export function NoteEditor({
         return
       }
 
+      if (visitSession.sessionId) {
+        fetchWithAuth("/api/visits/session", {
+          method: "PUT",
+          jsonBody: { session_id: visitSession.sessionId, action: "completed" }
+        }).catch(error => {
+          console.debug("Failed to mark visit completed", error)
+        })
+      }
+
+      void performAutoSave({ force: true })
+
       setIsFinalized(true)
       stopAudioStream()
       setVisitStarted(false)
+      setSessionActiveStart(null)
       setVisitSession(prev => ({
         ...prev,
         status: "finalized",
@@ -903,8 +1481,11 @@ export function NoteEditor({
     [
       applyWizardIssues,
       currentSessionTime,
+      fetchWithAuth,
       onNoteContentChange,
-      stopAudioStream
+      performAutoSave,
+      stopAudioStream,
+      visitSession.sessionId
     ]
   )
 
@@ -1039,6 +1620,7 @@ export function NoteEditor({
           throw new Error("Encounter ID must be numeric")
         }
         let sessionData: any = null
+        let normalizedSession: VisitSessionState | undefined
         if (!visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "POST",
@@ -1059,21 +1641,57 @@ export function NoteEditor({
           sessionData = await response.json()
         }
         if (sessionData) {
-          setVisitSession(prev => ({ ...prev, ...sessionData }))
+          normalizedSession = syncVisitSessionFromPayload(sessionData)
         }
         if (!hasEverStarted) {
           setHasEverStarted(true)
-          setCurrentSessionTime(0)
-          setPausedTime(0)
           setTranscriptEntries([])
-        } else {
-          setCurrentSessionTime(pausedTime)
         }
+
         await ensureNoteCreated()
         setVisitStarted(true)
         const started = await startAudioStream()
         if (!started) {
           setVisitError("Microphone access is required for live transcription.")
+          setVisitStarted(false)
+          setSessionActiveStart(null)
+          const sessionIdForPause = (() => {
+            if (normalizedSession?.sessionId) {
+              return normalizedSession.sessionId
+            }
+            if (visitSession.sessionId) {
+              return visitSession.sessionId
+            }
+            if (typeof sessionData === "object" && sessionData) {
+              const raw =
+                (sessionData as Record<string, unknown>).sessionId ??
+                (sessionData as Record<string, unknown>).session_id ??
+                (sessionData as Record<string, unknown>).id
+              if (typeof raw === "string" && raw.trim().length > 0) {
+                return raw.trim()
+              }
+              if (typeof raw === "number" && Number.isFinite(raw)) {
+                return String(raw)
+              }
+            }
+            return undefined
+          })()
+          if (sessionIdForPause) {
+            try {
+              const pauseResponse = await fetchWithAuth("/api/visits/session", {
+                method: "PUT",
+                jsonBody: { session_id: sessionIdForPause, action: "paused" }
+              })
+              if (pauseResponse.ok) {
+                const pausePayload = await pauseResponse.json().catch(() => null)
+                if (pausePayload) {
+                  syncVisitSessionFromPayload(pausePayload)
+                }
+              }
+            } catch (pauseError) {
+              console.error("Failed to pause visit after microphone error", pauseError)
+            }
+          }
         }
       } catch (error) {
         setVisitError(
@@ -1081,6 +1699,7 @@ export function NoteEditor({
         )
         stopAudioStream()
         setVisitStarted(false)
+        setSessionActiveStart(null)
       } finally {
         setVisitLoading(false)
       }
@@ -1095,7 +1714,7 @@ export function NoteEditor({
           if (response.ok) {
             const data = await response.json().catch(() => null)
             if (data) {
-              setVisitSession(prev => ({ ...prev, ...data }))
+              syncVisitSessionFromPayload(data)
             }
           }
         }
@@ -1105,6 +1724,7 @@ export function NoteEditor({
         stopAudioStream()
         setVisitStarted(false)
         setPausedTime(currentSessionTime)
+        setSessionActiveStart(null)
         setVisitLoading(false)
       }
     }
@@ -1117,12 +1737,12 @@ export function NoteEditor({
     fetchWithAuth,
     visitSession.sessionId,
     hasEverStarted,
-    pausedTime,
     ensureNoteCreated,
     startAudioStream,
     stopAudioStream,
     currentSessionTime,
-    isFinalized
+    isFinalized,
+    syncVisitSessionFromPayload
   ])
 
   const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
@@ -1133,6 +1753,12 @@ export function NoteEditor({
     <div className="flex flex-col flex-1">
       {/* Toolbar */}
       <div className="border-b bg-background p-4 space-y-4">
+        <input
+          ref={chartFileInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleChartFileChange}
+        />
         <div className="flex flex-wrap gap-4 items-end">
           <div className="grid w-full max-w-sm items-center gap-1.5">
             <Label htmlFor="patient-id">Patient ID</Label>
@@ -1289,6 +1915,30 @@ export function NoteEditor({
             <Save className="w-4 h-4 mr-2" />
             Save Draft & Exit
           </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleChartUploadClick}
+            disabled={chartUploadStatus === "uploading" || chartUploadStatus === "processing"}
+            className="border-dashed border-border"
+          >
+            {chartUploadStatus === "uploading" ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Uploading…
+              </>
+            ) : chartUploadStatus === "processing" ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Processing…
+              </>
+            ) : (
+              <>
+                <UploadCloud className="w-4 h-4 mr-2" />
+                Upload Chart
+              </>
+            )}
+          </Button>
           <div className="text-xs text-muted-foreground">
             {lastAutoSaveTime
               ? `Auto-saved ${new Date(lastAutoSaveTime).toLocaleTimeString()}`
@@ -1297,6 +1947,40 @@ export function NoteEditor({
               <span className="ml-2 text-destructive">{autoSaveError}</span>
             )}
           </div>
+          {chartUploadStatus !== "idle" && (
+            <div className="text-xs text-muted-foreground">
+              {chartUploadStatus === "complete" && chartUploadMetadata ? (
+                <span>
+                  Uploaded {chartUploadMetadata.filename}
+                  {typeof chartUploadMetadata.size === "number"
+                    ? ` (${Math.round(chartUploadMetadata.size / 1024)} KB)`
+                    : ""}
+                </span>
+              ) : chartUploadStatus === "processing" ? (
+                <span>Chart processing…</span>
+              ) : chartUploadStatus === "error" ? (
+                <span className="text-destructive">{chartUploadError ?? "Chart upload failed"}</span>
+              ) : (
+                <span>Preparing chart upload…</span>
+              )}
+            </div>
+          )}
+          {complianceServiceStatus === "degraded" && (
+            <div className="flex items-center gap-2 text-xs text-amber-600">
+              <AlertTriangle className="w-3 h-3" />
+              <span>
+                Compliance service degraded.
+                {typeof complianceRetrySeconds === "number"
+                  ? ` Retrying in ${complianceRetrySeconds}s.`
+                  : " Retrying…"}
+              </span>
+            </div>
+          )}
+          {complianceError && complianceServiceStatus === "degraded" && (
+            <div className="text-xs text-destructive">
+              {complianceError}
+            </div>
+          )}
 
           {/* Start Visit with Recording Indicator */}
           <div className="flex items-center gap-3">
@@ -1586,6 +2270,59 @@ export function NoteEditor({
           onError={handleFinalizationError}
         />
       )}
+
+      <Dialog
+        open={Boolean(autoSaveConflict)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAutoSaveConflict(null)
+            autoSaveBlockedRef.current = false
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Auto-save conflict detected</DialogTitle>
+            <DialogDescription>
+              {autoSaveConflict?.message ?? "Another device updated this note. Choose which version to keep."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            {autoSaveConflict?.updatedAt && (
+              <p>Server version saved at {new Date(autoSaveConflict.updatedAt).toLocaleString()}.</p>
+            )}
+            {autoSaveConflict?.serverVersion != null && (
+              <p>Server version: {autoSaveConflict.serverVersion}</p>
+            )}
+            {autoSaveConflict?.serverContent && (
+              <div className="border rounded-md bg-muted/40">
+                <ScrollArea className="max-h-64">
+                  <pre className="whitespace-pre-wrap p-4 text-xs text-muted-foreground">
+                    {autoSaveConflict.serverContent}
+                  </pre>
+                </ScrollArea>
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex flex-col sm:flex-row sm:justify-between gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                void resolveAutoSaveConflict("acceptServer")
+              }}
+            >
+              Use Server Version
+            </Button>
+            <Button
+              onClick={() => {
+                void resolveAutoSaveConflict("overwrite")
+              }}
+            >
+              Overwrite with My Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
     </div>
   )

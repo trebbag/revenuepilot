@@ -38,12 +38,20 @@ export interface LayoutPreferences {
   suggestionPanel: number
 }
 
+export interface CurrentNoteState {
+  id: string | null
+  version?: number | null
+  lastSavedAt?: string | null
+}
+
 interface SessionState {
   selectedCodes: SelectedCodesCounts
   selectedCodesList: SessionCode[]
   addedCodes: string[]
   isSuggestionPanelOpen: boolean
   layout: LayoutPreferences
+  panelStates: Record<string, boolean>
+  currentNote: CurrentNoteState | null
 }
 
 interface SessionContextValue {
@@ -58,6 +66,7 @@ interface SessionContextValue {
     setLayout: (layout: Partial<LayoutPreferences>) => void
     refresh: () => Promise<void>
     reset: () => void
+    setCurrentNote: (note: CurrentNoteState | null) => void
   }
 }
 
@@ -69,6 +78,7 @@ type SessionAction =
   | { type: "changeCategory"; payload: { code: SessionCode; newCategory: "diagnoses" | "differentials" } }
   | { type: "setSuggestionPanelOpen"; payload: boolean }
   | { type: "setLayout"; payload: Partial<LayoutPreferences> }
+  | { type: "setCurrentNote"; payload: CurrentNoteState | null }
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined)
 
@@ -77,6 +87,15 @@ const EMPTY_COUNTS: SelectedCodesCounts = {
   prevention: 0,
   diagnoses: 0,
   differentials: 0
+}
+
+const DEFAULT_LAYOUT: LayoutPreferences = {
+  noteEditor: 70,
+  suggestionPanel: 30
+}
+
+const DEFAULT_PANEL_STATES: Record<string, boolean> = {
+  suggestionPanel: false
 }
 
 function resolveCategory(code: SuggestionCodeInput | SessionCode): CodeCategory {
@@ -122,78 +141,53 @@ function countCodes(list: SessionCode[]): SelectedCodesCounts {
 }
 
 function createInitialSessionState(): SessionState {
-  const initialCodes: SessionCode[] = [
-    {
-      code: "99213",
-      type: "CPT",
-      category: "codes",
-      description: "Office visit, established patient",
-      rationale: "Moderate complexity medical decision making with established patient visit",
-      confidence: 87,
-      reimbursement: "$127.42",
-      rvu: "1.92"
-    },
-    {
-      code: "99214",
-      type: "CPT",
-      category: "codes",
-      description: "Office visit, established patient (moderate complexity)",
-      rationale: "High complexity decision making documented with comprehensive assessment",
-      confidence: 78,
-      reimbursement: "$184.93",
-      rvu: "2.80"
-    },
-    {
-      code: "J06.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute upper respiratory infection, unspecified",
-      rationale: "Primary diagnosis based on presenting symptoms and clinical findings",
-      confidence: 92
-    },
-    {
-      code: "J02.9",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Acute pharyngitis, unspecified",
-      rationale: "Secondary diagnosis from physical examination findings",
-      confidence: 84
-    },
-    {
-      code: "Z23",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Encounter for immunization",
-      rationale: "Patient received influenza vaccination during visit",
-      confidence: 95
-    },
-    {
-      code: "M25.50",
-      type: "ICD-10",
-      category: "diagnoses",
-      description: "Pain in unspecified joint",
-      rationale: "Patient reports joint discomfort as secondary concern",
-      confidence: 78
-    },
-    {
-      code: "Viral URI vs Bacterial Sinusitis",
-      type: "DIFFERENTIAL",
-      category: "differentials",
-      description: "Primary differential diagnosis consideration",
-      rationale: "85% confidence viral, 35% bacterial based on symptom pattern",
-      confidence: 85
+  return {
+    selectedCodes: { ...EMPTY_COUNTS },
+    selectedCodesList: [],
+    addedCodes: [],
+    isSuggestionPanelOpen: false,
+    layout: { ...DEFAULT_LAYOUT },
+    panelStates: { ...DEFAULT_PANEL_STATES },
+    currentNote: null
+  }
+}
+
+function normalizeCurrentNote(raw: unknown): CurrentNoteState | null {
+  if (!raw || typeof raw !== "object") {
+    return null
+  }
+
+  const data = raw as Record<string, unknown>
+  const idRaw = data.id ?? data.noteId ?? data.note_id
+  const id =
+    typeof idRaw === "string"
+      ? idRaw.trim()
+      : typeof idRaw === "number"
+        ? String(idRaw)
+        : null
+
+  if (!id) {
+    return null
+  }
+
+  let version: number | null = null
+  const versionRaw = data.version ?? data.noteVersion
+  if (typeof versionRaw === "number" && Number.isFinite(versionRaw)) {
+    version = versionRaw
+  } else if (typeof versionRaw === "string") {
+    const parsed = Number.parseInt(versionRaw, 10)
+    if (Number.isFinite(parsed)) {
+      version = parsed
     }
-  ]
+  }
+
+  const lastSavedRaw = data.lastSavedAt ?? data.last_saved_at ?? data.updatedAt ?? data.lastSaved
+  const lastSavedAt = typeof lastSavedRaw === "string" ? lastSavedRaw : null
 
   return {
-    selectedCodes: countCodes(initialCodes),
-    selectedCodesList: initialCodes,
-    addedCodes: [],
-    isSuggestionPanelOpen: true,
-    layout: {
-      noteEditor: 70,
-      suggestionPanel: 30
-    }
+    id,
+    version,
+    lastSavedAt
   }
 }
 
@@ -218,21 +212,34 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ? session.addedCodes.map(value => String(value))
         : base.addedCodes
 
+      const panelStates = {
+        ...base.panelStates,
+        ...(session.panelStates ?? {})
+      }
+
       const isSuggestionPanelOpen = typeof session.isSuggestionPanelOpen === "boolean"
         ? session.isSuggestionPanelOpen
-        : base.isSuggestionPanelOpen
+        : typeof panelStates.suggestionPanel === "boolean"
+          ? panelStates.suggestionPanel
+          : base.isSuggestionPanelOpen
+
+      panelStates.suggestionPanel = isSuggestionPanelOpen
 
       const nextLayout: LayoutPreferences = {
         noteEditor: typeof layout.noteEditor === "number" ? layout.noteEditor : base.layout.noteEditor,
         suggestionPanel: typeof layout.suggestionPanel === "number" ? layout.suggestionPanel : base.layout.suggestionPanel
       }
 
+      const currentNote = normalizeCurrentNote(session.currentNote)
+
       return {
         selectedCodes,
         selectedCodesList: list,
         addedCodes,
         isSuggestionPanelOpen,
-        layout: nextLayout
+        layout: nextLayout,
+        panelStates,
+        currentNote
       }
     }
     case "addCode": {
@@ -277,7 +284,14 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       }
     }
     case "setSuggestionPanelOpen":
-      return { ...state, isSuggestionPanelOpen: action.payload }
+      return {
+        ...state,
+        isSuggestionPanelOpen: action.payload,
+        panelStates: {
+          ...state.panelStates,
+          suggestionPanel: action.payload
+        }
+      }
     case "setLayout":
       return {
         ...state,
@@ -287,6 +301,11 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             ? action.payload.suggestionPanel
             : state.layout.suggestionPanel
         }
+      }
+    case "setCurrentNote":
+      return {
+        ...state,
+        currentNote: action.payload
       }
     default:
       return state
@@ -377,9 +396,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       selectedCodes: state.selectedCodes,
       selectedCodesList: state.selectedCodesList,
       addedCodes: state.addedCodes,
-      isSuggestionPanelOpen: state.isSuggestionPanelOpen
+      isSuggestionPanelOpen: state.isSuggestionPanelOpen,
+      panelStates: state.panelStates,
+      currentNote: state.currentNote
     }),
-    [state.selectedCodes, state.selectedCodesList, state.addedCodes, state.isSuggestionPanelOpen]
+    [state.selectedCodes, state.selectedCodesList, state.addedCodes, state.isSuggestionPanelOpen, state.panelStates, state.currentNote]
   )
 
   const layoutPayload = useMemo(() => state.layout, [state.layout])
@@ -484,6 +505,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "setLayout", payload: layout })
   }, [])
 
+  const setCurrentNote = useCallback((note: CurrentNoteState | null) => {
+    if (note === null) {
+      dispatch({ type: "setCurrentNote", payload: null })
+      return
+    }
+
+    const normalized = normalizeCurrentNote(note)
+    dispatch({ type: "setCurrentNote", payload: normalized })
+  }, [])
+
   const value = useMemo<SessionContextValue>(
     () => ({
       state,
@@ -496,10 +527,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         setSuggestionPanelOpen,
         setLayout,
         refresh,
-        reset
+        reset,
+        setCurrentNote
       }
     }),
-    [state, hydrated, syncing, addCode, removeCode, changeCodeCategory, setSuggestionPanelOpen, setLayout, refresh, reset]
+    [
+      state,
+      hydrated,
+      syncing,
+      addCode,
+      removeCode,
+      changeCodeCategory,
+      setSuggestionPanelOpen,
+      setLayout,
+      refresh,
+      reset,
+      setCurrentNote
+    ]
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

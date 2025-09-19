@@ -27,6 +27,14 @@ function SuggestionPanel({
   // Use specialty/payer provided by parent (do not render controls here)
   const parentSpecialty = (settingsState && settingsState.specialty) || '';
   const parentPayer = (settingsState && settingsState.payer) || '';
+  const [specialty, setSpecialty] = useState(parentSpecialty);
+  const [payer, setPayer] = useState(parentPayer);
+  useEffect(() => {
+    setSpecialty(parentSpecialty);
+  }, [parentSpecialty]);
+  useEffect(() => {
+    setPayer(parentPayer);
+  }, [parentPayer]);
   // Debounce backend suggestion calls.  When `text` changes rapidly we clear
   // the previous timeout and only invoke `fetchSuggestions` once the user has
   // paused typing for 300ms.

@@ -19,7 +19,7 @@ import { Button } from "./components/ui/button"
 import { Badge } from "./components/ui/badge"
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
-import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
+import type { SessionCode } from "./contexts/SessionContext"
 
 type ViewKey =
   | "home"
@@ -71,6 +71,7 @@ export function ProtectedApp() {
     encounterId: string
   } | null>(null)
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
+  const [noteContent, setNoteContent] = useState("")
 
   const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
 
@@ -98,7 +99,7 @@ export function ProtectedApp() {
     [auth.user, userRole]
   )
 
-  const { selectedCodes, selectedCodesList, addedCodes, isSuggestionPanelOpen, layout } = sessionState
+  const { selectedCodes, selectedCodesList, isSuggestionPanelOpen, layout } = sessionState
 
   // Shared appointment state between Builder and Schedule components
   const [sharedAppointments, setSharedAppointments] = useState([
@@ -233,13 +234,6 @@ export function ProtectedApp() {
       {accessDeniedMessage}
     </div>
   ) : null
-
-  const handleAddCode = useCallback(
-    (code: SuggestionCodeInput | SessionCode) => {
-      sessionActions.addCode(code)
-    },
-    [sessionActions]
-  )
 
   const handleRemoveCode = useCallback(
     (code: SessionCode, action: 'clear' | 'return', reasoning?: string) => {
@@ -801,6 +795,7 @@ export function ProtectedApp() {
                     prePopulatedPatient={prePopulatedPatient}
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
+                    onNoteContentChange={setNoteContent}
                   />
                   <SelectedCodesBar
                     selectedCodes={selectedCodes}
@@ -818,10 +813,7 @@ export function ProtectedApp() {
                   <ResizablePanel defaultSize={layout.suggestionPanel} minSize={25} maxSize={40}>
                     <SuggestionPanel
                       onClose={() => sessionActions.setSuggestionPanelOpen(false)}
-                      selectedCodes={selectedCodes}
-                      onUpdateCodes={() => undefined}
-                      onAddCode={handleAddCode}
-                      addedCodes={addedCodes}
+                      noteContent={noteContent}
                     />
                   </ResizablePanel>
                 </>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
@@ -22,32 +22,15 @@ import {
   Minus,
   ExternalLink,
   TestTube,
-  AlertTriangle
+  AlertTriangle,
+  Loader2
 } from "lucide-react"
-import { apiFetchJson } from "../lib/api"
+import { apiFetch } from "../lib/api"
+import { useSession } from "../contexts/SessionContext"
 
 interface SuggestionPanelProps {
   onClose: () => void
-  selectedCodes: {
-    codes: number
-    prevention: number
-    diagnoses: number
-    differentials: number
-  }
-  onUpdateCodes: (codes: { codes: number; prevention: number; diagnoses: number; differentials: number }) => void
-  onAddCode?: (code: any) => void
-  addedCodes?: string[]
   noteContent?: string
-  selectedCodesList?: SelectedCodeItem[]
-}
-
-interface SelectedCodeItem {
-  code?: string
-  type?: string
-  category?: string
-  description?: string
-  rationale?: string
-  confidence?: number
 }
 
 interface DifferentialItem {
@@ -104,22 +87,50 @@ interface PreventionSuggestionItem {
   rationale?: string
 }
 
-export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCode, addedCodes = [], noteContent = "", selectedCodesList = [] }: SuggestionPanelProps) {
+const SUGGESTION_REFRESH_INTERVAL = 2_000
+const SUGGESTION_MAX_BACKOFF = 30_000
+
+const parseRetryAfterMs = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value >= 1_000 ? Math.round(value) : Math.round(value * 1_000)
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseFloat(value)
+    if (Number.isFinite(parsed)) {
+      return parsed >= 1_000 ? Math.round(parsed) : Math.round(parsed * 1_000)
+    }
+  }
+  return null
+}
+
+type CardKey = "codes" | "compliance" | "prevention" | "differentials" | "followUp"
+
+export function SuggestionPanel({ onClose, noteContent = "" }: SuggestionPanelProps) {
+  const { state: sessionState, actions: sessionActions } = useSession()
+  const { selectedCodesList, addedCodes } = sessionState
   const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
   const [codesLoading, setCodesLoading] = useState(false)
   const [codesError, setCodesError] = useState<string | null>(null)
+  const [codesServiceStatus, setCodesServiceStatus] = useState<"online" | "degraded">("online")
+  const [codesRetrySeconds, setCodesRetrySeconds] = useState<number | null>(null)
 
   const [complianceAlerts, setComplianceAlerts] = useState<ComplianceAlertItem[]>([])
   const [complianceLoading, setComplianceLoading] = useState(false)
   const [complianceError, setComplianceError] = useState<string | null>(null)
+  const [complianceServiceStatus, setComplianceServiceStatus] = useState<"online" | "degraded">("online")
+  const [complianceRetrySeconds, setComplianceRetrySeconds] = useState<number | null>(null)
 
   const [differentialSuggestions, setDifferentialSuggestions] = useState<DifferentialItem[]>([])
   const [differentialsLoading, setDifferentialsLoading] = useState(false)
   const [differentialsError, setDifferentialsError] = useState<string | null>(null)
+  const [differentialsServiceStatus, setDifferentialsServiceStatus] = useState<"online" | "degraded">("online")
+  const [differentialsRetrySeconds, setDifferentialsRetrySeconds] = useState<number | null>(null)
 
   const [preventionSuggestions, setPreventionSuggestions] = useState<PreventionSuggestionItem[]>([])
   const [preventionLoading, setPreventionLoading] = useState(false)
   const [preventionError, setPreventionError] = useState<string | null>(null)
+  const [preventionServiceStatus, setPreventionServiceStatus] = useState<"online" | "degraded">("online")
+  const [preventionRetrySeconds, setPreventionRetrySeconds] = useState<number | null>(null)
 
   const [expandedCards, setExpandedCards] = useState({
     codes: true,
@@ -131,6 +142,187 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
 
   const [showConfidenceWarning, setShowConfidenceWarning] = useState(false)
   const [selectedDifferential, setSelectedDifferential] = useState<DifferentialItem | null>(null)
+
+  const codesAbortRef = useRef<AbortController | null>(null)
+  const codesTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const codesRetryAttemptRef = useRef(0)
+  const codesCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const complianceAbortRef = useRef<AbortController | null>(null)
+  const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const complianceRetryAttemptRef = useRef(0)
+  const complianceCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const differentialsAbortRef = useRef<AbortController | null>(null)
+  const differentialsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const differentialsRetryAttemptRef = useRef(0)
+  const differentialsCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const preventionAbortRef = useRef<AbortController | null>(null)
+  const preventionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const preventionRetryAttemptRef = useRef(0)
+  const preventionCountdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const clearServiceCountdown = useCallback(
+    (
+      ref: MutableRefObject<ReturnType<typeof setInterval> | null>,
+      setter: (value: number | null) => void
+    ) => {
+      if (ref.current) {
+        clearInterval(ref.current)
+        ref.current = null
+      }
+      setter(null)
+    },
+    []
+  )
+
+  const startServiceCountdown = useCallback(
+    (
+      delayMs: number,
+      ref: MutableRefObject<ReturnType<typeof setInterval> | null>,
+      setter: (value: number | null) => void
+    ) => {
+      clearServiceCountdown(ref, setter)
+      if (delayMs <= 0) {
+        setter(null)
+        return
+      }
+      const end = Date.now() + delayMs
+      setter(Math.ceil(delayMs / 1_000))
+      ref.current = window.setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((end - Date.now()) / 1_000))
+        setter(remaining > 0 ? remaining : null)
+        if (remaining <= 0 && ref.current) {
+          clearInterval(ref.current)
+          ref.current = null
+        }
+      }, 1_000)
+    },
+    [clearServiceCountdown]
+  )
+
+  const trimmedNoteContent = useMemo(() => noteContent?.trim() ?? "", [noteContent])
+
+  const fetchCodeSuggestions = useCallback(async () => {
+    if (codesTimeoutRef.current) {
+      clearTimeout(codesTimeoutRef.current)
+      codesTimeoutRef.current = null
+    }
+
+    if (!trimmedNoteContent) {
+      codesAbortRef.current?.abort()
+      codesAbortRef.current = null
+      setCodesLoading(false)
+      setCodesError(null)
+      setCodesServiceStatus("online")
+      setCodeSuggestions([])
+      codesRetryAttemptRef.current = 0
+      clearServiceCountdown(codesCountdownRef, setCodesRetrySeconds)
+      return
+    }
+
+    codesAbortRef.current?.abort()
+    const controller = new AbortController()
+    codesAbortRef.current = controller
+
+    const attempt = codesRetryAttemptRef.current
+    if (attempt === 0) {
+      setCodesLoading(true)
+      setCodesError(null)
+    }
+
+    let nextDelay = SUGGESTION_REFRESH_INTERVAL
+    let explicitRetry: number | null = null
+
+    try {
+      const response = await apiFetch("/api/ai/codes/suggest", {
+        method: "POST",
+        jsonBody: { content: trimmedNoteContent },
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        let message = `Unable to load code suggestions (${response.status})`
+        explicitRetry = parseRetryAfterMs(response.headers.get("Retry-After"))
+        try {
+          const body = await response.json()
+          if (body && typeof body === "object") {
+            const bodyRecord = body as Record<string, unknown>
+            if (typeof bodyRecord.message === "string") {
+              message = bodyRecord.message
+            }
+            const retryField =
+              bodyRecord.retryAfter ?? bodyRecord.retry_after ?? bodyRecord.retry_delay
+            const parsedRetry = parseRetryAfterMs(retryField)
+            if (parsedRetry !== null) {
+              explicitRetry = parsedRetry
+            }
+          }
+        } catch (parseError) {
+          console.debug("Failed to parse code suggestion error payload", parseError)
+        }
+
+        if (explicitRetry !== null) {
+          nextDelay = explicitRetry
+        }
+
+        throw new Error(message)
+      }
+
+      const data = await response.json().catch(() => ({} as Record<string, unknown>))
+      const normalized: CodeSuggestionItem[] = Array.isArray((data as any)?.suggestions)
+        ? ((data as any).suggestions as any[]).map((item: any) => ({
+            code: item?.code ?? "",
+            type: item?.type ?? "CPT",
+            description: item?.description,
+            rationale: item?.reasoning ?? item?.description,
+            reasoning: item?.reasoning,
+            confidence:
+              typeof item?.confidence === "number"
+                ? Math.round(item.confidence * 100)
+                : typeof item?.confidence === "string"
+                  ? Math.round(Number.parseFloat(item.confidence) * 100) || undefined
+                  : undefined,
+            whatItIs: item?.whatItIs,
+            usageRules: Array.isArray(item?.usageRules) ? item.usageRules : [],
+            reasonsSuggested: Array.isArray(item?.reasonsSuggested) ? item.reasonsSuggested : [],
+            potentialConcerns: Array.isArray(item?.potentialConcerns) ? item.potentialConcerns : []
+          }))
+        : []
+
+      setCodeSuggestions(normalized)
+      setCodesError(null)
+      setCodesServiceStatus("online")
+      codesRetryAttemptRef.current = 0
+      clearServiceCountdown(codesCountdownRef, setCodesRetrySeconds)
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      const message = error instanceof Error ? error.message : "Unable to load code suggestions."
+      setCodesError(message)
+      setCodesServiceStatus("degraded")
+      codesRetryAttemptRef.current += 1
+      const attemptDelay =
+        explicitRetry ??
+        Math.min(SUGGESTION_REFRESH_INTERVAL * 2 ** codesRetryAttemptRef.current, SUGGESTION_MAX_BACKOFF)
+      nextDelay = attemptDelay
+      startServiceCountdown(nextDelay, codesCountdownRef, setCodesRetrySeconds)
+    } finally {
+      setCodesLoading(false)
+      if (!controller.signal.aborted && trimmedNoteContent) {
+        codesTimeoutRef.current = window.setTimeout(() => {
+          void fetchCodeSuggestions()
+        }, nextDelay)
+      }
+      codesAbortRef.current = null
+    }
+  }, [
+    clearServiceCountdown,
+    trimmedNoteContent,
+    startServiceCountdown
+  ])
 
   const codesInUse = useMemo(
     () =>
@@ -159,197 +351,449 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     [differentialSuggestions, addedCodes]
   )
 
-  useEffect(() => {
-    const trimmed = noteContent?.trim()
+  const fetchComplianceAlerts = useCallback(async () => {
+    if (complianceTimeoutRef.current) {
+      clearTimeout(complianceTimeoutRef.current)
+      complianceTimeoutRef.current = null
+    }
 
-    if (!trimmed) {
-      setCodeSuggestions([])
+    if (!trimmedNoteContent) {
+      complianceAbortRef.current?.abort()
+      complianceAbortRef.current = null
+      setComplianceLoading(false)
+      setComplianceError(null)
+      setComplianceServiceStatus("online")
       setComplianceAlerts([])
-      setDifferentialSuggestions([])
+      complianceRetryAttemptRef.current = 0
+      clearServiceCountdown(complianceCountdownRef, setComplianceRetrySeconds)
       return
     }
 
+    complianceAbortRef.current?.abort()
     const controller = new AbortController()
-    const signal = controller.signal
+    complianceAbortRef.current = controller
 
-    const fetchCodes = async () => {
-      setCodesLoading(true)
-      setCodesError(null)
-      try {
-        const data =
-          (await apiFetchJson<{ suggestions?: any[] }>("/api/ai/codes/suggest", {
-            method: "POST",
-            jsonBody: { content: trimmed, useOfflineMode: true },
-            signal
-          })) ?? {}
-
-        const normalized: CodeSuggestionItem[] = (data?.suggestions || []).map((item: any) => ({
-          code: item.code,
-          type: item.type,
-          description: item.description,
-          rationale: item.reasoning || item.description,
-          reasoning: item.reasoning,
-          confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-          whatItIs: item.whatItIs,
-          usageRules: item.usageRules || [],
-          reasonsSuggested: item.reasonsSuggested || [],
-          potentialConcerns: item.potentialConcerns || []
-        }))
-        setCodeSuggestions(normalized)
-      } catch (error) {
-        if ((error as Error).name === "AbortError") {
-          return
-        }
-        console.error("Failed to load code suggestions", error)
-        setCodesError("Unable to load code suggestions.")
-        setCodeSuggestions([])
-      } finally {
-        setCodesLoading(false)
-      }
-    }
-
-    const fetchCompliance = async () => {
+    const attempt = complianceRetryAttemptRef.current
+    if (attempt === 0) {
       setComplianceLoading(true)
       setComplianceError(null)
-      try {
-        const data =
-          (await apiFetchJson<{ alerts?: any[] }>("/api/ai/compliance/check", {
-            method: "POST",
-            jsonBody: { content: trimmed, codes: codesInUse, useOfflineMode: true },
-            signal
-          })) ?? {}
-
-        const normalized: ComplianceAlertItem[] = (data?.alerts || []).map((item: any) => ({
-          text: item.text,
-          category: item.category,
-          priority: item.priority,
-          confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-          reasoning: item.reasoning
-        }))
-        setComplianceAlerts(normalized)
-      } catch (error) {
-        if ((error as Error).name === "AbortError") {
-          return
-        }
-        console.error("Failed to load compliance alerts", error)
-        setComplianceError("Unable to load compliance alerts.")
-        setComplianceAlerts([])
-      } finally {
-        setComplianceLoading(false)
-      }
     }
 
-    const fetchDifferentials = async () => {
+    let nextDelay = SUGGESTION_REFRESH_INTERVAL
+    let explicitRetry: number | null = null
+
+    try {
+      const response = await apiFetch("/api/ai/compliance/check", {
+        method: "POST",
+        jsonBody: { content: trimmedNoteContent, codes: codesInUse },
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        let message = `Unable to load compliance alerts (${response.status})`
+        explicitRetry = parseRetryAfterMs(response.headers.get("Retry-After"))
+        try {
+          const body = await response.json()
+          if (body && typeof body === "object") {
+            const bodyRecord = body as Record<string, unknown>
+            if (typeof bodyRecord.message === "string") {
+              message = bodyRecord.message
+            }
+            const retryField =
+              bodyRecord.retryAfter ?? bodyRecord.retry_after ?? bodyRecord.retry_delay
+            const parsedRetry = parseRetryAfterMs(retryField)
+            if (parsedRetry !== null) {
+              explicitRetry = parsedRetry
+            }
+          }
+        } catch (parseError) {
+          console.debug("Failed to parse compliance error payload", parseError)
+        }
+
+        if (explicitRetry !== null) {
+          nextDelay = explicitRetry
+        }
+
+        throw new Error(message)
+      }
+
+      const data = await response.json().catch(() => ({} as Record<string, unknown>))
+      const normalized: ComplianceAlertItem[] = Array.isArray((data as any)?.alerts)
+        ? ((data as any).alerts as any[]).map((item: any) => ({
+            text: typeof item?.text === "string" ? item.text : "",
+            category: typeof item?.category === "string" ? item.category : undefined,
+            priority: typeof item?.priority === "string" ? item.priority : undefined,
+            confidence:
+              typeof item?.confidence === "number"
+                ? Math.round(item.confidence * 100)
+                : typeof item?.confidence === "string"
+                  ? Math.round(Number.parseFloat(item.confidence) * 100) || undefined
+                  : undefined,
+            reasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined
+          }))
+        : []
+
+      setComplianceAlerts(normalized)
+      setComplianceError(null)
+      setComplianceServiceStatus("online")
+      complianceRetryAttemptRef.current = 0
+      clearServiceCountdown(complianceCountdownRef, setComplianceRetrySeconds)
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      const message = error instanceof Error ? error.message : "Unable to load compliance alerts."
+      setComplianceError(message)
+      setComplianceServiceStatus("degraded")
+      complianceRetryAttemptRef.current += 1
+      const attemptDelay =
+        explicitRetry ??
+        Math.min(
+          SUGGESTION_REFRESH_INTERVAL * 2 ** complianceRetryAttemptRef.current,
+          SUGGESTION_MAX_BACKOFF
+        )
+      nextDelay = attemptDelay
+      startServiceCountdown(nextDelay, complianceCountdownRef, setComplianceRetrySeconds)
+    } finally {
+      setComplianceLoading(false)
+      if (!controller.signal.aborted && trimmedNoteContent) {
+        complianceTimeoutRef.current = window.setTimeout(() => {
+          void fetchComplianceAlerts()
+        }, nextDelay)
+      }
+      complianceAbortRef.current = null
+    }
+  }, [
+    clearServiceCountdown,
+    trimmedNoteContent,
+    startServiceCountdown,
+    codesInUse
+  ])
+
+  const fetchDifferentialSuggestions = useCallback(async () => {
+    if (differentialsTimeoutRef.current) {
+      clearTimeout(differentialsTimeoutRef.current)
+      differentialsTimeoutRef.current = null
+    }
+
+    if (!trimmedNoteContent) {
+      differentialsAbortRef.current?.abort()
+      differentialsAbortRef.current = null
+      setDifferentialsLoading(false)
+      setDifferentialsError(null)
+      setDifferentialsServiceStatus("online")
+      setDifferentialSuggestions([])
+      differentialsRetryAttemptRef.current = 0
+      clearServiceCountdown(differentialsCountdownRef, setDifferentialsRetrySeconds)
+      return
+    }
+
+    differentialsAbortRef.current?.abort()
+    const controller = new AbortController()
+    differentialsAbortRef.current = controller
+
+    const attempt = differentialsRetryAttemptRef.current
+    if (attempt === 0) {
       setDifferentialsLoading(true)
       setDifferentialsError(null)
-      try {
-        const data =
-          (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
-            method: "POST",
-            jsonBody: { content: trimmed, useOfflineMode: true },
-            signal
-          })) ?? {}
+    }
 
-        const normalized: DifferentialItem[] = (data?.differentials || []).map((item: any) => {
-          const supporting = item.supportingFactors || []
-          const contradicting = item.contradictingFactors || []
-          const testsToConfirm = item.testsToConfirm || []
-          const testsToExclude = item.testsToExclude || []
+    let nextDelay = SUGGESTION_REFRESH_INTERVAL
+    let explicitRetry: number | null = null
 
-          return {
-            diagnosis: item.diagnosis,
-            icdCode: item.icdCode || item.diagnosis,
-            icdDescription: item.icdDescription || item.diagnosis,
-            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-            reasoning: item.reasoning,
-            supportingFactors: supporting,
-            contradictingFactors: contradicting,
-            forFactors: supporting,
-            againstFactors: contradicting,
-            testsToConfirm,
-            testsToExclude,
-            whatItIs: item.whatItIs,
-            details: item.details,
-            confidenceFactors: item.confidenceFactors,
-            learnMoreUrl: item.learnMoreUrl
+    try {
+      const response = await apiFetch("/api/ai/differentials/generate", {
+        method: "POST",
+        jsonBody: { content: trimmedNoteContent },
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        let message = `Unable to load differential suggestions (${response.status})`
+        explicitRetry = parseRetryAfterMs(response.headers.get("Retry-After"))
+        try {
+          const body = await response.json()
+          if (body && typeof body === "object") {
+            const bodyRecord = body as Record<string, unknown>
+            if (typeof bodyRecord.message === "string") {
+              message = bodyRecord.message
+            }
+            const retryField =
+              bodyRecord.retryAfter ?? bodyRecord.retry_after ?? bodyRecord.retry_delay
+            const parsedRetry = parseRetryAfterMs(retryField)
+            if (parsedRetry !== null) {
+              explicitRetry = parsedRetry
+            }
           }
-        })
-        setDifferentialSuggestions(normalized)
-      } catch (error) {
-        if ((error as Error).name === "AbortError") {
-          return
+        } catch (parseError) {
+          console.debug("Failed to parse differential error payload", parseError)
         }
-        console.error("Failed to load differentials", error)
-        setDifferentialsError("Unable to load differential suggestions.")
-        setDifferentialSuggestions([])
-      } finally {
-        setDifferentialsLoading(false)
+
+        if (explicitRetry !== null) {
+          nextDelay = explicitRetry
+        }
+
+        throw new Error(message)
       }
+
+      const data = await response.json().catch(() => ({} as Record<string, unknown>))
+      const normalized: DifferentialItem[] = Array.isArray((data as any)?.differentials)
+        ? ((data as any).differentials as any[]).map((item: any) => {
+            const supporting = Array.isArray(item?.supportingFactors)
+              ? item.supportingFactors
+              : Array.isArray(item?.forFactors)
+                ? item.forFactors
+                : []
+            const contradicting = Array.isArray(item?.contradictingFactors)
+              ? item.contradictingFactors
+              : Array.isArray(item?.againstFactors)
+                ? item.againstFactors
+                : []
+            const testsToConfirm = Array.isArray(item?.testsToConfirm)
+              ? item.testsToConfirm
+              : []
+            const testsToExclude = Array.isArray(item?.testsToExclude)
+              ? item.testsToExclude
+              : []
+
+            return {
+              diagnosis: item?.diagnosis ?? "",
+              icdCode: item?.icdCode ?? item?.diagnosis ?? "",
+              icdDescription: item?.icdDescription ?? item?.diagnosis ?? "",
+              confidence:
+                typeof item?.confidence === "number"
+                  ? Math.round(item.confidence * 100)
+                  : typeof item?.confidence === "string"
+                    ? Math.round(Number.parseFloat(item.confidence) * 100) || undefined
+                    : undefined,
+              reasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined,
+              supportingFactors: supporting,
+              contradictingFactors: contradicting,
+              forFactors: supporting,
+              againstFactors: contradicting,
+              testsToConfirm,
+              testsToExclude,
+              whatItIs: typeof item?.whatItIs === "string" ? item.whatItIs : undefined,
+              details: typeof item?.details === "string" ? item.details : undefined,
+              confidenceFactors:
+                typeof item?.confidenceFactors === "string" ? item.confidenceFactors : undefined,
+              learnMoreUrl: typeof item?.learnMoreUrl === "string" ? item.learnMoreUrl : undefined
+            }
+          })
+        : []
+
+      setDifferentialSuggestions(normalized)
+      setDifferentialsError(null)
+      setDifferentialsServiceStatus("online")
+      differentialsRetryAttemptRef.current = 0
+      clearServiceCountdown(differentialsCountdownRef, setDifferentialsRetrySeconds)
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      const message =
+        error instanceof Error ? error.message : "Unable to load differential suggestions."
+      setDifferentialsError(message)
+      setDifferentialsServiceStatus("degraded")
+      differentialsRetryAttemptRef.current += 1
+      const attemptDelay =
+        explicitRetry ??
+        Math.min(
+          SUGGESTION_REFRESH_INTERVAL * 2 ** differentialsRetryAttemptRef.current,
+          SUGGESTION_MAX_BACKOFF
+        )
+      nextDelay = attemptDelay
+      startServiceCountdown(nextDelay, differentialsCountdownRef, setDifferentialsRetrySeconds)
+    } finally {
+      setDifferentialsLoading(false)
+      if (!controller.signal.aborted && trimmedNoteContent) {
+        differentialsTimeoutRef.current = window.setTimeout(() => {
+          void fetchDifferentialSuggestions()
+        }, nextDelay)
+      }
+      differentialsAbortRef.current = null
+    }
+  }, [
+    clearServiceCountdown,
+    trimmedNoteContent,
+    startServiceCountdown
+  ])
+
+  const fetchPreventionSuggestions = useCallback(async () => {
+    if (preventionTimeoutRef.current) {
+      clearTimeout(preventionTimeoutRef.current)
+      preventionTimeoutRef.current = null
     }
 
-    const debounceId = window.setTimeout(() => {
-      fetchCodes()
-      fetchCompliance()
-      fetchDifferentials()
-    }, 500)
-
-    return () => {
-      controller.abort()
-      window.clearTimeout(debounceId)
-    }
-  }, [noteContent, codesInUse])
-
-  useEffect(() => {
+    preventionAbortRef.current?.abort()
     const controller = new AbortController()
-    const signal = controller.signal
+    preventionAbortRef.current = controller
 
-    const fetchPrevention = async () => {
+    const attempt = preventionRetryAttemptRef.current
+    if (attempt === 0) {
       setPreventionLoading(true)
       setPreventionError(null)
-      try {
-        const data =
-          (await apiFetchJson<{ recommendations?: any[] }>("/api/ai/prevention/suggest", {
-            method: "POST",
-            jsonBody: { useOfflineMode: true },
-            signal
-          })) ?? {}
+    }
 
-        const normalized: PreventionSuggestionItem[] = (data?.recommendations || []).map((item: any, index: number) => {
-          const recommendation = item.recommendation || `Recommendation ${index + 1}`
-          return {
-            id: recommendation,
-            code: recommendation,
-            type: "PREVENTION",
-            category: "prevention",
-            recommendation,
-            priority: item.priority,
-            source: item.source,
-            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-            reasoning: item.reasoning,
-            ageRelevant: item.ageRelevant,
-            description: item.reasoning || recommendation,
-            rationale: item.reasoning
+    let nextDelay = SUGGESTION_REFRESH_INTERVAL
+    let explicitRetry: number | null = null
+
+    try {
+      const response = await apiFetch("/api/ai/prevention/suggest", {
+        method: "POST",
+        jsonBody: {},
+        signal: controller.signal
+      })
+
+      if (!response.ok) {
+        let message = `Unable to load prevention recommendations (${response.status})`
+        explicitRetry = parseRetryAfterMs(response.headers.get("Retry-After"))
+        try {
+          const body = await response.json()
+          if (body && typeof body === "object") {
+            const bodyRecord = body as Record<string, unknown>
+            if (typeof bodyRecord.message === "string") {
+              message = bodyRecord.message
+            }
+            const retryField =
+              bodyRecord.retryAfter ?? bodyRecord.retry_after ?? bodyRecord.retry_delay
+            const parsedRetry = parseRetryAfterMs(retryField)
+            if (parsedRetry !== null) {
+              explicitRetry = parsedRetry
+            }
           }
-        })
-        setPreventionSuggestions(normalized)
-      } catch (error) {
-        if ((error as Error).name === "AbortError") {
-          return
+        } catch (parseError) {
+          console.debug("Failed to parse prevention error payload", parseError)
         }
-        console.error("Failed to load prevention recommendations", error)
-        setPreventionError("Unable to load prevention recommendations.")
-        setPreventionSuggestions([])
-      } finally {
-        setPreventionLoading(false)
+
+        if (explicitRetry !== null) {
+          nextDelay = explicitRetry
+        }
+
+        throw new Error(message)
       }
+
+      const data = await response.json().catch(() => ({} as Record<string, unknown>))
+      const normalized: PreventionSuggestionItem[] = Array.isArray((data as any)?.recommendations)
+        ? ((data as any).recommendations as any[]).map((item: any, index: number) => {
+            const recommendation =
+              typeof item?.recommendation === "string"
+                ? item.recommendation
+                : `Recommendation ${index + 1}`
+            return {
+              id: typeof item?.id === "string" ? item.id : recommendation,
+              code: typeof item?.code === "string" ? item.code : recommendation,
+              type: typeof item?.type === "string" ? item.type : "PREVENTION",
+              category: typeof item?.category === "string" ? item.category : "prevention",
+              recommendation,
+              priority: typeof item?.priority === "string" ? item.priority : undefined,
+              source: typeof item?.source === "string" ? item.source : undefined,
+              confidence:
+                typeof item?.confidence === "number"
+                  ? Math.round(item.confidence * 100)
+                  : typeof item?.confidence === "string"
+                    ? Math.round(Number.parseFloat(item.confidence) * 100) || undefined
+                    : undefined,
+              reasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined,
+              ageRelevant: typeof item?.ageRelevant === "boolean" ? item.ageRelevant : undefined,
+              description:
+                typeof item?.description === "string"
+                  ? item.description
+                  : typeof item?.reasoning === "string"
+                    ? item.reasoning
+                    : recommendation,
+              rationale: typeof item?.rationale === "string" ? item.rationale : undefined
+            }
+          })
+        : []
+
+      setPreventionSuggestions(normalized)
+      setPreventionError(null)
+      setPreventionServiceStatus("online")
+      preventionRetryAttemptRef.current = 0
+      clearServiceCountdown(preventionCountdownRef, setPreventionRetrySeconds)
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      const message = error instanceof Error ? error.message : "Unable to load prevention recommendations."
+      setPreventionError(message)
+      setPreventionServiceStatus("degraded")
+      preventionRetryAttemptRef.current += 1
+      const attemptDelay =
+        explicitRetry ??
+        Math.min(
+          SUGGESTION_REFRESH_INTERVAL * 2 ** preventionRetryAttemptRef.current,
+          SUGGESTION_MAX_BACKOFF
+        )
+      nextDelay = attemptDelay
+      startServiceCountdown(nextDelay, preventionCountdownRef, setPreventionRetrySeconds)
+    } finally {
+      setPreventionLoading(false)
+      if (!controller.signal.aborted) {
+        preventionTimeoutRef.current = window.setTimeout(() => {
+          void fetchPreventionSuggestions()
+        }, nextDelay)
+      }
+      preventionAbortRef.current = null
     }
+  }, [clearServiceCountdown, startServiceCountdown])
 
-    fetchPrevention()
-
+  useEffect(() => {
+    codesRetryAttemptRef.current = 0
+    void fetchCodeSuggestions()
     return () => {
-      controller.abort()
+      if (codesTimeoutRef.current) {
+        clearTimeout(codesTimeoutRef.current)
+        codesTimeoutRef.current = null
+      }
+      codesAbortRef.current?.abort()
+      codesAbortRef.current = null
+      clearServiceCountdown(codesCountdownRef, setCodesRetrySeconds)
     }
-  }, [])
+  }, [fetchCodeSuggestions, clearServiceCountdown])
+
+  useEffect(() => {
+    complianceRetryAttemptRef.current = 0
+    void fetchComplianceAlerts()
+    return () => {
+      if (complianceTimeoutRef.current) {
+        clearTimeout(complianceTimeoutRef.current)
+        complianceTimeoutRef.current = null
+      }
+      complianceAbortRef.current?.abort()
+      complianceAbortRef.current = null
+      clearServiceCountdown(complianceCountdownRef, setComplianceRetrySeconds)
+    }
+  }, [fetchComplianceAlerts, clearServiceCountdown])
+
+  useEffect(() => {
+    differentialsRetryAttemptRef.current = 0
+    void fetchDifferentialSuggestions()
+    return () => {
+      if (differentialsTimeoutRef.current) {
+        clearTimeout(differentialsTimeoutRef.current)
+        differentialsTimeoutRef.current = null
+      }
+      differentialsAbortRef.current?.abort()
+      differentialsAbortRef.current = null
+      clearServiceCountdown(differentialsCountdownRef, setDifferentialsRetrySeconds)
+    }
+  }, [fetchDifferentialSuggestions, clearServiceCountdown])
+
+  useEffect(() => {
+    preventionRetryAttemptRef.current = 0
+    void fetchPreventionSuggestions()
+    return () => {
+      if (preventionTimeoutRef.current) {
+        clearTimeout(preventionTimeoutRef.current)
+        preventionTimeoutRef.current = null
+      }
+      preventionAbortRef.current?.abort()
+      preventionAbortRef.current = null
+      clearServiceCountdown(preventionCountdownRef, setPreventionRetrySeconds)
+    }
+  }, [fetchPreventionSuggestions, clearServiceCountdown])
 
   const toggleCard = (cardKey: string) => {
     setExpandedCards(prev => ({
@@ -367,7 +811,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     }
 
     const codeValue = differential.icdCode || differential.diagnosis
-    if (!codeValue || !onAddCode) {
+    if (!codeValue) {
       return
     }
 
@@ -380,12 +824,12 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       confidence: confidenceValue
     }
 
-    onAddCode(icdCodeItem)
+    sessionActions.addCode(icdCodeItem)
   }
 
   const handleAddAsDifferential = (differential: DifferentialItem) => {
     const codeValue = differential.icdCode || differential.diagnosis
-    if (!codeValue || !onAddCode) {
+    if (!codeValue) {
       return
     }
 
@@ -397,7 +841,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       rationale: `Added as differential consideration: ${differential.diagnosis}. ${differential.reasoning || ""}`,
       confidence: differential.confidence
     }
-    onAddCode(icdCodeItem)
+    sessionActions.addCode(icdCodeItem)
   }
 
   const handleAddCode = (code: any) => {
@@ -405,35 +849,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       return
     }
 
-    // Determine the correct category for the code
-    let updatedCodes = { ...selectedCodes }
-    
-    // If the code has a specific category (from differentials), use that
-    if (code.category) {
-      updatedCodes[code.category] = selectedCodes[code.category] + 1
-    } else if (code.type === "CPT") {
-      // Categorize CPT codes based on code number
-      if (code.code.startsWith("992") || code.code.startsWith("993")) {
-        // E/M codes go to consultation
-        updatedCodes.codes = selectedCodes.codes + 1
-      } else if (code.code.startsWith("999")) {
-        // Preventive codes also go to consultation  
-        updatedCodes.codes = selectedCodes.codes + 1
-      } else {
-        // Other CPT codes might be procedures
-        updatedCodes.diagnoses = selectedCodes.diagnoses + 1
-      }
-    } else if (code.type === "ICD-10") {
-      updatedCodes.diagnoses = selectedCodes.diagnoses + 1
-    }
-    
-    // Update the selected codes count
-    onUpdateCodes(updatedCodes)
-    
-    // Call the optional onAddCode callback to track added codes
-    if (onAddCode) {
-      onAddCode(code)
-    }
+    sessionActions.addCode(code)
   }
 
   const followUpSuggestions = [
@@ -441,13 +857,147 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     { interval: "3-5 days", condition: "if symptoms worsen", priority: "urgent" }
   ]
 
-  const cardConfigs = [
-    { key: 'codes', title: 'Codes', icon: Code, count: filteredCodeSuggestions.length, color: 'text-blue-600' },
-    { key: 'compliance', title: 'Compliance', icon: Shield, count: complianceAlerts.length, color: 'text-amber-600' },
-    { key: 'prevention', title: 'Prevention', icon: Heart, count: filteredPreventionSuggestions.length, color: 'text-red-600' },
-    { key: 'differentials', title: 'Differentials', icon: Stethoscope, count: filteredDifferentialSuggestions.length, color: 'text-purple-600' },
-    { key: 'followUp', title: 'Follow-Up', icon: Calendar, count: followUpSuggestions.length, color: 'text-orange-600' }
+  const cardConfigs: Array<{
+    key: CardKey
+    title: string
+    icon: typeof Code
+    count: number
+    color: string
+  }> = [
+    { key: "codes", title: "Codes", icon: Code, count: filteredCodeSuggestions.length, color: "text-blue-600" },
+    { key: "compliance", title: "Compliance", icon: Shield, count: complianceAlerts.length, color: "text-amber-600" },
+    { key: "prevention", title: "Prevention", icon: Heart, count: filteredPreventionSuggestions.length, color: "text-red-600" },
+    {
+      key: "differentials",
+      title: "Differentials",
+      icon: Stethoscope,
+      count: filteredDifferentialSuggestions.length,
+      color: "text-purple-600"
+    },
+    { key: "followUp", title: "Follow-Up", icon: Calendar, count: followUpSuggestions.length, color: "text-orange-600" }
   ]
+
+  const renderServiceStatusBadge = useCallback(
+    (key: CardKey) => {
+      switch (key) {
+        case "codes":
+          if (codesLoading) {
+            return (
+              <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating
+              </Badge>
+            )
+          }
+          if (codesServiceStatus === "degraded") {
+            return (
+              <Badge
+                variant="outline"
+                className="flex items-center gap-1 text-xs border-amber-200 bg-amber-50 text-amber-700"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {codesRetrySeconds != null ? `Degraded · retry in ${codesRetrySeconds}s` : "Degraded"}
+              </Badge>
+            )
+          }
+          return null
+        case "compliance":
+          if (complianceLoading) {
+            return (
+              <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating
+              </Badge>
+            )
+          }
+          if (complianceServiceStatus === "degraded") {
+            return (
+              <Badge
+                variant="outline"
+                className="flex items-center gap-1 text-xs border-amber-200 bg-amber-50 text-amber-700"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {complianceRetrySeconds != null ? `Degraded · retry in ${complianceRetrySeconds}s` : "Degraded"}
+              </Badge>
+            )
+          }
+          return null
+        case "differentials":
+          if (differentialsLoading) {
+            return (
+              <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating
+              </Badge>
+            )
+          }
+          if (differentialsServiceStatus === "degraded") {
+            return (
+              <Badge
+                variant="outline"
+                className="flex items-center gap-1 text-xs border-amber-200 bg-amber-50 text-amber-700"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {differentialsRetrySeconds != null ? `Degraded · retry in ${differentialsRetrySeconds}s` : "Degraded"}
+              </Badge>
+            )
+          }
+          return null
+        case "prevention":
+          if (preventionLoading) {
+            return (
+              <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                <Loader2 className="h-3 w-3 animate-spin" /> Updating
+              </Badge>
+            )
+          }
+          if (preventionServiceStatus === "degraded") {
+            return (
+              <Badge
+                variant="outline"
+                className="flex items-center gap-1 text-xs border-amber-200 bg-amber-50 text-amber-700"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                {preventionRetrySeconds != null ? `Degraded · retry in ${preventionRetrySeconds}s` : "Degraded"}
+              </Badge>
+            )
+          }
+          return null
+        default:
+          return null
+      }
+    },
+    [
+      codesLoading,
+      codesServiceStatus,
+      codesRetrySeconds,
+      complianceLoading,
+      complianceServiceStatus,
+      complianceRetrySeconds,
+      differentialsLoading,
+      differentialsServiceStatus,
+      differentialsRetrySeconds,
+      preventionLoading,
+      preventionServiceStatus,
+      preventionRetrySeconds
+    ]
+  )
+
+  const renderDegradedBanner = useCallback(
+    (status: "online" | "degraded", retrySeconds: number | null, label: string) => {
+      if (status !== "degraded") {
+        return null
+      }
+
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-700">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>
+            {label} is experiencing delays.{" "}
+            {retrySeconds != null ? `Retrying in ${retrySeconds}s.` : "Showing the most recent results."}
+          </span>
+        </div>
+      )
+    },
+    []
+  )
 
   // Circular confidence indicator component
   const ConfidenceGauge = ({ confidence, size = 20 }: { confidence?: number; size?: number }) => {
@@ -530,10 +1080,14 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                               {config.count}
                             </Badge>
                           </div>
-                          {expandedCards[config.key] ? 
-                            <ChevronDown className="h-4 w-4" /> : 
-                            <ChevronRight className="h-4 w-4" />
-                          }
+                          <div className="flex items-center gap-2">
+                            {renderServiceStatusBadge(config.key)}
+                            {expandedCards[config.key] ? (
+                              <ChevronDown className="h-4 w-4" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4" />
+                            )}
+                          </div>
                         </CardTitle>
                       </CardHeader>
                     </CollapsibleTrigger>
@@ -543,6 +1097,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Codes Section */}
                         {config.key === 'codes' && (
                           <div className="space-y-3">
+                            {renderDegradedBanner(
+                              codesServiceStatus,
+                              codesRetrySeconds,
+                              "The coding assistant"
+                            )}
                             {codesLoading && (
                               <p className="text-sm text-muted-foreground">Analyzing note for coding opportunities...</p>
                             )}
@@ -704,6 +1263,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Compliance Section */}
                         {config.key === 'compliance' && (
                           <div className="space-y-3">
+                            {renderDegradedBanner(
+                              complianceServiceStatus,
+                              complianceRetrySeconds,
+                              "The compliance assistant"
+                            )}
                             {complianceLoading && (
                               <p className="text-sm text-muted-foreground">Reviewing documentation for compliance issues...</p>
                             )}
@@ -747,6 +1311,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Public Health Section */}
                         {config.key === 'prevention' && (
                           <div className="space-y-2">
+                            {renderDegradedBanner(
+                              preventionServiceStatus,
+                              preventionRetrySeconds,
+                              "The preventive care assistant"
+                            )}
                             {preventionLoading && (
                               <p className="text-sm text-muted-foreground">Loading preventive care opportunities...</p>
                             )}
@@ -831,6 +1400,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Differentials Section */}
                         {config.key === 'differentials' && (
                           <div className="space-y-3">
+                            {renderDegradedBanner(
+                              differentialsServiceStatus,
+                              differentialsRetrySeconds,
+                              "The differential assistant"
+                            )}
                             {differentialsLoading && (
                               <p className="text-sm text-muted-foreground">Generating differential diagnoses...</p>
                             )}
@@ -1218,18 +1792,17 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
               <AlertDialogAction
                 onClick={() => {
                   if (selectedDifferential) {
-                    // Create ICD-10 code item and add as diagnosis (purple card)
                     const codeValue = selectedDifferential.icdCode || selectedDifferential.diagnosis
-                    if (codeValue && onAddCode) {
+                    if (codeValue) {
                       const icdCodeItem = {
                         code: codeValue,
                         type: "ICD-10",
-                        category: "diagnoses",
+                        category: "diagnoses" as const,
                         description: selectedDifferential.icdDescription || selectedDifferential.diagnosis,
                         rationale: `Added as diagnosis from differential: ${selectedDifferential.diagnosis}. ${selectedDifferential.reasoning || ''}`,
                         confidence: selectedDifferential.confidence
                       }
-                      onAddCode(icdCodeItem)
+                      sessionActions.addCode(icdCodeItem)
                     }
                   }
                   setShowConfidenceWarning(false)
