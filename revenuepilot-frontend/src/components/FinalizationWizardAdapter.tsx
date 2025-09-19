@@ -42,6 +42,15 @@ type SessionCodeLike = {
   [key: string]: unknown
 }
 
+type TranscriptEntryLike = {
+  id?: string | number | null
+  text?: string | null
+  speaker?: string | null
+  timestamp?: number | string | null
+  confidence?: number | null
+  [key: string]: unknown
+}
+
 interface PatientInfoInput {
   patientId?: string | null
   encounterId?: string | null
@@ -69,6 +78,7 @@ interface FinalizationWizardAdapterProps {
   complianceIssues: ComplianceLike[]
   noteContent?: string
   patientInfo?: PatientInfoInput
+  transcriptEntries?: TranscriptEntryLike[]
   stepOverrides?: WizardStepOverride[]
   noteId: string | null
   fetchWithAuth: FetchWithAuth
@@ -262,6 +272,7 @@ export function FinalizationWizardAdapter({
   complianceIssues,
   noteContent,
   patientInfo,
+  transcriptEntries,
   stepOverrides,
   noteId,
   fetchWithAuth,
@@ -269,6 +280,7 @@ export function FinalizationWizardAdapter({
   onError
 }: FinalizationWizardAdapterProps) {
   const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(null)
+  const [wizardSuggestions, setWizardSuggestions] = useState<WizardCodeItem[]>([])
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId
@@ -304,6 +316,60 @@ export function FinalizationWizardAdapter({
     return payload
   }, [patientInfo])
 
+  const sanitizedTranscripts = useMemo(() => {
+    if (!Array.isArray(transcriptEntries)) {
+      return [] as Array<{ id: string | number; text: string; speaker?: string; timestamp?: number | string; confidence?: number }>
+    }
+
+    return transcriptEntries
+      .map((entry, index) => {
+        const textValue = typeof entry?.text === "string" ? entry.text.trim() : ""
+        if (!textValue) {
+          return null
+        }
+
+        const speakerValue =
+          typeof entry?.speaker === "string" && entry.speaker.trim().length > 0
+            ? entry.speaker.trim()
+            : undefined
+
+        let timestamp: number | string | undefined
+        if (typeof entry?.timestamp === "number" && Number.isFinite(entry.timestamp)) {
+          timestamp = entry.timestamp
+        } else if (typeof entry?.timestamp === "string" && entry.timestamp.trim().length > 0) {
+          timestamp = entry.timestamp.trim()
+        }
+
+        const confidence =
+          typeof entry?.confidence === "number" && Number.isFinite(entry.confidence)
+            ? Math.max(0, Math.min(1, entry.confidence))
+            : undefined
+
+        return {
+          id: entry?.id ?? index,
+          text: textValue,
+          speaker: speakerValue,
+          timestamp,
+          confidence,
+        }
+      })
+      .filter((entry): entry is { id: string | number; text: string; speaker?: string; timestamp?: number | string; confidence?: number } => Boolean(entry))
+  }, [transcriptEntries])
+
+  const selectedCodeSet = useMemo(() => {
+    const codes = Array.isArray(selectedCodesList) ? selectedCodesList : []
+    const identifiers = codes
+      .map(codeItem =>
+        typeof codeItem?.code === "string" && codeItem.code.trim().length > 0
+          ? codeItem.code.trim().toUpperCase()
+          : typeof codeItem?.description === "string" && codeItem.description.trim().length > 0
+            ? codeItem.description.trim().toUpperCase()
+            : undefined
+      )
+      .filter((value): value is string => Boolean(value))
+    return new Set(identifiers)
+  }, [selectedCodesList])
+
   useEffect(() => {
     if (!isOpen) {
       return
@@ -312,14 +378,46 @@ export function FinalizationWizardAdapter({
     let cancelled = false
     const initialise = async () => {
       const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
+      const resolvedNoteContent = noteContent ?? sessionData?.noteContent ?? ""
+      const normalizedNote = typeof resolvedNoteContent === "string" ? resolvedNoteContent : ""
+      const wordCount = normalizedNote.trim().length > 0 ? normalizedNote.trim().split(/\s+/).length : 0
+      const charCount = normalizedNote.length
+      const currentSelectedCodes = Array.isArray(selectedCodesList) ? selectedCodesList : []
+      const contextPayload: Record<string, unknown> = {
+        noteMetrics: {
+          wordCount,
+          charCount
+        }
+      }
+
+      if (sanitizedTranscripts.length > 0) {
+        contextPayload.transcript = sanitizedTranscripts.map(entry => ({
+          id: entry.id,
+          text: entry.text,
+          speaker: entry.speaker,
+          timestamp: entry.timestamp,
+          confidence: entry.confidence
+        }))
+      }
+
+      if (currentSelectedCodes.length > 0) {
+        contextPayload.selectedCodes = currentSelectedCodes.map(code => ({
+          code: typeof code?.code === "string" ? code.code : undefined,
+          description: typeof code?.description === "string" ? code.description : undefined,
+          category: typeof code?.category === "string" ? code.category : undefined,
+          type: typeof code?.type === "string" ? code.type : undefined
+        }))
+      }
+
       const payload: Record<string, unknown> = {
         encounterId,
         patientId: typeof patientInfo?.patientId === "string" ? patientInfo.patientId.trim() : sessionData?.patientId ?? null,
         noteId: trimmedNoteId || sessionData?.noteId || undefined,
-        noteContent: noteContent ?? sessionData?.noteContent ?? "",
-        selectedCodes: Array.isArray(selectedCodesList) ? selectedCodesList : [],
+        noteContent: normalizedNote,
+        selectedCodes: currentSelectedCodes,
         complianceIssues: Array.isArray(complianceIssues) ? complianceIssues : [],
-        patientMetadata: { ...patientMetadataPayload }
+        patientMetadata: { ...patientMetadataPayload },
+        context: contextPayload
       }
 
       if (sessionData?.sessionId) {
@@ -365,21 +463,133 @@ export function FinalizationWizardAdapter({
     onError,
     patientInfo?.patientId,
     patientMetadataPayload,
+    sanitizedTranscripts,
     selectedCodesList,
+    sessionData?.noteContent,
     sessionData?.sessionId
   ])
 
-  const selectedWizardCodes = useMemo(
-    () =>
-      toWizardCodeItems(
-        Array.isArray(sessionData?.selectedCodes) && sessionData.selectedCodes.length > 0
-          ? sessionData.selectedCodes
-          : Array.isArray(selectedCodesList)
-            ? selectedCodesList
-            : []
-      ),
-    [selectedCodesList, sessionData?.selectedCodes]
-  )
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+
+    const sourceContent = sessionData?.noteContent ?? noteContent ?? ""
+    const trimmedContent = typeof sourceContent === "string" ? sourceContent.trim() : ""
+    if (!trimmedContent) {
+      setWizardSuggestions([])
+      return
+    }
+
+    let cancelled = false
+
+    const fetchSuggestions = async () => {
+      try {
+        const response = await fetchWithAuth("/api/ai/codes/suggest", {
+          method: "POST",
+          jsonBody: { content: trimmedContent, useOfflineMode: true }
+        })
+        if (!response.ok) {
+          throw new Error(`Suggestion request failed (${response.status})`)
+        }
+        const data = await response.json().catch(() => ({}))
+        const rawList = Array.isArray(data?.suggestions) ? data.suggestions : []
+        const mapped: WizardCodeItem[] = rawList
+          .map((item: any, index: number) => {
+            const codeValue = typeof item?.code === "string" ? item.code.trim() : ""
+            const descriptionValue = typeof item?.description === "string" ? item.description.trim() : ""
+            if (!codeValue && !descriptionValue) {
+              return null
+            }
+            const identifier = codeValue || descriptionValue || `suggestion-${index + 1}`
+            if (selectedCodeSet.has(identifier.toUpperCase())) {
+              return null
+            }
+            const confidence = typeof item?.confidence === "number" ? item.confidence : undefined
+            return {
+              id: identifier,
+              code: codeValue || undefined,
+              title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
+              description: descriptionValue || undefined,
+              details: typeof item?.reasoning === "string" ? item.reasoning : undefined,
+              aiReasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined,
+              confidence: confidence,
+              status: "pending"
+            } as WizardCodeItem
+          })
+          .filter((item): item is WizardCodeItem => Boolean(item))
+
+        if (!cancelled) {
+          setWizardSuggestions(mapped)
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Unable to fetch AI suggestions", error)
+          setWizardSuggestions([])
+        }
+      }
+    }
+
+    void fetchSuggestions()
+
+    return () => {
+      cancelled = true
+    }
+  }, [fetchWithAuth, isOpen, noteContent, selectedCodeSet, sessionData?.noteContent])
+
+  const reimbursementLookup = useMemo(() => {
+    const map = new Map<string, number>()
+    const summaryCodes = sessionData?.reimbursementSummary?.codes
+    if (Array.isArray(summaryCodes)) {
+      summaryCodes.forEach(entry => {
+        const code = typeof entry?.code === "string" ? entry.code.trim().toUpperCase() : undefined
+        const amount = typeof entry?.amount === "number" ? entry.amount : undefined
+        if (code && typeof amount === "number") {
+          map.set(code, amount)
+        }
+      })
+    }
+    return map
+  }, [sessionData?.reimbursementSummary?.codes])
+
+  const selectedWizardCodes = useMemo(() => {
+    const base = toWizardCodeItems(
+      Array.isArray(sessionData?.selectedCodes) && sessionData.selectedCodes.length > 0
+        ? sessionData.selectedCodes
+        : Array.isArray(selectedCodesList)
+          ? selectedCodesList
+          : []
+    )
+
+    if (reimbursementLookup.size === 0) {
+      return base
+    }
+
+    const formatter = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2
+    })
+
+    return base.map(item => {
+      const codeKey = typeof item.code === "string" ? item.code.trim().toUpperCase() : undefined
+      if (codeKey && reimbursementLookup.has(codeKey)) {
+        const amount = reimbursementLookup.get(codeKey) ?? 0
+        return {
+          ...item,
+          reimbursement: formatter.format(amount)
+        }
+      }
+      return item
+    })
+  }, [reimbursementLookup, selectedCodesList, sessionData?.selectedCodes])
+
+  const reimbursementSummary = useMemo(() => {
+    if (sessionData?.reimbursementSummary) {
+      return sessionData.reimbursementSummary
+    }
+    return undefined
+  }, [sessionData?.reimbursementSummary])
 
   const complianceWizardItems = useMemo(
     () =>
@@ -438,6 +648,15 @@ export function FinalizationWizardAdapter({
       if (typeof state.progress === "number" && Number.isFinite(state.progress)) {
         const suffix = `${Math.max(0, Math.min(100, Math.round(state.progress)))}%`
         description = description ? `${description} • ${suffix}` : `Progress ${suffix}`
+      }
+
+      const blockingList = Array.isArray((state as Record<string, unknown>)?.blockingIssues)
+        ? ((state as Record<string, unknown>).blockingIssues as unknown[])
+        : []
+      const blockingCount = blockingList.filter(item => typeof item === "string" && item.trim().length > 0).length
+      if (blockingCount > 0) {
+        const blockingText = `${blockingCount} blocking issue${blockingCount === 1 ? "" : "s"}`
+        description = description ? `${description} • ${blockingText}` : blockingText
       }
 
       overrides.push({ id: stepId, description })
@@ -620,10 +839,13 @@ export function FinalizationWizardAdapter({
       <div className="relative z-10 flex h-full w-full flex-col overflow-hidden">
         <FinalizationWizard
           selectedCodes={selectedWizardCodes}
-          suggestedCodes={[]}
+          suggestedCodes={wizardSuggestions}
           complianceItems={complianceWizardItems}
           noteContent={sessionData?.noteContent ?? noteContent ?? ""}
           patientMetadata={patientMetadata}
+          reimbursementSummary={reimbursementSummary}
+          transcriptEntries={sanitizedTranscripts}
+          blockingIssues={sessionData?.blockingIssues}
           stepOverrides={mergedStepOverrides.length > 0 ? mergedStepOverrides : stepOverrides}
           onFinalize={handleFinalize}
           onClose={handleClose}
