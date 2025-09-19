@@ -51,6 +51,14 @@ export interface PatientMetadata extends Record<string, unknown> {
   providerName?: string;
 }
 
+export interface VisitTranscriptEntry extends Record<string, unknown> {
+  id?: number | string;
+  speaker?: string;
+  text?: string;
+  timestamp?: number | string;
+  confidence?: number;
+}
+
 export interface WizardPatientQuestion {
   id: number;
   question: string;
@@ -141,6 +149,9 @@ export interface FinalizationWizardProps {
   complianceItems?: WizardComplianceItem[];
   noteContent?: string;
   patientMetadata?: PatientMetadata;
+  reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> };
+  transcriptEntries?: VisitTranscriptEntry[];
+  blockingIssues?: string[];
   stepOverrides?: WizardStepOverride[];
   onClose?: (result?: FinalizeResult) => void;
   onFinalize?: (
@@ -367,6 +378,9 @@ export function FinalizationWizard({
   complianceItems = [],
   noteContent: incomingNoteContent = '',
   patientMetadata,
+  reimbursementSummary,
+  transcriptEntries,
+  blockingIssues,
   stepOverrides,
   onClose,
   onFinalize,
@@ -384,6 +398,43 @@ export function FinalizationWizard({
     () => normalizeComplianceItems(complianceItems),
     [complianceItems],
   );
+  const normalizedTranscript = React.useMemo(() => {
+    if (!Array.isArray(transcriptEntries)) {
+      return [] as VisitTranscriptEntry[];
+    }
+
+    return transcriptEntries
+      .map((entry, index) => {
+        const text = typeof entry?.text === 'string' ? entry.text.trim() : '';
+        if (!text) return null;
+
+        const speaker =
+          typeof entry?.speaker === 'string' && entry.speaker.trim().length > 0
+            ? entry.speaker.trim()
+            : undefined;
+
+        let timestamp: number | string | undefined;
+        if (typeof entry?.timestamp === 'number' && Number.isFinite(entry.timestamp)) {
+          timestamp = entry.timestamp;
+        } else if (typeof entry?.timestamp === 'string' && entry.timestamp.trim().length > 0) {
+          timestamp = entry.timestamp.trim();
+        }
+
+        const confidence =
+          typeof entry?.confidence === 'number' && Number.isFinite(entry.confidence)
+            ? Math.max(0, Math.min(1, entry.confidence))
+            : undefined;
+
+        return {
+          id: entry?.id ?? index + 1,
+          speaker,
+          text,
+          timestamp,
+          confidence,
+        } as VisitTranscriptEntry;
+      })
+      .filter((entry): entry is VisitTranscriptEntry => Boolean(entry));
+  }, [transcriptEntries]);
   const overridesMap = React.useMemo(
     () => createOverridesMap(stepOverrides),
     [stepOverrides],
@@ -449,12 +500,20 @@ export function FinalizationWizard({
     const complianceDescription = formatComplianceSummary(
       normalizedCompliance.length,
     );
+    const outstandingBlocking =
+      blockingIssues?.filter(
+        issue => typeof issue === 'string' && issue.trim().length > 0,
+      ) ?? [];
     const finalizeDescription = isFinalizing
       ? 'Finalizing note and preparing export package...'
       : finalizeResult
       ? finalizeResult.exportReady
         ? 'Note finalized and ready for export'
         : 'Finalized with outstanding issues that need review'
+      : outstandingBlocking.length
+      ? `Review ${outstandingBlocking.length} blocking issue${
+          outstandingBlocking.length === 1 ? '' : 's'
+        } before dispatch`
       : 'Final confirmation and submission';
 
     const baseSteps: WizardStepData[] = [
@@ -933,6 +992,11 @@ export function FinalizationWizard({
               originalContent={currentStepData.originalContent || ''}
               aiEnhancedContent={currentStepData.beautifiedContent || ''}
               patientSummaryContent={currentStepData.patientSummaryContent || ''}
+              patientMetadata={patientMetadata}
+              transcriptEntries={normalizedTranscript}
+              selectedCodes={normalizedSelected}
+              suggestedCodes={normalizedSuggested}
+              reimbursementSummary={reimbursementSummary}
               onAcceptAllChanges={() => {
                 handleNoteChange(beautifiedContent);
               }}

@@ -1580,6 +1580,7 @@ export function NoteEditor({
             sex: patientSexValue ?? null,
             encounterDate: encounterDateValue ?? null
           }}
+          transcriptEntries={transcriptEntries}
           fetchWithAuth={fetchWithAuth}
           noteId={noteId}
           onPreFinalizeResult={handlePreFinalizeResult}
