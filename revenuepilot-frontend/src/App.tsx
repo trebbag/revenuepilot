@@ -1,4 +1,5 @@
 import { Button } from "./components/ui/button"
+import { LoginExperience } from "./components/LoginExperience"
 import { AuthProvider, useAuth } from "./contexts/AuthContext"
 import { SessionProvider, useSession } from "./contexts/SessionContext"
 import { ProtectedApp } from "./ProtectedApp"
@@ -27,7 +28,7 @@ function FullscreenMessage({ title, description, actionLabel, onAction }: Fullsc
 }
 
 function AppShell() {
-  const { status, checking, refresh } = useAuth()
+  const { status, checking } = useAuth()
   const { hydrated, actions } = useSession()
 
   if (checking) {
@@ -40,14 +41,7 @@ function AppShell() {
   }
 
   if (status !== "authenticated") {
-    return (
-      <FullscreenMessage
-        title="Authentication required"
-        description="Your session has ended. Please sign in again to continue."
-        actionLabel="Retry"
-        onAction={() => refresh()}
-      />
-    )
+    return <LoginExperience />
   }
 
   if (!hydrated) {
