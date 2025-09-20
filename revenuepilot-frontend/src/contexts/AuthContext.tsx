@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
-import { apiFetch } from "../lib/api"
+import { apiFetch, clearStoredTokens } from "../lib/api"
 
 export type AuthStatus = "authenticated" | "unauthenticated"
 
@@ -138,6 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } finally {
       refreshController.current?.abort()
+      clearStoredTokens()
       setState({
         status: "unauthenticated",
         user: null,

@@ -1,6 +1,7 @@
 export type AuthTokenStorageKey = "token" | "accessToken" | "authToken"
 
 const TOKEN_STORAGE_KEYS: AuthTokenStorageKey[] = ["token", "accessToken", "authToken"]
+const REFRESH_TOKEN_STORAGE_KEY = "refreshToken"
 const ABSOLUTE_URL_RE = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//
 
 let cachedApiBaseUrl: string | null | undefined
@@ -36,6 +37,128 @@ export function getStoredToken(): string | null {
     }
   }
 
+  return null
+}
+
+function getLocalStorage(): Storage | undefined {
+  if (typeof window === "undefined") {
+    return undefined
+  }
+  try {
+    return typeof window.localStorage !== "undefined" ? window.localStorage : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getSessionStorage(): Storage | undefined {
+  if (typeof window === "undefined") {
+    return undefined
+  }
+  try {
+    return typeof window.sessionStorage !== "undefined" ? window.sessionStorage : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function safeSetItem(storage: Storage | undefined, key: string, value: string | null) {
+  if (!storage) {
+    return
+  }
+  try {
+    if (value === null) {
+      storage.removeItem(key)
+    } else {
+      storage.setItem(key, value)
+    }
+  } catch {
+    // ignore storage write failures
+  }
+}
+
+function sanitizeToken(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+export interface PersistAuthTokensOptions {
+  accessToken: string
+  refreshToken?: string
+  remember?: boolean
+}
+
+export function persistAuthTokens(options: PersistAuthTokensOptions): void {
+  const { accessToken, refreshToken, remember = false } = options
+  if (typeof window === "undefined") {
+    return
+  }
+
+  const sanitizedAccess = sanitizeToken(accessToken)
+  const sanitizedRefresh = sanitizeToken(refreshToken)
+  const local = getLocalStorage()
+  const session = getSessionStorage()
+
+  if (!sanitizedAccess) {
+    for (const key of TOKEN_STORAGE_KEYS) {
+      safeSetItem(local, key, null)
+      safeSetItem(session, key, null)
+    }
+  } else if (remember) {
+    for (const key of TOKEN_STORAGE_KEYS) {
+      safeSetItem(local, key, sanitizedAccess)
+      safeSetItem(session, key, sanitizedAccess)
+    }
+  } else {
+    for (const key of TOKEN_STORAGE_KEYS) {
+      safeSetItem(session, key, sanitizedAccess)
+      safeSetItem(local, key, null)
+    }
+  }
+
+  if (!sanitizedRefresh) {
+    safeSetItem(local, REFRESH_TOKEN_STORAGE_KEY, null)
+    safeSetItem(session, REFRESH_TOKEN_STORAGE_KEY, null)
+  } else if (remember) {
+    safeSetItem(local, REFRESH_TOKEN_STORAGE_KEY, sanitizedRefresh)
+    safeSetItem(session, REFRESH_TOKEN_STORAGE_KEY, sanitizedRefresh)
+  } else {
+    safeSetItem(session, REFRESH_TOKEN_STORAGE_KEY, sanitizedRefresh)
+    safeSetItem(local, REFRESH_TOKEN_STORAGE_KEY, null)
+  }
+}
+
+export function clearStoredTokens(): void {
+  if (typeof window === "undefined") {
+    return
+  }
+  const local = getLocalStorage()
+  const session = getSessionStorage()
+  for (const key of TOKEN_STORAGE_KEYS) {
+    safeSetItem(local, key, null)
+    safeSetItem(session, key, null)
+  }
+  safeSetItem(local, REFRESH_TOKEN_STORAGE_KEY, null)
+  safeSetItem(session, REFRESH_TOKEN_STORAGE_KEY, null)
+}
+
+export function getStoredRefreshToken(): string | null {
+  for (const storage of getStorageCandidates()) {
+    if (!storage) {
+      continue
+    }
+    try {
+      const value = storage.getItem(REFRESH_TOKEN_STORAGE_KEY)
+      if (typeof value === "string" && value) {
+        return value
+      }
+    } catch {
+      // ignore storage access errors
+    }
+  }
   return null
 }
 
