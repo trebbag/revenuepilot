@@ -8,6 +8,7 @@ __pycache__/
 # Node
 node_modules/
 dist/
+!finalization-wizard/dist/
 build/
 electron/dist/
 .yarn/install-state.gz
