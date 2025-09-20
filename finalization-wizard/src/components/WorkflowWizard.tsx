@@ -468,9 +468,19 @@ export function FinalizationWizard({
   >(null);
 
   React.useEffect(() => {
+    if (finalizeResult) {
+      return;
+    }
+
     setFinalizeResult(null);
     setFinalizeError(null);
-  }, [normalizedSelected, normalizedSuggested, normalizedCompliance, noteContent]);
+  }, [
+    finalizeResult,
+    normalizedSelected,
+    normalizedSuggested,
+    normalizedCompliance,
+    noteContent,
+  ]);
 
   React.useEffect(() => {
     const nextDefault = incomingNoteContent || getDefaultNoteContent(patientMetadata);

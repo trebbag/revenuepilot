@@ -325,16 +325,16 @@ export function DualRichTextEditor({
 
   type SuggestionPriority = 'high' | 'medium' | 'low';
 
-  const formatConfidence = (value?: number | null): string | null => {
+  function formatConfidence(value?: number | null): string | null {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       return null;
     }
     const percent = value > 1 ? value : value * 100;
     const normalized = Math.max(0, Math.min(100, Math.round(percent)));
     return `${normalized}%`;
-  };
+  }
 
-  const getCodeTypeLabel = (item?: WizardCodeItem): string => {
+  function getCodeTypeLabel(item?: WizardCodeItem): string {
     const explicit = typeof item?.codeType === 'string' ? item.codeType.trim() : '';
     if (explicit) {
       return explicit.toUpperCase();
@@ -347,16 +347,16 @@ export function DualRichTextEditor({
       return 'ICD-10';
     }
     return 'CODE';
-  };
+  }
 
-  const getCodeTypeBadgeClass = (codeType: string): string => {
+  function getCodeTypeBadgeClass(codeType: string): string {
     if (codeType.toUpperCase() === 'CPT') {
       return 'bg-green-50 text-green-700 border border-green-200 text-xs flex-shrink-0';
     }
     return 'bg-blue-50 text-blue-700 border border-blue-200 text-xs flex-shrink-0';
-  };
+  }
 
-  const getCodeBadgeProps = (item: WizardCodeItem, index: number) => {
+  function getCodeBadgeProps(item: WizardCodeItem, index: number) {
     if (item.stillValid === false) {
       return { text: 'Needs Update', className: 'bg-red-100 text-red-700 text-xs' };
     }
@@ -374,17 +374,17 @@ export function DualRichTextEditor({
       text: index === 0 ? 'Primary' : 'Pending Review',
       className: index === 0 ? 'bg-green-100 text-green-800 text-xs' : 'bg-slate-100 text-slate-700 text-xs',
     };
-  };
+  }
 
-  const formatTagLabel = (value: string): string => {
+  function formatTagLabel(value: string): string {
     const cleaned = value.replace(/[\-_]+/g, ' ').trim();
     if (!cleaned) {
       return value;
     }
     return cleaned.replace(/\b\w/g, char => char.toUpperCase());
-  };
+  }
 
-  const getCodeTagList = (item: WizardCodeItem): string[] => {
+  function getCodeTagList(item: WizardCodeItem): string[] {
     const tags = new Set<string>();
     const addTag = (value?: string | null) => {
       if (typeof value === 'string') {
@@ -408,9 +408,9 @@ export function DualRichTextEditor({
     addTag(typeof item.category === 'string' ? item.category : undefined);
 
     return Array.from(tags.values()).slice(0, 4);
-  };
+  }
 
-  const getSupportingText = (item: WizardCodeItem): string | undefined => {
+  function getSupportingText(item: WizardCodeItem): string | undefined {
     const candidates = [item.docSupport, item.details, item.aiReasoning];
     for (const entry of candidates) {
       if (typeof entry === 'string') {
@@ -440,7 +440,7 @@ export function DualRichTextEditor({
     }
 
     return undefined;
-  };
+  }
 
   const getCodeMetaLine = (item: WizardCodeItem): string[] => {
     const parts: string[] = [];

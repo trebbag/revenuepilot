@@ -128,13 +128,19 @@ interface NoteEditorProps {
   }
   selectedCodesList?: any[]
   onNoteContentChange?: (content: string) => void
+  onNavigateToDrafts?: () => void
+  testOverrides?: {
+    initialRecordedSeconds?: number
+  }
 }
 
 export function NoteEditor({
   prePopulatedPatient,
   selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 },
   selectedCodesList = [],
-  onNoteContentChange
+  onNoteContentChange,
+  onNavigateToDrafts,
+  testOverrides
 }: NoteEditorProps) {
   const auth = useAuth()
   const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
@@ -200,13 +206,14 @@ export function NoteEditor({
   const [transcriptionIndex, setTranscriptionIndex] = useState(-1)
   const [showFullTranscript, setShowFullTranscript] = useState(false)
 
+  const initialRecordedSeconds = testOverrides?.initialRecordedSeconds ?? 0
   const [visitStarted, setVisitStarted] = useState(false)
   const [visitLoading, setVisitLoading] = useState(false)
   const [visitError, setVisitError] = useState<string | null>(null)
   const [visitSession, setVisitSession] = useState<{ sessionId?: number; status?: string; startTime?: string; endTime?: string }>({})
-  const [hasEverStarted, setHasEverStarted] = useState(false)
+  const [hasEverStarted, setHasEverStarted] = useState(initialRecordedSeconds > 0)
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
-  const [pausedTime, setPausedTime] = useState(0)
+  const [pausedTime, setPausedTime] = useState(initialRecordedSeconds)
 
   const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
   const [isFinalized, setIsFinalized] = useState(false)
@@ -214,6 +221,8 @@ export function NoteEditor({
   const [noteId, setNoteId] = useState<string | null>(null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
+  const [saveDraftLoading, setSaveDraftLoading] = useState(false)
+  const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
 
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -376,7 +385,6 @@ export function NoteEditor({
         content:
           typeof contentOverride === "string" ? contentOverride : noteContentRef.current
       }
-
       const createPromise = (async () => {
         try {
           const response = await fetchWithAuth("/api/notes/create", {
@@ -1264,6 +1272,10 @@ export function NoteEditor({
     return undefined
   }, [visitSession?.startTime])
 
+  const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
+  const hasRecordedTime = totalDisplayTime > 0
+  const isEditorDisabled = isFinalized || !visitStarted
+
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
   const criticalIssues = activeIssues.filter(issue => issue.severity === 'critical')
@@ -1325,10 +1337,154 @@ export function NoteEditor({
     }
   }, [ensureNoteCreated, isFinalized])
 
-  const handleSaveDraft = () => {
-    // TODO: Save draft and navigate to drafts page
-    console.log("Saving draft and exiting...")
-  }
+
+  const handleSaveDraft = useCallback(async () => {
+    if (saveDraftLoading) {
+      return
+    }
+
+    if (isFinalized) {
+      toast.info("Note already finalized", {
+        description: "Finalized notes cannot be saved as drafts."
+      })
+      return
+    }
+
+    const trimmedPatientId = patientId.trim()
+    if (!trimmedPatientId) {
+      const message = "Patient ID is required before saving a draft."
+      setSaveDraftError(message)
+      toast.error("Unable to save draft", { description: message })
+      return
+    }
+
+    const previousAutoSaveTime = lastAutoSaveTime
+    const optimisticTimestamp = new Date().toISOString()
+
+    setSaveDraftLoading(true)
+    setSaveDraftError(null)
+    setLastAutoSaveTime(optimisticTimestamp)
+
+    try {
+      const content = noteContentRef.current ?? ""
+      const ensuredId = await ensureNoteCreated(content)
+      if (!ensuredId) {
+        throw new Error("Unable to determine draft identifier")
+      }
+
+      const numericId = Number(ensuredId)
+      const payload: Record<string, unknown> = {
+        note_id: Number.isFinite(numericId) ? numericId : ensuredId,
+        content
+      }
+
+      const response = await fetchWithAuth("/api/notes/auto-save", {
+        method: "PUT",
+        jsonBody: payload
+      })
+
+      if (!response.ok) {
+        let message = `Failed to save draft (${response.status})`
+        try {
+          const errorBody = await response.json()
+          const detail =
+            typeof errorBody?.message === "string" && errorBody.message.trim().length > 0
+              ? errorBody.message
+              : typeof errorBody?.detail === "string" && errorBody.detail.trim().length > 0
+                ? errorBody.detail
+                : ""
+          if (detail) {
+            message = detail
+          }
+        } catch {
+          // Ignore parsing errors
+        }
+        throw new Error(message)
+      }
+
+      await response.json().catch(() => ({}))
+
+      autoSaveLastContentRef.current = content
+      setAutoSaveError(null)
+      if (!noteId) {
+        setNoteId(String(ensuredId))
+      }
+
+      if (visitSession.sessionId) {
+        try {
+          const sessionResponse = await fetchWithAuth("/api/visits/session", {
+            method: "PUT",
+            jsonBody: { session_id: visitSession.sessionId, action: "complete" }
+          })
+          if (sessionResponse.ok) {
+            const sessionData = await sessionResponse.json().catch(() => null)
+            if (sessionData) {
+              setVisitSession(prev => ({ ...prev, ...sessionData }))
+            }
+          }
+        } catch (error) {
+          console.error("Failed to update visit session after draft save", error)
+        }
+      }
+
+      stopAudioStream()
+      setVisitStarted(false)
+      setPausedTime(currentSessionTime)
+
+      try {
+        const encounterValue = encounterId.trim()
+        await fetchWithAuth("/api/activity/log", {
+          method: "POST",
+          jsonBody: {
+            eventType: "draft_saved",
+            details: {
+              manual: true,
+              patientId: trimmedPatientId,
+              encounterId: encounterValue || undefined,
+              noteId: ensuredId,
+              source: "note-editor"
+            }
+          }
+        })
+      } catch (error) {
+        console.error("Failed to log draft save activity", error)
+      }
+
+      toast.success("Draft saved", {
+        description: "Draft saved and available in drafts overview."
+      })
+      onNavigateToDrafts?.()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to save draft"
+      setSaveDraftError(message)
+      setAutoSaveError(message)
+      setLastAutoSaveTime(previousAutoSaveTime ?? null)
+      toast.error("Unable to save draft", {
+        description: message
+      })
+    } finally {
+      setSaveDraftLoading(false)
+    }
+  }, [
+    saveDraftLoading,
+    isFinalized,
+    patientId,
+    lastAutoSaveTime,
+    noteContentRef,
+    ensureNoteCreated,
+    fetchWithAuth,
+    noteId,
+    visitSession.sessionId,
+    setVisitSession,
+    stopAudioStream,
+    setVisitStarted,
+    currentSessionTime,
+    setPausedTime,
+    encounterId,
+    onNavigateToDrafts,
+    setAutoSaveError
+  ])
+
 
   const canStartVisit = useMemo(() => {
     if (isFinalized) {
@@ -1446,10 +1602,6 @@ export function NoteEditor({
     currentSessionTime,
     isFinalized
   ])
-
-  const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
-  const isEditorDisabled = isFinalized || !visitStarted
-  const hasRecordedTime = totalDisplayTime > 0
 
   return (
     <div className="flex flex-col flex-1">
@@ -1604,13 +1756,24 @@ export function NoteEditor({
           
           <Button
             variant="outline"
-            onClick={handleSaveDraft}
-            disabled={!hasRecordedTime}
+            onClick={() => {
+              void handleSaveDraft()
+            }}
+            disabled={!hasRecordedTime || saveDraftLoading || isFinalized}
             className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            <Save className="w-4 h-4 mr-2" />
-            Save Draft & Exit
+            {saveDraftLoading ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4 mr-2" />
+            )}
+            {saveDraftLoading ? "Saving Draft…" : "Save Draft & Exit"}
           </Button>
+          {saveDraftError && (
+            <p className="text-xs text-destructive" role="alert">
+              {saveDraftError}
+            </p>
+          )}
           <div className="text-xs text-muted-foreground">
             {lastAutoSaveTime
               ? `Auto-saved ${new Date(lastAutoSaveTime).toLocaleTimeString()}`

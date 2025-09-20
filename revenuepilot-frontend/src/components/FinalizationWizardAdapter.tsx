@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import "finalization-wizard/dist/style.css"
 
@@ -103,6 +103,233 @@ const COMPLIANCE_SEVERITY_MAP: Record<string, WizardComplianceItem["severity"]> 
   info: "low"
 }
 
+const mapComplianceSeverityToStatus = (
+  severity?: string | null,
+  dismissed?: boolean | null
+): ComplianceCheckPayload["status"] => {
+  if (dismissed) {
+    return "not_applicable"
+  }
+  const normalized = typeof severity === "string" ? severity.toLowerCase() : ""
+  if (normalized === "critical" || normalized === "high") {
+    return "fail"
+  }
+  if (normalized === "warning" || normalized === "medium") {
+    return "warning"
+  }
+  if (normalized === "info" || normalized === "low") {
+    return "pass"
+  }
+  return "warning"
+}
+
+const deriveBillingValidation = (
+  validation: PreFinalizeCheckResponse | undefined,
+  reimbursementSummary: NoteContentUpdateResponsePayload["reimbursementSummary"] | undefined
+): BillingValidationPayload => {
+  const issues = validation?.issues && typeof validation.issues === "object" ? validation.issues : {}
+  const issueList = (key: string): unknown[] => {
+    const value = (issues as Record<string, unknown>)[key]
+    return Array.isArray(value) ? value : []
+  }
+
+  const estimated =
+    typeof validation?.estimatedReimbursement === "number"
+      ? validation.estimatedReimbursement
+      : typeof reimbursementSummary?.total === "number"
+        ? reimbursementSummary.total
+        : undefined
+
+  return {
+    codesValidated: issueList("codes").length === 0,
+    documentationLevelVerified: issueList("content").length === 0,
+    medicalNecessityConfirmed: issueList("compliance").length === 0,
+    billingComplianceChecked:
+      issueList("compliance").length === 0 && issueList("prevention").length === 0,
+    estimatedReimbursement: typeof estimated === "number" ? estimated : 0,
+    payerSpecificRequirements: []
+  }
+}
+
+const deriveComplianceChecks = (issues: ComplianceLike[] | undefined): ComplianceCheckPayload[] => {
+  if (!Array.isArray(issues)) {
+    return []
+  }
+
+  return issues
+    .map(issue => {
+      if (!issue) return null
+      const description =
+        typeof issue.description === "string" && issue.description.trim().length > 0
+          ? issue.description.trim()
+          : typeof issue.details === "string" && issue.details.trim().length > 0
+            ? issue.details.trim()
+            : typeof issue.title === "string"
+              ? issue.title.trim()
+              : undefined
+      const requiredActions: string[] = []
+      if (typeof issue.details === "string" && issue.details.trim().length > 0) {
+        requiredActions.push(issue.details.trim())
+      }
+      if (Array.isArray(issue.gaps)) {
+        issue.gaps.forEach(entry => {
+          if (typeof entry === "string" && entry.trim().length > 0) {
+            requiredActions.push(entry.trim())
+          }
+        })
+      }
+      return {
+        checkType:
+          typeof issue.category === "string" && issue.category.trim().length > 0
+            ? issue.category.trim()
+            : "documentation_standards",
+        status: mapComplianceSeverityToStatus(issue.severity, issue.dismissed),
+        description,
+        requiredActions
+      } satisfies ComplianceCheckPayload
+    })
+    .filter((entry): entry is ComplianceCheckPayload => Boolean(entry))
+}
+
+const deriveBillingSummary = (
+  codes: SessionCodeLike[] | undefined,
+  reimbursementSummary: NoteContentUpdateResponsePayload["reimbursementSummary"] | undefined
+): BillingSummaryPayload => {
+  const list = Array.isArray(codes) ? codes : []
+  const diagnoses: string[] = []
+  const procedures: string[] = []
+  const modifierCodes: string[] = []
+  let totalRvu = 0
+
+  list.forEach(item => {
+    if (!item) return
+    const codeValue = sanitizeString(item.code)
+    const category = sanitizeString(item.category)
+    if (category?.toLowerCase().includes("diagnos") || category?.toLowerCase().includes("differential")) {
+      if (codeValue) {
+        diagnoses.push(codeValue)
+      }
+    } else if (category?.toLowerCase().includes("procedure") || category?.toLowerCase().includes("code")) {
+      if (codeValue) {
+        procedures.push(codeValue)
+      }
+    } else if (codeValue && diagnoses.length === 0) {
+      diagnoses.push(codeValue)
+    }
+
+    const rawModifiers = Array.isArray((item as Record<string, unknown>).modifiers)
+      ? ((item as Record<string, unknown>).modifiers as unknown[])
+      : Array.isArray((item as Record<string, unknown>).modifierCodes)
+        ? ((item as Record<string, unknown>).modifierCodes as unknown[])
+        : []
+    rawModifiers.forEach(modifier => {
+      if (typeof modifier === "string" && modifier.trim().length > 0) {
+        modifierCodes.push(modifier.trim())
+      }
+    })
+
+    const rvuValue = (item as Record<string, unknown>).rvu
+    if (typeof rvuValue === "number" && Number.isFinite(rvuValue)) {
+      totalRvu += rvuValue
+    } else if (typeof rvuValue === "string") {
+      const parsed = Number(rvuValue)
+      if (Number.isFinite(parsed)) {
+        totalRvu += parsed
+      }
+    }
+  })
+
+  const estimatedPayment =
+    typeof reimbursementSummary?.total === "number" ? reimbursementSummary.total : undefined
+
+  return {
+    primaryDiagnosis: diagnoses[0],
+    secondaryDiagnoses: diagnoses.slice(1),
+    procedures,
+    evaluationManagementLevel: procedures[0] ?? undefined,
+    totalRvu: totalRvu > 0 ? totalRvu : 0,
+    estimatedPayment: typeof estimatedPayment === "number" ? estimatedPayment : 0,
+    modifierCodes
+  }
+}
+
+const deriveFinalReview = (session?: WorkflowSessionResponsePayload | null): FinalReviewPayload => {
+  const stepsArray: WorkflowStepStateLike[] = Array.isArray(session?.stepStates)
+    ? (session?.stepStates as WorkflowStepStateLike[])
+    : session?.stepStates && typeof session.stepStates === "object"
+      ? (Object.values(session.stepStates) as WorkflowStepStateLike[])
+      : []
+
+  const allStepsCompleted = stepsArray.every(
+    step => step && typeof step === "object" && step.status === "completed"
+  )
+  const hasBlocking = Array.isArray(session?.blockingIssues) && session.blockingIssues.length > 0
+
+  return {
+    allStepsCompleted,
+    physicianFinalApproval: true,
+    qualityReviewPassed: !hasBlocking,
+    complianceVerified: !hasBlocking,
+    readyForDispatch: allStepsCompleted && !hasBlocking
+  }
+}
+
+const deriveDispatchOptions = (existing?: WorkflowDispatchPayload): DispatchOptionsPayload => {
+  const base = existing?.dispatchOptions ?? {}
+  return {
+    sendToEmr: typeof base.sendToEmr === "boolean" ? base.sendToEmr : true,
+    generatePatientSummary:
+      typeof base.generatePatientSummary === "boolean" ? base.generatePatientSummary : false,
+    scheduleFollowup:
+      typeof base.scheduleFollowup === "boolean" ? base.scheduleFollowup : false,
+    sendToBilling: typeof base.sendToBilling === "boolean" ? base.sendToBilling : true,
+    notifyReferrals: typeof base.notifyReferrals === "boolean" ? base.notifyReferrals : false
+  }
+}
+
+const deriveDispatchStatus = (
+  timestamp: string,
+  existing?: WorkflowDispatchPayload
+): DispatchStatusPayload => {
+  const base = existing?.dispatchStatus ?? {}
+  const errors = Array.isArray(base.dispatchErrors)
+    ? base.dispatchErrors.filter(error => typeof error === "string" && error.trim().length > 0)
+    : []
+  return {
+    dispatchInitiated:
+      typeof base.dispatchInitiated === "boolean" ? base.dispatchInitiated : true,
+    dispatchCompleted:
+      typeof base.dispatchCompleted === "boolean" ? base.dispatchCompleted : true,
+    dispatchTimestamp: base.dispatchTimestamp ?? timestamp,
+    dispatchConfirmationNumber: sanitizeString(base.dispatchConfirmationNumber ?? undefined),
+    dispatchErrors: errors
+  }
+}
+
+const derivePostDispatchActions = (
+  existing?: WorkflowDispatchPayload
+): PostDispatchActionPayload[] => {
+  if (!Array.isArray(existing?.postDispatchActions)) {
+    return []
+  }
+  return existing!.postDispatchActions!
+    .map(action => {
+      if (!action) return null
+      return {
+        actionType: sanitizeString(action.actionType ?? undefined),
+        status: sanitizeString(action.status ?? undefined),
+        scheduledTime: sanitizeString(action.scheduledTime ?? undefined),
+        completionTime: sanitizeString(action.completionTime ?? undefined),
+        errorMessage: sanitizeString(action.errorMessage ?? undefined),
+        retryCount:
+          typeof action.retryCount === "number" && Number.isFinite(action.retryCount)
+            ? action.retryCount
+            : 0
+      }
+    })
+    .filter((entry): entry is PostDispatchActionPayload => Boolean(entry))
+}
+
 interface WorkflowStepStateLike {
   step?: number | string | null
   status?: string | null
@@ -130,6 +357,9 @@ interface WorkflowSessionResponsePayload {
   sessionProgress?: Record<string, unknown>
   createdAt?: string | null
   updatedAt?: string | null
+  attestation?: WorkflowAttestationPayload
+  dispatch?: WorkflowDispatchPayload
+  lastValidation?: Record<string, unknown>
 }
 
 interface NoteContentUpdateResponsePayload {
@@ -153,6 +383,202 @@ interface DispatchResponsePayload {
   result: FinalizeResult
 }
 
+interface PayerRequirementPayload {
+  payerName?: string | null
+  requirementType?: string | null
+  description?: string | null
+  isMet?: boolean | null
+  missingElements?: string[]
+}
+
+interface BillingValidationPayload {
+  codesValidated: boolean
+  documentationLevelVerified: boolean
+  medicalNecessityConfirmed: boolean
+  billingComplianceChecked: boolean
+  estimatedReimbursement?: number
+  payerSpecificRequirements?: PayerRequirementPayload[]
+}
+
+interface ComplianceCheckPayload {
+  checkType?: string | null
+  status?: "pass" | "fail" | "warning" | "not_applicable"
+  description?: string | null
+  requiredActions?: string[]
+}
+
+interface BillingSummaryPayload {
+  primaryDiagnosis?: string | null
+  secondaryDiagnoses?: string[]
+  procedures?: string[]
+  evaluationManagementLevel?: string | null
+  totalRvu?: number | null
+  estimatedPayment?: number | null
+  modifierCodes?: string[]
+}
+
+interface AttestationDetailsPayload {
+  physicianAttestation?: boolean
+  attestationText?: string | null
+  attestationTimestamp?: string | null
+  digitalSignature?: string | null
+  attestationIpAddress?: string | null
+  attestedBy?: string | null
+}
+
+interface WorkflowAttestationPayload {
+  billingValidation?: BillingValidationPayload
+  attestation?: AttestationDetailsPayload
+  complianceChecks?: ComplianceCheckPayload[]
+  billingSummary?: BillingSummaryPayload
+}
+
+interface FinalReviewPayload {
+  allStepsCompleted?: boolean
+  physicianFinalApproval?: boolean
+  qualityReviewPassed?: boolean
+  complianceVerified?: boolean
+  readyForDispatch?: boolean
+}
+
+interface DispatchOptionsPayload {
+  sendToEmr?: boolean
+  generatePatientSummary?: boolean
+  scheduleFollowup?: boolean
+  sendToBilling?: boolean
+  notifyReferrals?: boolean
+}
+
+interface DispatchStatusPayload {
+  dispatchInitiated?: boolean
+  dispatchCompleted?: boolean
+  dispatchTimestamp?: string | null
+  dispatchConfirmationNumber?: string | null
+  dispatchErrors?: string[]
+}
+
+interface PostDispatchActionPayload {
+  actionType?: string | null
+  status?: string | null
+  scheduledTime?: string | null
+  completionTime?: string | null
+  errorMessage?: string | null
+  retryCount?: number | null
+}
+
+interface WorkflowDispatchPayload {
+  destination?: string | null
+  deliveryMethod?: string | null
+  timestamp?: string | null
+  finalReview?: FinalReviewPayload
+  dispatchOptions?: DispatchOptionsPayload
+  dispatchStatus?: DispatchStatusPayload
+  postDispatchActions?: PostDispatchActionPayload[]
+}
+
+interface BackendPayerRequirementPayload {
+  payer_name?: string | null
+  requirement_type?: string | null
+  description?: string | null
+  is_met?: boolean | null
+  missing_elements: string[]
+}
+
+interface BackendBillingValidationPayload {
+  codes_validated: boolean
+  documentation_level_verified: boolean
+  medical_necessity_confirmed: boolean
+  billing_compliance_checked: boolean
+  estimated_reimbursement: number
+  payer_specific_requirements: BackendPayerRequirementPayload[]
+}
+
+interface BackendComplianceCheckPayload {
+  check_type?: string | null
+  status?: "pass" | "fail" | "warning" | "not_applicable"
+  description?: string | null
+  required_actions: string[]
+}
+
+interface BackendBillingSummaryPayload {
+  primary_diagnosis?: string | null
+  secondary_diagnoses: string[]
+  procedures: string[]
+  evaluation_management_level?: string | null
+  total_rvu: number
+  estimated_payment: number
+  modifier_codes: string[]
+}
+
+interface BackendAttestationDetailsPayload {
+  physician_attestation: boolean
+  attestation_text?: string | null
+  attestation_timestamp?: string | null
+  digital_signature?: string | null
+  attestation_ip_address?: string | null
+  attestedBy?: string | null
+}
+
+interface AttestationRequestBodyPayload {
+  encounterId: string
+  sessionId: string
+  billing_validation: BackendBillingValidationPayload
+  attestation: BackendAttestationDetailsPayload
+  compliance_checks: BackendComplianceCheckPayload[]
+  billing_summary: BackendBillingSummaryPayload
+}
+
+interface BackendFinalReviewPayload {
+  all_steps_completed: boolean
+  physician_final_approval: boolean
+  quality_review_passed: boolean
+  compliance_verified: boolean
+  ready_for_dispatch: boolean
+}
+
+interface BackendDispatchOptionsPayload {
+  send_to_emr: boolean
+  generate_patient_summary: boolean
+  schedule_followup: boolean
+  send_to_billing: boolean
+  notify_referrals: boolean
+}
+
+interface BackendDispatchStatusPayload {
+  dispatch_initiated: boolean
+  dispatch_completed: boolean
+  dispatch_timestamp?: string | null
+  dispatch_confirmation_number?: string | null
+  dispatch_errors: string[]
+}
+
+interface BackendPostDispatchActionPayload {
+  action_type?: string | null
+  status?: string | null
+  scheduled_time?: string | null
+  completion_time?: string | null
+  error_message?: string | null
+  retry_count: number
+}
+
+interface DispatchRequestBodyPayload {
+  encounterId: string
+  sessionId: string
+  destination?: string
+  deliveryMethod?: string
+  timestamp?: string
+  final_review: BackendFinalReviewPayload
+  dispatch_options: BackendDispatchOptionsPayload
+  dispatch_status: BackendDispatchStatusPayload
+  post_dispatch_actions: BackendPostDispatchActionPayload[]
+}
+
+interface DispatchContextSnapshot {
+  lastValidation?: PreFinalizeCheckResponse
+  reimbursementSummary?: NoteContentUpdateResponsePayload["reimbursementSummary"]
+  sessionAfterNoteUpdate?: WorkflowSessionResponsePayload
+}
+
 const sanitizeString = (value: unknown): string | undefined => {
   if (typeof value !== "string") {
     return undefined
@@ -160,6 +586,176 @@ const sanitizeString = (value: unknown): string | undefined => {
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : undefined
 }
+
+const cleanStringList = (input: unknown): string[] => {
+  if (!Array.isArray(input)) {
+    return []
+  }
+  return input
+    .map(entry => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry): entry is string => entry.length > 0)
+}
+
+const toBackendPayerRequirement = (
+  requirement: PayerRequirementPayload | undefined
+): BackendPayerRequirementPayload => {
+  return {
+    payer_name: sanitizeString(requirement?.payerName ?? undefined) ?? undefined,
+    requirement_type: sanitizeString(requirement?.requirementType ?? undefined) ?? undefined,
+    description: sanitizeString(requirement?.description ?? undefined) ?? undefined,
+    is_met: typeof requirement?.isMet === "boolean" ? requirement.isMet : undefined,
+    missing_elements: cleanStringList(requirement?.missingElements)
+  }
+}
+
+const toBackendBillingValidation = (
+  payload: BillingValidationPayload | undefined
+): BackendBillingValidationPayload => {
+  const requirements =
+    payload?.payerSpecificRequirements?.map(entry => toBackendPayerRequirement(entry)) ?? []
+  return {
+    codes_validated: Boolean(payload?.codesValidated),
+    documentation_level_verified: Boolean(payload?.documentationLevelVerified),
+    medical_necessity_confirmed: Boolean(payload?.medicalNecessityConfirmed),
+    billing_compliance_checked: Boolean(payload?.billingComplianceChecked),
+    estimated_reimbursement:
+      typeof payload?.estimatedReimbursement === "number" && Number.isFinite(payload.estimatedReimbursement)
+        ? payload.estimatedReimbursement
+        : 0,
+    payer_specific_requirements: requirements
+  }
+}
+
+const toBackendComplianceChecks = (
+  items: ComplianceCheckPayload[] | undefined
+): BackendComplianceCheckPayload[] => {
+  if (!Array.isArray(items)) {
+    return []
+  }
+  return items.map(item => ({
+    check_type: sanitizeString(item.checkType ?? undefined) ?? undefined,
+    status: item.status ?? "warning",
+    description: sanitizeString(item.description ?? undefined) ?? undefined,
+    required_actions: cleanStringList(item.requiredActions)
+  }))
+}
+
+const toBackendBillingSummary = (
+  payload: BillingSummaryPayload | undefined
+): BackendBillingSummaryPayload => {
+  return {
+    primary_diagnosis: sanitizeString(payload?.primaryDiagnosis ?? undefined) ?? undefined,
+    secondary_diagnoses: cleanStringList(payload?.secondaryDiagnoses),
+    procedures: cleanStringList(payload?.procedures),
+    evaluation_management_level: sanitizeString(payload?.evaluationManagementLevel ?? undefined) ?? undefined,
+    total_rvu: typeof payload?.totalRvu === "number" && Number.isFinite(payload.totalRvu) ? payload.totalRvu : 0,
+    estimated_payment:
+      typeof payload?.estimatedPayment === "number" && Number.isFinite(payload.estimatedPayment)
+        ? payload.estimatedPayment
+        : 0,
+    modifier_codes: cleanStringList(payload?.modifierCodes)
+  }
+}
+
+const toBackendAttestationDetails = (
+  payload: AttestationDetailsPayload | undefined
+): BackendAttestationDetailsPayload => {
+  return {
+    physician_attestation: Boolean(payload?.physicianAttestation),
+    attestation_text: sanitizeString(payload?.attestationText ?? undefined) ?? undefined,
+    attestation_timestamp: sanitizeString(payload?.attestationTimestamp ?? undefined) ?? undefined,
+    digital_signature: sanitizeString(payload?.digitalSignature ?? undefined) ?? undefined,
+    attestation_ip_address: sanitizeString(payload?.attestationIpAddress ?? undefined) ?? undefined,
+    attestedBy: sanitizeString(payload?.attestedBy ?? undefined) ?? undefined
+  }
+}
+
+const toBackendAttestationRequest = (input: {
+  encounterId: string
+  sessionId: string
+  billingValidation: BillingValidationPayload | undefined
+  attestation: AttestationDetailsPayload | undefined
+  complianceChecks: ComplianceCheckPayload[] | undefined
+  billingSummary: BillingSummaryPayload | undefined
+}): AttestationRequestBodyPayload => {
+  return {
+    encounterId: input.encounterId,
+    sessionId: input.sessionId,
+    billing_validation: toBackendBillingValidation(input.billingValidation),
+    attestation: toBackendAttestationDetails(input.attestation),
+    compliance_checks: toBackendComplianceChecks(input.complianceChecks),
+    billing_summary: toBackendBillingSummary(input.billingSummary)
+  }
+}
+
+const toBackendFinalReview = (
+  payload: FinalReviewPayload | undefined
+): BackendFinalReviewPayload => ({
+  all_steps_completed: Boolean(payload?.allStepsCompleted),
+  physician_final_approval: Boolean(payload?.physicianFinalApproval),
+  quality_review_passed: Boolean(payload?.qualityReviewPassed),
+  compliance_verified: Boolean(payload?.complianceVerified),
+  ready_for_dispatch: Boolean(payload?.readyForDispatch)
+})
+
+const toBackendDispatchOptions = (
+  payload: DispatchOptionsPayload | undefined
+): BackendDispatchOptionsPayload => ({
+  send_to_emr: Boolean(payload?.sendToEmr),
+  generate_patient_summary: Boolean(payload?.generatePatientSummary),
+  schedule_followup: Boolean(payload?.scheduleFollowup),
+  send_to_billing: Boolean(payload?.sendToBilling),
+  notify_referrals: Boolean(payload?.notifyReferrals)
+})
+
+const toBackendDispatchStatus = (
+  payload: DispatchStatusPayload | undefined
+): BackendDispatchStatusPayload => ({
+  dispatch_initiated: payload?.dispatchInitiated !== false,
+  dispatch_completed: payload?.dispatchCompleted !== false,
+  dispatch_timestamp: sanitizeString(payload?.dispatchTimestamp ?? undefined) ?? undefined,
+  dispatch_confirmation_number: sanitizeString(payload?.dispatchConfirmationNumber ?? undefined) ?? undefined,
+  dispatch_errors: cleanStringList(payload?.dispatchErrors)
+})
+
+const toBackendPostDispatchActions = (
+  payload: PostDispatchActionPayload[] | undefined
+): BackendPostDispatchActionPayload[] => {
+  if (!Array.isArray(payload)) {
+    return []
+  }
+  return payload.map(action => ({
+    action_type: sanitizeString(action.actionType ?? undefined) ?? undefined,
+    status: sanitizeString(action.status ?? undefined) ?? undefined,
+    scheduled_time: sanitizeString(action.scheduledTime ?? undefined) ?? undefined,
+    completion_time: sanitizeString(action.completionTime ?? undefined) ?? undefined,
+    error_message: sanitizeString(action.errorMessage ?? undefined) ?? undefined,
+    retry_count:
+      typeof action.retryCount === "number" && Number.isFinite(action.retryCount) ? action.retryCount : 0
+  }))
+}
+
+const toBackendDispatchRequest = (input: {
+  encounterId: string
+  sessionId: string
+  destination?: string
+  deliveryMethod?: string
+  timestamp?: string
+  finalReview: FinalReviewPayload | undefined
+  dispatchOptions: DispatchOptionsPayload | undefined
+  dispatchStatus: DispatchStatusPayload | undefined
+  postDispatchActions: PostDispatchActionPayload[] | undefined
+}): DispatchRequestBodyPayload => ({
+  encounterId: input.encounterId,
+  sessionId: input.sessionId,
+  destination: input.destination,
+  deliveryMethod: input.deliveryMethod,
+  timestamp: input.timestamp,
+  final_review: toBackendFinalReview(input.finalReview),
+  dispatch_options: toBackendDispatchOptions(input.dispatchOptions),
+  dispatch_status: toBackendDispatchStatus(input.dispatchStatus),
+  post_dispatch_actions: toBackendPostDispatchActions(input.postDispatchActions)
+})
 
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
   if (!Array.isArray(list)) {
@@ -281,6 +877,15 @@ export function FinalizationWizardAdapter({
 }: FinalizationWizardAdapterProps) {
   const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(null)
   const [wizardSuggestions, setWizardSuggestions] = useState<WizardCodeItem[]>([])
+  const attestationPayloadRef = useRef<AttestationRequestBodyPayload | null>(null)
+  const dispatchContextRef = useRef<DispatchContextSnapshot | null>(null)
+
+  useEffect(() => {
+    if (!isOpen) {
+      attestationPayloadRef.current = null
+      dispatchContextRef.current = null
+    }
+  }, [isOpen])
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId
@@ -370,19 +975,97 @@ export function FinalizationWizardAdapter({
     return new Set(identifiers)
   }, [selectedCodesList])
 
+  const initializationInput = useMemo(() => {
+    const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
+    const sessionNoteId = typeof sessionData?.noteId === "string" ? sessionData.noteId.trim() : ""
+    const providedNoteContent = typeof noteContent === "string" ? noteContent : ""
+    const sessionNoteContent =
+      typeof sessionData?.noteContent === "string" ? sessionData.noteContent : ""
+    const normalizedNote = providedNoteContent || sessionNoteContent || ""
+    const patientIdFromProps =
+      typeof patientInfo?.patientId === "string" && patientInfo.patientId.trim().length > 0
+        ? patientInfo.patientId.trim()
+        : ""
+    const sessionPatientId =
+      typeof sessionData?.patientId === "string" && sessionData.patientId.trim().length > 0
+        ? sessionData.patientId.trim()
+        : ""
+
+    return {
+      trimmedNoteId,
+      sessionNoteId,
+      normalizedNote,
+      patientIdFromProps,
+      sessionPatientId,
+      selectedCodes: Array.isArray(selectedCodesList) ? selectedCodesList : [],
+      complianceList: Array.isArray(complianceIssues) ? complianceIssues : [],
+      metadata: patientMetadataPayload,
+      transcripts: sanitizedTranscripts,
+      sessionId:
+        typeof sessionData?.sessionId === "string" && sessionData.sessionId.trim().length > 0
+          ? sessionData.sessionId.trim()
+          : ""
+    }
+  }, [
+    complianceIssues,
+    noteContent,
+    noteId,
+    patientInfo?.patientId,
+    patientMetadataPayload,
+    sanitizedTranscripts,
+    selectedCodesList,
+    sessionData?.noteContent,
+    sessionData?.noteId,
+    sessionData?.patientId,
+    sessionData?.sessionId
+  ])
+
+  const lastInitialisationRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (!isOpen) {
       return
     }
 
+    const fingerprint = JSON.stringify({
+      encounterId,
+      noteId: initializationInput.trimmedNoteId || initializationInput.sessionNoteId || null,
+      noteContent: initializationInput.normalizedNote,
+      patientId: initializationInput.patientIdFromProps || initializationInput.sessionPatientId || null,
+      selectedCodes: initializationInput.selectedCodes.map(code => ({
+        code: typeof code?.code === "string" ? code.code : null,
+        description: typeof code?.description === "string" ? code.description : null,
+        category: typeof code?.category === "string" ? code.category : null,
+        type: typeof code?.type === "string" ? code.type : null
+      })),
+      compliance: initializationInput.complianceList.map(issue => ({
+        id: typeof issue?.id === "string" ? issue.id : null,
+        code: typeof issue?.code === "string" ? issue.code : null,
+        severity: typeof issue?.severity === "string" ? issue.severity : null
+      })),
+      metadata: initializationInput.metadata,
+      transcripts: initializationInput.transcripts.map(entry => ({
+        id: entry.id,
+        text: entry.text,
+        speaker: entry.speaker,
+        timestamp: entry.timestamp,
+        confidence: entry.confidence
+      })),
+      sessionId: initializationInput.sessionId
+    })
+
+    if (lastInitialisationRef.current === fingerprint) {
+      return
+    }
+
+    lastInitialisationRef.current = fingerprint
+
     let cancelled = false
     const initialise = async () => {
-      const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
-      const resolvedNoteContent = noteContent ?? sessionData?.noteContent ?? ""
-      const normalizedNote = typeof resolvedNoteContent === "string" ? resolvedNoteContent : ""
-      const wordCount = normalizedNote.trim().length > 0 ? normalizedNote.trim().split(/\s+/).length : 0
-      const charCount = normalizedNote.length
-      const currentSelectedCodes = Array.isArray(selectedCodesList) ? selectedCodesList : []
+      const wordCount = initializationInput.normalizedNote.trim().length
+        ? initializationInput.normalizedNote.trim().split(/\s+/).length
+        : 0
+      const charCount = initializationInput.normalizedNote.length
       const contextPayload: Record<string, unknown> = {
         noteMetrics: {
           wordCount,
@@ -390,8 +1073,8 @@ export function FinalizationWizardAdapter({
         }
       }
 
-      if (sanitizedTranscripts.length > 0) {
-        contextPayload.transcript = sanitizedTranscripts.map(entry => ({
+      if (initializationInput.transcripts.length > 0) {
+        contextPayload.transcript = initializationInput.transcripts.map(entry => ({
           id: entry.id,
           text: entry.text,
           speaker: entry.speaker,
@@ -400,8 +1083,8 @@ export function FinalizationWizardAdapter({
         }))
       }
 
-      if (currentSelectedCodes.length > 0) {
-        contextPayload.selectedCodes = currentSelectedCodes.map(code => ({
+      if (initializationInput.selectedCodes.length > 0) {
+        contextPayload.selectedCodes = initializationInput.selectedCodes.map(code => ({
           code: typeof code?.code === "string" ? code.code : undefined,
           description: typeof code?.description === "string" ? code.description : undefined,
           category: typeof code?.category === "string" ? code.category : undefined,
@@ -411,17 +1094,19 @@ export function FinalizationWizardAdapter({
 
       const payload: Record<string, unknown> = {
         encounterId,
-        patientId: typeof patientInfo?.patientId === "string" ? patientInfo.patientId.trim() : sessionData?.patientId ?? null,
-        noteId: trimmedNoteId || sessionData?.noteId || undefined,
-        noteContent: normalizedNote,
-        selectedCodes: currentSelectedCodes,
-        complianceIssues: Array.isArray(complianceIssues) ? complianceIssues : [],
-        patientMetadata: { ...patientMetadataPayload },
+        patientId:
+          initializationInput.patientIdFromProps || initializationInput.sessionPatientId || null,
+        noteId:
+          initializationInput.trimmedNoteId || initializationInput.sessionNoteId || undefined,
+        noteContent: initializationInput.normalizedNote,
+        selectedCodes: initializationInput.selectedCodes,
+        complianceIssues: initializationInput.complianceList,
+        patientMetadata: { ...initializationInput.metadata },
         context: contextPayload
       }
 
-      if (sessionData?.sessionId) {
-        payload.sessionId = sessionData.sessionId
+      if (initializationInput.sessionId) {
+        payload.sessionId = initializationInput.sessionId
       }
 
       try {
@@ -453,21 +1138,13 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [
-    complianceIssues,
-    encounterId,
-    fetchWithAuth,
-    isOpen,
-    noteContent,
-    noteId,
-    onError,
-    patientInfo?.patientId,
-    patientMetadataPayload,
-    sanitizedTranscripts,
-    selectedCodesList,
-    sessionData?.noteContent,
-    sessionData?.sessionId
-  ])
+  }, [encounterId, fetchWithAuth, initializationInput, isOpen, onError])
+
+  useEffect(() => {
+    if (!isOpen) {
+      lastInitialisationRef.current = null
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (!isOpen) {
@@ -524,7 +1201,7 @@ export function FinalizationWizardAdapter({
         }
       } catch (error) {
         if (!cancelled) {
-          console.error("Unable to fetch AI suggestions", error)
+          onError?.("Unable to fetch AI suggestions", error)
           setWizardSuggestions([])
         }
       }
@@ -535,7 +1212,7 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [fetchWithAuth, isOpen, noteContent, selectedCodeSet, sessionData?.noteContent])
+  }, [fetchWithAuth, isOpen, noteContent, onError, selectedCodeSet, sessionData?.noteContent])
 
   const reimbursementLookup = useMemo(() => {
     const map = new Map<string, number>()
@@ -690,16 +1367,20 @@ export function FinalizationWizardAdapter({
         throw new Error("No active workflow session is available for finalization.")
       }
 
+      attestationPayloadRef.current = null
+      dispatchContextRef.current = null
+
       const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
       const payloadWithContext: FinalizeRequestWithContext = trimmedNoteId
         ? { ...request, noteId: trimmedNoteId }
         : request
 
-      const providerName =
+      const providerName = sanitizeString(
         sessionData?.patientMetadata && typeof sessionData.patientMetadata === "object" &&
-        typeof (sessionData.patientMetadata as Record<string, unknown>).providerName === "string"
+          typeof (sessionData.patientMetadata as Record<string, unknown>).providerName === "string"
           ? ((sessionData.patientMetadata as Record<string, unknown>).providerName as string)
           : undefined
+      )
 
       try {
         const noteResponse = await fetchWithAuth(`/api/v1/notes/${encodeURIComponent(encounterId)}/content`, {
@@ -725,6 +1406,35 @@ export function FinalizationWizardAdapter({
           reimbursementSummary: data.reimbursementSummary
         }
         onPreFinalizeResult?.(validation)
+
+        const billingValidation = deriveBillingValidation(validation, data.reimbursementSummary)
+        const complianceCheckPayload = deriveComplianceChecks(
+          Array.isArray(complianceIssues) ? complianceIssues : sessionData?.complianceIssues
+        )
+        const billingSummary = deriveBillingSummary(selectedCodesList, data.reimbursementSummary)
+        const attestationTimestamp = new Date().toISOString()
+        const attestationStatement = providerName
+          ? `Final attestation recorded by ${providerName}`
+          : "Final attestation recorded via finalization wizard"
+        const attestationDetails: AttestationDetailsPayload = {
+          physicianAttestation: true,
+          attestationText: attestationStatement,
+          attestationTimestamp,
+          attestedBy: providerName ?? undefined
+        }
+        attestationPayloadRef.current = toBackendAttestationRequest({
+          encounterId,
+          sessionId: activeSessionId,
+          billingValidation,
+          attestation: attestationDetails,
+          complianceChecks: complianceCheckPayload,
+          billingSummary
+        })
+        dispatchContextRef.current = {
+          lastValidation: validation,
+          reimbursementSummary: data.reimbursementSummary,
+          sessionAfterNoteUpdate: data.session
+        }
 
         if (!validation?.canFinalize) {
           const issueMessages: string[] = []
@@ -753,16 +1463,44 @@ export function FinalizationWizardAdapter({
         throw error
       }
 
+      let attestedSession: WorkflowSessionResponsePayload | undefined
       try {
+        const fallbackSession =
+          dispatchContextRef.current?.sessionAfterNoteUpdate ?? sessionData ?? undefined
+        const fallbackValidation = dispatchContextRef.current?.lastValidation
+        const fallbackReimbursement =
+          dispatchContextRef.current?.reimbursementSummary ??
+          (fallbackSession?.reimbursementSummary as
+            | NoteContentUpdateResponsePayload["reimbursementSummary"]
+            | undefined)
+        const fallbackCodes =
+          (Array.isArray(fallbackSession?.selectedCodes)
+            ? (fallbackSession?.selectedCodes as SessionCodeLike[])
+            : undefined) ?? selectedCodesList
+        const fallbackComplianceSource = Array.isArray(fallbackSession?.complianceIssues)
+          ? (fallbackSession?.complianceIssues as ComplianceLike[])
+          : complianceIssues
+        const attestationPayload =
+          attestationPayloadRef.current ??
+          toBackendAttestationRequest({
+            encounterId,
+            sessionId: activeSessionId,
+            billingValidation: deriveBillingValidation(fallbackValidation, fallbackReimbursement),
+            attestation: {
+              physicianAttestation: true,
+              attestationText: providerName
+                ? `Final attestation recorded by ${providerName}`
+                : "Final attestation recorded via finalization wizard",
+              attestationTimestamp: new Date().toISOString(),
+              attestedBy: providerName ?? undefined
+            },
+            complianceChecks: deriveComplianceChecks(fallbackComplianceSource),
+            billingSummary: deriveBillingSummary(fallbackCodes, fallbackReimbursement)
+          })
         const attestResponse = await fetchWithAuth(`/api/v1/workflow/${encodeURIComponent(activeSessionId)}/step5/attest`, {
           method: "POST",
           json: true,
-          body: JSON.stringify({
-            encounterId,
-            sessionId: activeSessionId,
-            attestedBy: providerName ?? undefined,
-            statement: "Attestation confirmed via finalization wizard"
-          })
+          body: JSON.stringify(attestationPayload)
         })
 
         if (!attestResponse.ok) {
@@ -770,17 +1508,27 @@ export function FinalizationWizardAdapter({
         }
 
         const attestData = (await attestResponse.json()) as WorkflowAttestationResponsePayload
-        setSessionData(attestData.session)
+        attestedSession = attestData.session
+        setSessionData(attestedSession)
+
+        const dispatchTimestamp = new Date().toISOString()
+        const sessionForDispatch = attestedSession ?? fallbackSession
+        const dispatchPayload = toBackendDispatchRequest({
+          encounterId,
+          sessionId: activeSessionId,
+          destination: "ehr",
+          deliveryMethod: "wizard",
+          timestamp: dispatchTimestamp,
+          finalReview: deriveFinalReview(sessionForDispatch),
+          dispatchOptions: deriveDispatchOptions(sessionForDispatch?.dispatch),
+          dispatchStatus: deriveDispatchStatus(dispatchTimestamp, sessionForDispatch?.dispatch),
+          postDispatchActions: derivePostDispatchActions(sessionForDispatch?.dispatch)
+        })
 
         const dispatchResponse = await fetchWithAuth(`/api/v1/workflow/${encodeURIComponent(activeSessionId)}/step6/dispatch`, {
           method: "POST",
           json: true,
-          body: JSON.stringify({
-            encounterId,
-            sessionId: activeSessionId,
-            destination: "ehr",
-            deliveryMethod: "wizard"
-          })
+          body: JSON.stringify(dispatchPayload)
         })
 
         if (!dispatchResponse.ok) {
@@ -814,7 +1562,9 @@ export function FinalizationWizardAdapter({
       noteId,
       onError,
       onPreFinalizeResult,
-      sessionData?.patientMetadata,
+      selectedCodesList,
+      complianceIssues,
+      sessionData,
       sessionData?.sessionId
     ]
   )

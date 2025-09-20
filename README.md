@@ -432,6 +432,32 @@ To run only these tests:
 pytest tests/test_ehr_integration.py -q
 ```
 
+### Frontend end-to-end smoke tests
+
+A Playwright suite now exercises the Vite-driven web frontend against a fully
+mocked API surface. The test boots the `revenuepilot-frontend` workspace,
+authenticates via the mock, loads analytics, inspects the activity log, and
+walks the documentation workflow through visit finalisation.
+
+Install the Playwright browser binaries once (Chromium is sufficient for CI):
+
+```bash
+npx playwright install --with-deps chromium
+```
+
+Then run the suite from the repository root:
+
+```bash
+npm run test:e2e
+```
+
+The command automatically launches the Express-based mock API defined in
+`tests/mocks/frontend-api-server.js` and the Vite dev server for the
+`revenuepilot-frontend` workspace. Environment variables `FRONTEND_API_PORT`
+and `FRONTEND_DEV_PORT` can be overridden when needed for local conflicts. The
+tests leave behind Playwright traces and videos for failures inside
+`playwright-report/`.
+
 ### UI Enhancements
 
 The editor displays a badge on the Export button showing the count of codes that will be sent. A classification summary row (C / P / O / M) appears beneath the patient / encounter ID inputs:

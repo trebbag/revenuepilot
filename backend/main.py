@@ -3125,6 +3125,263 @@ def _generate_patient_questions(
     return questions
 
 
+def _derive_billing_summary_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    codes = session.get("selectedCodes") or []
+    if not isinstance(codes, list):
+        codes = []
+    diagnoses: List[str] = []
+    procedures: List[str] = []
+    modifiers: List[str] = []
+    total_rvu = 0.0
+    for entry in codes:
+        if not isinstance(entry, dict):
+            continue
+        code_value = str(entry.get("code") or "").strip()
+        category = str(entry.get("category") or "").lower()
+        if category in {"diagnosis", "diagnoses", "differentials", "differential"}:
+            if code_value:
+                diagnoses.append(code_value)
+        elif category in {"procedure", "codes", "billing"}:
+            if code_value:
+                procedures.append(code_value)
+        else:
+            if code_value and not diagnoses:
+                diagnoses.append(code_value)
+        modifiers_field = entry.get("modifiers") or entry.get("modifierCodes")
+        if isinstance(modifiers_field, list):
+            for modifier in modifiers_field:
+                if isinstance(modifier, str) and modifier.strip():
+                    modifiers.append(modifier.strip())
+        rvu_value = entry.get("rvu")
+        try:
+            if rvu_value is not None:
+                total_rvu += float(rvu_value)
+        except (TypeError, ValueError):
+            continue
+    reimbursement = session.get("reimbursementSummary") or {}
+    estimated_payment = reimbursement.get("total")
+    try:
+        if estimated_payment is not None:
+            estimated_payment = float(estimated_payment)
+    except (TypeError, ValueError):
+        estimated_payment = None
+    summary = BillingSummaryModel(
+        primaryDiagnosis=diagnoses[0] if diagnoses else None,
+        secondaryDiagnoses=diagnoses[1:] if len(diagnoses) > 1 else [],
+        procedures=procedures,
+        evaluationManagementLevel=procedures[0] if procedures else None,
+        totalRvu=total_rvu if total_rvu else None,
+        estimatedPayment=estimated_payment,
+        modifierCodes=modifiers,
+    )
+    return summary.model_dump()
+
+
+def _derive_compliance_checks_from_session(session: Dict[str, Any]) -> List[Dict[str, Any]]:
+    issues = session.get("complianceIssues") or []
+    checks: List[Dict[str, Any]] = []
+    if not isinstance(issues, list):
+        issues = []
+    severity_to_status = {
+        "critical": "fail",
+        "high": "fail",
+        "warning": "warning",
+        "medium": "warning",
+        "info": "pass",
+        "low": "pass",
+    }
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity") or "info").lower()
+        status = severity_to_status.get(severity, "warning")
+        description = issue.get("description") or issue.get("details") or issue.get("title")
+        actions: List[str] = []
+        details = issue.get("details")
+        if isinstance(details, str) and details.strip():
+            actions.append(details.strip())
+        normalized = ComplianceCheckModel(
+            checkType=issue.get("category") or "documentation_standards",
+            status=status,
+            description=description,
+            requiredActions=actions,
+        )
+        checks.append(normalized.model_dump())
+    return checks
+
+
+def _derive_billing_validation_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    validation = session.get("lastValidation") or {}
+    issues = validation.get("issues") if isinstance(validation, dict) else {}
+    if not isinstance(issues, dict):
+        issues = {}
+    codes_ok = not (issues.get("codes") or [])
+    content_ok = not (issues.get("content") or [])
+    compliance_ok = not (issues.get("compliance") or [])
+    prevention_ok = not (issues.get("prevention") or [])
+    reimbursement = validation.get("estimatedReimbursement")
+    if reimbursement is None:
+        reimbursement_summary = session.get("reimbursementSummary") or {}
+        reimbursement = reimbursement_summary.get("total", 0.0)
+    try:
+        reimbursement_value = float(reimbursement or 0.0)
+    except (TypeError, ValueError):
+        reimbursement_value = 0.0
+    billing_validation = BillingValidationModel(
+        codesValidated=codes_ok,
+        documentationLevelVerified=content_ok,
+        medicalNecessityConfirmed=compliance_ok,
+        billingComplianceChecked=compliance_ok and prevention_ok,
+        estimatedReimbursement=reimbursement_value,
+        payerSpecificRequirements=[],
+    )
+    return billing_validation.model_dump()
+
+
+def _derive_final_review_from_session(session: Dict[str, Any]) -> Dict[str, Any]:
+    step_states = session.get("stepStates") or {}
+    if isinstance(step_states, list):
+        states_iterable = step_states
+    elif isinstance(step_states, dict):
+        states_iterable = step_states.values()
+    else:
+        states_iterable = []
+    all_completed = True
+    for entry in states_iterable:
+        if not isinstance(entry, dict):
+            continue
+        status = entry.get("status") or "not_started"
+        if status != "completed" and entry.get("step") != 6:
+            all_completed = False
+            break
+    blocking = session.get("blockingIssues") or []
+    compliance_verified = not blocking
+    review = FinalReviewModel(
+        allStepsCompleted=all_completed,
+        physicianFinalApproval=True,
+        qualityReviewPassed=compliance_verified,
+        complianceVerified=compliance_verified,
+        readyForDispatch=all_completed and compliance_verified,
+    )
+    return review.model_dump()
+
+
+def _normalize_attestation_payload(raw: Any) -> Dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    billing_raw = (
+        payload.get("billingValidation")
+        or payload.get("billing_validation")
+        or {}
+    )
+    try:
+        billing = BillingValidationModel.model_validate(billing_raw).model_dump()
+    except ValidationError:
+        billing = BillingValidationModel().model_dump()
+    attestation_raw = payload.get("attestation") or {}
+    if not attestation_raw and payload:
+        attestation_raw = {
+            "attestedBy": payload.get("attestedBy"),
+            "attestationText": payload.get("statement"),
+            "attestationTimestamp": payload.get("timestamp"),
+        }
+    try:
+        attestation = AttestationDetailsModel.model_validate(attestation_raw).model_dump()
+    except ValidationError:
+        attestation = AttestationDetailsModel().model_dump()
+    if payload.get("statement") and not attestation.get("attestationText"):
+        attestation["attestationText"] = str(payload["statement"])
+    if payload.get("timestamp") and not attestation.get("attestationTimestamp"):
+        attestation["attestationTimestamp"] = str(payload["timestamp"])
+    if payload.get("attestedBy") and not attestation.get("attestedBy"):
+        attestation["attestedBy"] = str(payload["attestedBy"])
+    if attestation.get("physicianAttestation") is None:
+        attestation["physicianAttestation"] = bool(attestation.get("attestedBy"))
+    compliance_raw = (
+        payload.get("complianceChecks")
+        or payload.get("compliance_checks")
+        or []
+    )
+    compliance: List[Dict[str, Any]] = []
+    if isinstance(compliance_raw, list):
+        for item in compliance_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                compliance.append(ComplianceCheckModel.model_validate(item).model_dump())
+            except ValidationError:
+                continue
+    billing_summary_raw = (
+        payload.get("billingSummary")
+        or payload.get("billing_summary")
+        or {}
+    )
+    try:
+        billing_summary = BillingSummaryModel.model_validate(billing_summary_raw).model_dump()
+    except ValidationError:
+        billing_summary = BillingSummaryModel().model_dump()
+    record = {
+        "billingValidation": billing,
+        "attestation": attestation,
+        "complianceChecks": compliance,
+        "billingSummary": billing_summary,
+    }
+    return record
+
+
+def _normalize_dispatch_payload(raw: Any) -> Dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    destination = payload.get("destination") or "ehr"
+    delivery_method = payload.get("deliveryMethod") or payload.get("delivery_method") or "internal"
+    timestamp = payload.get("timestamp") or payload.get("dispatchTimestamp")
+    final_review_raw = payload.get("finalReview") or payload.get("final_review") or {}
+    try:
+        final_review = FinalReviewModel.model_validate(final_review_raw).model_dump()
+    except ValidationError:
+        final_review = FinalReviewModel().model_dump()
+    dispatch_options_raw = payload.get("dispatchOptions") or payload.get("dispatch_options") or {}
+    try:
+        dispatch_options = DispatchOptionsModel.model_validate(dispatch_options_raw).model_dump()
+    except ValidationError:
+        dispatch_options = DispatchOptionsModel().model_dump()
+    dispatch_status_raw = payload.get("dispatchStatus") or payload.get("dispatch_status") or {}
+    if not dispatch_status_raw:
+        dispatch_status_raw = {
+            "dispatchInitiated": True,
+            "dispatchCompleted": bool(payload.get("dispatchCompleted")),
+            "dispatchTimestamp": timestamp,
+            "dispatchConfirmationNumber": payload.get("dispatchConfirmationNumber"),
+            "dispatchErrors": payload.get("dispatchErrors"),
+        }
+    try:
+        dispatch_status = DispatchStatusModel.model_validate(dispatch_status_raw).model_dump()
+    except ValidationError:
+        dispatch_status = DispatchStatusModel().model_dump()
+    if timestamp and not dispatch_status.get("dispatchTimestamp"):
+        dispatch_status["dispatchTimestamp"] = timestamp
+    if dispatch_status.get("dispatchConfirmationNumber") is None:
+        dispatch_status["dispatchConfirmationNumber"] = uuid4().hex[:8]
+    if dispatch_status.get("dispatchInitiated") is None:
+        dispatch_status["dispatchInitiated"] = True
+    actions_raw = payload.get("postDispatchActions") or payload.get("post_dispatch_actions") or []
+    actions: List[Dict[str, Any]] = []
+    if isinstance(actions_raw, list):
+        for item in actions_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                actions.append(PostDispatchActionModel.model_validate(item).model_dump())
+            except ValidationError:
+                continue
+    return {
+        "destination": destination,
+        "deliveryMethod": delivery_method,
+        "timestamp": timestamp,
+        "finalReview": final_review,
+        "dispatchOptions": dispatch_options,
+        "dispatchStatus": dispatch_status,
+        "postDispatchActions": actions,
+    }
+
 def _recalculate_current_step(session: Dict[str, Any]) -> None:
     states = session.get("stepStates") or {}
     for step in _FINALIZATION_STEPS:
@@ -3229,6 +3486,11 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
                 }
             )
         data["patientQuestions"] = normalized_questions
+    data["attestation"] = _normalize_attestation_payload(data.get("attestation") or {})
+    data["dispatch"] = _normalize_dispatch_payload(data.get("dispatch") or {})
+    if not isinstance(data.get("lastValidation"), dict):
+        last_validation = data.get("lastValidation")
+        data["lastValidation"] = last_validation if isinstance(last_validation, dict) else {}
     data.setdefault("createdAt", _utc_now_iso())
     data.setdefault("updatedAt", data["createdAt"])
     _recalculate_current_step(data)
@@ -3257,6 +3519,9 @@ def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
         "sessionProgress": normalized.get("sessionProgress", {}),
         "createdAt": normalized.get("createdAt"),
         "updatedAt": normalized.get("updatedAt"),
+        "attestation": normalized.get("attestation", _normalize_attestation_payload({})),
+        "dispatch": normalized.get("dispatch", _normalize_dispatch_payload({})),
+        "lastValidation": normalized.get("lastValidation"),
     }
 
 
@@ -3723,6 +3988,9 @@ class WorkflowSessionResponse(BaseModel):
     sessionProgress: Dict[str, Any] = Field(default_factory=dict)
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
+    attestation: Dict[str, Any] = Field(default_factory=dict)
+    dispatch: Dict[str, Any] = Field(default_factory=dict)
+    lastValidation: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NoteContentUpdateRequest(PreFinalizeCheckRequest):
@@ -3748,16 +4016,116 @@ class FinalizeResult(BaseModel):
     issues: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PayerRequirementModel(BaseModel):
+    payerName: Optional[str] = Field(None, alias="payer_name")
+    requirementType: Optional[str] = Field(None, alias="requirement_type")
+    description: Optional[str] = None
+    isMet: Optional[bool] = Field(None, alias="is_met")
+    missingElements: List[str] = Field(default_factory=list, alias="missing_elements")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ComplianceCheckModel(BaseModel):
+    checkType: Optional[str] = Field(None, alias="check_type")
+    status: Optional[str] = None
+    description: Optional[str] = None
+    requiredActions: List[str] = Field(default_factory=list, alias="required_actions")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class BillingValidationModel(BaseModel):
+    codesValidated: bool = Field(False, alias="codes_validated")
+    documentationLevelVerified: bool = Field(False, alias="documentation_level_verified")
+    medicalNecessityConfirmed: bool = Field(False, alias="medical_necessity_confirmed")
+    billingComplianceChecked: bool = Field(False, alias="billing_compliance_checked")
+    estimatedReimbursement: float = Field(0.0, alias="estimated_reimbursement")
+    payerSpecificRequirements: List[PayerRequirementModel] = Field(
+        default_factory=list, alias="payer_specific_requirements"
+    )
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class BillingSummaryModel(BaseModel):
+    primaryDiagnosis: Optional[str] = Field(None, alias="primary_diagnosis")
+    secondaryDiagnoses: List[str] = Field(default_factory=list, alias="secondary_diagnoses")
+    procedures: List[str] = Field(default_factory=list)
+    evaluationManagementLevel: Optional[str] = Field(None, alias="evaluation_management_level")
+    totalRvu: Optional[float] = Field(None, alias="total_rvu")
+    estimatedPayment: Optional[float] = Field(None, alias="estimated_payment")
+    modifierCodes: List[str] = Field(default_factory=list, alias="modifier_codes")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class AttestationDetailsModel(BaseModel):
+    physicianAttestation: bool = Field(False, alias="physician_attestation")
+    attestationText: Optional[str] = Field(None, alias="attestation_text")
+    attestationTimestamp: Optional[str] = Field(None, alias="attestation_timestamp")
+    digitalSignature: Optional[str] = Field(None, alias="digital_signature")
+    attestationIpAddress: Optional[str] = Field(None, alias="attestation_ip_address")
+    attestedBy: Optional[str] = None
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class AttestationRequest(BaseModel):
     encounterId: Optional[str] = None
     sessionId: Optional[str] = None
     attestedBy: Optional[str] = None
     statement: Optional[str] = None
     timestamp: Optional[str] = None
+    billingValidation: Optional[BillingValidationModel] = Field(
+        None, alias="billing_validation"
+    )
+    attestation: Optional[AttestationDetailsModel] = None
+    complianceChecks: List[ComplianceCheckModel] = Field(
+        default_factory=list, alias="compliance_checks"
+    )
+    billingSummary: Optional[BillingSummaryModel] = Field(
+        None, alias="billing_summary"
+    )
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class WorkflowAttestationResponse(BaseModel):
     session: WorkflowSessionResponse
+
+
+class FinalReviewModel(BaseModel):
+    allStepsCompleted: bool = Field(False, alias="all_steps_completed")
+    physicianFinalApproval: bool = Field(False, alias="physician_final_approval")
+    qualityReviewPassed: bool = Field(False, alias="quality_review_passed")
+    complianceVerified: bool = Field(False, alias="compliance_verified")
+    readyForDispatch: bool = Field(False, alias="ready_for_dispatch")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class DispatchOptionsModel(BaseModel):
+    sendToEmr: bool = Field(False, alias="send_to_emr")
+    generatePatientSummary: bool = Field(False, alias="generate_patient_summary")
+    scheduleFollowup: bool = Field(False, alias="schedule_followup")
+    sendToBilling: bool = Field(False, alias="send_to_billing")
+    notifyReferrals: bool = Field(False, alias="notify_referrals")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class DispatchStatusModel(BaseModel):
+    dispatchInitiated: bool = Field(False, alias="dispatch_initiated")
+    dispatchCompleted: bool = Field(False, alias="dispatch_completed")
+    dispatchTimestamp: Optional[str] = Field(None, alias="dispatch_timestamp")
+    dispatchConfirmationNumber: Optional[str] = Field(
+        None, alias="dispatch_confirmation_number"
+    )
+    dispatchErrors: List[str] = Field(default_factory=list, alias="dispatch_errors")
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class PostDispatchActionModel(BaseModel):
+    actionType: Optional[str] = Field(None, alias="action_type")
+    status: Optional[str] = None
+    scheduledTime: Optional[str] = Field(None, alias="scheduled_time")
+    completionTime: Optional[str] = Field(None, alias="completion_time")
+    errorMessage: Optional[str] = Field(None, alias="error_message")
+    retryCount: int = Field(0, alias="retry_count")
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class DispatchRequest(BaseModel):
@@ -3766,6 +4134,15 @@ class DispatchRequest(BaseModel):
     destination: Optional[str] = None
     deliveryMethod: Optional[str] = None
     timestamp: Optional[str] = None
+    finalReview: Optional[FinalReviewModel] = Field(None, alias="final_review")
+    dispatchOptions: Optional[DispatchOptionsModel] = Field(
+        None, alias="dispatch_options"
+    )
+    dispatchStatus: Optional[DispatchStatusModel] = Field(None, alias="dispatch_status")
+    postDispatchActions: List[PostDispatchActionModel] = Field(
+        default_factory=list, alias="post_dispatch_actions"
+    )
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class DispatchResponse(BaseModel):
@@ -7290,12 +7667,55 @@ async def attest_workflow_session_v1(
     if not payload:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
-    attestation_timestamp = req.timestamp or _utc_now_iso()
-    session["attestation"] = {
-        "attestedBy": req.attestedBy or user.get("sub"),
-        "statement": req.statement or "Provider attestation recorded",
-        "timestamp": attestation_timestamp,
-    }
+    requested_attestation = req.attestation.model_dump() if req.attestation else {}
+    attestation_timestamp = (
+        requested_attestation.get("attestationTimestamp")
+        or req.timestamp
+        or _utc_now_iso()
+    )
+    attested_by = (
+        requested_attestation.get("attestedBy")
+        or req.attestedBy
+        or user.get("sub")
+    )
+    statement = (
+        requested_attestation.get("attestationText")
+        or req.statement
+        or "Provider attestation recorded"
+    )
+    requested_attestation.setdefault("attestationTimestamp", attestation_timestamp)
+    requested_attestation.setdefault("attestationText", statement)
+    requested_attestation.setdefault("attestedBy", attested_by)
+    if requested_attestation.get("physicianAttestation") is None:
+        requested_attestation["physicianAttestation"] = True
+    billing_validation = (
+        req.billingValidation.model_dump()
+        if req.billingValidation
+        else _derive_billing_validation_from_session(session)
+    )
+    if not billing_validation.get("estimatedReimbursement"):
+        fallback_billing = _derive_billing_validation_from_session(session)
+        billing_validation["estimatedReimbursement"] = fallback_billing.get(
+            "estimatedReimbursement", 0.0
+        )
+    compliance_checks = (
+        [item.model_dump() for item in req.complianceChecks]
+        if req.complianceChecks
+        else _derive_compliance_checks_from_session(session)
+    )
+    billing_summary = (
+        req.billingSummary.model_dump()
+        if req.billingSummary
+        else _derive_billing_summary_from_session(session)
+    )
+    session["attestation"] = _normalize_attestation_payload(
+        {
+            "billingValidation": billing_validation,
+            "attestation": requested_attestation,
+            "complianceChecks": compliance_checks,
+            "billingSummary": billing_summary,
+        }
+    )
     step_states = session.get("stepStates") or {}
     attest_step = step_states.get("5") or _default_step_states()["5"]
     attest_step.update(
@@ -7317,7 +7737,7 @@ async def attest_workflow_session_v1(
     step_states["6"] = dispatch_step
     session["stepStates"] = step_states
     session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "attestation_submitted", session["attestation"])
+    _append_audit_event(session, "attestation_submitted", session["attestation"].get("attestation", {}))
     normalized = _normalize_finalization_session(session)
     normalized["attestation"] = session["attestation"]
     normalized["updatedAt"] = session["updatedAt"]
@@ -7342,12 +7762,56 @@ async def dispatch_workflow_session_v1(
     if not payload:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
-    dispatch_timestamp = req.timestamp or _utc_now_iso()
-    session["dispatch"] = {
-        "destination": req.destination or "ehr",
-        "deliveryMethod": req.deliveryMethod or "internal",
-        "timestamp": dispatch_timestamp,
-    }
+    dispatch_status_payload = req.dispatchStatus.model_dump() if req.dispatchStatus else {}
+    dispatch_timestamp = (
+        dispatch_status_payload.get("dispatchTimestamp")
+        or req.timestamp
+        or _utc_now_iso()
+    )
+    destination = req.destination or payload.get("dispatch", {}).get("destination") or "ehr"
+    delivery_method = (
+        req.deliveryMethod
+        or payload.get("dispatch", {}).get("deliveryMethod")
+        or "internal"
+    )
+    final_review = (
+        req.finalReview.model_dump()
+        if req.finalReview
+        else _derive_final_review_from_session(session)
+    )
+    dispatch_options = (
+        req.dispatchOptions.model_dump()
+        if req.dispatchOptions
+        else DispatchOptionsModel(sendToEmr=True, sendToBilling=True).model_dump()
+    )
+    dispatch_status_payload.setdefault("dispatchTimestamp", dispatch_timestamp)
+    if dispatch_status_payload.get("dispatchInitiated") is None:
+        dispatch_status_payload["dispatchInitiated"] = True
+    if dispatch_status_payload.get("dispatchCompleted") is None:
+        dispatch_status_payload["dispatchCompleted"] = True
+    if dispatch_status_payload.get("dispatchConfirmationNumber") is None:
+        dispatch_status_payload["dispatchConfirmationNumber"] = uuid4().hex[:8]
+    if dispatch_status_payload.get("dispatchErrors") is None:
+        dispatch_status_payload["dispatchErrors"] = []
+    dispatch_status = DispatchStatusModel.model_validate(
+        dispatch_status_payload
+    ).model_dump()
+    actions = (
+        [item.model_dump() for item in req.postDispatchActions]
+        if req.postDispatchActions
+        else []
+    )
+    session["dispatch"] = _normalize_dispatch_payload(
+        {
+            "destination": destination,
+            "deliveryMethod": delivery_method,
+            "timestamp": dispatch_timestamp,
+            "finalReview": final_review,
+            "dispatchOptions": dispatch_options,
+            "dispatchStatus": dispatch_status,
+            "postDispatchActions": actions,
+        }
+    )
     step_states = session.get("stepStates") or {}
     dispatch_step = step_states.get("6") or _default_step_states()["6"]
     dispatch_step.update(
@@ -7381,7 +7845,7 @@ async def dispatch_workflow_session_v1(
     normalized["blockingIssues"] = blocking
     export_ready = not blocking
     finalized_content = (normalized.get("noteContent") or "").strip()
-    _append_audit_event(normalized, "dispatch_completed", normalized["dispatch"])
+    _append_audit_event(normalized, "dispatch_completed", normalized["dispatch"].get("dispatchStatus", {}))
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
     sessions[session_id] = normalized

@@ -73,5 +73,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && tsc --project tsconfig.build.json && node scripts/postbuild.js"
+
   }
 }
