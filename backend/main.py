@@ -7632,7 +7632,72 @@ async def suggest(
 
 
 
-def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], List[Dict[str, float]], float]:
+def _slugify_identifier(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "item"
+
+
+def _infer_issue_severity(text: str) -> str:
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in ("violation", "breach", "critical", "fail", "urgent", "must")):
+        return "critical"
+    if any(keyword in lowered for keyword in ("missing", "incomplete", "insufficient", "warning", "review")):
+        return "warning"
+    return "info"
+
+
+def _infer_issue_category(text: str) -> str:
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in ("code", "coding", "cpt", "icd", "modifier", "billing")):
+        return "coding"
+    if any(keyword in lowered for keyword in ("hipaa", "privacy", "compliance", "quality", "regulation")):
+        return "quality"
+    return "documentation"
+
+
+def _normalize_compliance_issue_entries(entries: Iterable[str]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    for index, raw_entry in enumerate(entries):
+        if raw_entry is None:
+            continue
+        text = str(raw_entry).strip()
+        if not text:
+            continue
+        issue_id = f"compliance-{_slugify_identifier(text)}-{index}"
+        if issue_id in seen_ids:
+            continue
+        seen_ids.add(issue_id)
+        severity = _infer_issue_severity(text)
+        category = _infer_issue_category(text)
+        normalized.append(
+            {
+                "id": issue_id,
+                "title": text,
+                "description": text,
+                "details": text,
+                "category": category,
+                "severity": severity,
+                "suggestion": "Review and resolve before finalization.",
+                "dismissed": False,
+                "source": "wizard",
+            }
+        )
+    return normalized
+
+
+def _extend_unique(target: List[str], values: Iterable[str]) -> None:
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        trimmed = value.strip()
+        if not trimmed:
+            continue
+        if trimmed not in target:
+            target.append(trimmed)
+
+
+def _validate_note(req: PreFinalizeCheckRequest) -> Dict[str, Any]:
     """Perform simple validation on a draft note and its metadata."""
 
     issues: Dict[str, List[str]] = {
@@ -7672,7 +7737,51 @@ def _validate_note(req: PreFinalizeCheckRequest) -> Tuple[Dict[str, List[str]], 
     if not req.compliance:
         issues["compliance"].append("No compliance checks provided")
 
-    return issues, details, total
+    required_fields: List[str] = []
+    missing_documentation: List[str] = []
+
+    for key in ("content", "codes", "prevention", "diagnoses", "differentials", "compliance"):
+        category_issues = issues.get(key, [])
+        if category_issues:
+            if key not in required_fields:
+                required_fields.append(key)
+            _extend_unique(missing_documentation, category_issues)
+
+    confidence = 0.0
+    if req.differentials:
+        confidence = min(1.0, 0.4 + 0.15 * len(req.differentials))
+        confidence = min(confidence, 1.0)
+
+    step_validation = {
+        "contentReview": {"passed": not issues["content"], "issues": issues["content"]},
+        "codeVerification": {"passed": not issues["codes"], "conflicts": issues["codes"]},
+        "preventionItems": {"passed": not issues["prevention"], "missing": issues["prevention"]},
+        "diagnosesConfirmation": {
+            "passed": not issues["diagnoses"],
+            "requirements": issues["diagnoses"],
+        },
+        "differentialsReview": {"passed": not issues["differentials"], "confidence": confidence},
+        "complianceChecks": {
+            "passed": not issues["compliance"],
+            "criticalIssues": issues["compliance"],
+        },
+    }
+
+    compliance_entries = list(req.compliance or []) + issues["compliance"]
+    compliance_issues = _normalize_compliance_issue_entries(compliance_entries)
+
+    can_finalize = all(len(v) == 0 for v in issues.values())
+
+    return {
+        "issues": issues,
+        "reimbursementDetails": details,
+        "estimatedTotal": total,
+        "requiredFields": required_fields,
+        "missingDocumentation": missing_documentation,
+        "stepValidation": step_validation,
+        "complianceIssues": compliance_issues,
+        "canFinalize": can_finalize,
+    }
 
 
 @app.post("/api/v1/workflow/sessions", response_model=WorkflowSessionResponse)
@@ -8018,12 +8127,19 @@ async def update_note_content_v1(
         differentials=req.differentials or [],
         compliance=req.compliance or [],
     )
-    issues, details, total = _validate_note(precheck)
+    validation_result = _validate_note(precheck)
+    issues = validation_result["issues"]
+    details = validation_result["reimbursementDetails"]
+    total = validation_result["estimatedTotal"]
     validation = {
-        "canFinalize": all(len(v) == 0 for v in issues.values()),
+        "canFinalize": validation_result["canFinalize"],
         "issues": issues,
         "estimatedReimbursement": total,
         "reimbursementSummary": {"total": total, "codes": details},
+        "requiredFields": validation_result["requiredFields"],
+        "missingDocumentation": validation_result["missingDocumentation"],
+        "stepValidation": validation_result["stepValidation"],
+        "complianceIssues": validation_result["complianceIssues"],
     }
     normalized["reimbursementSummary"] = validation["reimbursementSummary"]
     normalized["blockingIssues"] = _collect_blocking_issues(issues)
@@ -8372,11 +8488,16 @@ async def pre_finalize_check(
 ):
     """Validate a draft note before allowing finalization."""
 
-    issues, details, total = _validate_note(req)
-    can_finalize = all(len(v) == 0 for v in issues.values())
+    validation_result = _validate_note(req)
+    details = validation_result["reimbursementDetails"]
+    total = validation_result["estimatedTotal"]
     return {
-        "canFinalize": can_finalize,
-        "issues": issues,
+        "canFinalize": validation_result["canFinalize"],
+        "issues": validation_result["issues"],
+        "requiredFields": validation_result["requiredFields"],
+        "missingDocumentation": validation_result["missingDocumentation"],
+        "stepValidation": validation_result["stepValidation"],
+        "complianceIssues": validation_result["complianceIssues"],
         "estimatedReimbursement": total,
         "reimbursementSummary": {"total": total, "codes": details},
     }
@@ -8388,14 +8509,33 @@ async def finalize_note(
 ):
     """Finalize a note and report export readiness and reimbursement."""
 
-    issues, details, total = _validate_note(req)
-    export_ready = all(len(v) == 0 for v in issues.values())
+    validation_result = _validate_note(req)
+    details = validation_result["reimbursementDetails"]
+    total = validation_result["estimatedTotal"]
+    export_ready = validation_result["canFinalize"]
+    compliance_certification = {
+        "status": "pass" if export_ready else "fail",
+        "attestedBy": user.get("sub"),
+        "attestedAt": _utc_now_iso(),
+        "summary": "All compliance checks passed." if export_ready else "Outstanding compliance items require attention.",
+        "pendingActions": validation_result["missingDocumentation"],
+        "issuesReviewed": validation_result["complianceIssues"],
+        "stepValidation": validation_result["stepValidation"],
+    }
     return {
         "finalizedContent": req.content.strip(),
         "codesSummary": details,
         "reimbursementSummary": {"total": total, "codes": details},
+        "estimatedReimbursement": total,
         "exportReady": export_ready,
-        "issues": issues,
+        "exportStatus": "complete" if export_ready else "pending",
+        "issues": validation_result["issues"],
+        "requiredFields": validation_result["requiredFields"],
+        "missingDocumentation": validation_result["missingDocumentation"],
+        "stepValidation": validation_result["stepValidation"],
+        "complianceIssues": validation_result["complianceIssues"],
+        "complianceCertification": compliance_certification,
+        "finalizedNoteId": uuid4().hex,
     }
 
 

@@ -797,6 +797,12 @@ def test_pre_finalize_and_finalize(client):
     data = resp.json()
     assert data["canFinalize"] is True
     assert data["estimatedReimbursement"] == 75.0
+    assert data["requiredFields"] == []
+    assert data["missingDocumentation"] == []
+    assert data["stepValidation"]["contentReview"]["passed"] is True
+    assert data["stepValidation"]["codeVerification"]["passed"] is True
+    assert data["complianceIssues"]
+    assert data["reimbursementSummary"]["codes"] == [{"code": "99213", "amount": 75.0}]
 
     resp2 = client.post(
         "/api/notes/finalize",
@@ -807,6 +813,13 @@ def test_pre_finalize_and_finalize(client):
     data2 = resp2.json()
     assert data2["exportReady"] is True
     assert data2["reimbursementSummary"]["total"] == 75.0
+    assert data2["exportStatus"] == "complete"
+    assert data2["requiredFields"] == []
+    assert data2["missingDocumentation"] == []
+    assert data2["stepValidation"]["contentReview"]["passed"] is True
+    assert data2["complianceCertification"]["status"] == "pass"
+    assert data2["complianceCertification"]["issuesReviewed"]
+    assert isinstance(data2["finalizedNoteId"], str)
 
 
 def test_pre_finalize_detects_issues(client):
@@ -829,6 +842,11 @@ def test_pre_finalize_detects_issues(client):
     assert data["canFinalize"] is False
     assert data["issues"]["content"]
     assert data["issues"]["codes"]
+    assert "content" in data["requiredFields"]
+    assert data["missingDocumentation"]
+    assert data["stepValidation"]["contentReview"]["passed"] is False
+    assert data["stepValidation"]["codeVerification"]["passed"] is False
+    assert data["complianceIssues"]
 
     resp2 = client.post(
         "/api/notes/finalize",
@@ -838,4 +856,8 @@ def test_pre_finalize_detects_issues(client):
     assert resp2.status_code == 200
     data2 = resp2.json()
     assert data2["exportReady"] is False
+    assert data2["exportStatus"] == "pending"
+    assert data2["complianceCertification"]["status"] == "fail"
+    assert data2["missingDocumentation"]
+    assert data2["stepValidation"]["contentReview"]["passed"] is False
     assert data2["issues"]["codes"]
