@@ -10,6 +10,7 @@ import { Drafts } from "./components/Drafts"
 import { Schedule, type ScheduleChartUploadStatus } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
+import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
 import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
 import { StyleGuide } from "./components/StyleGuide"
@@ -72,6 +73,9 @@ interface DraftAnalyticsSummary {
   drafts: number
 }
 
+
+type NoteViewMode = "draft" | "beautified"
+
 interface ActiveDraftState {
   noteId: string
   content: string
@@ -79,6 +83,7 @@ interface ActiveDraftState {
   encounterId?: string
   patientName?: string
 }
+
 
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
@@ -158,6 +163,10 @@ export function ProtectedApp() {
   const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
   const [draftCount, setDraftCount] = useState<number | null>(null)
   const [chartUploadStatuses, setChartUploadStatuses] = useState<Record<string, ScheduleChartUploadStatus>>({})
+
+  const [noteViewMode, setNoteViewMode] = useState<NoteViewMode>("draft")
+  const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
+  const [ehrExportStatus, setEhrExportStatus] = useState<EhrExportState | null>(null)
 
   const normalizeText = useCallback((value?: string | null, fallback = "") => {
     if (!value) {
@@ -1348,6 +1357,13 @@ export function ProtectedApp() {
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
                     onNavigateToDrafts={() => handleNavigate('drafts')}
+                    initialViewMode="draft"
+                    viewMode={noteViewMode}
+                    onViewModeChange={setNoteViewMode}
+                    beautifiedNote={beautifiedNoteState}
+                    onBeautifiedNoteChange={setBeautifiedNoteState}
+                    ehrExportState={ehrExportStatus}
+                    onEhrExportStateChange={setEhrExportStatus}
                   />
                   <SelectedCodesBar
                     selectedCodes={selectedCodes}
