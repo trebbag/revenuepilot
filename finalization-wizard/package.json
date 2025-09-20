@@ -72,7 +72,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsc --project tsconfig.build.json && node scripts/postbuild.js"
-
+    "build": "vite build && tsc --project tsconfig.build.json && node scripts/postbuild.js",
+    "prepare": "npm run build"
   }
 }
