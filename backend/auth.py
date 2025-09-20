@@ -59,6 +59,7 @@ def register_user(
     ensure_settings_table(conn)
 
     pwd_hash = hash_password(password)
+
     now = time.time()
     resolved_email = email or f"{username}@example.test"
     resolved_name = name or username
@@ -113,6 +114,7 @@ def register_user(
             now,
         ),
     )
+
     user_id = cur.lastrowid
 
     conn.execute(

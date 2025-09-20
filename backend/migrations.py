@@ -3,6 +3,7 @@ import sqlite3
 from typing import Any, Iterable, Optional, Tuple
 
 
+
 def ensure_clinics_table(conn: sqlite3.Connection) -> None:
     """Ensure the clinics table exists for multi-tenant deployments."""
 
@@ -54,38 +55,79 @@ def ensure_users_table(conn: sqlite3.Connection) -> None:
 
     if "email" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)"
+        )
+        conn.execute("UPDATE users SET email = username WHERE email IS NULL")
+
     if "name" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN name TEXT")
+        conn.execute(
+            "UPDATE users SET name = username WHERE name IS NULL"
+        )
+
     if "clinic_id" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN clinic_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_clinic ON users(clinic_id)"
+        )
+
     if "mfa_enabled" not in columns:
         conn.execute(
             "ALTER TABLE users ADD COLUMN mfa_enabled INTEGER NOT NULL DEFAULT 0"
         )
+
     if "mfa_secret" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN mfa_secret TEXT")
+
     if "account_locked_until" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN account_locked_until REAL")
+
     if "failed_login_attempts" not in columns:
         conn.execute(
             "ALTER TABLE users ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0"
         )
+
     if "last_login" not in columns:
         conn.execute("ALTER TABLE users ADD COLUMN last_login REAL")
+
     if "created_at" not in columns:
         conn.execute(
-            "ALTER TABLE users ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+            "ALTER TABLE users ADD COLUMN created_at REAL NOT NULL DEFAULT 0"
         )
-    if "updated_at" not in columns:
         conn.execute(
-            "ALTER TABLE users ADD COLUMN updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+            "UPDATE users SET created_at = strftime('%s','now') WHERE created_at = 0"
         )
 
+    if "updated_at" not in columns:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN updated_at REAL NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "UPDATE users SET updated_at = strftime('%s','now') WHERE updated_at = 0"
+        )
+
+    conn.commit()
+
+
+def ensure_clinics_table(conn: sqlite3.Connection) -> None:
+    """Ensure the ``clinics`` table exists for multi-tenant deployments."""
+
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_clinic ON users(clinic_id)"
+        """
+        CREATE TABLE IF NOT EXISTS clinics (
+            id TEXT PRIMARY KEY,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT,
+            settings TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+        )
+        """
     )
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_clinic_code ON clinics(code)"
+
     )
     conn.commit()
 
@@ -670,7 +712,8 @@ def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
-    """Ensure the authentication sessions table exists for token tracking."""
+    """Ensure the sessions table stores rich session metadata."""
+
 
     ensure_users_table(conn)
     conn.execute(
@@ -678,18 +721,102 @@ def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover 
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             user_id INTEGER NOT NULL,
-            token_hash TEXT NOT NULL,
+            token_hash TEXT,
             refresh_token_hash TEXT,
             expires_at REAL NOT NULL,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            last_accessed REAL NOT NULL DEFAULT (strftime('%s','now')),
+            created_at REAL NOT NULL,
+            last_accessed REAL NOT NULL,
             ip_address TEXT,
             user_agent TEXT,
             offline_session INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         """
     )
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "token_hash" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN token_hash TEXT")
+    if "refresh_token_hash" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN refresh_token_hash TEXT")
+    if "expires_at" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN expires_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN created_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "last_accessed" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN last_accessed REAL NOT NULL DEFAULT (strftime('%s','now'))"
+        )
+    if "ip_address" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN ip_address TEXT")
+    if "user_agent" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN user_agent TEXT")
+    if "offline_session" not in columns:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN offline_session INTEGER NOT NULL DEFAULT 0"
+        )
+    if "metadata" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN metadata TEXT")
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
+    )
+    conn.commit()
+
+
+def ensure_password_reset_tokens_table(conn: sqlite3.Connection) -> None:
+    """Ensure the password reset token table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            used INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reset_user ON password_reset_tokens(user_id)"
+    )
+    conn.commit()
+
+
+def ensure_mfa_challenges_table(conn: sqlite3.Connection) -> None:
+    """Ensure the temporary MFA challenge table exists."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mfa_challenges (
+            session_token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            code_hash TEXT NOT NULL,
+            method TEXT NOT NULL,
+            expires_at REAL NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_sent REAL NOT NULL,
+            remember_me INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(mfa_challenges)")}
+    if "remember_me" not in columns:
+        conn.execute(
+            "ALTER TABLE mfa_challenges ADD COLUMN remember_me INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.commit()
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "token_hash" not in columns:
