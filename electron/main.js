@@ -271,12 +271,15 @@ async function startBackend() {
 }
 
 function resolveIndexHtml() {
-  const devPath = path.join(__dirname, 'dist', 'index.html'); // when running from source (electron/dist)
-  const packagedPath = path.join(__dirname, '..', 'dist', 'index.html'); // inside asar (dist)
-  if (fs.existsSync(devPath)) return devPath;
+  const localBundledPath = path.join(__dirname, 'dist', 'index.html');
+  const workspaceBundledPath = path.join(__dirname, '..', 'revenuepilot-frontend', 'build', 'index.html');
+  const packagedPath = path.join(__dirname, '..', 'dist', 'index.html');
+
+  if (fs.existsSync(localBundledPath)) return localBundledPath;
+  if (fs.existsSync(workspaceBundledPath)) return workspaceBundledPath;
   if (fs.existsSync(packagedPath)) return packagedPath;
-  console.error('Could not locate index.html. Looked in:', devPath, packagedPath);
-  return devPath; // attempt anyway so error is surfaced in logs
+  console.error('Could not locate index.html. Looked in:', localBundledPath, workspaceBundledPath, packagedPath);
+  return localBundledPath; // attempt anyway so error is surfaced in logs
 }
 
 function createWindow() {

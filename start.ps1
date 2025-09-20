@@ -19,7 +19,7 @@ try {
     $env:VITE_API_URL = "http://localhost:8000"
 
     Write-Host "Starting frontend (Vite) on default port..."
-    npm run dev
+    npm --workspace revenuepilot-frontend run dev
 }
 finally {
     Write-Host "Stopping backend..."
