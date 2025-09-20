@@ -385,7 +385,6 @@ export function NoteEditor({
         content:
           typeof contentOverride === "string" ? contentOverride : noteContentRef.current
       }
-
       const createPromise = (async () => {
         try {
           const response = await fetchWithAuth("/api/notes/create", {
@@ -1274,8 +1273,8 @@ export function NoteEditor({
   }, [visitSession?.startTime])
 
   const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
-  const isEditorDisabled = isFinalized || !visitStarted
   const hasRecordedTime = totalDisplayTime > 0
+  const isEditorDisabled = isFinalized || !visitStarted
 
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
@@ -1337,6 +1336,7 @@ export function NoteEditor({
       })
     }
   }, [ensureNoteCreated, isFinalized])
+
 
   const handleSaveDraft = useCallback(async () => {
     if (saveDraftLoading) {
@@ -1484,6 +1484,7 @@ export function NoteEditor({
     onNavigateToDrafts,
     setAutoSaveError
   ])
+
 
   const canStartVisit = useMemo(() => {
     if (isFinalized) {

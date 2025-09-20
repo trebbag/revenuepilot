@@ -975,19 +975,97 @@ export function FinalizationWizardAdapter({
     return new Set(identifiers)
   }, [selectedCodesList])
 
+  const initializationInput = useMemo(() => {
+    const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
+    const sessionNoteId = typeof sessionData?.noteId === "string" ? sessionData.noteId.trim() : ""
+    const providedNoteContent = typeof noteContent === "string" ? noteContent : ""
+    const sessionNoteContent =
+      typeof sessionData?.noteContent === "string" ? sessionData.noteContent : ""
+    const normalizedNote = providedNoteContent || sessionNoteContent || ""
+    const patientIdFromProps =
+      typeof patientInfo?.patientId === "string" && patientInfo.patientId.trim().length > 0
+        ? patientInfo.patientId.trim()
+        : ""
+    const sessionPatientId =
+      typeof sessionData?.patientId === "string" && sessionData.patientId.trim().length > 0
+        ? sessionData.patientId.trim()
+        : ""
+
+    return {
+      trimmedNoteId,
+      sessionNoteId,
+      normalizedNote,
+      patientIdFromProps,
+      sessionPatientId,
+      selectedCodes: Array.isArray(selectedCodesList) ? selectedCodesList : [],
+      complianceList: Array.isArray(complianceIssues) ? complianceIssues : [],
+      metadata: patientMetadataPayload,
+      transcripts: sanitizedTranscripts,
+      sessionId:
+        typeof sessionData?.sessionId === "string" && sessionData.sessionId.trim().length > 0
+          ? sessionData.sessionId.trim()
+          : ""
+    }
+  }, [
+    complianceIssues,
+    noteContent,
+    noteId,
+    patientInfo?.patientId,
+    patientMetadataPayload,
+    sanitizedTranscripts,
+    selectedCodesList,
+    sessionData?.noteContent,
+    sessionData?.noteId,
+    sessionData?.patientId,
+    sessionData?.sessionId
+  ])
+
+  const lastInitialisationRef = useRef<string | null>(null)
+
   useEffect(() => {
     if (!isOpen) {
       return
     }
 
+    const fingerprint = JSON.stringify({
+      encounterId,
+      noteId: initializationInput.trimmedNoteId || initializationInput.sessionNoteId || null,
+      noteContent: initializationInput.normalizedNote,
+      patientId: initializationInput.patientIdFromProps || initializationInput.sessionPatientId || null,
+      selectedCodes: initializationInput.selectedCodes.map(code => ({
+        code: typeof code?.code === "string" ? code.code : null,
+        description: typeof code?.description === "string" ? code.description : null,
+        category: typeof code?.category === "string" ? code.category : null,
+        type: typeof code?.type === "string" ? code.type : null
+      })),
+      compliance: initializationInput.complianceList.map(issue => ({
+        id: typeof issue?.id === "string" ? issue.id : null,
+        code: typeof issue?.code === "string" ? issue.code : null,
+        severity: typeof issue?.severity === "string" ? issue.severity : null
+      })),
+      metadata: initializationInput.metadata,
+      transcripts: initializationInput.transcripts.map(entry => ({
+        id: entry.id,
+        text: entry.text,
+        speaker: entry.speaker,
+        timestamp: entry.timestamp,
+        confidence: entry.confidence
+      })),
+      sessionId: initializationInput.sessionId
+    })
+
+    if (lastInitialisationRef.current === fingerprint) {
+      return
+    }
+
+    lastInitialisationRef.current = fingerprint
+
     let cancelled = false
     const initialise = async () => {
-      const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
-      const resolvedNoteContent = noteContent ?? sessionData?.noteContent ?? ""
-      const normalizedNote = typeof resolvedNoteContent === "string" ? resolvedNoteContent : ""
-      const wordCount = normalizedNote.trim().length > 0 ? normalizedNote.trim().split(/\s+/).length : 0
-      const charCount = normalizedNote.length
-      const currentSelectedCodes = Array.isArray(selectedCodesList) ? selectedCodesList : []
+      const wordCount = initializationInput.normalizedNote.trim().length
+        ? initializationInput.normalizedNote.trim().split(/\s+/).length
+        : 0
+      const charCount = initializationInput.normalizedNote.length
       const contextPayload: Record<string, unknown> = {
         noteMetrics: {
           wordCount,
@@ -995,8 +1073,8 @@ export function FinalizationWizardAdapter({
         }
       }
 
-      if (sanitizedTranscripts.length > 0) {
-        contextPayload.transcript = sanitizedTranscripts.map(entry => ({
+      if (initializationInput.transcripts.length > 0) {
+        contextPayload.transcript = initializationInput.transcripts.map(entry => ({
           id: entry.id,
           text: entry.text,
           speaker: entry.speaker,
@@ -1005,8 +1083,8 @@ export function FinalizationWizardAdapter({
         }))
       }
 
-      if (currentSelectedCodes.length > 0) {
-        contextPayload.selectedCodes = currentSelectedCodes.map(code => ({
+      if (initializationInput.selectedCodes.length > 0) {
+        contextPayload.selectedCodes = initializationInput.selectedCodes.map(code => ({
           code: typeof code?.code === "string" ? code.code : undefined,
           description: typeof code?.description === "string" ? code.description : undefined,
           category: typeof code?.category === "string" ? code.category : undefined,
@@ -1016,17 +1094,19 @@ export function FinalizationWizardAdapter({
 
       const payload: Record<string, unknown> = {
         encounterId,
-        patientId: typeof patientInfo?.patientId === "string" ? patientInfo.patientId.trim() : sessionData?.patientId ?? null,
-        noteId: trimmedNoteId || sessionData?.noteId || undefined,
-        noteContent: normalizedNote,
-        selectedCodes: currentSelectedCodes,
-        complianceIssues: Array.isArray(complianceIssues) ? complianceIssues : [],
-        patientMetadata: { ...patientMetadataPayload },
+        patientId:
+          initializationInput.patientIdFromProps || initializationInput.sessionPatientId || null,
+        noteId:
+          initializationInput.trimmedNoteId || initializationInput.sessionNoteId || undefined,
+        noteContent: initializationInput.normalizedNote,
+        selectedCodes: initializationInput.selectedCodes,
+        complianceIssues: initializationInput.complianceList,
+        patientMetadata: { ...initializationInput.metadata },
         context: contextPayload
       }
 
-      if (sessionData?.sessionId) {
-        payload.sessionId = sessionData.sessionId
+      if (initializationInput.sessionId) {
+        payload.sessionId = initializationInput.sessionId
       }
 
       try {
@@ -1058,21 +1138,13 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [
-    complianceIssues,
-    encounterId,
-    fetchWithAuth,
-    isOpen,
-    noteContent,
-    noteId,
-    onError,
-    patientInfo?.patientId,
-    patientMetadataPayload,
-    sanitizedTranscripts,
-    selectedCodesList,
-    sessionData?.noteContent,
-    sessionData?.sessionId
-  ])
+  }, [encounterId, fetchWithAuth, initializationInput, isOpen, onError])
+
+  useEffect(() => {
+    if (!isOpen) {
+      lastInitialisationRef.current = null
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (!isOpen) {
@@ -1129,7 +1201,7 @@ export function FinalizationWizardAdapter({
         }
       } catch (error) {
         if (!cancelled) {
-          console.error("Unable to fetch AI suggestions", error)
+          onError?.("Unable to fetch AI suggestions", error)
           setWizardSuggestions([])
         }
       }
@@ -1140,7 +1212,7 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [fetchWithAuth, isOpen, noteContent, selectedCodeSet, sessionData?.noteContent])
+  }, [fetchWithAuth, isOpen, noteContent, onError, selectedCodeSet, sessionData?.noteContent])
 
   const reimbursementLookup = useMemo(() => {
     const map = new Map<string, number>()

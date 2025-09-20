@@ -23,7 +23,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\"",
-    "test:smoke": "npx playwright test e2e/smoke-login.spec.js",
+    "test:e2e": "npx playwright test",
     "mock": "node mock/server.js"
   },
   "dependencies": {
