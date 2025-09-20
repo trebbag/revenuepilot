@@ -20,7 +20,7 @@ import { Avatar, AvatarFallback } from "./ui/avatar"
 import { getPrimaryNavItems, secondaryNavItems, bottomNavItems } from "./navigation/NavigationConfig"
 import { NotificationsPanel } from "./navigation/NotificationsPanel"
 import { Notification } from "./navigation/NotificationUtils"
-import { apiFetch, apiFetchJson, resolveWebsocketUrl } from "../lib/api"
+import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl } from "../lib/api"
 import { isViewKey, mapServerViewToViewKey, mapViewKeyToServerView } from "../lib/navigation"
 import type { ViewKey } from "../lib/navigation"
 
@@ -793,8 +793,16 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
       }
 
       try {
-        const url = resolveWebsocketUrl('/ws/notifications')
-        ws = new WebSocket(url)
+
+        const token = getStoredToken()
+        const wsTarget = new URL(resolveWebsocketUrl("/ws/notifications"))
+        if (token) {
+          wsTarget.searchParams.set("token", token)
+        }
+        const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
+        ws = protocols
+          ? new WebSocket(wsTarget.toString(), protocols)
+          : new WebSocket(wsTarget.toString())
       } catch (error) {
         setNotificationsError(prev => prev ?? "Unable to connect to notifications channel.")
         startPolling()

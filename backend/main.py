@@ -2048,11 +2048,46 @@ def require_roles(*roles: str):
 async def ws_require_role(websocket: WebSocket, role: str) -> Dict[str, Any]:
     """Authenticate a websocket connection against a required role."""
 
-    auth = websocket.headers.get("Authorization")
-    if not auth or not auth.lower().startswith("bearer "):
+    def _normalise_token(candidate: str | None) -> str | None:
+        if not candidate:
+            return None
+        value = candidate.strip()
+        if not value:
+            return None
+        if value.lower().startswith("bearer "):
+            _, _, remainder = value.partition(" ")
+            value = remainder.strip()
+        return value or None
+
+    token: str | None = None
+    auth_header = websocket.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = _normalise_token(auth_header)
+
+    if not token:
+        token = _normalise_token(websocket.query_params.get("token"))
+
+    if not token:
+        candidates: List[str] = []
+        header_protocols = websocket.headers.get("sec-websocket-protocol")
+        if header_protocols:
+            candidates.extend(
+                [part.strip() for part in header_protocols.split(",") if part.strip()]
+            )
+        scope_protocols = websocket.scope.get("subprotocols") or []
+        for proto in scope_protocols:
+            if proto and proto not in candidates:
+                candidates.append(proto)
+        for proto in candidates:
+            if proto.lower().startswith("bearer "):
+                token = _normalise_token(proto)
+                if token:
+                    break
+
+    if not token:
         await websocket.close(code=1008)
         raise WebSocketDisconnect()
-    token = auth.split()[1]
+
     credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     try:
         data = get_current_user(credentials, required_role=role)
