@@ -10,7 +10,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./dist/style.css": "./dist/style.css"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.3",
@@ -71,6 +72,6 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && tsc --project tsconfig.build.json"
+    "build": "vite build && tsc --project tsconfig.build.json && node scripts/postbuild.js"
   }
 }

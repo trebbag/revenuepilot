@@ -10,9 +10,9 @@
   "author": "RevenuePilot Team",
   "main": "electron/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "npm --workspace finalization-wizard run build && vite build",
-    "preview": "vite preview",
+    "dev": "npm --workspace revenuepilot-frontend run dev",
+    "build": "npm --workspace finalization-wizard run build && npm --workspace revenuepilot-frontend run build && node scripts/sync-frontend-build.js",
+    "preview": "npm --workspace revenuepilot-frontend run preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",
     "electron:build:current": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder",

@@ -25,7 +25,7 @@ export VITE_API_URL="http://localhost:8000"
 
 echo "Starting frontend (Vite) on default port..."
 
-# Start the React development server.  This will block until you exit it (Ctrl+C).
-npm run dev
+# Start the React development server from the workspace. This blocks until exit (Ctrl+C).
+npm --workspace revenuepilot-frontend run dev
 
 # When the frontend exits, the trap will kill the backend.
