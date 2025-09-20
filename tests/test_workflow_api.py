@@ -260,3 +260,340 @@ def test_workflow_session_lifecycle(client):
     # Session retrieval should now return 404.
     resp = client.get(f"/api/v1/workflow/sessions/{session_id}", headers=headers)
     assert resp.status_code == 404
+
+
+def test_finalization_contract_payloads(client):
+    token = main.create_token("alice", "user")
+    headers = auth_header(token)
+
+    initial_payload = {
+        "encounterId": "encounter-contract",
+        "patientId": "patient-contract",
+        "noteId": "note-contract",
+        "noteContent": "Patient evaluated for chronic conditions with plan for medication adjustment and follow-up in two weeks.",
+        "patientMetadata": {"name": "Rivka Doe", "providerName": "Dr. Alice"},
+        "selectedCodes": [
+            {
+                "id": "code-1",
+                "code": "99213",
+                "type": "CPT",
+                "category": "procedure",
+                "description": "Established patient visit",
+            },
+            {
+                "id": "diag-1",
+                "code": "E11.9",
+                "type": "ICD-10",
+                "category": "diagnosis",
+                "description": "Type 2 diabetes mellitus"
+            },
+        ],
+        "complianceIssues": [
+            {
+                "id": "comp-1",
+                "title": "Confirm medication adherence",
+                "severity": "warning",
+                "details": "Document adherence discussion",
+            }
+        ],
+    }
+
+    resp = client.post("/api/v1/workflow/sessions", json=initial_payload, headers=headers)
+    assert resp.status_code == 200
+    session_payload = unwrap(resp.json())
+    session_id = session_payload["sessionId"]
+
+    note_update = {
+        "sessionId": session_id,
+        "encounterId": "encounter-contract",
+        "noteId": "note-contract",
+        "content": "Patient evaluated for diabetes and hypertension. Medication adherence reinforced and follow-up arranged in clinic.",
+        "codes": ["99213"],
+        "prevention": ["Lifestyle counseling provided"],
+        "diagnoses": ["E11.9"],
+        "differentials": ["I10"],
+        "compliance": ["Documentation complete"],
+    }
+
+    resp = client.put(
+        "/api/v1/notes/encounter-contract/content",
+        json=note_update,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    note_data = unwrap(resp.json())
+    assert note_data["validation"]["canFinalize"] is True
+
+    attestation_payload = {
+        "encounterId": "encounter-contract",
+        "sessionId": session_id,
+        "billing_validation": {
+            "codes_validated": True,
+            "documentation_level_verified": True,
+            "medical_necessity_confirmed": True,
+            "billing_compliance_checked": True,
+            "estimated_reimbursement": 75.0,
+            "payer_specific_requirements": [],
+        },
+        "attestation": {
+            "physician_attestation": True,
+            "attestation_text": "Reviewed and verified",
+            "attestation_timestamp": "2024-04-01T12:00:00Z",
+            "attestation_ip_address": "203.0.113.1",
+            "digital_signature": "sig-123",
+            "attestedBy": "Dr. Alice",
+        },
+        "compliance_checks": [
+            {
+                "check_type": "documentation_standards",
+                "status": "pass",
+                "description": "All documentation present",
+                "required_actions": [],
+            }
+        ],
+        "billing_summary": {
+            "primary_diagnosis": "E11.9",
+            "secondary_diagnoses": ["I10"],
+            "procedures": ["99213"],
+            "evaluation_management_level": "99213",
+            "total_rvu": 2.0,
+            "estimated_payment": 75.0,
+            "modifier_codes": ["25"],
+        },
+    }
+
+    resp = client.post(
+        f"/api/v1/workflow/{session_id}/step5/attest",
+        json=attestation_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    attested_session = unwrap(resp.json())["session"]
+    attestation_details = attested_session["attestation"]["attestation"]
+    assert attestation_details["attestationText"] == "Reviewed and verified"
+    assert attestation_details["attestedBy"] == "Dr. Alice"
+    billing_validation = attested_session["attestation"]["billingValidation"]
+    assert billing_validation["codesValidated"] is True
+    assert billing_validation["estimatedReimbursement"] == pytest.approx(75.0)
+
+    dispatch_payload = {
+        "encounterId": "encounter-contract",
+        "sessionId": session_id,
+        "destination": "ehr",
+        "deliveryMethod": "api",
+        "final_review": {
+            "all_steps_completed": True,
+            "physician_final_approval": True,
+            "quality_review_passed": True,
+            "compliance_verified": True,
+            "ready_for_dispatch": True,
+        },
+        "dispatch_options": {
+            "send_to_emr": True,
+            "generate_patient_summary": False,
+            "schedule_followup": False,
+            "send_to_billing": True,
+            "notify_referrals": False,
+        },
+        "dispatch_status": {
+            "dispatch_initiated": True,
+            "dispatch_completed": True,
+            "dispatch_timestamp": "2024-04-01T12:05:00Z",
+            "dispatch_confirmation_number": "CONF123",
+            "dispatch_errors": [],
+        },
+        "post_dispatch_actions": [
+            {
+                "action_type": "billing_submission",
+                "status": "completed",
+                "scheduled_time": "2024-04-01T12:06:00Z",
+                "completion_time": "2024-04-01T12:07:00Z",
+                "retry_count": 0,
+            }
+        ],
+    }
+
+    resp = client.post(
+        f"/api/v1/workflow/{session_id}/step6/dispatch",
+        json=dispatch_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    dispatch_result = unwrap(resp.json())
+    session_after_dispatch = dispatch_result["session"]
+    dispatch_status = session_after_dispatch["dispatch"]["dispatchStatus"]
+    assert dispatch_status["dispatchCompleted"] is True
+    assert dispatch_status["dispatchInitiated"] is True
+    assert (
+        session_after_dispatch["dispatch"]["dispatchOptions"]["sendToBilling"] is True
+    )
+    assert dispatch_result["result"]["exportReady"] is True
+    assert dispatch_result["result"]["reimbursementSummary"]["total"] == pytest.approx(75.0)
+
+
+def test_finalization_workflow_roundtrip_matches_spec(client):
+    token = main.create_token("alice", "user")
+    headers = auth_header(token)
+
+    session_create_payload = {
+        "encounterId": "encounter-roundtrip",
+        "patientId": "patient-roundtrip",
+        "noteId": "note-roundtrip",
+        "noteContent": "Initial detailed clinical note with enough content for validation.",
+        "patientMetadata": {"name": "Jordan Smith", "providerName": "Dr. Alice"},
+        "selectedCodes": [
+            {
+                "id": "code-a",
+                "code": "99213",
+                "type": "CPT",
+                "category": "procedure",
+                "description": "Established patient visit",
+            },
+            {
+                "id": "diag-a",
+                "code": "E11.9",
+                "type": "ICD-10",
+                "category": "diagnosis",
+                "description": "Type 2 diabetes mellitus",
+            },
+        ],
+        "complianceIssues": [
+            {
+                "id": "comp-a",
+                "title": "Document medication adherence",
+                "severity": "warning",
+                "details": "Include adherence discussion in plan",
+            }
+        ],
+    }
+
+    resp = client.post("/api/v1/workflow/sessions", json=session_create_payload, headers=headers)
+    assert resp.status_code == 200
+    created_session = unwrap(resp.json())
+    session_id = created_session["sessionId"]
+    assert session_id
+    assert created_session["stepStates"][0]["status"] == "in_progress"
+
+    note_update_payload = {
+        "sessionId": session_id,
+        "encounterId": "encounter-roundtrip",
+        "noteId": "note-roundtrip",
+        "content": "Patient seen for diabetes and hypertension. Medication adherence reinforced and follow-up arranged.",
+        "codes": ["99213"],
+        "prevention": ["Lifestyle counseling provided"],
+        "diagnoses": ["E11.9"],
+        "differentials": ["I10"],
+        "compliance": ["Documentation complete"],
+    }
+
+    resp = client.put(
+        "/api/v1/notes/encounter-roundtrip/content",
+        json=note_update_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    note_update_data = unwrap(resp.json())
+    assert note_update_data["validation"]["canFinalize"] is True
+    assert note_update_data["session"]["lastValidation"]["reimbursementSummary"]["total"] >= 0.0
+
+    attestation_payload = {
+        "encounterId": "encounter-roundtrip",
+        "sessionId": session_id,
+        "billing_validation": {
+            "codes_validated": True,
+            "documentation_level_verified": True,
+            "medical_necessity_confirmed": True,
+            "billing_compliance_checked": True,
+            "estimated_reimbursement": 80.0,
+            "payer_specific_requirements": [],
+        },
+        "attestation": {
+            "physician_attestation": True,
+            "attestation_text": "Final attestation recorded via contract test",
+            "attestation_timestamp": "2024-05-01T10:00:00Z",
+            "attestedBy": "Dr. Alice",
+        },
+        "compliance_checks": [
+            {
+                "check_type": "documentation_standards",
+                "status": "pass",
+                "description": "All documentation present",
+                "required_actions": [],
+            }
+        ],
+        "billing_summary": {
+            "primary_diagnosis": "E11.9",
+            "secondary_diagnoses": ["I10"],
+            "procedures": ["99213"],
+            "evaluation_management_level": "99213",
+            "total_rvu": 2.0,
+            "estimated_payment": 80.0,
+            "modifier_codes": [],
+        },
+    }
+
+    resp = client.post(
+        f"/api/v1/workflow/{session_id}/step5/attest",
+        json=attestation_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    attested_session = unwrap(resp.json())["session"]
+    assert attested_session["stepStates"][4]["status"] == "completed"
+    attestation_details = attested_session["attestation"]["attestation"]
+    assert attestation_details["attestationText"] == "Final attestation recorded via contract test"
+    assert attestation_details["physicianAttestation"] is True
+    compliance_checks = attested_session["attestation"]["complianceChecks"]
+    assert compliance_checks[0]["requiredActions"] == []
+
+    dispatch_payload = {
+        "encounterId": "encounter-roundtrip",
+        "sessionId": session_id,
+        "destination": "ehr",
+        "deliveryMethod": "wizard",
+        "final_review": {
+            "all_steps_completed": True,
+            "physician_final_approval": True,
+            "quality_review_passed": True,
+            "compliance_verified": True,
+            "ready_for_dispatch": True,
+        },
+        "dispatch_options": {
+            "send_to_emr": True,
+            "generate_patient_summary": False,
+            "schedule_followup": False,
+            "send_to_billing": True,
+            "notify_referrals": False,
+        },
+        "dispatch_status": {
+            "dispatch_initiated": True,
+            "dispatch_completed": True,
+            "dispatch_timestamp": "2024-05-01T10:05:00Z",
+            "dispatch_confirmation_number": "ROUND123",
+            "dispatch_errors": [],
+        },
+        "post_dispatch_actions": [
+            {
+                "action_type": "billing_submission",
+                "status": "completed",
+                "scheduled_time": "2024-05-01T10:06:00Z",
+                "completion_time": "2024-05-01T10:07:00Z",
+                "retry_count": 0,
+            }
+        ],
+    }
+
+    resp = client.post(
+        f"/api/v1/workflow/{session_id}/step6/dispatch",
+        json=dispatch_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    dispatch_result = unwrap(resp.json())
+    session_after_dispatch = dispatch_result["session"]
+    assert session_after_dispatch["stepStates"][5]["status"] == "completed"
+    dispatch_status = session_after_dispatch["dispatch"]["dispatchStatus"]
+    assert dispatch_status["dispatchCompleted"] is True
+    assert dispatch_status["dispatchErrors"] == []
+    assert dispatch_result["result"]["exportReady"] is True
+    assert dispatch_result["result"]["reimbursementSummary"]["total"] >= 0.0
