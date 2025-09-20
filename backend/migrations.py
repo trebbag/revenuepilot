@@ -639,6 +639,37 @@ def ensure_notification_counters_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def ensure_notification_events_table(conn: sqlite3.Connection) -> None:
+    """Ensure the notification_events table persists individual notifications."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            read_at REAL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_events_user ON notification_events(user_id, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_notification_events_unread ON notification_events(user_id, is_read)"
+    )
+
+    conn.commit()
+
+
 def ensure_compliance_rule_catalog_table(conn: sqlite3.Connection) -> None:
     """Ensure the compliance rule catalogue table exists."""
 

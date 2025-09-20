@@ -1,3 +1,233 @@
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import "@testing-library/jest-dom/vitest"
+
+import { NavigationSidebar } from "../NavigationSidebar"
+import { SidebarProvider } from "../ui/sidebar"
+import { apiFetch, apiFetchJson, resolveWebsocketUrl } from "../../lib/api"
+
+declare global {
+  interface Window {
+    WebSocket: typeof WebSocket
+  }
+}
+
+vi.mock("../../lib/api", () => {
+  return {
+    apiFetchJson: vi.fn(),
+    apiFetch: vi.fn(),
+    resolveWebsocketUrl: vi.fn()
+  }
+})
+
+const mockedApiFetchJson = vi.mocked(apiFetchJson)
+const mockedApiFetch = vi.mocked(apiFetch)
+const mockedResolveWebsocketUrl = vi.mocked(resolveWebsocketUrl)
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = []
+  static OPEN = 1
+  static CLOSED = 3
+
+  readyState = MockWebSocket.OPEN
+  onopen: (() => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+  onerror: (() => void) | null = null
+  onclose: (() => void) | null = null
+
+  constructor(public url: string) {
+    MockWebSocket.instances.push(this)
+  }
+
+  send() {}
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED
+    this.onclose?.(new Event("close"))
+  }
+}
+
+describe("NavigationSidebar notifications", () => {
+  const notificationsEndpoint = `/api/notifications?limit=20&offset=0`
+
+  beforeEach(() => {
+    MockWebSocket.instances = []
+    vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket)
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn()
+      }))
+    )
+
+    mockedApiFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      text: async () => ""
+    } as unknown as Response)
+
+    const baseNotifications = [
+      {
+        id: "notif-1",
+        title: "Compliance alert",
+        message: "Review required",
+        severity: "high",
+        timestamp: "2024-03-14T08:30:00Z",
+        isRead: false
+      },
+      {
+        id: "notif-2",
+        title: "Reminder",
+        message: "Team standup at 4pm",
+        severity: "info",
+        timestamp: "2024-03-13T08:30:00Z",
+        isRead: true
+      }
+    ]
+
+    let currentNotifications = [...baseNotifications]
+
+    mockedApiFetchJson.mockImplementation(async (url: string, options?: { method?: string }) => {
+      if (url.startsWith("/api/user/current-view")) {
+        return { currentView: null }
+      }
+      if (url === notificationsEndpoint) {
+        return {
+          items: currentNotifications,
+          total: currentNotifications.length,
+          limit: 20,
+          offset: 0,
+          unreadCount: currentNotifications.filter(item => !item.isRead).length
+        }
+      }
+      if (url.startsWith("/api/user/profile")) {
+        return { currentView: null, clinic: null, preferences: {}, uiPreferences: {} }
+      }
+      if (url.startsWith("/api/user/ui-preferences")) {
+        return { uiPreferences: {} }
+      }
+      if (url.startsWith("/api/notifications/") && url.endsWith("/read") && options?.method === "POST") {
+        const id = decodeURIComponent(url.split("/").slice(-2)[0] ?? "")
+        currentNotifications = currentNotifications.map(item =>
+          item.id === id ? { ...item, isRead: true } : item
+        )
+        return { unreadCount: currentNotifications.filter(item => !item.isRead).length }
+      }
+      if (url === "/api/notifications/read-all" && options?.method === "POST") {
+        currentNotifications = currentNotifications.map(item => ({ ...item, isRead: true }))
+        return { unreadCount: 0 }
+      }
+
+      throw new Error(`Unexpected apiFetchJson call: ${url}`)
+    })
+
+    mockedResolveWebsocketUrl.mockReturnValue("ws://localhost/ws/notifications")
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.resetAllMocks()
+  })
+
+  function renderSidebar() {
+    return render(
+      <SidebarProvider>
+        <NavigationSidebar currentView="dashboard" userDraftCount={0} />
+      </SidebarProvider>
+    )
+  }
+
+  it("loads notifications and displays unread count", async () => {
+    renderSidebar()
+
+    await waitFor(() => {
+      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+    })
+
+    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTrigger = navTriggers[navTriggers.length - 1]
+    expect(navTrigger).toBeInTheDocument()
+
+    const badges = await screen.findAllByText("1", { selector: '[data-slot="badge"]' })
+    expect(badges.length).toBeGreaterThan(0)
+
+    fireEvent.click(navTrigger)
+
+    expect(await screen.findByText("Compliance alert")).toBeInTheDocument()
+    expect(screen.getByText("Review required")).toBeInTheDocument()
+  })
+
+  it("marks a notification as read via the API", async () => {
+    renderSidebar()
+
+    await waitFor(() => {
+      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+    })
+
+    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTrigger = navTriggers[navTriggers.length - 1]
+    fireEvent.click(navTrigger)
+
+    const cards = await screen.findAllByText("Compliance alert", { selector: 'h4', timeout: 2000 })
+    fireEvent.click(cards[0])
+
+    await waitFor(() => {
+      expect(mockedApiFetchJson).toHaveBeenCalledWith(
+        "/api/notifications/notif-1/read",
+        expect.objectContaining({ method: "POST" })
+      )
+    })
+
+    await waitFor(() => {
+      const calls = mockedApiFetchJson.mock.calls.filter(call => call[0] === notificationsEndpoint)
+      expect(calls.length).toBeGreaterThan(1)
+    })
+  })
+
+  it("adds websocket notifications to the feed", async () => {
+    renderSidebar()
+
+    await waitFor(() => {
+      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+    })
+
+    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTrigger = navTriggers[navTriggers.length - 1]
+    fireEvent.click(navTrigger)
+
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBeGreaterThan(0)
+    })
+
+    const socket = MockWebSocket.instances[0]
+    socket.onopen?.()
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        channel: "notifications",
+        event: "notification",
+        id: "notif-3",
+        title: "New task",
+        message: "Review the latest submission",
+        severity: "warning",
+        timestamp: "2024-03-15T10:00:00Z",
+        unreadCount: 2
+      })
+    } as MessageEvent)
+
+    expect(
+      await screen.findByText("New task", undefined, { timeout: 2000 })
+    ).toBeInTheDocument()
+    expect(screen.getByText("Review the latest submission")).toBeInTheDocument()
+
 import { render, waitFor } from "@testing-library/react"
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
 
@@ -95,5 +325,6 @@ describe("NavigationSidebar websocket authentication", () => {
 
     // ensure cleanup does not throw when the component unmounts
     wsInstances.forEach(instance => instance.onclose?.())
+
   })
 })
