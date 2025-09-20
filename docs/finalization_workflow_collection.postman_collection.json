@@ -1,0 +1,146 @@
+{
+  "info": {
+    "name": "Finalization Workflow QA",
+    "_postman_id": "b8f4c546-4aa0-4b9d-91d4-9b1f8a8cf52d",
+    "description": "Regression collection for the six-step finalization workflow covering session creation, note validation, attestation, and dispatch.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Create Workflow Session",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/workflow/sessions",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "workflow", "sessions"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"encounterId\": \"{{encounterId}}\",\n  \"patientId\": \"{{patientId}}\",\n  \"noteId\": \"{{noteId}}\",\n  \"noteContent\": \"Clinical note text...\",\n  \"patientMetadata\": {\n    \"name\": \"{{providerName}}\",\n    \"providerName\": \"{{providerName}}\"\n  },\n  \"selectedCodes\": [\n    { \"code\": \"99213\", \"type\": \"CPT\", \"category\": \"procedure\" },\n    { \"code\": \"E11.9\", \"type\": \"ICD-10\", \"category\": \"diagnosis\" }\n  ],\n  \"complianceIssues\": [\n    { \"id\": \"comp-1\", \"title\": \"Confirm medication adherence\", \"severity\": \"warning\" }\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const payload = pm.response.json();",
+              "const data = payload.data || payload;",
+              "if (data.sessionId) { pm.collectionVariables.set('sessionId', data.sessionId); }",
+              "if (data.encounterId) { pm.collectionVariables.set('encounterId', data.encounterId); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Update Note Content",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/notes/{{encounterId}}/content",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "notes", "{{encounterId}}", "content"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"sessionId\": \"{{sessionId}}\",\n  \"encounterId\": \"{{encounterId}}\",\n  \"noteId\": \"{{noteId}}\",\n  \"content\": \"Updated clinical note with > 20 words and supporting documentation.\",\n  \"codes\": [\"99213\"],\n  \"prevention\": [\"Lifestyle counseling provided\"],\n  \"diagnoses\": [\"E11.9\"],\n  \"differentials\": [\"I10\"],\n  \"compliance\": [\"Documentation complete\"]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const payload = pm.response.json();",
+              "const data = payload.data || payload;",
+              "if (data.validation) { pm.collectionVariables.set('lastValidation', JSON.stringify(data.validation)); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Submit Attestation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/workflow/{{sessionId}}/step5/attest",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "workflow", "{{sessionId}}", "step5", "attest"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"encounterId\": \"{{encounterId}}\",\n  \"sessionId\": \"{{sessionId}}\",\n  \"billing_validation\": {\n    \"codes_validated\": true,\n    \"documentation_level_verified\": true,\n    \"medical_necessity_confirmed\": true,\n    \"billing_compliance_checked\": true,\n    \"estimated_reimbursement\": 75.0,\n    \"payer_specific_requirements\": []\n  },\n  \"attestation\": {\n    \"physician_attestation\": true,\n    \"attestation_text\": \"Reviewed and verified\",\n    \"attestation_timestamp\": \"2024-04-01T12:00:00Z\",\n    \"attestation_ip_address\": \"203.0.113.1\",\n    \"digital_signature\": \"sig-123\",\n    \"attestedBy\": \"{{providerName}}\"\n  },\n  \"compliance_checks\": [\n    {\n      \"check_type\": \"documentation_standards\",\n      \"status\": \"pass\",\n      \"description\": \"All documentation present\",\n      \"required_actions\": []\n    }\n  ],\n  \"billing_summary\": {\n    \"primary_diagnosis\": \"E11.9\",\n    \"secondary_diagnoses\": [\"I10\"],\n    \"procedures\": [\"99213\"],\n    \"evaluation_management_level\": \"99213\",\n    \"total_rvu\": 2.0,\n    \"estimated_payment\": 75.0,\n    \"modifier_codes\": [\"25\"]\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "Dispatch Finalized Note",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{authToken}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/workflow/{{sessionId}}/step6/dispatch",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "v1", "workflow", "{{sessionId}}", "step6", "dispatch"]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"encounterId\": \"{{encounterId}}\",\n  \"sessionId\": \"{{sessionId}}\",\n  \"destination\": \"ehr\",\n  \"deliveryMethod\": \"wizard\",\n  \"final_review\": {\n    \"all_steps_completed\": true,\n    \"physician_final_approval\": true,\n    \"quality_review_passed\": true,\n    \"compliance_verified\": true,\n    \"ready_for_dispatch\": true\n  },\n  \"dispatch_options\": {\n    \"send_to_emr\": true,\n    \"generate_patient_summary\": false,\n    \"schedule_followup\": false,\n    \"send_to_billing\": true,\n    \"notify_referrals\": false\n  },\n  \"dispatch_status\": {\n    \"dispatch_initiated\": true,\n    \"dispatch_completed\": true,\n    \"dispatch_timestamp\": \"2024-04-01T12:05:00Z\",\n    \"dispatch_confirmation_number\": \"CONF123\",\n    \"dispatch_errors\": []\n  },\n  \"post_dispatch_actions\": [\n    {\n      \"action_type\": \"billing_submission\",\n      \"status\": \"completed\",\n      \"scheduled_time\": \"2024-04-01T12:06:00Z\",\n      \"completion_time\": \"2024-04-01T12:07:00Z\",\n      \"retry_count\": 0\n    }\n  ]\n}"
+        }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8000" },
+    { "key": "authToken", "value": "" },
+    { "key": "sessionId", "value": "" },
+    { "key": "encounterId", "value": "encounter-contract" },
+    { "key": "patientId", "value": "patient-contract" },
+    { "key": "noteId", "value": "note-contract" },
+    { "key": "providerName", "value": "Dr. Quinn" }
+  ]
+}
