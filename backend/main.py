@@ -108,6 +108,8 @@ from backend.key_manager import (
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 from backend.migrations import (  # type: ignore
+    ensure_clinics_table,
+    ensure_users_table,
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
@@ -138,6 +140,8 @@ from backend.migrations import (  # type: ignore
     ensure_cpt_reference_table,
     ensure_payer_schedule_table,
     ensure_billing_audits_table,
+    ensure_password_reset_tokens_table,
+    ensure_audit_log_table,
     seed_compliance_rules,
     seed_cpt_codes,
     seed_icd10_codes,
@@ -1244,18 +1248,16 @@ def get_db() -> sqlite3.Connection:
 
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-    )
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
-    )
+    ensure_clinics_table(conn)
+    ensure_users_table(conn)
+    ensure_audit_log_table(conn)
     ensure_settings_table(conn)
     ensure_templates_table(conn)
     ensure_user_profile_table(conn)
     ensure_events_table(conn)
     ensure_refresh_table(conn)
     ensure_session_table(conn)
+    ensure_password_reset_tokens_table(conn)
     ensure_notes_table(conn)
     ensure_error_log_table(conn)
     ensure_exports_table(conn)
@@ -1282,27 +1284,10 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     compliance_engine.configure_engine(conn)
 
 
-# Proper users table creation (replacing previously malformed snippet)
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-)
-db_conn.commit()
-
-# Table recording failed logins and administrative actions for auditing.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS audit_log ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "timestamp REAL NOT NULL,"
-    "username TEXT,"
-    "action TEXT NOT NULL,"
-    "details TEXT"
-    ")"
-)
-db_conn.commit()
-
-
-# Persisted user preferences for theme, enabled categories and custom rules.
-# Ensure the table exists and contains the latest schema (including ``lang``).
+# Initial schema guarantees for runtime use.
+ensure_clinics_table(db_conn)
+ensure_users_table(db_conn)
+ensure_audit_log_table(db_conn)
 ensure_settings_table(db_conn)
 
 # Table storing user and clinic specific note templates.
@@ -1336,6 +1321,7 @@ ensure_notes_table(db_conn)
 # Tables for refresh tokens and user session state
 ensure_refresh_table(db_conn)
 ensure_session_table(db_conn)
+ensure_password_reset_tokens_table(db_conn)
 
 # Core clinical data tables.
 ensure_patients_table(db_conn)
@@ -1448,31 +1434,224 @@ def _insert_audit_log(
     username: str | None,
     action: str,
     details: Any | None = None,
+    *,
+    success: bool | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    clinic_id: str | None = None,
 ) -> None:
     """Persist an entry into the audit_log table (best effort)."""
 
+    ensure_audit_log_table(db_conn)
     payload = _serialise_audit_details(details)
     timestamp = time.time()
+    user_id: int | None = None
+    resolved_clinic = clinic_id
+    if username:
+        try:
+            row = db_conn.execute(
+                "SELECT id, clinic_id FROM users WHERE username=?",
+                (username,),
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row:
+            user_id = row["id"]
+            if resolved_clinic is None:
+                resolved_clinic = row["clinic_id"]
+    success_value: int | None
+    if success is None:
+        success_value = None
+    else:
+        success_value = 1 if success else 0
+
     try:
         db_conn.execute(
-            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-            (timestamp, username, action, payload),
+            """
+            INSERT INTO audit_log (
+                timestamp,
+                username,
+                user_id,
+                clinic_id,
+                action,
+                details,
+                ip_address,
+                user_agent,
+                success
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                timestamp,
+                username,
+                user_id,
+                resolved_clinic,
+                action,
+                payload,
+                ip_address,
+                user_agent,
+                success_value,
+            ),
         )
         db_conn.commit()
     except sqlite3.OperationalError as exc:
         if "no such table: audit_log" not in str(exc):
             logger.exception("Failed to write audit log entry")
             return
-        db_conn.execute(
-            "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
-        )
-        db_conn.execute(
-            "INSERT INTO audit_log (timestamp, username, action, details) VALUES (?, ?, ?, ?)",
-            (timestamp, username, action, payload),
-        )
-        db_conn.commit()
+        ensure_audit_log_table(db_conn)
+        try:
+            db_conn.execute(
+                """
+                INSERT INTO audit_log (
+                    timestamp,
+                    username,
+                    user_id,
+                    clinic_id,
+                    action,
+                    details,
+                    ip_address,
+                    user_agent,
+                    success
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    timestamp,
+                    username,
+                    user_id,
+                    resolved_clinic,
+                    action,
+                    payload,
+                    ip_address,
+                    user_agent,
+                    success_value,
+                ),
+            )
+            db_conn.commit()
+        except Exception:
+            logger.exception("Failed to write audit log entry")
     except Exception:
         logger.exception("Failed to write audit log entry")
+
+
+def _create_auth_session(
+    user_id: int,
+    access_token: str,
+    refresh_token: str,
+    *,
+    offline: bool = False,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> str:
+    """Persist a session entry for the authenticated user."""
+
+    ensure_session_table(db_conn)
+    session_id = str(uuid.uuid4())
+    now = time.time()
+    refresh_expiry = (
+        datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    ).timestamp()
+    try:
+        db_conn.execute(
+            """
+            INSERT INTO sessions (
+                id,
+                user_id,
+                token_hash,
+                refresh_token_hash,
+                expires_at,
+                created_at,
+                last_accessed,
+                ip_address,
+                user_agent,
+                offline_session
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                user_id,
+                hash_password(access_token),
+                hash_password(refresh_token),
+                refresh_expiry,
+                now,
+                now,
+                ip_address,
+                user_agent,
+                1 if offline else 0,
+            ),
+        )
+        db_conn.commit()
+    except sqlite3.Error:
+        logger.exception("Failed to persist auth session")
+    return session_id
+
+
+def _touch_auth_session(
+    user_id: int,
+    refresh_token: str,
+    *,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> Optional[str]:
+    """Update last access time for the matching session, if any."""
+
+    ensure_session_table(db_conn)
+    rows = db_conn.execute(
+        "SELECT id, refresh_token_hash FROM sessions WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    now = time.time()
+    refresh_expiry = (
+        datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    ).timestamp()
+    for row in rows:
+        stored_hash = row["refresh_token_hash"]
+        if stored_hash and verify_password(refresh_token, stored_hash):
+            try:
+                db_conn.execute(
+                    """
+                    UPDATE sessions
+                       SET last_accessed=?,
+                           expires_at=?,
+                           ip_address=COALESCE(?, ip_address),
+                           user_agent=COALESCE(?, user_agent)
+                     WHERE id=?
+                    """,
+                    (
+                        now,
+                        refresh_expiry,
+                        ip_address,
+                        user_agent,
+                        row["id"],
+                    ),
+                )
+                db_conn.commit()
+            except sqlite3.Error:
+                logger.exception("Failed to update auth session")
+            return row["id"]
+    return None
+
+
+def _remove_auth_session(user_id: int, refresh_token: str) -> bool:
+    """Remove the session matching the provided refresh token."""
+
+    ensure_session_table(db_conn)
+    rows = db_conn.execute(
+        "SELECT id, refresh_token_hash FROM sessions WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    for row in rows:
+        stored_hash = row["refresh_token_hash"]
+        if stored_hash and verify_password(refresh_token, stored_hash):
+            try:
+                db_conn.execute("DELETE FROM sessions WHERE id=?", (row["id"],))
+                db_conn.commit()
+                return True
+            except sqlite3.Error:
+                logger.exception("Failed to remove auth session")
+                return False
+    return False
 
 
 def _normalise_confidence(value: Any) -> Optional[float]:
@@ -2318,19 +2497,27 @@ class UserSettings(BaseModel):
 @app.post("/register")
 async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     """Register a new user and immediately issue JWT tokens."""
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     try:
         _user_id = register_user(db_conn, model.username, model.password)
     except sqlite3.IntegrityError:
         _insert_audit_log(
             model.username,
             "register_failed",
-            {"reason": "username exists", "client": request.client.host if request.client else None},
+            {"reason": "username exists", "client": client_host},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
         )
         raise HTTPException(status_code=400, detail="Username already exists")
     _insert_audit_log(
         model.username,
         "register",
-        {"client": request.client.host if request.client else None},
+        {"client": client_host},
+        success=True,
+        ip_address=client_host,
+        user_agent=user_agent,
     )
     access_token = create_access_token(model.username, "user")
     refresh_token = create_refresh_token(model.username, "user")
@@ -2359,12 +2546,17 @@ async def auth_register(model: RegisterModel, request: Request):
     Mirrors /register but if the user already exists returns 200 with tokens
     instead of a 400 so that repeated calls in isolated test DBs succeed.
     """
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     try:
         _user_id = register_user(db_conn, model.username, model.password)
         _insert_audit_log(
             model.username,
             "register",
-            {"source": "auth", "client": request.client.host if request.client else None},
+            {"source": "auth", "client": client_host},
+            success=True,
+            ip_address=client_host,
+            user_agent=user_agent,
         )
     except sqlite3.IntegrityError:
         row = db_conn.execute(
@@ -2375,7 +2567,10 @@ async def auth_register(model: RegisterModel, request: Request):
         _insert_audit_log(
             model.username,
             "register_exists",
-            {"source": "auth", "client": request.client.host if request.client else None},
+            {"source": "auth", "client": client_host},
+            success=True,
+            ip_address=client_host,
+            user_agent=user_agent,
         )
         session_row = (
             db_conn.execute(
@@ -2454,6 +2649,10 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     ensure_refresh_table(db_conn)
+    ensure_session_state_table(db_conn)
+    ensure_notification_counters_table(db_conn)
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     cutoff = time.time() - 15 * 60
     recent_failures = db_conn.execute(
         "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
@@ -2472,8 +2671,11 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
             "failed_login",
             {
                 "reason": "invalid credentials",
-                "client": request.client.host if request.client else None,
+                "client": client_host,
             },
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
@@ -2491,10 +2693,22 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     )
     db_conn.commit()
 
+    _create_auth_session(
+        user_id,
+        access_token,
+        refresh_token,
+        offline=False,
+        ip_address=client_host,
+        user_agent=user_agent,
+    )
+
     _insert_audit_log(
         model.username,
         "login",
-        {"client": request.client.host if request.client else None},
+        {"client": client_host},
+        success=True,
+        ip_address=client_host,
+        user_agent=user_agent,
     )
 
     settings_row = db_conn.execute(
@@ -2647,15 +2861,24 @@ async def auth_status(
 
 @app.post("/refresh")
 @app.post("/api/auth/refresh")
-async def refresh(model: RefreshModel) -> Dict[str, Any]:
+async def refresh(model: RefreshModel, request: Request) -> Dict[str, Any]:
     """Issue a new access token given a valid refresh token."""
     ensure_refresh_table(db_conn)
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     try:
         data = jwt.decode(model.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if data.get("type") != "refresh":
             raise jwt.PyJWTError()
     except jwt.PyJWTError:
-        _insert_audit_log(None, "refresh_failed", {"reason": "invalid_token"})
+        _insert_audit_log(
+            None,
+            "refresh_failed",
+            {"reason": "invalid_token"},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
         )
@@ -2664,7 +2887,14 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         (data["sub"],),
     ).fetchone()
     if not row:
-        _insert_audit_log(data.get("sub"), "refresh_failed", {"reason": "unknown_user"})
+        _insert_audit_log(
+            data.get("sub"),
+            "refresh_failed",
+            {"reason": "unknown_user"},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     user_id = row["id"]
     rows = db_conn.execute(
@@ -2679,13 +2909,33 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
             valid = True
             break
     if not valid:
-        _insert_audit_log(data.get("sub"), "refresh_failed", {"reason": "token_mismatch"})
+        _insert_audit_log(
+            data.get("sub"),
+            "refresh_failed",
+            {"reason": "token_mismatch"},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+    _touch_auth_session(
+        user_id,
+        model.refresh_token,
+        ip_address=client_host,
+        user_agent=user_agent,
+    )
     access_token = create_access_token(data["sub"], data["role"], data.get("clinic"))
     expires_at_iso = (
         datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     ).isoformat() + "Z"
-    _insert_audit_log(data.get("sub"), "refresh_token", None)
+    _insert_audit_log(
+        data.get("sub"),
+        "refresh_token",
+        None,
+        success=True,
+        ip_address=client_host,
+        user_agent=user_agent,
+    )
     return {
         "token": access_token,
         "expiresAt": expires_at_iso,
@@ -2697,9 +2947,11 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
 
 @app.post("/auth/logout")
 @app.post("/api/auth/logout")
-async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cover - simple DB op
+async def auth_logout(model: LogoutModel, request: Request) -> Dict[str, bool]:  # pragma: no cover - simple DB op
     """Revoke a refresh token by removing it from storage."""
     ensure_refresh_table(db_conn)
+    client_host = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
     try:
         data = jwt.decode(model.token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if data.get("type") != "refresh":
@@ -2713,6 +2965,14 @@ async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cove
         (data["sub"],),
     ).fetchone()
     if not row:
+        _insert_audit_log(
+            data.get("sub"),
+            "logout_failed",
+            {"reason": "unknown_user"},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
         return {"success": False}
     user_id = row["id"]
     rows = db_conn.execute(
@@ -2726,10 +2986,29 @@ async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cove
             success = True
             break
     db_conn.commit()
+    session_removed = _remove_auth_session(user_id, model.token)
     if success:
-        _insert_audit_log(data.get("sub"), "logout", None)
+        _insert_audit_log(
+            data.get("sub"),
+            "logout",
+            None,
+            success=True,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
     else:
-        _insert_audit_log(data.get("sub"), "logout_failed", None)
+        _insert_audit_log(
+            data.get("sub"),
+            "logout_failed",
+            {"reason": "token_not_found"},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent,
+        )
+    if session_removed and not success:
+        success = True
+    else:
+        success = success or session_removed
     return {"success": success}
 
 
@@ -2808,9 +3087,41 @@ async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]
 @app.get("/audit")
 async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, Any]]:
     rows = db_conn.execute(
-        "SELECT timestamp, username, action, details FROM audit_log ORDER BY timestamp DESC"
+        """
+        SELECT timestamp, username, action, details, ip_address, user_agent, success, clinic_id
+          FROM audit_log
+         ORDER BY timestamp DESC
+        """
     ).fetchall()
-    return [dict(r) for r in rows]
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        details_raw = row["details"]
+        parsed_details: Any = None
+        if details_raw:
+            try:
+                parsed_details = json.loads(details_raw)
+            except json.JSONDecodeError:
+                parsed_details = details_raw
+        metadata: Dict[str, Any] | None = None
+        details_value: Any = parsed_details
+        if isinstance(parsed_details, dict):
+            metadata = parsed_details
+            details_value = parsed_details.get("path") or parsed_details
+        entry = {
+            "timestamp": row["timestamp"],
+            "username": row["username"],
+            "action": row["action"],
+            "details": details_value,
+            "ipAddress": row["ip_address"],
+            "userAgent": row["user_agent"],
+            "success": None if row["success"] is None else bool(row["success"]),
+        }
+        if metadata is not None:
+            entry["metadata"] = metadata
+        if row["clinic_id"]:
+            entry["clinicId"] = row["clinic_id"]
+        entries.append(entry)
+    return JSONResponse(content=entries, headers={"X-Bypass-Envelope": "1"})
 
 
 @app.get("/settings")
@@ -4920,6 +5231,10 @@ class AuditLogEntryModel(BaseModel):
     username: Optional[str] = None
     action: str
     details: Optional[Any] = None
+    ipAddress: Optional[str] = None
+    userAgent: Optional[str] = None
+    success: Optional[bool] = None
+    clinicId: Optional[str] = None
 
 
 class UsageTrendPoint(BaseModel):
@@ -6320,7 +6635,7 @@ async def get_activity_log(
         params.append(cursor)
 
     query = (
-        "SELECT id, timestamp, username, action, details FROM audit_log "
+        "SELECT id, timestamp, username, action, details, ip_address, user_agent, success, clinic_id FROM audit_log "
         f"{where_clause} ORDER BY id DESC LIMIT ?"
     )
     params.append(limit)
@@ -6342,6 +6657,10 @@ async def get_activity_log(
                 username=row["username"],
                 action=row["action"],
                 details=parsed,
+                ipAddress=row["ip_address"],
+                userAgent=row["user_agent"],
+                success=None if row["success"] is None else bool(row["success"]),
+                clinicId=row["clinic_id"],
             )
         )
 
