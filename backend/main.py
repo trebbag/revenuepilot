@@ -18,7 +18,10 @@ import shutil
 import time
 import asyncio
 import sys
+import threading
 import uuid
+import secrets
+import math
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
@@ -108,6 +111,8 @@ from backend.key_manager import (
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 from backend.migrations import (  # type: ignore
+    ensure_users_table,
+    ensure_clinics_table,
     ensure_settings_table,
     ensure_templates_table,
     ensure_events_table,
@@ -138,6 +143,8 @@ from backend.migrations import (  # type: ignore
     ensure_cpt_reference_table,
     ensure_payer_schedule_table,
     ensure_billing_audits_table,
+    ensure_password_reset_tokens_table,
+    ensure_mfa_challenges_table,
     seed_compliance_rules,
     seed_cpt_codes,
     seed_icd10_codes,
@@ -167,7 +174,6 @@ from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
-    authenticate_user,
     hash_password,
     register_user,
     verify_password,
@@ -1244,9 +1250,8 @@ def get_db() -> sqlite3.Connection:
 
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-    )
+    ensure_users_table(conn)
+    ensure_clinics_table(conn)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
     )
@@ -1256,6 +1261,8 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_events_table(conn)
     ensure_refresh_table(conn)
     ensure_session_table(conn)
+    ensure_password_reset_tokens_table(conn)
+    ensure_mfa_challenges_table(conn)
     ensure_notes_table(conn)
     ensure_error_log_table(conn)
     ensure_exports_table(conn)
@@ -1283,10 +1290,8 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
 
 
 # Proper users table creation (replacing previously malformed snippet)
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL)"
-)
-db_conn.commit()
+ensure_users_table(db_conn)
+ensure_clinics_table(db_conn)
 
 # Table recording failed logins and administrative actions for auditing.
 db_conn.execute(
@@ -1336,6 +1341,8 @@ ensure_notes_table(db_conn)
 # Tables for refresh tokens and user session state
 ensure_refresh_table(db_conn)
 ensure_session_table(db_conn)
+ensure_password_reset_tokens_table(db_conn)
+ensure_mfa_challenges_table(db_conn)
 
 # Core clinical data tables.
 ensure_patients_table(db_conn)
@@ -1442,6 +1449,29 @@ def _serialise_audit_details(details: Any | None) -> str | None:
         return json.dumps(details, ensure_ascii=False)
     except TypeError:
         return str(details)
+
+
+def _deserialise_audit_details(details: Any) -> Any:
+    """Best-effort conversion of stored audit detail payloads back to rich types."""
+
+    if details in (None, ""):
+        return None
+    if isinstance(details, (dict, list)):
+        return details
+    if isinstance(details, (bytes, bytearray)):
+        try:
+            details = details.decode("utf-8")
+        except Exception:
+            return None
+    if isinstance(details, str):
+        stripped = details.strip()
+        if not stripped:
+            return None
+        try:
+            return json.loads(stripped)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return stripped
+    return details
 
 
 def _insert_audit_log(
@@ -1910,6 +1940,25 @@ def save_json_config(name: str, data: Dict[str, Any]) -> None:  # pragma: no cov
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
+
+_SYSTEM_STATUS_DEFAULT = {
+    "status": "operational",
+    "maintenanceMode": False,
+    "message": None,
+}
+
+
+def _load_system_status() -> Dict[str, Any]:
+    payload = dict(_SYSTEM_STATUS_DEFAULT)
+    try:
+        data = load_json_config("system_status")
+        if isinstance(data, dict):
+            payload.update({k: data.get(k, payload[k]) for k in payload})
+    except Exception:
+        logger.exception("Failed to load system status configuration")
+    return payload
+
+
 # Attempt to use rich PHI scrubbers by default.  When Presidio or Philter is
 # installed they will be used automatically.  No environment variable is
 # required to enable them, keeping the behaviour simple out of the box.  Tests
@@ -1922,6 +1971,51 @@ if _DEID_ENGINE == "regex":
         _DEID_ENGINE = "philter"
     elif _SCRUBBER_AVAILABLE:
         _DEID_ENGINE = "scrubadub"
+
+# ---------------------------------------------------------------------------
+# Rate limiting primitives
+# ---------------------------------------------------------------------------
+
+
+class RateLimiter:
+    """Simple fixed-window rate limiter keyed by an arbitrary string."""
+
+    def __init__(self, limit: int, window_seconds: int):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._events: Dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            events = self._events[key]
+            threshold = now - self.window_seconds
+            while events and events[0] <= threshold:
+                events.popleft()
+            if len(events) >= self.limit:
+                return False
+            events.append(now)
+            return True
+
+    def retry_after(self, key: str) -> float:
+        now = time.time()
+        with self._lock:
+            events = self._events.get(key)
+            if not events:
+                return 0.0
+            threshold = now - self.window_seconds
+            while events and events[0] <= threshold:
+                events.popleft()
+            if len(events) < self.limit:
+                return 0.0
+            oldest = events[0]
+            return max(0.0, self.window_seconds - (now - oldest))
+
+    def reset(self, key: str) -> None:
+        with self._lock:
+            self._events.pop(key, None)
+
 
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
@@ -1940,29 +2034,443 @@ optional_security = HTTPBearer(auto_error=False)
 # Short-lived access tokens (minutes) and longer lived refresh tokens (days)
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
+REMEMBER_ME_ACCESS_TOKEN_EXPIRE_MINUTES = int(
+    os.getenv("REMEMBER_ME_ACCESS_MINUTES", "720")
+)
+REMEMBER_ME_REFRESH_TOKEN_EXPIRE_DAYS = int(
+    os.getenv("REMEMBER_ME_REFRESH_DAYS", "30")
+)
+OFFLINE_TOKEN_EXPIRE_DAYS = int(os.getenv("OFFLINE_TOKEN_EXPIRE_DAYS", "21"))
+
+LOGIN_RATE_LIMITER = RateLimiter(limit=5, window_seconds=15 * 60)
+MFA_VERIFY_RATE_LIMITER = RateLimiter(limit=3, window_seconds=5 * 60)
+MFA_RESEND_RATE_LIMITER = RateLimiter(limit=1, window_seconds=60)
+FORGOT_PASSWORD_RATE_LIMITER = RateLimiter(limit=3, window_seconds=15 * 60)
 
 
-def create_access_token(username: str, role: str, clinic: str | None = None) -> str:
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _user_agent(request: Request) -> str:
+    return request.headers.get("user-agent", "")
+
+
+def _normalize_identifier(identifier: str) -> str:
+    return identifier.strip().lower()
+
+
+def _lookup_clinic_by_code(code: str) -> sqlite3.Row | None:
+    return db_conn.execute(
+        "SELECT id, code, active FROM clinics WHERE LOWER(code)=?",
+        (code.lower(),),
+    ).fetchone()
+
+
+def _load_user_for_login(
+    identifier: str, clinic_id: str | None = None
+) -> sqlite3.Row | None:
+    ensure_users_table(db_conn)
+    normalized = _normalize_identifier(identifier)
+    params: List[Any] = [normalized, normalized]
+    query = (
+        "SELECT id, username, email, name, password_hash, role, clinic_id, mfa_enabled, mfa_secret, "
+        "account_locked_until, failed_login_attempts, last_login FROM users "
+        "WHERE (LOWER(username)=? OR LOWER(email)=?)"
+    )
+    if clinic_id:
+        query += " AND clinic_id=?"
+        params.append(clinic_id)
+    return db_conn.execute(query, params).fetchone()
+
+
+def _row_get(row: sqlite3.Row, key: str, default: Any | None = None) -> Any | None:
+    if row is None:
+        return default
+    try:
+        keys = row.keys()  # type: ignore[attr-defined]
+        if key in keys:
+            return row[key]
+    except Exception:
+        pass
+    return default
+
+
+def _build_user_payload(user_row: sqlite3.Row) -> Dict[str, Any]:
+    email = _row_get(user_row, "email") or user_row["username"]
+    name = _row_get(user_row, "name") or user_row["username"]
+    payload = {
+        "id": user_row["id"],
+        "email": email,
+        "name": name,
+        "role": user_row["role"],
+        "clinicId": _row_get(user_row, "clinic_id"),
+    }
+    return payload
+
+
+def _persist_session_record(
+    user_id: int,
+    session_id: str,
+    access_token: str,
+    refresh_token: str | None,
+    expires_at: datetime,
+    ip_address: str,
+    user_agent: str,
+    remember_me: bool,
+    *,
+    offline: bool = False,
+    extra_metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    ensure_session_table(db_conn)
+    created_at = datetime.utcnow()
+    metadata = {
+        "id": session_id,
+        "createdAt": created_at.replace(tzinfo=timezone.utc).isoformat(),
+        "expiresAt": expires_at.replace(tzinfo=timezone.utc).isoformat(),
+        "ip": ip_address,
+        "userAgent": user_agent,
+        "rememberMe": remember_me,
+        "offline": offline,
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    try:
+        db_conn.execute(
+            """
+            INSERT OR REPLACE INTO sessions
+            (id, user_id, token_hash, refresh_token_hash, expires_at, created_at, last_accessed, ip_address, user_agent, offline_session, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                user_id,
+                hash_password(access_token),
+                hash_password(refresh_token) if refresh_token else None,
+                expires_at.timestamp(),
+                created_at.timestamp(),
+                created_at.timestamp(),
+                ip_address,
+                user_agent,
+                1 if offline else 0,
+                json.dumps(metadata, ensure_ascii=False),
+            ),
+        )
+        db_conn.commit()
+    except sqlite3.Error:
+        logger.exception("Failed to persist session metadata")
+
+    return metadata
+
+
+def _issue_session_tokens(
+    user_row: sqlite3.Row,
+    *,
+    remember_me: bool,
+    clinic_id: str | None,
+    ip_address: str,
+    user_agent: str,
+    offline: bool = False,
+    offline_payload: Dict[str, Any] | None = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any], str, str | None, str]:
+    session_id = str(uuid.uuid4())
+    created_at = datetime.utcnow()
+
+    if offline:
+        minutes = OFFLINE_TOKEN_EXPIRE_DAYS * 24 * 60
+        access_token = create_access_token(
+            user_row["username"],
+            user_row["role"],
+            clinic_id,
+            expires_minutes=minutes,
+            session_id=session_id,
+            token_type="offline",
+        )
+        refresh_token = None
+        expires_at = created_at + timedelta(minutes=minutes)
+    else:
+        minutes = (
+            REMEMBER_ME_ACCESS_TOKEN_EXPIRE_MINUTES
+            if remember_me
+            else ACCESS_TOKEN_EXPIRE_MINUTES
+        )
+        days = (
+            REMEMBER_ME_REFRESH_TOKEN_EXPIRE_DAYS
+            if remember_me
+            else REFRESH_TOKEN_EXPIRE_DAYS
+        )
+        access_token = create_access_token(
+            user_row["username"],
+            user_row["role"],
+            clinic_id,
+            expires_minutes=minutes,
+            session_id=session_id,
+        )
+        refresh_token = create_refresh_token(
+            user_row["username"],
+            user_row["role"],
+            clinic_id,
+            expires_days=days,
+            session_id=session_id,
+        )
+        expires_at = created_at + timedelta(minutes=minutes)
+
+    metadata = _persist_session_record(
+        user_row["id"],
+        session_id,
+        access_token,
+        refresh_token,
+        expires_at,
+        ip_address,
+        user_agent,
+        remember_me,
+        offline=offline,
+        extra_metadata=offline_payload,
+    )
+
+    tokens = {
+        "accessToken": access_token,
+        "expiresIn": int(minutes * 60),
+    }
+    if refresh_token:
+        tokens["refreshToken"] = refresh_token
+
+    return tokens, metadata, access_token, refresh_token, session_id
+
+
+def _persist_refresh_token(user_id: int, refresh_token: str, days: int) -> None:
+    ensure_refresh_table(db_conn)
+    try:
+        db_conn.execute(
+            "DELETE FROM refresh_tokens WHERE expires_at < ?",
+            (time.time(),),
+        )
+        db_conn.execute(
+            "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+            (
+                user_id,
+                hash_password(refresh_token),
+                (datetime.utcnow() + timedelta(days=days)).timestamp(),
+            ),
+        )
+        db_conn.commit()
+    except sqlite3.Error:
+        logger.exception("Failed to persist refresh token")
+
+
+def _load_user_preferences(user_id: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    settings_row = db_conn.execute(
+        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if settings_row:
+        sr = dict(settings_row)
+        settings = {
+            "theme": sr["theme"],
+            "categories": json.loads(sr["categories"]),
+            "rules": json.loads(sr["rules"]),
+            "lang": sr["lang"],
+            "summaryLang": sr["summary_lang"] or sr["lang"],
+            "specialty": sr["specialty"],
+            "payer": sr["payer"],
+            "region": sr["region"] or "",
+            "template": sr["template"],
+            "useLocalModels": bool(sr["use_local_models"]),
+            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
+            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
+            "beautifyModel": sr["beautify_model"],
+            "suggestModel": sr["suggest_model"],
+            "summarizeModel": sr["summarize_model"],
+            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+        }
+    else:
+        settings = UserSettings().model_dump()
+
+    session_row = db_conn.execute(
+        "SELECT data FROM session_state WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if session_row and session_row["data"]:
+        session_state = _normalize_session_state(session_row["data"])
+    else:
+        session_state = _normalize_session_state(SessionStateModel())
+
+    return settings, session_state
+
+
+def _compose_auth_response(
+    user_row: sqlite3.Row,
+    settings: Dict[str, Any],
+    session_state: Dict[str, Any],
+    *,
+    remember_me: bool,
+    clinic_id: str | None,
+    ip_address: str,
+    user_agent: str,
+    clinic_code: str | None,
+) -> Dict[str, Any]:
+    user_payload = _build_user_payload(user_row)
+    user_payload.update(
+        {
+            "specialty": settings.get("specialty"),
+            "permissions": [user_row["role"]],
+            "preferences": settings,
+        }
+    )
+
+    tokens, session_meta, access_token, refresh_token, session_id = _issue_session_tokens(
+        user_row,
+        remember_me=remember_me,
+        clinic_id=clinic_id or _row_get(user_row, "clinic_id"),
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+
+    refresh_days = (
+        REMEMBER_ME_REFRESH_TOKEN_EXPIRE_DAYS if remember_me else REFRESH_TOKEN_EXPIRE_DAYS
+    )
+    if refresh_token:
+        _persist_refresh_token(user_row["id"], refresh_token, refresh_days)
+
+    permissions = [user_row["role"]]
+    _insert_audit_log(
+        user_row["username"],
+        "login",
+        {
+            "client": ip_address,
+            "sessionId": session_id,
+            "remember": remember_me,
+            "clinicCode": clinic_code,
+        },
+    )
+
+    response: Dict[str, Any] = {
+        "success": True,
+        "requiresMFA": False,
+        "user": user_payload,
+        "tokens": tokens,
+        "permissions": permissions,
+        "session": session_state,
+        "sessionMeta": session_meta,
+        "settings": settings,
+        "sessionState": session_state,
+        "expiresAt": session_meta.get("expiresAt"),
+        "token": tokens["accessToken"],
+        "access_token": tokens["accessToken"],
+        "expires_in": tokens["expiresIn"],
+    }
+    if "refreshToken" in tokens:
+        response["refreshToken"] = tokens["refreshToken"]
+        response["refresh_token"] = tokens["refreshToken"]
+
+    return response
+
+
+def _create_mfa_challenge(
+    user_id: int, method: str = "totp", remember_me: bool = False
+) -> Tuple[str, str, str]:
+    ensure_mfa_challenges_table(db_conn)
+    session_token = str(uuid.uuid4())
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.utcnow() + timedelta(minutes=5)
+    try:
+        db_conn.execute(
+            "REPLACE INTO mfa_challenges (session_token, user_id, code_hash, method, expires_at, attempts, last_sent, remember_me)"
+            " VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (
+                session_token,
+                user_id,
+                hash_password(code),
+                method,
+                expires_at.timestamp(),
+                time.time(),
+                1 if remember_me else 0,
+            ),
+        )
+        db_conn.commit()
+    except sqlite3.Error:
+        logger.exception("Failed to create MFA challenge")
+    return session_token, code, method
+
+
+def _load_mfa_challenge(session_token: str) -> sqlite3.Row | None:
+    ensure_mfa_challenges_table(db_conn)
+    return db_conn.execute(
+        "SELECT session_token, user_id, code_hash, method, expires_at, attempts, last_sent, remember_me FROM mfa_challenges WHERE session_token=?",
+        (session_token,),
+    ).fetchone()
+
+
+def _delete_mfa_challenge(session_token: str) -> None:
+    try:
+        db_conn.execute(
+            "DELETE FROM mfa_challenges WHERE session_token=?",
+            (session_token,),
+        )
+        db_conn.commit()
+    except sqlite3.Error:
+        logger.exception("Failed to delete MFA challenge")
+
+
+def _validate_password_strength(password: str) -> None:
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not any(ch.isalpha() for ch in password):
+        raise ValueError("Password must include a letter")
+    if not any(ch.isdigit() for ch in password):
+        raise ValueError("Password must include a number")
+
+
+def create_access_token(
+    username: str,
+    role: str,
+    clinic: str | None = None,
+    *,
+    expires_minutes: int | None = None,
+    session_id: str | None = None,
+    token_type: str = "access",
+) -> str:
     """Create a signed JWT access token for the given user."""
+    minutes = expires_minutes or ACCESS_TOKEN_EXPIRE_MINUTES
     payload = {
         "sub": username,
         "role": role,
-        "type": "access",
-        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "type": token_type,
+        "exp": datetime.utcnow() + timedelta(minutes=minutes),
     }
     if clinic is not None:
         payload["clinic"] = clinic
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(username: str, role: str) -> str:
+def create_refresh_token(
+    username: str,
+    role: str,
+    clinic: str | None = None,
+    *,
+    expires_days: int | None = None,
+    session_id: str | None = None,
+) -> str:
     """Create a refresh token with a longer expiry."""
+    days = expires_days or REFRESH_TOKEN_EXPIRE_DAYS
     payload = {
         "sub": username,
         "role": role,
         "type": "refresh",
-        "exp": datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "exp": datetime.utcnow() + timedelta(days=days),
     }
+    if clinic is not None:
+        payload["clinic"] = clinic
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -2021,6 +2529,7 @@ def require_role(role: str):
         return data
 
     return checker
+
 
 
 def require_roles(*roles: str):
@@ -2116,10 +2625,92 @@ class RegisterModel(BaseModel):
     password: str
 
 
+EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 class LoginModel(BaseModel):
-    username: str
+    emailOrUsername: str | None = Field(default=None, alias="emailOrUsername")
     password: str
-    lang: str = "en"
+    clinicCode: str | None = Field(default=None, alias="clinicCode")
+    rememberMe: bool = Field(default=False, alias="rememberMe")
+    username: str | None = None  # Backwards compatibility
+    lang: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_identifier(cls, values: Any) -> Any:
+        if isinstance(values, dict):
+            data = dict(values)
+            if not data.get("emailOrUsername") and data.get("username"):
+                data["emailOrUsername"] = data.get("username")
+            return data
+        return values
+
+    @field_validator("emailOrUsername")
+    @classmethod
+    def _require_identifier(cls, value: str | None) -> str:
+        if not value or not str(value).strip():
+            raise ValueError("emailOrUsername is required")
+        return str(value)
+
+    @field_validator("password")
+    @classmethod
+    def _require_password(cls, value: str) -> str:
+        if not value or not str(value).strip():
+            raise ValueError("Password is required")
+        return value
+
+
+class VerifyMFAModel(BaseModel):
+    code: str
+    mfaSessionToken: str = Field(alias="mfaSessionToken")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("code")
+    @classmethod
+    def _validate_code(cls, value: str) -> str:
+        value = value.strip()
+        if not value.isdigit() or len(value) != 6:
+            raise ValueError("code must be a 6 digit number")
+        return value
+
+
+class ResendMFAModel(BaseModel):
+    mfaSessionToken: str = Field(alias="mfaSessionToken")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ForgotPasswordModel(BaseModel):
+    email: str
+    clinicCode: str | None = Field(default=None, alias="clinicCode")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("email")
+    @classmethod
+    def _validate_email(cls, value: str) -> str:
+        value = value.strip()
+        if not EMAIL_REGEX.match(value):
+            raise ValueError("Invalid email")
+        return value
+
+
+class ResetPasswordTokenModel(BaseModel):
+    token: str
+    newPassword: str = Field(alias="newPassword")
+    confirmPassword: str = Field(alias="confirmPassword")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _ensure_match(self) -> "ResetPasswordTokenModel":
+        if self.newPassword != self.confirmPassword:
+            raise ValueError("Passwords do not match")
+        return self
 
 
 class RefreshModel(BaseModel):
@@ -2452,116 +3043,426 @@ async def delete_user(username: str, user=Depends(require_role("admin"))):
 
 @app.post("/login")
 async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
-    """Validate credentials and return a JWT on success."""
-    ensure_refresh_table(db_conn)
-    cutoff = time.time() - 15 * 60
-    recent_failures = db_conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
-        (model.username, cutoff),
-    ).fetchone()[0]
-    if recent_failures >= 5:
+    """Validate credentials and return session tokens on success."""
+
+    identifier = model.emailOrUsername or ""
+    normalized_identifier = _normalize_identifier(identifier)
+    ip_address = _client_ip(request)
+    limiter_key = f"{ip_address}:{normalized_identifier}"
+
+    def _enforce_login_rate_limit() -> None:
+        allowed = LOGIN_RATE_LIMITER.allow(limiter_key)
+        if allowed:
+            return
+        retry_after = LOGIN_RATE_LIMITER.retry_after(limiter_key)
+        headers = {"Retry-After": str(int(math.ceil(retry_after)))} if retry_after else None
         raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail="Account locked due to failed login attempts",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "Too many login attempts", "code": "RATE_LIMITED"},
+            headers=headers,
         )
 
-    auth = authenticate_user(db_conn, model.username, model.password)
-    if not auth:
+    clinic_id: str | None = None
+    if model.clinicCode:
+        clinic = _lookup_clinic_by_code(model.clinicCode)
+        if not clinic or not clinic["active"]:
+            _insert_audit_log(
+                normalized_identifier,
+                "failed_login",
+                {
+                    "reason": "invalid_clinic",
+                    "clinicCode": model.clinicCode,
+                    "client": ip_address,
+                },
+            )
+            _enforce_login_rate_limit()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": "Invalid credentials", "code": "INVALID_CREDENTIALS"},
+            )
+        clinic_id = clinic["id"]
+
+    user_row = _load_user_for_login(identifier, clinic_id)
+    if not user_row:
+        await asyncio.sleep(0.2)
         _insert_audit_log(
-            model.username,
+            normalized_identifier,
             "failed_login",
+            {"reason": "unknown_user", "client": ip_address, "clinicCode": model.clinicCode},
+        )
+        _enforce_login_rate_limit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid credentials", "code": "INVALID_CREDENTIALS"},
+        )
+
+    now_ts = time.time()
+    locked_until = _row_get(user_row, "account_locked_until")
+    if locked_until and locked_until > now_ts:
+        _insert_audit_log(
+            user_row["username"],
+            "login_locked",
             {
-                "reason": "invalid credentials",
-                "client": request.client.host if request.client else None,
+                "client": ip_address,
+                "lockedUntil": locked_until,
+                "clinicCode": model.clinicCode,
             },
         )
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
+            status_code=status.HTTP_423_LOCKED,
+            detail={"error": "Account locked", "code": "ACCOUNT_LOCKED"},
         )
-    user_id, role = auth
-    access_token = create_access_token(model.username, role)
-    refresh_token = create_refresh_token(model.username, role)
 
-    # Persist hashed refresh token for later verification
-    expires_at = (datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)).timestamp()
-    db_conn.execute("DELETE FROM refresh_tokens WHERE user_id=?", (user_id,))
+    if not verify_password(model.password, user_row["password_hash"]):
+        attempts = int(_row_get(user_row, "failed_login_attempts", 0) or 0) + 1
+        lock_until: float | None = None
+        if attempts >= 5:
+            lock_until = now_ts + 15 * 60
+        db_conn.execute(
+            "UPDATE users SET failed_login_attempts=?, account_locked_until=?, updated_at=? WHERE id=?",
+            (attempts, lock_until, now_ts, user_row["id"]),
+        )
+        db_conn.commit()
+        await asyncio.sleep(min(0.25 * attempts, 2.0))
+        detail_payload = {
+            "reason": "invalid_credentials",
+            "attempts": attempts,
+            "client": ip_address,
+            "clinicCode": model.clinicCode,
+        }
+        if lock_until:
+            detail_payload["lockedUntil"] = lock_until
+        _insert_audit_log(user_row["username"], "failed_login", detail_payload)
+        _enforce_login_rate_limit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid credentials", "code": "INVALID_CREDENTIALS"},
+        )
+
     db_conn.execute(
-        "INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
-        (user_id, hash_password(refresh_token), expires_at),
+        "UPDATE users SET failed_login_attempts=0, account_locked_until=NULL, last_login=?, updated_at=? WHERE id=?",
+        (now_ts, now_ts, user_row["id"]),
     )
     db_conn.commit()
+    LOGIN_RATE_LIMITER.reset(limiter_key)
 
-    _insert_audit_log(
-        model.username,
-        "login",
-        {"client": request.client.host if request.client else None},
-    )
+    settings, session_state = _load_user_preferences(user_row["id"])
+    user_agent = _user_agent(request)
 
-    settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
-    if settings_row:
-        sr = dict(settings_row)
-        settings = {
-            "theme": sr["theme"],
-            "categories": json.loads(sr["categories"]),
-            "rules": json.loads(sr["rules"]),
-            "lang": sr["lang"],
-            "summaryLang": sr["summary_lang"] or sr["lang"],
-            "specialty": sr["specialty"],
-            "payer": sr["payer"],
-            "region": sr["region"] or "",
-            "template": sr["template"],
-            "useLocalModels": bool(sr["use_local_models"]),
-            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
-            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
-            "beautifyModel": sr["beautify_model"],
-            "suggestModel": sr["suggest_model"],
-            "summarizeModel": sr["summarize_model"],
-            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+    if _row_get(user_row, "mfa_enabled"):
+        session_token, code, method = _create_mfa_challenge(
+            user_row["id"], remember_me=model.rememberMe
+        )
+        details = {
+            "method": method,
+            "client": ip_address,
+            "sessionToken": session_token,
         }
-    else:
-        settings = UserSettings().model_dump()
+        _insert_audit_log(user_row["username"], "login_mfa_challenge", details)
+        payload: Dict[str, Any] = {
+            "success": True,
+            "requiresMFA": True,
+            "mfaSessionToken": session_token,
+            "mfaMethod": method,
+        }
+        if ENVIRONMENT in {"development", "dev"}:
+            payload["debugCode"] = code
+        return payload
 
-    session_row = db_conn.execute(
-        "SELECT data FROM session_state WHERE user_id=?", (user_id,)
-    ).fetchone()
-    if session_row and session_row["data"]:
-        session = _normalize_session_state(session_row["data"])
-    else:
-        session = _normalize_session_state(SessionStateModel())
-
-    user_obj = {
-        "id": user_id,
-        "name": model.username,
-        "role": role,
-        "specialty": settings.get("specialty"),
-        "permissions": [role],
-        "preferences": settings,
-    }
-    expires_at_iso = (
-        datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    ).isoformat() + "Z"
-
-    return {
-        "token": access_token,
-        "refreshToken": refresh_token,
-        "user": user_obj,
-        "expiresAt": expires_at_iso,
-        # Backwards compatible fields
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        "settings": settings,
-        "session": session,
-    }
+    return _compose_auth_response(
+        user_row,
+        settings,
+        session_state,
+        remember_me=model.rememberMe,
+        clinic_id=clinic_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        clinic_code=model.clinicCode,
+    )
 
 
 @app.post("/auth/login")
 @app.post("/api/auth/login")
 async def auth_login(model: LoginModel, request: Request):
     return await login(model, request)
+
+
+@app.post("/api/auth/verify-mfa")
+async def verify_mfa(model: VerifyMFAModel, request: Request) -> Dict[str, Any]:
+    token = model.mfaSessionToken
+    if not MFA_VERIFY_RATE_LIMITER.allow(token):
+        retry = MFA_VERIFY_RATE_LIMITER.retry_after(token)
+        headers = {"Retry-After": str(int(math.ceil(retry)))} if retry else None
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "Too many verification attempts", "code": "RATE_LIMITED"},
+            headers=headers,
+        )
+
+    challenge = _load_mfa_challenge(token)
+    if not challenge:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired MFA code", "code": "INVALID_MFA"},
+        )
+
+    if challenge["expires_at"] < time.time():
+        _delete_mfa_challenge(token)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "MFA code expired", "code": "INVALID_MFA"},
+        )
+
+    if not verify_password(model.code, challenge["code_hash"]):
+        attempts = int(challenge["attempts"] or 0) + 1
+        db_conn.execute(
+            "UPDATE mfa_challenges SET attempts=? WHERE session_token=?",
+            (attempts, token),
+        )
+        db_conn.commit()
+        _insert_audit_log(
+            str(challenge["user_id"]),
+            "mfa_failed",
+            {"attempts": attempts, "sessionToken": token, "client": _client_ip(request)},
+        )
+        if attempts >= 3:
+            _delete_mfa_challenge(token)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired MFA code", "code": "INVALID_MFA"},
+        )
+
+    _delete_mfa_challenge(token)
+    MFA_VERIFY_RATE_LIMITER.reset(token)
+    user_row = db_conn.execute(
+        "SELECT id, username, email, name, password_hash, role, clinic_id, mfa_enabled, mfa_secret, account_locked_until, failed_login_attempts, last_login FROM users WHERE id=?",
+        (challenge["user_id"],),
+    ).fetchone()
+    if not user_row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid or expired MFA code", "code": "INVALID_MFA"},
+        )
+
+    settings, session_state = _load_user_preferences(user_row["id"])
+    ip_address = _client_ip(request)
+    user_agent = _user_agent(request)
+    remember_me = bool(_row_get(challenge, "remember_me"))
+    response = _compose_auth_response(
+        user_row,
+        settings,
+        session_state,
+        remember_me=remember_me,
+        clinic_id=_row_get(user_row, "clinic_id"),
+        ip_address=ip_address,
+        user_agent=user_agent,
+        clinic_code=None,
+    )
+    _insert_audit_log(
+        user_row["username"],
+        "mfa_verified",
+        {"client": ip_address, "sessionToken": token},
+    )
+    return response
+
+
+@app.post("/api/auth/resend-mfa")
+async def resend_mfa(model: ResendMFAModel) -> Dict[str, Any]:
+    token = model.mfaSessionToken
+    if not MFA_RESEND_RATE_LIMITER.allow(token):
+        retry = MFA_RESEND_RATE_LIMITER.retry_after(token)
+        headers = {"Retry-After": str(int(math.ceil(retry)))} if retry else None
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "MFA resend rate limited", "code": "RATE_LIMITED"},
+            headers=headers,
+        )
+
+    challenge = _load_mfa_challenge(token)
+    if not challenge:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "Invalid MFA session", "code": "INVALID_MFA"},
+        )
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.utcnow() + timedelta(minutes=5)
+    db_conn.execute(
+        "UPDATE mfa_challenges SET code_hash=?, expires_at=?, attempts=0, last_sent=?, remember_me=? WHERE session_token=?",
+        (
+            hash_password(code),
+            expires_at.timestamp(),
+            time.time(),
+            _row_get(challenge, "remember_me", 0),
+            token,
+        ),
+    )
+    db_conn.commit()
+    method = challenge["method"]
+    _insert_audit_log(
+        str(challenge["user_id"]),
+        "mfa_resent",
+        {"sessionToken": token},
+    )
+    payload: Dict[str, Any] = {
+        "success": True,
+        "message": "Verification code sent",
+    }
+    if ENVIRONMENT in {"development", "dev"}:
+        payload["debugCode"] = code
+    return payload
+
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(model: ForgotPasswordModel, request: Request) -> Dict[str, Any]:
+    ip_address = _client_ip(request)
+    if not FORGOT_PASSWORD_RATE_LIMITER.allow(ip_address):
+        retry = FORGOT_PASSWORD_RATE_LIMITER.retry_after(ip_address)
+        headers = {"Retry-After": str(int(math.ceil(retry)))} if retry else None
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"error": "Too many requests", "code": "RATE_LIMITED"},
+            headers=headers,
+        )
+
+    clinic_id: str | None = None
+    if model.clinicCode:
+        clinic = _lookup_clinic_by_code(model.clinicCode)
+        if clinic and clinic["active"]:
+            clinic_id = clinic["id"]
+        else:
+            _insert_audit_log(
+                None,
+                "password_reset_requested",
+                {
+                    "reason": "invalid_clinic",
+                    "clinicCode": model.clinicCode,
+                    "client": ip_address,
+                },
+            )
+            return {
+                "success": True,
+                "message": "If an account exists, reset instructions have been sent",
+            }
+
+    identifier = _normalize_identifier(model.email)
+    params: List[Any] = [identifier, identifier]
+    query = "SELECT id, username, email, clinic_id FROM users WHERE (LOWER(email)=? OR LOWER(username)=?)"
+    if clinic_id:
+        query += " AND clinic_id=?"
+        params.append(clinic_id)
+    user_row = db_conn.execute(query, params).fetchone()
+
+    debug_token: str | None = None
+    if user_row:
+        ensure_password_reset_tokens_table(db_conn)
+        db_conn.execute(
+            "UPDATE password_reset_tokens SET used=1 WHERE user_id=?",
+            (user_row["id"],),
+        )
+        reset_token = secrets.token_urlsafe(32)
+        debug_token = reset_token
+        db_conn.execute(
+            "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at, used) VALUES (?, ?, ?, ?, 0)",
+            (
+                str(uuid.uuid4()),
+                user_row["id"],
+                hash_password(reset_token),
+                (datetime.utcnow() + timedelta(hours=1)).timestamp(),
+            ),
+        )
+        db_conn.commit()
+        _insert_audit_log(
+            user_row["username"],
+            "password_reset_requested",
+            {"client": ip_address, "clinicCode": model.clinicCode},
+        )
+    else:
+        _insert_audit_log(
+            None,
+            "password_reset_requested",
+            {"reason": "unknown_email", "client": ip_address, "clinicCode": model.clinicCode},
+        )
+
+    response: Dict[str, Any] = {
+        "success": True,
+        "message": "If an account exists, reset instructions have been sent",
+    }
+    if debug_token and ENVIRONMENT in {"development", "dev"}:
+        response["debugToken"] = debug_token
+    return response
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password_with_token(
+    model: ResetPasswordTokenModel, request: Request
+) -> Dict[str, Any]:
+    try:
+        _validate_password_strength(model.newPassword)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": str(exc), "code": "WEAK_PASSWORD"},
+        ) from exc
+
+    ensure_password_reset_tokens_table(db_conn)
+    rows = db_conn.execute(
+        "SELECT id, user_id, token_hash, expires_at, used FROM password_reset_tokens WHERE used=0",
+    ).fetchall()
+    match: sqlite3.Row | None = None
+    for row in rows:
+        if verify_password(model.token, row["token_hash"]):
+            match = row
+            break
+
+    if not match:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Invalid token", "code": "INVALID_TOKEN"},
+        )
+
+    if match["expires_at"] < time.time():
+        db_conn.execute(
+            "UPDATE password_reset_tokens SET used=1 WHERE id=?",
+            (match["id"],),
+        )
+        db_conn.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "Token expired", "code": "INVALID_TOKEN"},
+        )
+
+    password_hash = hash_password(model.newPassword)
+    now_ts = time.time()
+    db_conn.execute(
+        "UPDATE users SET password_hash=?, updated_at=? WHERE id=?",
+        (password_hash, now_ts, match["user_id"]),
+    )
+    db_conn.execute(
+        "UPDATE password_reset_tokens SET used=1 WHERE user_id=?",
+        (match["user_id"],),
+    )
+    db_conn.execute(
+        "DELETE FROM refresh_tokens WHERE user_id=?",
+        (match["user_id"],),
+    )
+    db_conn.execute(
+        "DELETE FROM sessions WHERE user_id=?",
+        (match["user_id"],),
+    )
+    db_conn.commit()
+
+    user_row = db_conn.execute(
+        "SELECT username FROM users WHERE id=?",
+        (match["user_id"],),
+    ).fetchone()
+    username = user_row["username"] if user_row else None
+    _insert_audit_log(
+        username,
+        "password_reset_completed",
+        {"client": _client_ip(request)},
+    )
+    return {"success": True, "message": "Password successfully reset"}
 
 
 @app.get("/auth/status")
@@ -2645,6 +3546,51 @@ async def auth_status(
     return {"authenticated": True, "user": user_payload}
 
 
+@app.get("/api/auth/validate")
+async def auth_validate(
+    request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    token_data = get_current_user(credentials)
+    if token_data.get("type") not in (None, "access", "offline"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+    username = token_data.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+    row = db_conn.execute(
+        "SELECT id, username, email, name, role, clinic_id FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+    settings, _session_state = _load_user_preferences(row["id"])
+    user_payload = _build_user_payload(row)
+    user_payload.update(
+        {
+            "specialty": settings.get("specialty"),
+            "permissions": [row["role"]],
+            "preferences": settings,
+        }
+    )
+    _insert_audit_log(
+        row["username"],
+        "token_validated",
+        {"client": _client_ip(request)},
+    )
+    return {"valid": True, "user": user_payload, "permissions": [row["role"]]}
+
+
 @app.post("/refresh")
 @app.post("/api/auth/refresh")
 async def refresh(model: RefreshModel) -> Dict[str, Any]:
@@ -2686,13 +3632,17 @@ async def refresh(model: RefreshModel) -> Dict[str, Any]:
         datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     ).isoformat() + "Z"
     _insert_audit_log(data.get("sub"), "refresh_token", None)
-    return {
-        "token": access_token,
+    response = {
+        "success": True,
+        "tokens": {
+            "accessToken": access_token,
+            "expiresIn": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        },
         "expiresAt": expires_at_iso,
-        # Backwards compatible fields
         "access_token": access_token,
         "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     }
+    return response
 
 
 @app.post("/auth/logout")
@@ -2731,6 +3681,79 @@ async def auth_logout(model: LogoutModel) -> Dict[str, bool]:  # pragma: no cove
     else:
         _insert_audit_log(data.get("sub"), "logout_failed", None)
     return {"success": success}
+
+
+@app.post("/api/auth/offline-session")
+async def create_offline_session(
+    request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> Dict[str, Any]:
+    token_data = get_current_user(credentials)
+    if token_data.get("type") not in (None, "access"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Offline token requires access token",
+        )
+
+    username = token_data.get("sub")
+    if not username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Offline token requires access token",
+        )
+
+    user_row = db_conn.execute(
+        "SELECT id, username, email, name, role, clinic_id FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
+    if not user_row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Offline token requires access token",
+        )
+
+    ip_address = _client_ip(request)
+    user_agent = _user_agent(request)
+    tokens, session_meta, access_token, _refresh, session_id = _issue_session_tokens(
+        user_row,
+        remember_me=True,
+        clinic_id=_row_get(user_row, "clinic_id"),
+        ip_address=ip_address,
+        user_agent=user_agent,
+        offline=True,
+        offline_payload={"purpose": "offline"},
+    )
+
+    offline_token_value = access_token
+    user_payload = _build_user_payload(user_row)
+    permissions = [user_row["role"]]
+    user_data = {
+        "id": user_row["id"],
+        "email": user_payload["email"],
+        "name": user_payload["name"],
+        "role": user_row["role"],
+        "permissions": permissions,
+    }
+    _insert_audit_log(
+        user_row["username"],
+        "offline_session_created",
+        {"client": ip_address, "sessionId": session_id},
+    )
+    return {
+        "success": True,
+        "offlineToken": offline_token_value,
+        "expiresAt": session_meta.get("expiresAt"),
+        "userData": user_data,
+    }
+
+
+@app.get("/api/system/status")
+async def system_status() -> Dict[str, Any]:
+    payload = _load_system_status()
+    return {
+        "status": payload.get("status", "operational"),
+        "maintenanceMode": bool(payload.get("maintenanceMode")),
+        "message": payload.get("message"),
+    }
 
 
 @app.post("/reset-password")
@@ -2810,7 +3833,12 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
     rows = db_conn.execute(
         "SELECT timestamp, username, action, details FROM audit_log ORDER BY timestamp DESC"
     ).fetchall()
-    return [dict(r) for r in rows]
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        record = dict(row)
+        record["details"] = _deserialise_audit_details(record.get("details"))
+        entries.append(record)
+    return JSONResponse(content=entries, headers={"X-Bypass-Envelope": "1"})
 
 
 @app.get("/settings")

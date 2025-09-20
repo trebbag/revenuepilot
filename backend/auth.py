@@ -28,10 +28,19 @@ def register_user(
     Returns the new user's ID.
     """
     pwd_hash = hash_password(password)
-    cur = conn.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        (username, pwd_hash, role),
-    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    email = username
+    name = username
+    if {"email", "name"}.issubset(columns):
+        cur = conn.execute(
+            "INSERT INTO users (username, email, name, password_hash, role) VALUES (?, ?, ?, ?, ?)",
+            (username, email, name, pwd_hash, role),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, pwd_hash, role),
+        )
     user_id = cur.lastrowid
     conn.execute(
         "INSERT OR IGNORE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models) "
