@@ -101,6 +101,10 @@ def test_workflow_session_lifecycle(client):
     assert session_id
     assert session_data["encounterId"] == "encounter-1"
     assert session_data["patientMetadata"]["name"] == "Rivka Doe"
+    assert session_data["createdBy"] == "alice"
+    assert session_data["lastUpdatedBy"] == "alice"
+    assert any(collab["userId"] == "alice" for collab in session_data["collaborators"])
+    assert session_data["auditTrail"] and session_data["auditTrail"][0]["actor"] == "alice"
     # The revenue summary should include the CPT code we provided.
     assert session_data["reimbursementSummary"]["total"] == pytest.approx(75.0)
     # A question should be generated from the documented gap/compliance issue.
@@ -197,6 +201,7 @@ def test_workflow_session_lifecycle(client):
     assert "Content too short" in validation["issues"]["content"]
     assert "Invalid code 123" in validation["issues"]["codes"]
     assert note_response["session"]["blockingIssues"]
+    assert note_response["session"]["lastUpdatedBy"] == "alice"
 
     # Patient questions lifecycle: answer and then update status separately.
     resp = client.post(
@@ -238,12 +243,84 @@ def test_workflow_session_lifecycle(client):
     assert dispatch_payload["result"]["exportReady"] is False
     assert "prevention" in dispatch_payload["result"]["issues"]
 
+
+def test_workflow_session_tracks_collaboration_and_audit(client):
+    token = main.create_token("alice", "user")
+    headers = auth_header(token)
+    create_payload = {
+        "encounterId": "collab-encounter",
+        "patientId": "patient-123",
+        "noteId": "note-collab",
+        "noteContent": "Comprehensive documentation for collaboration testing.",
+        "context": {"source": "wizard", "transcriptId": "tx-1"},
+        "selectedCodes": [
+            {"code": "99213", "category": "procedure", "description": "Established patient visit"}
+        ],
+        "complianceIssues": [
+            {
+                "id": "ci-collab",
+                "title": "Document shared decision making",
+                "severity": "warning",
+                "details": "Include shared decision making note",
+            }
+        ],
+    }
+
+    resp = client.post("/api/v1/workflow/sessions", json=create_payload, headers=headers)
+    assert resp.status_code == 200
+    session_payload = unwrap(resp.json())
+    session_id = session_payload["sessionId"]
+    assert session_payload["createdBy"] == "alice"
+    assert session_payload["lastUpdatedBy"] == "alice"
+    assert session_payload["context"]["source"] == "wizard"
+    assert any(entry["userId"] == "alice" for entry in session_payload["collaborators"])
+    assert session_payload["auditTrail"] and session_payload["auditTrail"][0]["actor"] == "alice"
+    assert session_payload["patientQuestions"], "Expected compliance-driven question generation"
+    question_id = session_payload["patientQuestions"][0]["id"]
+
+    resp = client.put(
+        f"/api/v1/questions/{question_id}/status",
+        json={"sessionId": session_id, "status": "dismissed"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert unwrap(resp.json())["question"]["status"] == "dismissed"
+
+    # Introduce a collaborator and update a workflow step
+    password = main.hash_password("pw")
+    main.db_conn.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("bob", password, "user"),
+    )
+    main.db_conn.commit()
+    token_bob = main.create_token("bob", "user")
+    headers_bob = auth_header(token_bob)
+
+    resp = client.put(
+        f"/api/v1/workflow/sessions/{session_id}/step",
+        json={"step": 2, "status": "in_progress", "progress": 25},
+        headers=headers_bob,
+    )
+    assert resp.status_code == 200
+    updated_session = unwrap(resp.json())
+    assert updated_session["lastUpdatedBy"] == "bob"
+    assert any(entry["userId"] == "bob" for entry in updated_session["collaborators"])
+    assert any(editor["userId"] == "bob" for editor in updated_session["activeEditors"])
+    assert updated_session["auditTrail"] and updated_session["auditTrail"][-1]["actor"] == "bob"
+
     # Fetch questions via encounter to ensure resolved status persists.
-    resp = client.get("/api/v1/questions/encounter-1", headers=headers)
+    resp = client.get("/api/v1/questions/collab-encounter", headers=headers)
     assert resp.status_code == 200
     questions_payload = unwrap(resp.json())
     assert questions_payload["sessionId"] == session_id
     assert any(q["status"] == "dismissed" for q in questions_payload["questions"])
+
+    # Collaborators should also receive the resolved status and session linkage.
+    resp = client.get("/api/v1/questions/collab-encounter", headers=headers_bob)
+    assert resp.status_code == 200
+    collaborator_questions = unwrap(resp.json())
+    assert collaborator_questions["sessionId"] == session_id
+    assert any(q["status"] == "dismissed" for q in collaborator_questions["questions"])
 
     # Deleting the session removes it from persistence but retains summary counts for analytics.
     resp = client.delete(f"/api/v1/workflow/sessions/{session_id}", headers=headers)

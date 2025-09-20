@@ -129,6 +129,7 @@ from backend.migrations import (  # type: ignore
     ensure_notifications_table,
     ensure_user_profile_table,
     ensure_session_state_table,
+    ensure_shared_workflow_sessions_table,
     ensure_event_aggregates_table,
     ensure_compliance_issues_table,
     ensure_compliance_issue_history_table,
@@ -1274,6 +1275,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_visit_sessions_table(conn)
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
+    ensure_shared_workflow_sessions_table(conn)
     ensure_compliance_issues_table(conn)
     ensure_compliance_issue_history_table(conn)
     ensure_compliance_rules_table(conn)
@@ -1322,6 +1324,7 @@ ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 ensure_note_auto_saves_table(db_conn)
 ensure_session_state_table(db_conn)
+ensure_shared_workflow_sessions_table(db_conn)
 ensure_compliance_issues_table(db_conn)
 ensure_compliance_issue_history_table(db_conn)
 ensure_compliance_rules_table(db_conn)
@@ -3135,6 +3138,7 @@ async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     settings = UserSettings().model_dump()
     session = _normalize_session_state(SessionStateModel())
     ensure_session_state_table(db_conn)
+    ensure_shared_workflow_sessions_table(db_conn)
     ensure_notification_counters_table(db_conn)
     db_conn.execute(
         "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
@@ -3262,6 +3266,7 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     """Validate credentials and return a JWT on success."""
     ensure_refresh_table(db_conn)
     ensure_session_state_table(db_conn)
+    ensure_shared_workflow_sessions_table(db_conn)
     ensure_notification_counters_table(db_conn)
     client_host = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
@@ -5060,7 +5065,13 @@ def _update_session_progress(session: Dict[str, Any]) -> None:
     }
 
 
-def _append_audit_event(session: Dict[str, Any], action: str, details: Dict[str, Any] | None = None) -> None:
+def _append_audit_event(
+    session: Dict[str, Any],
+    action: str,
+    details: Dict[str, Any] | None = None,
+    *,
+    actor: Optional[str] = None,
+) -> None:
     audit = session.setdefault("auditTrail", [])
     if not isinstance(audit, list):
         audit = []
@@ -5068,6 +5079,7 @@ def _append_audit_event(session: Dict[str, Any], action: str, details: Dict[str,
         "id": uuid4().hex,
         "timestamp": _utc_now_iso(),
         "action": action,
+        "actor": actor or session.get("lastUpdatedBy"),
         "details": details or {},
     }
     audit.append(event)
@@ -5076,6 +5088,14 @@ def _append_audit_event(session: Dict[str, Any], action: str, details: Dict[str,
 
 def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
     data = copy.deepcopy(session) if isinstance(session, dict) else {}
+    if data.get("owner") is None and data.get("createdBy"):
+        data["owner"] = data.get("createdBy")
+    if data.get("createdBy") is None and data.get("owner"):
+        data["createdBy"] = data.get("owner")
+    if data.get("lastUpdatedBy") is None:
+        candidate = data.get("owner") or data.get("createdBy")
+        if candidate:
+            data["lastUpdatedBy"] = candidate
     if "stepStates" not in data or not isinstance(data.get("stepStates"), dict):
         data["stepStates"] = _default_step_states()
     else:
@@ -5116,6 +5136,44 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
     data.setdefault("noteContent", "")
     data.setdefault("patientMetadata", {})
     data.setdefault("blockingIssues", [])
+    context_payload = data.get("context")
+    if isinstance(context_payload, dict):
+        data["context"] = dict(context_payload)
+    else:
+        data["context"] = {}
+    collaborators = _normalize_collaborator_entries(data.get("collaborators"))
+    collaborators_map = {entry["userId"]: entry for entry in collaborators}
+    key_users = (
+        (data.get("createdBy"), data.get("createdAt")),
+        (data.get("owner"), data.get("createdAt")),
+        (data.get("lastUpdatedBy"), data.get("updatedAt")),
+    )
+    for username, timestamp in key_users:
+        if not username:
+            continue
+        entry = collaborators_map.get(username)
+        if entry is None:
+            entry = _resolve_collaborator_profile(username)
+            entry["status"] = "active"
+            entry["lastActiveAt"] = timestamp or _utc_now_iso()
+            collaborators.append(entry)
+            collaborators_map[username] = entry
+        else:
+            entry.setdefault("status", "active")
+            if not entry.get("lastActiveAt"):
+                entry["lastActiveAt"] = timestamp or _utc_now_iso()
+    data["collaborators"] = collaborators
+    active_entries = _normalize_active_editor_entries(data.get("activeEditors"))
+    active_map = {entry["userId"]: entry for entry in active_entries}
+    last_user = data.get("lastUpdatedBy")
+    if last_user and last_user not in active_map:
+        active_entries.append(
+            {
+                "userId": last_user,
+                "lastActiveAt": data.get("updatedAt") or _utc_now_iso(),
+            }
+        )
+    data["activeEditors"] = active_entries
     questions_input = data.get("patientQuestions")
     if not isinstance(questions_input, list) or not questions_input:
         data["patientQuestions"] = _generate_patient_questions(normalized_codes, data["complianceIssues"])
@@ -5163,6 +5221,12 @@ def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
         "encounterId": normalized.get("encounterId"),
         "patientId": normalized.get("patientId"),
         "noteId": normalized.get("noteId"),
+        "createdBy": normalized.get("createdBy"),
+        "owner": normalized.get("owner"),
+        "lastUpdatedBy": normalized.get("lastUpdatedBy"),
+        "collaborators": normalized.get("collaborators", []),
+        "activeEditors": normalized.get("activeEditors", []),
+        "context": normalized.get("context", {}),
         "currentStep": normalized.get("currentStep", 1),
         "stepStates": step_states,
         "selectedCodes": normalized.get("selectedCodes", []),
@@ -5214,6 +5278,74 @@ def _persist_session_state(user_id: int, session_state: Dict[str, Any]) -> None:
     db_conn.commit()
 
 
+def _store_shared_workflow_session(session: Dict[str, Any]) -> None:
+    session_id = session.get("sessionId")
+    if not session_id:
+        return
+    owner = session.get("owner") or session.get("createdBy")
+    try:
+        db_conn.execute(
+            "INSERT OR REPLACE INTO shared_workflow_sessions (session_id, owner_username, data, updated_at) VALUES (?, ?, ?, ?)",
+            (session_id, owner, json.dumps(session), time.time()),
+        )
+        db_conn.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to persist shared workflow session %s", session_id
+        )
+
+
+def _fetch_shared_workflow_session(session_id: str) -> Optional[Dict[str, Any]]:
+    if not session_id:
+        return None
+    row = db_conn.execute(
+        "SELECT data FROM shared_workflow_sessions WHERE session_id=?",
+        (session_id,),
+    ).fetchone()
+    if not row or not row["data"]:
+        return None
+    try:
+        return json.loads(row["data"])
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Unable to deserialize shared workflow session %s", session_id
+        )
+        return None
+
+
+def _fetch_shared_session_by_encounter(encounter_id: str) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    if not encounter_id:
+        return None, None
+    rows = db_conn.execute(
+        "SELECT session_id, data FROM shared_workflow_sessions"
+    ).fetchall()
+    for row in rows:
+        if not row or not row["data"]:
+            continue
+        try:
+            payload = json.loads(row["data"])
+        except Exception:
+            continue
+        if payload.get("encounterId") == encounter_id:
+            return row["session_id"], payload
+    return None, None
+
+
+def _delete_shared_workflow_session(session_id: str) -> None:
+    if not session_id:
+        return
+    try:
+        db_conn.execute(
+            "DELETE FROM shared_workflow_sessions WHERE session_id=?",
+            (session_id,),
+        )
+        db_conn.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to delete shared workflow session %s", session_id
+        )
+
+
 def _persist_finalization_sessions(
     user_id: int,
     session_state: Dict[str, Any],
@@ -5222,6 +5354,23 @@ def _persist_finalization_sessions(
     session_state = copy.deepcopy(session_state)
     session_state["finalizationSessions"] = sessions
     _persist_session_state(user_id, session_state)
+    for payload in sessions.values():
+        if isinstance(payload, dict):
+            _store_shared_workflow_session(payload)
+
+
+def _resolve_session_for_user(
+    username: str, session_id: str
+) -> Tuple[int, Dict[str, Any], Dict[str, Any], Optional[Dict[str, Any]]]:
+    user_id, session_state, sessions = _get_finalization_sessions(username)
+    payload = sessions.get(session_id)
+    if payload is None and session_id:
+        shared = _fetch_shared_workflow_session(session_id)
+        if isinstance(shared, dict):
+            sessions[session_id] = copy.deepcopy(shared)
+            payload = sessions[session_id]
+            _persist_finalization_sessions(user_id, session_state, sessions)
+    return user_id, session_state, sessions, payload
 
 
 def _collect_blocking_issues(issues: Dict[str, Any]) -> List[str]:
@@ -5233,6 +5382,158 @@ def _collect_blocking_issues(issues: Dict[str, Any]) -> List[str]:
             if isinstance(item, str) and item.strip():
                 blocking.append(item.strip())
     return blocking
+
+
+def _resolve_collaborator_profile(username: str, role: Optional[str] = None) -> Dict[str, Any]:
+    """Look up persisted user details for *username* when available."""
+
+    if not username:
+        return {}
+    display_name = username
+    resolved_role = role or "user"
+    try:
+        row = db_conn.execute(
+            "SELECT name, role FROM users WHERE username=?",
+            (username,),
+        ).fetchone()
+    except Exception:
+        row = None
+    if row:
+        name_value = row["name"] if "name" in row.keys() else row["name"]
+        if name_value:
+            display_name = name_value
+        role_value = row["role"] if "role" in row.keys() else row["role"]
+        if role_value:
+            resolved_role = role_value
+    return {
+        "userId": username,
+        "displayName": display_name,
+        "role": resolved_role or "user",
+    }
+
+
+def _normalize_collaborator_entries(entries: Any) -> List[Dict[str, Any]]:
+    """Normalize collaborator payloads stored on a workflow session."""
+
+    normalized: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    if isinstance(entries, list):
+        for item in entries:
+            if isinstance(item, dict):
+                raw_identifier = (
+                    item.get("userId")
+                    or item.get("username")
+                    or item.get("id")
+                    or item.get("email")
+                )
+                if isinstance(raw_identifier, (int, float)):
+                    user_id = str(raw_identifier)
+                elif isinstance(raw_identifier, str):
+                    user_id = raw_identifier.strip()
+                else:
+                    user_id = ""
+                if not user_id or user_id in seen:
+                    continue
+                profile = _resolve_collaborator_profile(user_id, role=item.get("role"))
+                entry = dict(profile)
+                display = item.get("displayName") or item.get("name")
+                if isinstance(display, str) and display.strip():
+                    entry["displayName"] = display.strip()
+                status = item.get("status") or item.get("state") or "active"
+                entry["status"] = status
+                last_active = item.get("lastActiveAt") or item.get("updatedAt")
+                if isinstance(last_active, (int, float)):
+                    entry["lastActiveAt"] = _iso_timestamp(float(last_active))
+                elif isinstance(last_active, str) and last_active.strip():
+                    entry["lastActiveAt"] = last_active.strip()
+                else:
+                    entry["lastActiveAt"] = _utc_now_iso()
+                normalized.append(entry)
+                seen.add(user_id)
+            elif isinstance(item, str):
+                user_id = item.strip()
+                if not user_id or user_id in seen:
+                    continue
+                profile = _resolve_collaborator_profile(user_id)
+                profile["status"] = "active"
+                profile["lastActiveAt"] = _utc_now_iso()
+                normalized.append(profile)
+                seen.add(user_id)
+    return normalized
+
+
+def _normalize_active_editor_entries(entries: Any) -> List[Dict[str, Any]]:
+    """Normalize active editor payloads for workflow collaboration."""
+
+    normalized: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    now = _utc_now_iso()
+    if isinstance(entries, list):
+        for item in entries:
+            user_id = ""
+            last_active = now
+            if isinstance(item, dict):
+                raw_identifier = (
+                    item.get("userId")
+                    or item.get("username")
+                    or item.get("id")
+                )
+                if isinstance(raw_identifier, (int, float)):
+                    user_id = str(raw_identifier)
+                elif isinstance(raw_identifier, str):
+                    user_id = raw_identifier.strip()
+                raw_last = item.get("lastActiveAt") or item.get("timestamp") or item.get("updatedAt")
+                if isinstance(raw_last, (int, float)):
+                    last_active = _iso_timestamp(float(raw_last))
+                elif isinstance(raw_last, str) and raw_last.strip():
+                    last_active = raw_last.strip()
+            elif isinstance(item, str):
+                user_id = item.strip()
+            if not user_id or user_id in seen:
+                continue
+            normalized.append({"userId": user_id, "lastActiveAt": last_active})
+            seen.add(user_id)
+    return normalized
+
+
+def _register_session_activity(
+    session: Dict[str, Any], user: Dict[str, Any], *, status: str = "active"
+) -> None:
+    """Update collaboration metadata for a session based on the acting user."""
+
+    username = user.get("sub")
+    if not username:
+        return
+    now = _utc_now_iso()
+    session.setdefault("createdBy", session.get("createdBy") or username)
+    session.setdefault("owner", session.get("owner") or session.get("createdBy"))
+    session["lastUpdatedBy"] = username
+
+    collaborators = _normalize_collaborator_entries(session.get("collaborators"))
+    collaborator_map = {item["userId"]: item for item in collaborators}
+    entry = collaborator_map.get(username)
+    if entry is None:
+        entry = _resolve_collaborator_profile(username, role=user.get("role"))
+        entry["status"] = status
+        entry["lastActiveAt"] = now
+        collaborators.append(entry)
+    else:
+        entry["status"] = status or entry.get("status") or "active"
+        entry["lastActiveAt"] = now
+        if user.get("role"):
+            entry["role"] = user["role"]
+        if not entry.get("displayName"):
+            entry["displayName"] = _resolve_collaborator_profile(username).get("displayName")
+    session["collaborators"] = collaborators
+
+    active_entries = _normalize_active_editor_entries(session.get("activeEditors"))
+    active_map = {item["userId"]: item for item in active_entries}
+    active_entry = active_map.get(username)
+    if active_entry is None:
+        active_entries.append({"userId": username, "lastActiveAt": now})
+    else:
+        active_entry["lastActiveAt"] = now
+    session["activeEditors"] = active_entries
 
 
 def _sync_selected_codes_to_session_state(
@@ -5727,6 +6028,10 @@ class WorkflowSessionCreateRequest(BaseModel):
     complianceIssues: List[Dict[str, Any]] = Field(default_factory=list)
     patientMetadata: Dict[str, Any] = Field(default_factory=dict)
     context: Dict[str, Any] = Field(default_factory=dict)
+    createdBy: Optional[str] = None
+    owner: Optional[str] = None
+    collaborators: List[Dict[str, Any]] = Field(default_factory=list)
+    activeEditors: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WorkflowStepUpdateRequest(BaseModel):
@@ -5742,6 +6047,12 @@ class WorkflowSessionResponse(BaseModel):
     encounterId: Optional[str] = None
     patientId: Optional[str] = None
     noteId: Optional[str] = None
+    createdBy: Optional[str] = None
+    owner: Optional[str] = None
+    lastUpdatedBy: Optional[str] = None
+    collaborators: List[Dict[str, Any]] = Field(default_factory=list)
+    activeEditors: List[Dict[str, Any]] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
     currentStep: int = 1
     stepStates: List[Dict[str, Any]] = Field(default_factory=list)
     selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
@@ -9174,6 +9485,7 @@ async def create_workflow_session_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     existing = None
+    created_now = False
     if session_id and session_id in sessions:
         existing = copy.deepcopy(sessions[session_id])
     else:
@@ -9192,7 +9504,7 @@ async def create_workflow_session_v1(
             "createdAt": _utc_now_iso(),
             "auditTrail": [],
         }
-        _append_audit_event(existing, "session_created", {"encounterId": req.encounterId})
+        created_now = True
     existing.update(
         {
             "sessionId": session_id,
@@ -9208,17 +9520,36 @@ async def create_workflow_session_v1(
     if req.patientMetadata:
         metadata.update({k: v for k, v in req.patientMetadata.items() if v is not None})
     existing["patientMetadata"] = metadata
+    context_payload = existing.get("context") if isinstance(existing.get("context"), dict) else {}
+    if req.context:
+        context_payload.update({k: v for k, v in req.context.items() if v is not None})
+    existing["context"] = context_payload
+    if req.createdBy:
+        existing["createdBy"] = req.createdBy
+    if req.owner:
+        existing["owner"] = req.owner
+    if req.collaborators:
+        existing["collaborators"] = req.collaborators
+    if req.activeEditors:
+        existing["activeEditors"] = req.activeEditors
     codes_payload = req.selectedCodes or existing.get("selectedCodes") or session_state.get("selectedCodesList") or []
     existing["selectedCodes"] = codes_payload
     issues_payload = req.complianceIssues or existing.get("complianceIssues") or []
     existing["complianceIssues"] = issues_payload
+    _register_session_activity(existing, user)
     existing["updatedAt"] = _utc_now_iso()
+    event_details = {"encounterId": req.encounterId, "patientId": existing.get("patientId")}
+    if created_now:
+        _append_audit_event(existing, "session_created", event_details, actor=user.get("sub"))
+    else:
+        _append_audit_event(existing, "session_updated", event_details, actor=user.get("sub"))
     normalized = _normalize_finalization_session(existing)
     normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
     normalized["patientQuestions"] = _generate_patient_questions(
         normalized["selectedCodes"], normalized["complianceIssues"]
     )
-    normalized["updatedAt"] = _utc_now_iso()
+    normalized["updatedAt"] = existing["updatedAt"]
+    normalized["context"] = existing.get("context", {})
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
     sessions[session_id] = normalized
@@ -9232,11 +9563,18 @@ async def create_workflow_session_v1(
 async def get_workflow_session_v1(
     session_id: str, user=Depends(require_role("user"))
 ) -> WorkflowSessionResponse:
-    _user_id, _state, sessions = _get_finalization_sessions(user["sub"])
-    payload = sessions.get(session_id)
-    if not payload:
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return WorkflowSessionResponse(**_session_to_response(payload))
+    # ``_resolve_session_for_user`` persists shared sessions into the caller's
+    # state. Normalize a copy to guarantee consistent structure before storing
+    # it locally for the requester.
+    normalized = _normalize_finalization_session(copy.deepcopy(payload))
+    sessions[session_id] = normalized
+    _persist_finalization_sessions(user_id, session_state, sessions)
+    return WorkflowSessionResponse(**_session_to_response(normalized))
 
 
 @app.put("/api/v1/workflow/sessions/{session_id}/step", response_model=WorkflowSessionResponse)
@@ -9245,9 +9583,10 @@ async def update_workflow_session_step_v1(
     req: WorkflowStepUpdateRequest,
     user=Depends(require_role("user")),
 ) -> WorkflowSessionResponse:
-    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
-    payload = sessions.get(session_id)
-    if not payload:
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     states = session.get("stepStates") or {}
@@ -9275,8 +9614,14 @@ async def update_workflow_session_step_v1(
         session["blockingIssues"] = entry["blockingIssues"]
     states[key] = entry
     session["stepStates"] = states
+    _register_session_activity(session, user)
     session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "step_updated", {"step": req.step, "status": req.status})
+    _append_audit_event(
+        session,
+        "step_updated",
+        {"step": req.step, "status": req.status},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
     normalized["updatedAt"] = session["updatedAt"]
     _recalculate_current_step(normalized)
@@ -9290,11 +9635,14 @@ async def update_workflow_session_step_v1(
 async def delete_workflow_session_v1(
     session_id: str, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
-    payload = sessions.pop(session_id, None)
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
     if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    sessions.pop(session_id, None)
     _persist_finalization_sessions(user_id, session_state, sessions)
+    _delete_shared_workflow_session(session_id)
     return {"status": "ended", "sessionId": session_id}
 
 
@@ -9302,7 +9650,7 @@ async def delete_workflow_session_v1(
 async def get_selected_codes_v1(
     encounter_id: str, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    _user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     found_session = None
     found_id = None
     for sid, payload in sessions.items():
@@ -9311,19 +9659,26 @@ async def get_selected_codes_v1(
             found_id = sid
             break
     if not found_session:
-        codes = session_state.get("selectedCodesList") or []
-        if not isinstance(codes, list):
-            codes = []
-        summary = _compute_reimbursement_summary(
-            [_normalize_code_entry(item, idx) for idx, item in enumerate(codes)]
-        )
-        return {
-            "encounterId": encounter_id,
-            "sessionId": None,
-            "codes": codes,
-            "reimbursementSummary": summary,
-            "complianceIssues": [],
-        }
+        shared_id, shared_payload = _fetch_shared_session_by_encounter(encounter_id)
+        if shared_payload:
+            found_session = copy.deepcopy(shared_payload)
+            found_id = shared_id
+            sessions[shared_id] = found_session
+            _persist_finalization_sessions(user_id, session_state, sessions)
+        else:
+            codes = session_state.get("selectedCodesList") or []
+            if not isinstance(codes, list):
+                codes = []
+            summary = _compute_reimbursement_summary(
+                [_normalize_code_entry(item, idx) for idx, item in enumerate(codes)]
+            )
+            return {
+                "encounterId": encounter_id,
+                "sessionId": None,
+                "codes": codes,
+                "reimbursementSummary": summary,
+                "complianceIssues": [],
+            }
     normalized = _normalize_finalization_session(found_session)
     return {
         "encounterId": encounter_id,
@@ -9341,22 +9696,30 @@ async def add_selected_code_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if entry.get("encounterId") == req.encounterId:
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     codes = session.get("selectedCodes") or []
     codes.append(req.model_dump(exclude={"encounterId", "sessionId"}, exclude_none=True))
     session["selectedCodes"] = codes
+    _register_session_activity(session, user)
     session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "code_added", {"code": req.code})
+    _append_audit_event(
+        session,
+        "code_added",
+        {"code": req.code},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
     normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
     normalized["updatedAt"] = session["updatedAt"]
@@ -9375,17 +9738,23 @@ async def update_selected_code_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if req.encounterId and entry.get("encounterId") != req.encounterId:
                 continue
-            if any(str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id) for item in entry.get("selectedCodes", [])):
+            if any(
+                str(item.get("id")) == str(code_id)
+                or str(item.get("code")) == str(code_id)
+                for item in entry.get("selectedCodes", [])
+            ):
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     updated = False
@@ -9398,8 +9767,14 @@ async def update_selected_code_v1(
     if not updated:
         raise HTTPException(status_code=404, detail="Code not found")
     session["selectedCodes"] = codes
+    _register_session_activity(session, user)
     session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "code_updated", {"codeId": code_id})
+    _append_audit_event(
+        session,
+        "code_updated",
+        {"codeId": code_id},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
     normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
     normalized["updatedAt"] = session["updatedAt"]
@@ -9419,17 +9794,23 @@ async def delete_selected_code_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if encounterId and entry.get("encounterId") != encounterId:
                 continue
-            if any(str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id) for item in entry.get("selectedCodes", [])):
+            if any(
+                str(item.get("id")) == str(code_id)
+                or str(item.get("code")) == str(code_id)
+                for item in entry.get("selectedCodes", [])
+            ):
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     codes = [
@@ -9438,8 +9819,14 @@ async def delete_selected_code_v1(
         if not (str(item.get("id")) == str(code_id) or str(item.get("code")) == str(code_id))
     ]
     session["selectedCodes"] = codes
+    _register_session_activity(session, user)
     session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "code_removed", {"codeId": code_id})
+    _append_audit_event(
+        session,
+        "code_removed",
+        {"codeId": code_id},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
     normalized["reimbursementSummary"] = _compute_reimbursement_summary(normalized["selectedCodes"])
     normalized["updatedAt"] = session["updatedAt"]
@@ -9461,19 +9848,22 @@ async def update_note_content_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if entry.get("encounterId") == encounter_id:
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     session["noteContent"] = req.content
-    session["updatedAt"] = _utc_now_iso()
+    updated_at = _utc_now_iso()
+    session["updatedAt"] = updated_at
     step_states = session.get("stepStates") or {}
     if "3" in step_states:
         compose_step = step_states["3"]
@@ -9483,12 +9873,12 @@ async def update_note_content_v1(
         {
             "status": "completed",
             "progress": 100,
-            "completedAt": session["updatedAt"],
-            "updatedAt": session["updatedAt"],
+            "completedAt": updated_at,
+            "updatedAt": updated_at,
         }
     )
     if not compose_step.get("startedAt"):
-        compose_step["startedAt"] = session["updatedAt"]
+        compose_step["startedAt"] = updated_at
     step_states["3"] = compose_step
     if "4" in step_states:
         compare_step = step_states["4"]
@@ -9496,10 +9886,11 @@ async def update_note_content_v1(
         compare_step = _default_step_states()["4"]
     if compare_step.get("status") == "not_started":
         compare_step["status"] = "in_progress"
-        compare_step["startedAt"] = session["updatedAt"]
-    compare_step["updatedAt"] = session["updatedAt"]
+        compare_step["startedAt"] = updated_at
+    compare_step["updatedAt"] = updated_at
     step_states["4"] = compare_step
     session["stepStates"] = step_states
+    _register_session_activity(session, user)
     normalized = _normalize_finalization_session(session)
     codes = [str(item.get("code")) for item in normalized.get("selectedCodes", []) if item.get("code")]
     precheck = PreFinalizeCheckRequest(
@@ -9527,7 +9918,14 @@ async def update_note_content_v1(
     normalized["reimbursementSummary"] = validation["reimbursementSummary"]
     normalized["blockingIssues"] = _collect_blocking_issues(issues)
     normalized["lastValidation"] = validation
-    _append_audit_event(normalized, "note_updated", {"encounterId": encounter_id})
+    normalized["updatedAt"] = updated_at
+    normalized["context"] = session.get("context", {})
+    _append_audit_event(
+        normalized,
+        "note_updated",
+        {"encounterId": encounter_id},
+        actor=user.get("sub"),
+    )
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
     sessions[session_id] = normalized
@@ -9553,9 +9951,10 @@ async def attest_workflow_session_v1(
     req: AttestationRequest,
     user=Depends(require_role("user")),
 ) -> WorkflowAttestationResponse:
-    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
-    payload = sessions.get(session_id)
-    if not payload:
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     requested_attestation = req.attestation.model_dump() if req.attestation else {}
@@ -9627,11 +10026,18 @@ async def attest_workflow_session_v1(
     dispatch_step["updatedAt"] = attestation_timestamp
     step_states["6"] = dispatch_step
     session["stepStates"] = step_states
-    session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "attestation_submitted", session["attestation"].get("attestation", {}))
+    _register_session_activity(session, user)
+    session["updatedAt"] = attestation_timestamp
+    _append_audit_event(
+        session,
+        "attestation_submitted",
+        session["attestation"].get("attestation", {}),
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
     normalized["attestation"] = session["attestation"]
     normalized["updatedAt"] = session["updatedAt"]
+    normalized["context"] = session.get("context", {})
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
     sessions[session_id] = normalized
@@ -9648,9 +10054,10 @@ async def dispatch_workflow_session_v1(
     req: DispatchRequest,
     user=Depends(require_role("user")),
 ) -> DispatchResponse:
-    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
-    payload = sessions.get(session_id)
-    if not payload:
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found")
     session = copy.deepcopy(payload)
     dispatch_status_payload = req.dispatchStatus.model_dump() if req.dispatchStatus else {}
@@ -9717,7 +10124,8 @@ async def dispatch_workflow_session_v1(
         dispatch_step["startedAt"] = dispatch_timestamp
     step_states["6"] = dispatch_step
     session["stepStates"] = step_states
-    session["updatedAt"] = _utc_now_iso()
+    _register_session_activity(session, user)
+    session["updatedAt"] = dispatch_timestamp
     normalized = _normalize_finalization_session(session)
     normalized["dispatch"] = session["dispatch"]
     validation = normalized.get("lastValidation")
@@ -9736,7 +10144,14 @@ async def dispatch_workflow_session_v1(
     normalized["blockingIssues"] = blocking
     export_ready = not blocking
     finalized_content = (normalized.get("noteContent") or "").strip()
-    _append_audit_event(normalized, "dispatch_completed", normalized["dispatch"].get("dispatchStatus", {}))
+    normalized["updatedAt"] = session["updatedAt"]
+    normalized["context"] = session.get("context", {})
+    _append_audit_event(
+        normalized,
+        "dispatch_completed",
+        normalized["dispatch"].get("dispatchStatus", {}),
+        actor=user.get("sub"),
+    )
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
     sessions[session_id] = normalized
@@ -9758,7 +10173,7 @@ async def dispatch_workflow_session_v1(
 async def get_patient_questions_v1(
     encounter_id: str, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    _user_id, _state, sessions = _get_finalization_sessions(user["sub"])
+    user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     for sid, payload in sessions.items():
         if payload.get("encounterId") == encounter_id:
             normalized = _normalize_finalization_session(payload)
@@ -9767,6 +10182,16 @@ async def get_patient_questions_v1(
                 "sessionId": sid,
                 "questions": normalized.get("patientQuestions", []),
             }
+    shared_id, shared_payload = _fetch_shared_session_by_encounter(encounter_id)
+    if shared_payload:
+        normalized = _normalize_finalization_session(shared_payload)
+        sessions[shared_id] = copy.deepcopy(normalized)
+        _persist_finalization_sessions(user_id, session_state, sessions)
+        return {
+            "encounterId": encounter_id,
+            "sessionId": shared_id,
+            "questions": normalized.get("patientQuestions", []),
+        }
     return {"encounterId": encounter_id, "sessionId": None, "questions": []}
 
 
@@ -9779,33 +10204,44 @@ async def answer_patient_question_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if any(str(item.get("id")) == str(question_id) for item in entry.get("patientQuestions", [])):
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found for question")
     session = copy.deepcopy(payload)
     questions = session.get("patientQuestions") or []
     updated = None
+    answer_timestamp = req.timestamp or _utc_now_iso()
     for item in questions:
         if str(item.get("id")) == str(question_id):
             item["answer"] = req.answer
             item["answeredBy"] = req.answeredBy or user.get("sub")
-            item["answeredAt"] = req.timestamp or _utc_now_iso()
+            item["answeredAt"] = answer_timestamp
             item["status"] = "resolved"
             updated = item
             break
     if updated is None:
         raise HTTPException(status_code=404, detail="Question not found")
     session["patientQuestions"] = questions
-    session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "question_answered", {"questionId": question_id})
+    _register_session_activity(session, user)
+    session["updatedAt"] = answer_timestamp
+    _append_audit_event(
+        session,
+        "question_answered",
+        {"questionId": question_id},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
+    normalized["updatedAt"] = session["updatedAt"]
+    normalized["context"] = session.get("context", {})
     sessions[session_id] = normalized
     _persist_finalization_sessions(user_id, session_state, sessions)
     question_payload = next(
@@ -9827,32 +10263,43 @@ async def update_patient_question_status_v1(
     user_id, session_state, sessions = _get_finalization_sessions(user["sub"])
     session_id = req.sessionId
     payload = None
-    if session_id and session_id in sessions:
-        payload = sessions[session_id]
-    else:
+    if session_id:
+        user_id, session_state, sessions, payload = _resolve_session_for_user(
+            user["sub"], session_id
+        )
+    if payload is None:
         for sid, entry in sessions.items():
             if any(str(item.get("id")) == str(question_id) for item in entry.get("patientQuestions", [])):
                 payload = entry
                 session_id = sid
                 break
-    if not payload:
+    if payload is None:
         raise HTTPException(status_code=404, detail="Session not found for question")
     session = copy.deepcopy(payload)
     questions = session.get("patientQuestions") or []
     updated = None
+    status_timestamp = req.timestamp or _utc_now_iso()
     for item in questions:
         if str(item.get("id")) == str(question_id):
             item["status"] = req.status
             item["updatedBy"] = req.updatedBy or user.get("sub")
-            item["updatedAt"] = req.timestamp or _utc_now_iso()
+            item["updatedAt"] = status_timestamp
             updated = item
             break
     if updated is None:
         raise HTTPException(status_code=404, detail="Question not found")
     session["patientQuestions"] = questions
-    session["updatedAt"] = _utc_now_iso()
-    _append_audit_event(session, "question_status_updated", {"questionId": question_id, "status": req.status})
+    _register_session_activity(session, user)
+    session["updatedAt"] = status_timestamp
+    _append_audit_event(
+        session,
+        "question_status_updated",
+        {"questionId": question_id, "status": req.status},
+        actor=user.get("sub"),
+    )
     normalized = _normalize_finalization_session(session)
+    normalized["updatedAt"] = session["updatedAt"]
+    normalized["context"] = session.get("context", {})
     sessions[session_id] = normalized
     _persist_finalization_sessions(user_id, session_state, sessions)
     question_payload = next(
