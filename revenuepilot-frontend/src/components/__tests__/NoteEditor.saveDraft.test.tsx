@@ -164,8 +164,8 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
         valid: true,
         encounter: {
           encounterId: 1001,
-          patientId: "PT-1001",
-          patient: { patientId: "PT-1001" },
+          patientId: "PT-42",
+          patient: { patientId: "PT-42" },
           date: "2024-03-14",
           type: "Consult",
           provider: "Dr. Example"
@@ -191,6 +191,19 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
 
   if (url === "/api/notes/create") {
     return new Response(JSON.stringify({ noteId: "note-123" }), { status: 200 })
+  }
+
+  if (url.startsWith("/api/notes/versions/")) {
+    const id = url.split("/").pop() ?? ""
+    const content = id === "42"
+      ? "Patient ID: PT-42\nEncounter ID: 42\nExisting content"
+      : "Seed content"
+    return new Response(
+      JSON.stringify([
+        { content, timestamp: "2024-01-01T00:00:00Z" }
+      ]),
+      { status: 200 }
+    )
   }
 
   if (url === "/api/notes/auto-save") {
@@ -293,5 +306,48 @@ describe("NoteEditor manual draft save", () => {
 
     expect(onNavigate).not.toHaveBeenCalled()
     expect(toastError).toHaveBeenCalled()
+  })
+
+  it("continues saving to the provided noteId when a draft is seeded", async () => {
+    const onNavigate = vi.fn()
+    render(
+      <NoteEditor
+        prePopulatedPatient={null}
+        initialNoteData={{
+          noteId: "42",
+          content: "Patient ID: PT-42\nEncounter ID: 42\nExisting content",
+          patientId: "PT-42",
+          encounterId: "42",
+          patientName: "John Doe"
+        }}
+        selectedCodes={{ codes: 0, prevention: 0, diagnoses: 0, differentials: 0 }}
+        selectedCodesList={[]}
+        onNavigateToDrafts={onNavigate}
+        testOverrides={{ initialRecordedSeconds: 120 }}
+      />
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/patient id/i)).toHaveValue("PT-42")
+    })
+
+    const saveButton = await screen.findByRole("button", { name: /save draft/i })
+    fireEvent.click(saveButton)
+
+    await waitFor(() => {
+      expect(onNavigate).toHaveBeenCalledTimes(1)
+    })
+
+    const createCall = fetchMock.mock.calls.find(
+      ([input]) => resolveUrl(input) === "/api/notes/create"
+    )
+    expect(createCall).toBeUndefined()
+
+    const autoSaveCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        resolveUrl(input) === "/api/notes/auto-save" &&
+        (init?.method ?? "GET").toUpperCase() === "PUT"
+    )
+    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ note_id: 42 })
   })
 })

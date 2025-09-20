@@ -63,6 +63,7 @@ interface RichTextEditorProps {
   onContentChange?: (content: string) => void
   noteId?: string
   autoSaveDelayMs?: number
+  initialContent?: string
 }
 
 const DEFAULT_NOTE_CONTENT = `SUBJECTIVE:
@@ -305,8 +306,9 @@ export function RichTextEditor({
   onContentChange,
   noteId,
   autoSaveDelayMs = 3000,
+  initialContent,
 }: RichTextEditorProps) {
-  const [content, setContent] = useState(DEFAULT_NOTE_CONTENT)
+  const [content, setContent] = useState(initialContent ?? DEFAULT_NOTE_CONTENT)
   const [templates, setTemplates] = useState<TemplateOption[]>(FALLBACK_TEMPLATES)
   const [templatesLoading, setTemplatesLoading] = useState(false)
   const [templatesError, setTemplatesError] = useState<string | null>(null)
@@ -321,8 +323,9 @@ export function RichTextEditor({
   const noteIdRef = useRef<string>(noteId ?? createGeneratedNoteId())
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const skipAutoSaveRef = useRef(false)
-  const lastSavedContentRef = useRef<string>("")
+  const lastSavedContentRef = useRef<string>(initialContent ?? "")
   const isMountedRef = useRef(true)
+  const lastInitialContentRef = useRef<string | undefined>(initialContent)
 
   useEffect(() => {
     return () => {
@@ -349,7 +352,8 @@ export function RichTextEditor({
   useEffect(() => {
     if (noteId && noteId !== noteIdRef.current) {
       noteIdRef.current = noteId
-      lastSavedContentRef.current = ""
+      lastSavedContentRef.current = initialContent ?? ""
+      lastInitialContentRef.current = initialContent
       setVersionHistory([])
       setHistoryIndex(-1)
       setHasLoadedHistory(false)
@@ -358,9 +362,34 @@ export function RichTextEditor({
       if (autoSaveTimerRef.current) {
         clearTimeout(autoSaveTimerRef.current)
       }
-      handleContentChange(DEFAULT_NOTE_CONTENT, { skipAutoSave: true })
+      handleContentChange(initialContent ?? DEFAULT_NOTE_CONTENT, { skipAutoSave: true })
+    } else if (!noteId && noteIdRef.current) {
+      noteIdRef.current = createGeneratedNoteId()
+      lastSavedContentRef.current = initialContent ?? ""
+      lastInitialContentRef.current = initialContent
+      setVersionHistory([])
+      setHistoryIndex(-1)
+      setHasLoadedHistory(false)
+      setLastSavedTime(null)
+      setSaveError(null)
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+      }
+      handleContentChange(initialContent ?? DEFAULT_NOTE_CONTENT, { skipAutoSave: true })
     }
-  }, [noteId, handleContentChange])
+  }, [noteId, initialContent, handleContentChange])
+
+  useEffect(() => {
+    if (initialContent === undefined) {
+      return
+    }
+    if (lastInitialContentRef.current === initialContent) {
+      return
+    }
+    lastInitialContentRef.current = initialContent
+    lastSavedContentRef.current = initialContent
+    handleContentChange(initialContent, { skipAutoSave: true })
+  }, [initialContent, handleContentChange])
 
   useEffect(() => {
     let isActive = true

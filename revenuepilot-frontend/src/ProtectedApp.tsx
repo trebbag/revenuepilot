@@ -7,7 +7,7 @@ import { Analytics } from "./components/Analytics"
 import { Settings } from "./components/Settings"
 import { ActivityLog } from "./components/ActivityLog"
 import { Drafts } from "./components/Drafts"
-import { Schedule } from "./components/Schedule"
+import { Schedule, type ScheduleChartUploadStatus } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
 import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
@@ -73,7 +73,17 @@ interface DraftAnalyticsSummary {
   drafts: number
 }
 
+
 type NoteViewMode = "draft" | "beautified"
+
+interface ActiveDraftState {
+  noteId: string
+  content: string
+  patientId?: string
+  encounterId?: string
+  patientName?: string
+}
+
 
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
@@ -113,6 +123,7 @@ export function ProtectedApp() {
     patientId: string
     encounterId: string
   } | null>(null)
+  const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
 
   const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
@@ -151,6 +162,7 @@ export function ProtectedApp() {
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0)
   const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
   const [draftCount, setDraftCount] = useState<number | null>(null)
+  const [chartUploadStatuses, setChartUploadStatuses] = useState<Record<string, ScheduleChartUploadStatus>>({})
 
   const [noteViewMode, setNoteViewMode] = useState<NoteViewMode>("draft")
   const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
@@ -594,11 +606,81 @@ export function ProtectedApp() {
     )
   }
 
-  const handleEditDraft = (draftId: string) => {
-    console.log(`Editing draft: ${draftId}`)
-    // In a real app, this would load the draft data and navigate to the editor
-    handleNavigate('app')
-  }
+  const extractDraftField = useCallback((content: string, pattern: RegExp) => {
+    const match = pattern.exec(content)
+    if (!match || typeof match[1] !== 'string') {
+      return undefined
+    }
+    const value = match[1].trim()
+    return value.length > 0 ? value : undefined
+  }, [])
+
+  const handleEditDraft = useCallback(
+    async (draftId: string) => {
+      const normalizedId = draftId.replace(/^draft-/i, '').trim()
+      if (!normalizedId) {
+        return
+      }
+
+      sessionActions.reset()
+
+      try {
+        let draftContent = ''
+        const versions = await apiFetchJson<any[]>(`/api/notes/versions/${encodeURIComponent(normalizedId)}`, {
+          fallbackValue: [],
+          returnNullOnEmpty: true
+        })
+        if (Array.isArray(versions) && versions.length > 0) {
+          const latest = versions[versions.length - 1]
+          if (latest && typeof latest.content === 'string') {
+            draftContent = latest.content
+          }
+        }
+
+        if (!draftContent) {
+          const drafts = await apiFetchJson<any[]>("/api/notes/drafts", {
+            fallbackValue: [],
+            returnNullOnEmpty: true
+          })
+          const match = Array.isArray(drafts)
+            ? drafts.find(entry => String(entry?.id) === normalizedId)
+            : undefined
+          if (match && typeof match.content === 'string') {
+            draftContent = match.content
+          }
+        }
+
+        const patientId = extractDraftField(draftContent, /patient\s*id\s*[:\-]\s*([^\n]+)/i)
+        const encounterId = extractDraftField(draftContent, /encounter\s*id\s*[:\-]\s*([^\n]+)/i)
+        const patientName = extractDraftField(
+          draftContent,
+          /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i,
+        )
+
+        setActiveDraft({
+          noteId: normalizedId,
+          content: draftContent,
+          patientId,
+          encounterId,
+          patientName
+        })
+
+        if (patientId || encounterId) {
+          setPrePopulatedPatient({
+            patientId: patientId ?? '',
+            encounterId: encounterId ?? ''
+          })
+        } else {
+          setPrePopulatedPatient(null)
+        }
+
+        handleNavigate('app')
+      } catch (error) {
+        console.error('Failed to load draft note', error)
+      }
+    },
+    [apiFetchJson, extractDraftField, handleNavigate, sessionActions],
+  )
 
   const handleStartVisit = useCallback(
     async (appointmentId: string, patientId: string, encounterId: string) => {
@@ -609,6 +691,7 @@ export function ProtectedApp() {
           console.error('Failed to update appointment status', error)
         }
       }
+      setActiveDraft(null)
       setPrePopulatedPatient({ patientId, encounterId })
       handleNavigate('app')
     },
@@ -619,12 +702,160 @@ export function ProtectedApp() {
     setDraftCount(summary.total)
   }, [])
 
-  const handleUploadChart = (patientId: string) => {
-    console.log(`Uploading chart for patient ${patientId}`)
-    // In a real app, this would open the chart upload wizard
-    // For now, we'll just log it - the wizard will be built later
-    alert(`Chart upload wizard for patient ${patientId} will be implemented in the next phase.`)
-  }
+  const handleUploadChart = useCallback((patientId: string) => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = ".pdf,.txt,.rtf,.doc,.docx,.json,.xml"
+
+    const cleanup = () => {
+      input.value = ""
+      input.remove()
+    }
+
+    const uploadFile = async (file: File) => {
+      const boundary = `----RevenuePilotUpload${Math.random().toString(16).slice(2)}`
+      const encoder = new TextEncoder()
+      const safeFileName = file.name.replace(/"/g, "%22") || "chart-upload"
+      const prefixBytes = encoder.encode(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeFileName}"\r\nContent-Type: ${
+          file.type || "application/octet-stream"
+        }\r\n\r\n`
+      )
+      const suffixBytes = encoder.encode("\r\n--" + boundary + "--\r\n")
+      const totalBytes = Math.max(prefixBytes.byteLength + file.size + suffixBytes.byteLength, 1)
+      let uploadedBytes = 0
+      const reader = file.stream().getReader()
+
+      const updateProgress = (progress: number, status: ScheduleChartUploadStatus["status"] = "uploading", error?: string) => {
+        const boundedProgress = Math.max(0, Math.min(100, Math.round(progress)))
+        setChartUploadStatuses(prev => ({
+          ...prev,
+          [patientId]: {
+            status,
+            progress: boundedProgress,
+            fileName: file.name,
+            error
+          }
+        }))
+      }
+
+      updateProgress(0)
+
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(prefixBytes)
+          uploadedBytes += prefixBytes.byteLength
+          updateProgress((uploadedBytes / totalBytes) * 100)
+
+          const pump = (): void => {
+            reader
+              .read()
+              .then(({ done, value }) => {
+                if (done) {
+                  controller.enqueue(suffixBytes)
+                  uploadedBytes += suffixBytes.byteLength
+                  updateProgress((uploadedBytes / totalBytes) * 100)
+                  controller.close()
+                  return
+                }
+
+                if (value) {
+                  controller.enqueue(value)
+                  uploadedBytes += value.byteLength
+                  updateProgress((uploadedBytes / totalBytes) * 100)
+                }
+
+                pump()
+              })
+              .catch(error => {
+                controller.error(error)
+              })
+          }
+
+          pump()
+        },
+        cancel(reason) {
+          reader.cancel(reason).catch(() => undefined)
+        }
+      })
+
+      const controller = new AbortController()
+
+      try {
+        const response = await apiFetch("/api/charts/upload", {
+          method: "POST",
+          body: stream,
+          headers: {
+            "Content-Type": `multipart/form-data; boundary=${boundary}`
+          },
+          signal: controller.signal
+        })
+
+        if (!response.ok) {
+          const message = await response.text()
+          throw new Error(message || "Unable to upload chart.")
+        }
+
+        try {
+          await response.json()
+        } catch {
+          // Ignore JSON parsing issues – upload succeeded
+        }
+
+        updateProgress(100, "success")
+
+        setAppointmentsState(prev => {
+          if (!prev.data) {
+            return prev
+          }
+          return {
+            ...prev,
+            data: prev.data.map(appointment =>
+              appointment.patientId === patientId
+                ? { ...appointment, fileUpToDate: true }
+                : appointment
+            )
+          }
+        })
+
+        try {
+          await apiFetchJson("/api/activity/log", {
+            method: "POST",
+            jsonBody: {
+              action: "chart.upload",
+              category: "chart",
+              details: {
+                patientId,
+                fileName: file.name,
+                size: file.size
+              }
+            }
+          })
+        } catch (error) {
+          console.error("Failed to log chart upload", error)
+        }
+
+        triggerScheduleRefresh()
+      } catch (error) {
+        if ((error as DOMException)?.name === "AbortError") {
+          return
+        }
+        const message = error instanceof Error ? error.message : "Unable to upload chart."
+        updateProgress(0, "error", message)
+      }
+    }
+
+    input.addEventListener("change", () => {
+      const file = input.files?.[0]
+      if (!file) {
+        cleanup()
+        return
+      }
+      void uploadFile(file).finally(cleanup)
+    })
+
+    input.click()
+  }, [triggerScheduleRefresh])
 
   // Calculate user's draft count for navigation badge
   const getUserDraftCount = () => {
@@ -906,6 +1137,7 @@ export function ProtectedApp() {
                   currentUser={currentUser}
                   onStartVisit={handleStartVisit}
                   onUploadChart={handleUploadChart}
+                  uploadStatuses={chartUploadStatuses}
                   appointments={appointmentsState.data ?? []}
                   loading={appointmentsState.loading}
                   error={appointmentsState.error}
@@ -1121,6 +1353,7 @@ export function ProtectedApp() {
                 <div className="flex flex-col h-full">
                   <NoteEditor
                     prePopulatedPatient={prePopulatedPatient}
+                    initialNoteData={activeDraft ?? undefined}
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
                     onNavigateToDrafts={() => handleNavigate('drafts')}
