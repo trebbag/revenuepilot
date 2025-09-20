@@ -1288,3 +1288,22 @@ def ensure_session_state_table(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+
+def ensure_shared_workflow_sessions_table(conn: sqlite3.Connection) -> None:
+    """Persist shared workflow sessions accessible across collaborators."""
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS shared_workflow_sessions (
+            session_id TEXT PRIMARY KEY,
+            owner_username TEXT,
+            data TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shared_workflow_sessions_owner ON shared_workflow_sessions(owner_username)"
+    )
+    conn.commit()
+
