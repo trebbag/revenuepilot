@@ -9,7 +9,13 @@ import {
   FileAlert
 } from "lucide-react"
 import { Badge } from "../ui/badge"
-import { Notification, formatTime, getNotificationBorderColor } from "./NotificationUtils"
+import {
+  Notification,
+  formatTime,
+  getNotificationBorderColor,
+  getNotificationColorClasses,
+  getVisualSeverity
+} from "./NotificationUtils"
 
 interface NotificationsPanelProps {
   isOpen: boolean
@@ -48,8 +54,9 @@ export function NotificationsPanel({
 
   if (!isOpen) return null
 
-  const getNotificationIcon = (type: Notification['type']) => {
-    switch (type) {
+  const getNotificationIcon = (severity: string) => {
+    const visual = getVisualSeverity(severity)
+    switch (visual) {
       case 'warning':
         return <AlertCircle className="w-4 h-4 text-orange-500" />
       case 'error':
@@ -58,19 +65,6 @@ export function NotificationsPanel({
         return <CheckCircle className="w-4 h-4 text-green-500" />
       default:
         return <Bell className="w-4 h-4 text-blue-500" />
-    }
-  }
-
-  const getNotificationTypeColor = (type: Notification['type']) => {
-    switch (type) {
-      case 'warning':
-        return 'text-orange-600 bg-orange-50 border-orange-200'
-      case 'error':
-        return 'text-red-600 bg-red-50 border-red-200'
-      case 'success':
-        return 'text-green-600 bg-green-50 border-green-200'
-      default:
-        return 'text-blue-600 bg-blue-50 border-blue-200'
     }
   }
 
@@ -140,17 +134,17 @@ export function NotificationsPanel({
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.03 }}
                   className={`relative p-4 transition-all duration-200 cursor-pointer group ${
-                    !notification.isRead 
-                      ? 'bg-gradient-to-r from-blue-50/60 to-blue-50/30 hover:from-blue-50/80 hover:to-blue-50/50' 
+                    !notification.isRead
+                      ? 'bg-gradient-to-r from-blue-50/60 to-blue-50/30 hover:from-blue-50/80 hover:to-blue-50/50'
                       : 'bg-white hover:bg-stone-50/70'
                   } ${index % 2 === 1 ? 'bg-stone-25/30' : ''} border-l-4 ${
-                    !notification.isRead ? 'border-l-blue-400' : getNotificationBorderColor(notification.type).replace('border-l-', 'border-l-')
+                    !notification.isRead ? 'border-l-blue-400' : getNotificationBorderColor(notification.severity)
                   }`}
                   onClick={() => onMarkAsRead(notification.id)}
                 >
                   <div className="flex items-start gap-3">
-                    <div className={`flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center border-2 shadow-sm ${getNotificationTypeColor(notification.type)}`}>
-                      {getNotificationIcon(notification.type)}
+                    <div className={`flex-shrink-0 w-9 h-9 rounded-xl flex items-center justify-center border-2 shadow-sm ${getNotificationColorClasses(notification.severity)}`}>
+                      {getNotificationIcon(notification.severity)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-start justify-between gap-3 mb-2">
@@ -175,11 +169,11 @@ export function NotificationsPanel({
                         {notification.message}
                       </p>
                       <div className="flex items-center justify-between">
-                        <Badge 
-                          variant="outline" 
-                          className={`text-xs px-2 py-1 font-medium border-2 ${getNotificationTypeColor(notification.type)} border-current shadow-sm`}
+                        <Badge
+                          variant="outline"
+                          className={`text-xs px-2 py-1 font-medium border-2 ${getNotificationColorClasses(notification.severity)} border-current shadow-sm`}
                         >
-                          {notification.priority.toUpperCase()}
+                          {(notification.severity || 'info').toUpperCase()}
                         </Badge>
                         {!notification.isRead && (
                           <span className="text-xs text-blue-700 font-medium opacity-0 group-hover:opacity-100 transition-opacity bg-blue-100/60 px-2 py-1 rounded-full">

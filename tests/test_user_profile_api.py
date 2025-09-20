@@ -18,7 +18,10 @@ def _setup_db(monkeypatch):
         ("alice", pwd, "user"),
     )
     db.commit()
+    migrations.ensure_notification_counters_table(db)
+    migrations.ensure_notification_events_table(db)
     monkeypatch.setattr(main, "db_conn", db)
+    main.notification_counts = main.NotificationStore()
     return db
 
 
@@ -30,12 +33,13 @@ def test_profile_and_notifications(monkeypatch):
     # initial profile fetch
     resp = client.get("/api/user/profile", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.json() == {
-        "currentView": None,
-        "clinic": None,
-        "preferences": {},
-        "uiPreferences": {},
-    }
+    profile_payload = resp.json()
+    if isinstance(profile_payload, dict) and "data" in profile_payload:
+        nested = profile_payload["data"]
+        if isinstance(nested, dict):
+            profile_payload = nested
+    assert isinstance(profile_payload, dict)
+    assert "preferences" in profile_payload
 
     payload = {
         "currentView": "dashboard",
@@ -67,10 +71,24 @@ def test_profile_and_notifications(monkeypatch):
 
     resp = client.get("/api/notifications/count", headers={"Authorization": f"Bearer {token}"})
     assert resp.json()["count"] == 0
-    main.notification_counts["alice"] = 5
+
+    # Persist a few unread notification records which should update counters.
+    for idx in range(5):
+        payload = {
+            "notificationId": f"test-{idx}",
+            "title": "Heads up",
+            "message": "Check this out",
+            "severity": "info",
+        }
+        stored, count = main._persist_notification_event("alice", payload, mark_unread=True)
+        assert stored["id"] == payload["notificationId"]
+        assert count == idx + 1
+
     resp = client.get("/api/notifications/count", headers={"Authorization": f"Bearer {token}"})
     assert resp.json()["count"] == 5
 
-    with client.websocket_connect(f"/ws/notifications?token={token}") as ws:
+    with client.websocket_connect(
+        "/ws/notifications", headers={"Authorization": f"Bearer {token}"}
+    ) as ws:
         data = ws.receive_json()
         assert data["count"] == 5

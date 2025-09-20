@@ -20,7 +20,7 @@ import { Avatar, AvatarFallback } from "./ui/avatar"
 import { getPrimaryNavItems, secondaryNavItems, bottomNavItems } from "./navigation/NavigationConfig"
 import { NotificationsPanel } from "./navigation/NotificationsPanel"
 import { Notification } from "./navigation/NotificationUtils"
-import { apiFetch, apiFetchJson } from "../lib/api"
+import { apiFetch, apiFetchJson, resolveWebsocketUrl } from "../lib/api"
 import { isViewKey, mapServerViewToViewKey, mapViewKeyToServerView } from "../lib/navigation"
 import type { ViewKey } from "../lib/navigation"
 
@@ -31,10 +31,6 @@ interface UIPreferences {
 
 interface CurrentViewResponse {
   currentView: string | null
-}
-
-interface NotificationCountResponse {
-  count: number
 }
 
 interface UserProfileResponse {
@@ -48,7 +44,34 @@ interface UiPreferencesResponse {
   uiPreferences: UIPreferences
 }
 
+interface NotificationListResponse {
+  items?: Array<{
+    id?: string | number
+    eventId?: string | number
+    title?: string
+    message?: string
+    severity?: string
+    timestamp?: string
+    createdAt?: string
+    created_at?: string
+    isRead?: boolean
+    is_read?: boolean
+    readAt?: string | null
+    read_at?: string | null
+  }>
+  total?: number
+  limit?: number
+  offset?: number
+  nextOffset?: number | null
+  unreadCount?: number
+}
+
+interface NotificationUpdateResponse {
+  unreadCount?: number
+}
+
 const NOTIFICATION_ERROR_ID = "notifications-error"
+const NOTIFICATION_PAGE_SIZE = 20
 
 interface CurrentUser {
   id: string
@@ -308,6 +331,57 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
     uiPreferencesRef.current = uiPreferences
   }, [uiPreferences])
 
+  const applyNotificationsResponse = useCallback((response: NotificationListResponse | null | undefined) => {
+    const items = Array.isArray(response?.items) ? response?.items ?? [] : []
+    const mapped: Notification[] = items.map(item => {
+      const timestamp =
+        typeof item.timestamp === 'string'
+          ? item.timestamp
+          : typeof item.createdAt === 'string'
+            ? item.createdAt
+            : typeof item.created_at === 'string'
+              ? item.created_at
+              : new Date().toISOString()
+      const severity = typeof item.severity === 'string' ? item.severity : 'info'
+      const title =
+        typeof item.title === 'string' && item.title.trim().length > 0 ? item.title : 'Notification'
+      const message =
+        typeof item.message === 'string' && item.message.trim().length > 0
+          ? item.message
+          : 'You have a new notification.'
+      const readAt =
+        typeof item.readAt === 'string'
+          ? item.readAt
+          : typeof item.read_at === 'string'
+            ? item.read_at
+            : null
+      const readFlag =
+        typeof item.isRead === 'boolean'
+          ? item.isRead
+          : typeof item.is_read === 'boolean'
+            ? item.is_read
+            : undefined
+      const idSource = item.id ?? item.eventId ?? Math.random().toString(36).slice(2)
+      return {
+        id: String(idSource),
+        title,
+        message,
+        severity,
+        timestamp,
+        isRead: typeof readFlag === 'boolean' ? readFlag : Boolean(readAt),
+        readAt
+      }
+    })
+
+    setNotifications(mapped)
+    const unread =
+      typeof response?.unreadCount === 'number'
+        ? response.unreadCount
+        : mapped.reduce((acc, item) => (item.isRead ? acc : acc + 1), 0)
+    setNotificationCount(unread)
+    setNotificationsError(null)
+  }, [])
+
   useEffect(() => {
     let active = true
 
@@ -316,9 +390,9 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         setNotificationsLoading(true)
         setProfileLoading(true)
 
-        const [viewResult, countResult, profileResult, prefsResult] = await Promise.allSettled([
+        const [viewResult, notificationsResult, profileResult, prefsResult] = await Promise.allSettled([
           apiFetchJson<CurrentViewResponse>("/api/user/current-view"),
-          apiFetchJson<NotificationCountResponse>("/api/notifications/count"),
+          apiFetchJson<NotificationListResponse>(`/api/notifications?limit=${NOTIFICATION_PAGE_SIZE}&offset=0`),
           apiFetchJson<UserProfileResponse>("/api/user/profile"),
           apiFetchJson<UiPreferencesResponse>("/api/user/ui-preferences")
         ])
@@ -369,13 +443,12 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
 
         setProfileError(profileMessage)
 
-        if (countResult.status === "fulfilled") {
-          setNotificationCount(countResult.value?.count ?? 0)
-          setNotificationsError(null)
+        if (notificationsResult.status === "fulfilled") {
+          applyNotificationsResponse(notificationsResult.value ?? undefined)
         } else {
           setNotificationsError("Unable to load notifications.")
-          if (countResult.status === "rejected") {
-            console.error(countResult.reason)
+          if (notificationsResult.status === "rejected") {
+            console.error(notificationsResult.reason)
           }
         }
       } catch (error) {
@@ -529,10 +602,9 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         id: NOTIFICATION_ERROR_ID,
         title: "Notifications unavailable",
         message: notificationsError,
-        type: "error",
+        severity: "error",
         timestamp: new Date().toISOString(),
-        isRead: false,
-        priority: "high"
+        isRead: false
       }
 
       const others = prev.filter(notification => notification.id !== NOTIFICATION_ERROR_ID)
@@ -549,44 +621,38 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
   }, [normalizedCurrentView, persistCurrentView, profileLoading])
 
   const normaliseNotificationPayload = useCallback((payload: Record<string, any>): Notification => {
-    const severity = typeof payload.severity === "string" ? payload.severity.toLowerCase() : undefined
-    const explicitType = typeof payload.type === "string" ? payload.type.toLowerCase() : undefined
+    const severityCandidate =
+      typeof payload.severity === 'string'
+        ? payload.severity
+        : typeof payload.level === 'string'
+          ? payload.level
+          : typeof payload.type === 'string'
+            ? payload.type
+            : 'info'
 
-    let notificationType: Notification['type'] = 'info'
-    if (explicitType === 'error' || severity === 'critical') {
-      notificationType = 'error'
-    } else if (explicitType === 'warning' || severity === 'warning' || severity === 'high') {
-      notificationType = 'warning'
-    } else if (explicitType === 'success' || severity === 'success') {
-      notificationType = 'success'
-    }
-
-    let priority: Notification['priority'] = 'medium'
-    if (severity === 'critical' || severity === 'high') {
-      priority = 'high'
-    } else if (severity === 'low') {
-      priority = 'low'
-    }
-
-    const timestamp = typeof payload.timestamp === "string" ? payload.timestamp : new Date().toISOString()
-    const title = typeof payload.title === "string" ? payload.title : "Notification"
+    const timestamp =
+      typeof payload.timestamp === 'string'
+        ? payload.timestamp
+        : typeof payload.createdAt === 'string'
+          ? payload.createdAt
+          : typeof payload.created_at === 'string'
+            ? payload.created_at
+            : new Date().toISOString()
+    const titleCandidate = typeof payload.title === 'string' ? payload.title : undefined
 
     const descriptionCandidate =
-      typeof payload.message === "string"
+      typeof payload.message === 'string'
         ? payload.message
-        : typeof payload.description === "string"
+        : typeof payload.description === 'string'
           ? payload.description
-          : typeof payload.detail === "string"
+          : typeof payload.detail === 'string'
             ? payload.detail
             : undefined
 
     const message =
-      descriptionCandidate ??
-      (notificationType === 'error'
-        ? 'An issue requires your attention.'
-        : notificationType === 'warning'
-          ? 'A new warning has been received.'
-          : 'You have a new notification.')
+      typeof descriptionCandidate === 'string' && descriptionCandidate.trim().length > 0
+        ? descriptionCandidate
+        : 'You have a new notification.'
 
     const idSource =
       payload.eventId ??
@@ -594,16 +660,52 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
       payload.notificationId ??
       Math.random().toString(36).slice(2)
 
+    const readAt =
+      typeof payload.readAt === 'string'
+        ? payload.readAt
+        : typeof payload.read_at === 'string'
+          ? payload.read_at
+          : undefined
+
+    const readFlag =
+      typeof payload.isRead === 'boolean'
+        ? payload.isRead
+        : typeof payload.is_read === 'boolean'
+          ? payload.is_read
+          : undefined
+
     return {
       id: String(idSource),
-      title,
+      title: typeof titleCandidate === 'string' && titleCandidate.trim().length > 0 ? titleCandidate : 'Notification',
       message,
-      type: notificationType,
+      severity: typeof severityCandidate === 'string' ? severityCandidate : 'info',
       timestamp,
-      isRead: false,
-      priority
+      isRead: typeof readFlag === 'boolean' ? readFlag : Boolean(readAt),
+      readAt
     }
   }, [])
+
+  const refreshNotifications = useCallback(
+    async ({ silent }: { silent?: boolean } = {}) => {
+      if (!silent) {
+        setNotificationsLoading(true)
+      }
+      try {
+        const response = await apiFetchJson<NotificationListResponse>(
+          `/api/notifications?limit=${NOTIFICATION_PAGE_SIZE}&offset=0`
+        )
+        applyNotificationsResponse(response ?? undefined)
+        return response ?? undefined
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to load notifications.'
+        setNotificationsError(prev => prev ?? message)
+        throw error
+      } finally {
+        setNotificationsLoading(false)
+      }
+    },
+    [applyNotificationsResponse]
+  )
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -617,21 +719,20 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
 
     const fetchCount = async () => {
       try {
-        const data = await apiFetchJson<NotificationCountResponse>("/api/notifications/count")
+        const response = await refreshNotifications({ silent: true })
         if (closed) {
           return
         }
-        setNotificationCount(data?.count ?? 0)
+        if (response && typeof response.unreadCount === 'number') {
+          setNotificationCount(response.unreadCount)
+        }
         setNotificationsError(null)
       } catch (error) {
         if (closed) {
           return
         }
-        setNotificationsError(prev => prev ?? "Unable to refresh notifications.")
-      } finally {
-        if (!closed) {
-          setNotificationsLoading(false)
-        }
+        const message = error instanceof Error ? error.message : 'Unable to refresh notifications.'
+        setNotificationsError(prev => prev ?? message)
       }
     }
 
@@ -664,12 +765,17 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
           setNotifications(prev => {
             const withoutError = prev.filter(item => item.id !== NOTIFICATION_ERROR_ID)
             const existingIndex = withoutError.findIndex(item => item.id === notification.id)
+            let updated: Notification[]
             if (existingIndex !== -1) {
-              const clone = [...withoutError]
-              clone[existingIndex] = notification
-              return clone
+              updated = [...withoutError]
+              updated[existingIndex] = notification
+            } else {
+              updated = [notification, ...withoutError]
             }
-            return [notification, ...withoutError]
+            if (updated.length > NOTIFICATION_PAGE_SIZE) {
+              updated = updated.slice(0, NOTIFICATION_PAGE_SIZE)
+            }
+            return updated
           })
         }
 
@@ -687,8 +793,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
       }
 
       try {
-        const protocol = window.location.protocol === "https:" ? "wss" : "ws"
-        const url = `${protocol}://${window.location.host}/ws/notifications`
+        const url = resolveWebsocketUrl('/ws/notifications')
         ws = new WebSocket(url)
       } catch (error) {
         setNotificationsError(prev => prev ?? "Unable to connect to notifications channel.")
@@ -738,7 +843,7 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
         ws.close()
       }
     }
-  }, [normaliseNotificationPayload])
+  }, [normaliseNotificationPayload, refreshNotifications])
 
   const resolvedCurrentUser = useMemo<CurrentUser | undefined>(() => {
     if (currentUser) {
@@ -819,36 +924,49 @@ function NavigationSidebarContent({ currentView, onNavigate, currentUser, userDr
     setShowNotifications(prev => !prev)
   }, [])
 
-  const handleMarkAsRead = useCallback((id: string) => {
-    setNotifications(prev => {
-      let shouldDecrement = false
-      const updated = prev.map(notification => {
-        if (notification.id === id) {
-          if (!notification.isRead && id !== NOTIFICATION_ERROR_ID) {
-            shouldDecrement = true
-          }
-          return { ...notification, isRead: true }
-        }
-        return notification
-      })
-
-      if (shouldDecrement) {
-        setNotificationCount(count => Math.max(0, count - 1))
+  const handleMarkAsRead = useCallback(
+    async (id: string) => {
+      if (!id || id === NOTIFICATION_ERROR_ID) {
+        return
       }
+      try {
+        const response = await apiFetchJson<NotificationUpdateResponse>(
+          `/api/notifications/${encodeURIComponent(id)}/read`,
+          {
+            method: 'POST'
+          }
+        )
+        await refreshNotifications({ silent: true }).catch(() => undefined)
+        if (response && typeof response.unreadCount === 'number') {
+          setNotificationCount(response.unreadCount)
+        }
+        setNotificationsError(null)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to update notification.'
+        setNotificationsError(prev => prev ?? message)
+      }
+    },
+    [refreshNotifications]
+  )
 
-      return updated
-    })
-  }, [])
-
-  const handleMarkAllAsRead = useCallback(() => {
-    setNotifications(prev => {
-      const hasUnread = prev.some(notification => notification.id !== NOTIFICATION_ERROR_ID && !notification.isRead)
-      if (hasUnread) {
+  const handleMarkAllAsRead = useCallback(async () => {
+    try {
+      const response = await apiFetchJson<NotificationUpdateResponse>(
+        '/api/notifications/read-all',
+        { method: 'POST' }
+      )
+      await refreshNotifications({ silent: true }).catch(() => undefined)
+      if (response && typeof response.unreadCount === 'number') {
+        setNotificationCount(response.unreadCount)
+      } else {
         setNotificationCount(0)
       }
-      return prev.map(notification => ({ ...notification, isRead: true }))
-    })
-  }, [])
+      setNotificationsError(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to mark notifications as read.'
+      setNotificationsError(prev => prev ?? message)
+    }
+  }, [refreshNotifications])
 
   const handleCloseNotifications = useCallback(() => {
     setShowNotifications(false)
