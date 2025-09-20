@@ -97,6 +97,14 @@ interface TranscriptEntry {
   speaker?: string
 }
 
+interface InitialNoteData {
+  noteId: string
+  content: string
+  patientId?: string
+  encounterId?: string
+  patientName?: string
+}
+
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
   const lower = text.toLowerCase()
   if (lower.includes("critical") || lower.includes("violation") || lower.includes("missing")) {
@@ -120,6 +128,7 @@ interface NoteEditorProps {
     patientId: string
     encounterId: string
   } | null
+  initialNoteData?: InitialNoteData
   selectedCodes?: {
     codes: number
     prevention: number
@@ -136,6 +145,7 @@ interface NoteEditorProps {
 
 export function NoteEditor({
   prePopulatedPatient,
+  initialNoteData,
   selectedCodes = { codes: 0, prevention: 0, diagnoses: 0, differentials: 0 },
   selectedCodesList = [],
   onNoteContentChange,
@@ -143,8 +153,12 @@ export function NoteEditor({
   testOverrides
 }: NoteEditorProps) {
   const auth = useAuth()
-  const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
-  const [patientId, setPatientId] = useState(prePopulatedPatient?.patientId || "")
+  const [patientInputValue, setPatientInputValue] = useState(
+    initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || ""
+  )
+  const [patientId, setPatientId] = useState(
+    initialNoteData?.patientId || prePopulatedPatient?.patientId || ""
+  )
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
   const [patientSuggestions, setPatientSuggestions] = useState<PatientSuggestion[]>([])
   const [patientSearchLoading, setPatientSearchLoading] = useState(false)
@@ -152,9 +166,11 @@ export function NoteEditor({
   const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false)
   const [patientDetails, setPatientDetails] = useState<PatientDetailsResponse | null>(null)
 
-  const [encounterId, setEncounterId] = useState(prePopulatedPatient?.encounterId || "")
+  const [encounterId, setEncounterId] = useState(
+    initialNoteData?.encounterId || prePopulatedPatient?.encounterId || ""
+  )
   const [encounterValidation, setEncounterValidation] = useState<EncounterValidationState>({
-    status: prePopulatedPatient?.encounterId ? 'loading' : 'idle'
+    status: (initialNoteData?.encounterId || prePopulatedPatient?.encounterId) ? 'loading' : 'idle'
   })
 
   const specialty = useMemo(() => {
@@ -195,7 +211,7 @@ export function NoteEditor({
     return null
   }, [encounterValidation.encounter, patientDetails?.demographics?.insurance, selectedPatient?.insurance, auth.user])
 
-  const [noteContent, setNoteContent] = useState("")
+  const [noteContent, setNoteContent] = useState(initialNoteData?.content ?? "")
   const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([])
   const [complianceLoading, setComplianceLoading] = useState(false)
   const [complianceError, setComplianceError] = useState<string | null>(null)
@@ -218,7 +234,7 @@ export function NoteEditor({
   const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
   const [isFinalized, setIsFinalized] = useState(false)
 
-  const [noteId, setNoteId] = useState<string | null>(null)
+  const [noteId, setNoteId] = useState<string | null>(initialNoteData?.noteId ?? null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
   const [saveDraftLoading, setSaveDraftLoading] = useState(false)
@@ -231,15 +247,23 @@ export function NoteEditor({
   const patientDetailsAbortRef = useRef<AbortController | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
-  const lastComplianceContentRef = useRef<string>("")
+  const lastComplianceContentRef = useRef<string>(initialNoteData?.content ?? "")
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const autoSaveLastContentRef = useRef<string>("")
+  const autoSaveLastContentRef = useRef<string>(initialNoteData?.content ?? "")
   const noteCreatePromiseRef = useRef<Promise<string> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
+  const prevInitialNoteIdRef = useRef<string | null>(initialNoteData?.noteId ?? null)
+  const prevInitialContentRef = useRef<string>(initialNoteData?.content ?? "")
+  const prevInitialPatientIdRef = useRef<string | undefined>(initialNoteData?.patientId)
+  const prevInitialEncounterIdRef = useRef<string | undefined>(initialNoteData?.encounterId)
+  const prevInitialPatientNameRef = useRef<string | undefined>(initialNoteData?.patientName)
+  const prevPrePopulatedRef = useRef<{ patientId: string; encounterId: string } | null>(
+    prePopulatedPatient ?? null
+  )
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   type FetchOptions = ApiFetchOptions
@@ -461,6 +485,81 @@ export function NoteEditor({
     setIsRecording(false)
   }, [])
 
+  useEffect(() => {
+    const incomingId = initialNoteData?.noteId ?? null
+    const incomingContent = initialNoteData?.content ?? ""
+    const prevId = prevInitialNoteIdRef.current
+    const prevContent = prevInitialContentRef.current
+
+    if (
+      incomingId === prevId &&
+      incomingContent === prevContent &&
+      initialNoteData?.patientId === prevInitialPatientIdRef.current &&
+      initialNoteData?.encounterId === prevInitialEncounterIdRef.current &&
+      initialNoteData?.patientName === prevInitialPatientNameRef.current
+    ) {
+      if (!initialNoteData) {
+        return
+      }
+      return
+    }
+
+    prevInitialNoteIdRef.current = incomingId
+    prevInitialContentRef.current = incomingContent
+    prevInitialPatientIdRef.current = initialNoteData?.patientId
+    prevInitialEncounterIdRef.current = initialNoteData?.encounterId
+    prevInitialPatientNameRef.current = initialNoteData?.patientName
+    noteCreatePromiseRef.current = null
+    queuedAudioChunksRef.current = []
+    setNoteId(incomingId)
+    setIsFinalized(false)
+    setShowFinalizationWizard(false)
+    setLastAutoSaveTime(null)
+    setAutoSaveError(null)
+    setSaveDraftError(null)
+    setVisitSession({})
+    setVisitStarted(false)
+    setHasEverStarted(false)
+    setVisitLoading(false)
+    setVisitError(null)
+    setCurrentSessionTime(0)
+    setPausedTime(initialRecordedSeconds)
+    setTranscriptEntries([])
+    setTranscriptionIndex(-1)
+    setTranscriptionError(null)
+    setComplianceIssues([])
+    setComplianceError(null)
+    setComplianceLoading(false)
+    setPatientSuggestions([])
+    setIsPatientDropdownOpen(false)
+    setPatientSearchError(null)
+    setPatientSearchLoading(false)
+    setPatientDetails(null)
+    stopAudioStream()
+
+    const patientIdValue = initialNoteData?.patientId ?? ""
+    const encounterValue = initialNoteData?.encounterId ?? ""
+    setPatientId(patientIdValue)
+    setPatientInputValue(patientIdValue || initialNoteData?.patientName || "")
+    setEncounterId(encounterValue)
+    setEncounterValidation({ status: encounterValue ? "loading" : "idle" })
+
+    if (initialNoteData?.patientName || patientIdValue) {
+      setSelectedPatient({
+        patientId: patientIdValue || initialNoteData?.patientName || "",
+        name: initialNoteData?.patientName,
+        source: "local"
+      })
+    } else {
+      setSelectedPatient(null)
+    }
+
+    setNoteContent(incomingContent)
+    noteContentRef.current = incomingContent
+    autoSaveLastContentRef.current = incomingContent
+    lastComplianceContentRef.current = incomingContent
+  }, [initialNoteData, initialRecordedSeconds, stopAudioStream])
+
   const startAudioStream = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setTranscriptionError("Microphone access is not supported in this browser.")
@@ -619,14 +718,28 @@ export function NoteEditor({
   }, [patientId, noteId, ensureNoteCreated])
 
   useEffect(() => {
-    if (prePopulatedPatient?.patientId) {
-      setPatientId(prePopulatedPatient.patientId)
-      setPatientInputValue(prePopulatedPatient.patientId)
+    if (initialNoteData) {
+      prevPrePopulatedRef.current = prePopulatedPatient ?? null
+      return
     }
-    if (prePopulatedPatient?.encounterId) {
-      setEncounterId(prePopulatedPatient.encounterId)
+
+    const previous = prevPrePopulatedRef.current
+    const next = prePopulatedPatient ?? null
+    if (
+      previous?.patientId === next?.patientId &&
+      previous?.encounterId === next?.encounterId
+    ) {
+      return
     }
-  }, [prePopulatedPatient])
+
+    prevPrePopulatedRef.current = next
+    const nextPatientId = next?.patientId ?? ""
+    const nextEncounterId = next?.encounterId ?? ""
+    setPatientId(nextPatientId)
+    setPatientInputValue(nextPatientId)
+    setEncounterId(nextEncounterId)
+    setEncounterValidation({ status: nextEncounterId ? "loading" : "idle" })
+  }, [prePopulatedPatient, initialNoteData])
 
   useEffect(() => {
     if (!patientInputValue || patientInputValue.trim().length < 2) {
@@ -1915,6 +2028,8 @@ export function NoteEditor({
               void ensureNoteCreated(content).catch(() => {})
             }
           }}
+          noteId={noteId ?? undefined}
+          initialContent={initialNoteData?.content}
         />
       </div>
 

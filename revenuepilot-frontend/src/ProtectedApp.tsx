@@ -72,6 +72,14 @@ interface DraftAnalyticsSummary {
   drafts: number
 }
 
+interface ActiveDraftState {
+  noteId: string
+  content: string
+  patientId?: string
+  encounterId?: string
+  patientName?: string
+}
+
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
   settings: "manage:settings",
@@ -110,6 +118,7 @@ export function ProtectedApp() {
     patientId: string
     encounterId: string
   } | null>(null)
+  const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
 
   const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
@@ -587,11 +596,81 @@ export function ProtectedApp() {
     )
   }
 
-  const handleEditDraft = (draftId: string) => {
-    console.log(`Editing draft: ${draftId}`)
-    // In a real app, this would load the draft data and navigate to the editor
-    handleNavigate('app')
-  }
+  const extractDraftField = useCallback((content: string, pattern: RegExp) => {
+    const match = pattern.exec(content)
+    if (!match || typeof match[1] !== 'string') {
+      return undefined
+    }
+    const value = match[1].trim()
+    return value.length > 0 ? value : undefined
+  }, [])
+
+  const handleEditDraft = useCallback(
+    async (draftId: string) => {
+      const normalizedId = draftId.replace(/^draft-/i, '').trim()
+      if (!normalizedId) {
+        return
+      }
+
+      sessionActions.reset()
+
+      try {
+        let draftContent = ''
+        const versions = await apiFetchJson<any[]>(`/api/notes/versions/${encodeURIComponent(normalizedId)}`, {
+          fallbackValue: [],
+          returnNullOnEmpty: true
+        })
+        if (Array.isArray(versions) && versions.length > 0) {
+          const latest = versions[versions.length - 1]
+          if (latest && typeof latest.content === 'string') {
+            draftContent = latest.content
+          }
+        }
+
+        if (!draftContent) {
+          const drafts = await apiFetchJson<any[]>("/api/notes/drafts", {
+            fallbackValue: [],
+            returnNullOnEmpty: true
+          })
+          const match = Array.isArray(drafts)
+            ? drafts.find(entry => String(entry?.id) === normalizedId)
+            : undefined
+          if (match && typeof match.content === 'string') {
+            draftContent = match.content
+          }
+        }
+
+        const patientId = extractDraftField(draftContent, /patient\s*id\s*[:\-]\s*([^\n]+)/i)
+        const encounterId = extractDraftField(draftContent, /encounter\s*id\s*[:\-]\s*([^\n]+)/i)
+        const patientName = extractDraftField(
+          draftContent,
+          /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i,
+        )
+
+        setActiveDraft({
+          noteId: normalizedId,
+          content: draftContent,
+          patientId,
+          encounterId,
+          patientName
+        })
+
+        if (patientId || encounterId) {
+          setPrePopulatedPatient({
+            patientId: patientId ?? '',
+            encounterId: encounterId ?? ''
+          })
+        } else {
+          setPrePopulatedPatient(null)
+        }
+
+        handleNavigate('app')
+      } catch (error) {
+        console.error('Failed to load draft note', error)
+      }
+    },
+    [apiFetchJson, extractDraftField, handleNavigate, sessionActions],
+  )
 
   const handleStartVisit = useCallback(
     async (appointmentId: string, patientId: string, encounterId: string) => {
@@ -602,6 +681,7 @@ export function ProtectedApp() {
           console.error('Failed to update appointment status', error)
         }
       }
+      setActiveDraft(null)
       setPrePopulatedPatient({ patientId, encounterId })
       handleNavigate('app')
     },
@@ -1114,6 +1194,7 @@ export function ProtectedApp() {
                 <div className="flex flex-col h-full">
                   <NoteEditor
                     prePopulatedPatient={prePopulatedPatient}
+                    initialNoteData={activeDraft ?? undefined}
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
                     onNavigateToDrafts={() => handleNavigate('drafts')}
