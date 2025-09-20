@@ -10,6 +10,7 @@ import { Drafts } from "./components/Drafts"
 import { Schedule } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
+import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
 import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
 import { StyleGuide } from "./components/StyleGuide"
@@ -71,6 +72,8 @@ interface ScheduleFiltersSnapshot {
 interface DraftAnalyticsSummary {
   drafts: number
 }
+
+type NoteViewMode = "draft" | "beautified"
 
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
@@ -148,6 +151,10 @@ export function ProtectedApp() {
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0)
   const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
   const [draftCount, setDraftCount] = useState<number | null>(null)
+
+  const [noteViewMode, setNoteViewMode] = useState<NoteViewMode>("draft")
+  const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
+  const [ehrExportStatus, setEhrExportStatus] = useState<EhrExportState | null>(null)
 
   const normalizeText = useCallback((value?: string | null, fallback = "") => {
     if (!value) {
@@ -1117,6 +1124,13 @@ export function ProtectedApp() {
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
                     onNavigateToDrafts={() => handleNavigate('drafts')}
+                    initialViewMode="draft"
+                    viewMode={noteViewMode}
+                    onViewModeChange={setNoteViewMode}
+                    beautifiedNote={beautifiedNoteState}
+                    onBeautifiedNoteChange={setBeautifiedNoteState}
+                    ehrExportState={ehrExportStatus}
+                    onEhrExportStateChange={setEhrExportStatus}
                   />
                   <SelectedCodesBar
                     selectedCodes={selectedCodes}

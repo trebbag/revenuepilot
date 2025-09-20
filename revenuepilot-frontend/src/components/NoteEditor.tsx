@@ -19,7 +19,8 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
-import { BeautifiedView } from "./BeautifiedView"
+import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
 import {
   FinalizationWizardAdapter,
   type PreFinalizeCheckResponse
@@ -115,6 +116,8 @@ const slugify = (value: string) =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
 
+type NoteViewMode = "draft" | "beautified"
+
 interface NoteEditorProps {
   prePopulatedPatient?: {
     patientId: string
@@ -132,6 +135,13 @@ interface NoteEditorProps {
   testOverrides?: {
     initialRecordedSeconds?: number
   }
+  initialViewMode?: NoteViewMode
+  viewMode?: NoteViewMode
+  onViewModeChange?: (mode: NoteViewMode) => void
+  beautifiedNote?: BeautifyResultState | null
+  onBeautifiedNoteChange?: (state: BeautifyResultState | null) => void
+  ehrExportState?: EhrExportState | null
+  onEhrExportStateChange?: (state: EhrExportState | null) => void
 }
 
 export function NoteEditor({
@@ -140,7 +150,14 @@ export function NoteEditor({
   selectedCodesList = [],
   onNoteContentChange,
   onNavigateToDrafts,
-  testOverrides
+  testOverrides,
+  initialViewMode = "draft",
+  viewMode,
+  onViewModeChange,
+  beautifiedNote,
+  onBeautifiedNoteChange,
+  ehrExportState,
+  onEhrExportStateChange
 }: NoteEditorProps) {
   const auth = useAuth()
   const [patientInputValue, setPatientInputValue] = useState(prePopulatedPatient?.patientId || "")
@@ -223,6 +240,76 @@ export function NoteEditor({
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
   const [saveDraftLoading, setSaveDraftLoading] = useState(false)
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
+
+  const [internalViewMode, setInternalViewMode] = useState<NoteViewMode>(viewMode ?? initialViewMode)
+  useEffect(() => {
+    if (viewMode !== undefined) {
+      setInternalViewMode(viewMode)
+    }
+  }, [viewMode])
+  const activeViewMode = viewMode ?? internalViewMode
+
+  const setActiveViewMode = useCallback(
+    (mode: NoteViewMode) => {
+      onViewModeChange?.(mode)
+      if (viewMode === undefined) {
+        setInternalViewMode(mode)
+      }
+    },
+    [onViewModeChange, viewMode]
+  )
+
+  const [internalBeautifiedState, setInternalBeautifiedState] = useState<BeautifyResultState | null>(
+    beautifiedNote ?? null
+  )
+  useEffect(() => {
+    if (beautifiedNote !== undefined) {
+      setInternalBeautifiedState(beautifiedNote ?? null)
+    }
+  }, [beautifiedNote])
+  const currentBeautifiedState = beautifiedNote ?? internalBeautifiedState
+
+  const [internalEhrExportState, setInternalEhrExportState] = useState<EhrExportState | null>(
+    ehrExportState ?? null
+  )
+  useEffect(() => {
+    if (ehrExportState !== undefined) {
+      setInternalEhrExportState(ehrExportState ?? null)
+    }
+  }, [ehrExportState])
+  const currentExportState = ehrExportState ?? internalEhrExportState
+
+  const beautifiedStateRef = useRef<BeautifyResultState | null>(currentBeautifiedState ?? null)
+  useEffect(() => {
+    beautifiedStateRef.current = currentBeautifiedState ?? null
+  }, [currentBeautifiedState])
+
+  const exportStateRef = useRef<EhrExportState | null>(currentExportState ?? null)
+  useEffect(() => {
+    exportStateRef.current = currentExportState ?? null
+  }, [currentExportState])
+
+  const setBeautifiedState = useCallback(
+    (next: BeautifyResultState | null) => {
+      beautifiedStateRef.current = next ?? null
+      if (beautifiedNote === undefined) {
+        setInternalBeautifiedState(next)
+      }
+      onBeautifiedNoteChange?.(next ?? null)
+    },
+    [beautifiedNote, onBeautifiedNoteChange]
+  )
+
+  const setEhrExportState = useCallback(
+    (next: EhrExportState | null) => {
+      exportStateRef.current = next ?? null
+      if (ehrExportState === undefined) {
+        setInternalEhrExportState(next)
+      }
+      onEhrExportStateChange?.(next ?? null)
+    },
+    [ehrExportState, onEhrExportStateChange]
+  )
 
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1899,23 +1986,75 @@ export function NoteEditor({
         </div>
       </div>
       
-      {/* Rich Text Editor */}
-      <div className="flex-1">
-        <RichTextEditor
-          disabled={isEditorDisabled}
-          complianceIssues={complianceIssues}
-          onDismissIssue={handleDismissIssue}
-          onRestoreIssue={handleRestoreIssue}
-          onContentChange={(content) => {
-            setNoteContent(content)
-            if (onNoteContentChange) {
-              onNoteContentChange(content)
-            }
-            if (!noteId && patientId.trim().length > 0) {
-              void ensureNoteCreated(content).catch(() => {})
-            }
-          }}
-        />
+      {/* Draft Editor & Beautified Preview */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Tabs
+          value={activeViewMode}
+          onValueChange={(value) => setActiveViewMode(value as NoteViewMode)}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <div className="px-4 pb-3">
+            <TabsList>
+              <TabsTrigger value="draft">Draft</TabsTrigger>
+              <TabsTrigger value="beautified" disabled={!noteContent.trim()}>
+                Beautified
+                {currentBeautifiedState?.isStale && (
+                  <span className="ml-2 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                    Stale
+                  </span>
+                )}
+              </TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="draft" className="flex min-h-0 flex-1 flex-col">
+            <div className="flex-1">
+              <RichTextEditor
+                disabled={isEditorDisabled}
+                complianceIssues={complianceIssues}
+                onDismissIssue={handleDismissIssue}
+                onRestoreIssue={handleRestoreIssue}
+                onContentChange={(content) => {
+                  setNoteContent(content)
+                  if (onNoteContentChange) {
+                    onNoteContentChange(content)
+                  }
+                  if (
+                    beautifiedStateRef.current &&
+                    !beautifiedStateRef.current.isStale &&
+                    beautifiedStateRef.current.noteContent !== content
+                  ) {
+                    const nextBeautified: BeautifyResultState = {
+                      ...beautifiedStateRef.current,
+                      isStale: true
+                    }
+                    setBeautifiedState(nextBeautified)
+                  }
+                  if (!noteId && patientId.trim().length > 0) {
+                    void ensureNoteCreated(content).catch(() => {})
+                  }
+                }}
+              />
+            </div>
+          </TabsContent>
+
+          <TabsContent value="beautified" className="flex min-h-0 flex-1">
+            <BeautifiedView
+              noteContent={noteContent}
+              specialty={specialty}
+              payer={payer}
+              isActive={activeViewMode === "beautified"}
+              existingResult={currentBeautifiedState ?? null}
+              onResultChange={setBeautifiedState}
+              exportState={currentExportState ?? null}
+              onExportStateChange={setEhrExportState}
+              patientId={patientId}
+              encounterId={encounterId}
+              noteId={noteId}
+              selectedCodes={selectedCodesList}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
 
       {/* Full Transcript Modal */}
