@@ -36,6 +36,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Label } from "./ui/label"
 import { Switch } from "./ui/switch"
 
+export interface ScheduleChartUploadStatus {
+  status: "idle" | "uploading" | "success" | "error"
+  progress: number
+  error?: string
+  fileName?: string
+}
+
 interface CurrentUser {
   id: string
   name: string
@@ -67,6 +74,7 @@ interface ScheduleProps {
   currentUser?: CurrentUser
   onStartVisit?: (appointmentId: string, patientId: string, encounterId: string) => void
   onUploadChart?: (patientId: string) => void
+  uploadStatuses?: Record<string, ScheduleChartUploadStatus>
   appointments?: Appointment[]
   loading?: boolean
   error?: string | null
@@ -85,6 +93,7 @@ export function Schedule({
   currentUser,
   onStartVisit,
   onUploadChart,
+  uploadStatuses = {},
   appointments: propAppointments,
   loading = false,
   error = null,
@@ -347,74 +356,108 @@ export function Schedule({
   }
 
   // Appointment Card Component
-  const AppointmentCard = ({ appointment, compact = false }: { appointment: Appointment, compact?: boolean }) => (
-    <Card className={`hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30 border-l-4 ${getPriorityColor(appointment.priority)} ${compact ? 'p-2' : ''}`}>
-      <CardContent className={compact ? "p-3" : "p-6"}>
-        <div className={`flex items-center ${compact ? 'gap-2' : 'gap-4'} ${compact ? 'flex-col sm:flex-row' : ''}`}>
-          <div className="flex items-center gap-2">
-            {settings.showPatientPhotos && (
-              <Avatar className={`${compact ? 'w-8 h-8' : 'w-12 h-12'} ring-2 ring-white shadow-sm`}>
-                <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium text-xs">
-                  {appointment.patientName.split(' ').map(n => n[0]).join('')}
-                </AvatarFallback>
-              </Avatar>
-            )}
-            {appointment.priority === 'high' && (
-              <div className={`absolute ${compact ? '-top-0.5 -right-0.5 w-3 h-3' : '-top-1 -right-1 w-4 h-4'} bg-red-500 rounded-full border-2 border-white`} />
-            )}
-          </div>
-          
-          <div className={`${compact ? 'text-center sm:text-left' : ''}`}>
-            <h3 className={`font-semibold text-foreground ${compact ? 'text-sm' : 'text-lg'}`}>{appointment.patientName}</h3>
-            <div className={`flex items-center gap-2 ${compact ? 'text-xs' : 'text-sm'} text-muted-foreground ${compact ? 'flex-col sm:flex-row' : ''}`}>
-              <div className="flex items-center gap-1">
-                <Clock className={`${compact ? 'w-3 h-3' : 'w-4 h-4'}`} />
-                <span>{formatTime(appointment.appointmentTime)}</span>
-                <span>({appointment.duration} min)</span>
+  const AppointmentCard = ({ appointment, compact = false }: { appointment: Appointment, compact?: boolean }) => {
+    const uploadState = uploadStatuses?.[appointment.patientId]
+    const isUploading = uploadState?.status === "uploading"
+    const isError = uploadState?.status === "error"
+    const progressValue = typeof uploadState?.progress === "number"
+      ? Math.max(0, Math.min(100, Math.round(uploadState.progress)))
+      : null
+
+    return (
+      <Card className={`hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30 border-l-4 ${getPriorityColor(appointment.priority)} ${compact ? 'p-2' : ''}`}>
+        <CardContent className={compact ? "p-3" : "p-6"}>
+          <div className={`flex items-center ${compact ? 'gap-2' : 'gap-4'} ${compact ? 'flex-col sm:flex-row' : ''}`}>
+            <div className="flex items-center gap-2">
+              {settings.showPatientPhotos && (
+                <Avatar className={`${compact ? 'w-8 h-8' : 'w-12 h-12'} ring-2 ring-white shadow-sm`}>
+                  <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium text-xs">
+                    {appointment.patientName.split(' ').map(n => n[0]).join('')}
+                  </AvatarFallback>
+                </Avatar>
+              )}
+              {appointment.priority === 'high' && (
+                <div className={`absolute ${compact ? '-top-0.5 -right-0.5 w-3 h-3' : '-top-1 -right-1 w-4 h-4'} bg-red-500 rounded-full border-2 border-white`} />
+              )}
+            </div>
+
+            <div className={`${compact ? 'text-center sm:text-left' : ''}`}>
+              <h3 className={`font-semibold text-foreground ${compact ? 'text-sm' : 'text-lg'}`}>{appointment.patientName}</h3>
+              <div className={`flex items-center gap-2 ${compact ? 'text-xs' : 'text-sm'} text-muted-foreground ${compact ? 'flex-col sm:flex-row' : ''}`}>
+                <div className="flex items-center gap-1">
+                  <Clock className={`${compact ? 'w-3 h-3' : 'w-4 h-4'}`} />
+                  <span>{formatTime(appointment.appointmentTime)}</span>
+                  <span>({appointment.duration} min)</span>
+                </div>
+                {appointment.isVirtual && settings.showVirtualMeeting && (
+                  <Badge variant="outline" className="text-xs">Virtual</Badge>
+                )}
               </div>
-              {appointment.isVirtual && settings.showVirtualMeeting && (
-                <Badge variant="outline" className="text-xs">Virtual</Badge>
+            </div>
+
+            <div className={`flex gap-1 ${compact ? 'flex-col' : 'flex-wrap'}`}>
+              <Badge className={`text-xs font-medium ${getStatusColor(appointment.status)}`}>
+                {appointment.status}
+              </Badge>
+              <Badge className={`text-xs font-medium ${getAppointmentTypeColor(appointment.appointmentType)}`}>
+                {appointment.appointmentType}
+              </Badge>
+            </div>
+
+            <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
+              {appointment.fileUpToDate ? (
+                <Badge variant="secondary" className="flex items-center gap-1 text-xs">
+                  <CheckCircle className="w-3 h-3" />
+                  Chart up to date
+                </Badge>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isUploading}
+                  onClick={() => onUploadChart?.(appointment.patientId)}
+                >
+                  {isUploading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      {progressValue !== null ? `Uploading ${progressValue}%` : "Uploading…"}
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      {compact ? 'Upload' : 'Upload Chart'}
+                    </>
+                  )}
+                </Button>
+              )}
+
+              {isError && (
+                <Badge
+                  variant="destructive"
+                  className="text-xs max-w-[12rem] truncate"
+                  title={uploadState?.error}
+                >
+                  {uploadState?.error ?? "Upload failed"}
+                </Badge>
+              )}
+
+              {canStartVisit(appointment) && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => onStartVisit?.(appointment.id, appointment.patientId, appointment.encounterId)}
+                  className="shadow-sm hover:shadow-md transition-shadow"
+                >
+                  <Play className="w-4 h-4 mr-2" />
+                  {compact ? 'Start' : 'Start Visit'}
+                </Button>
               )}
             </div>
           </div>
-
-          <div className={`flex gap-1 ${compact ? 'flex-col' : 'flex-wrap'}`}>
-            <Badge className={`text-xs font-medium ${getStatusColor(appointment.status)}`}>
-              {appointment.status}
-            </Badge>
-            <Badge className={`text-xs font-medium ${getAppointmentTypeColor(appointment.appointmentType)}`}>
-              {appointment.appointmentType}
-            </Badge>
-          </div>
-
-          <div className="flex items-center gap-2 ml-auto">
-            {!appointment.fileUpToDate && (
-              <Button 
-                variant="outline" 
-                size="sm"
-                onClick={() => onUploadChart?.(appointment.patientId)}
-              >
-                <Upload className="w-4 h-4 mr-2" />
-                {compact ? 'Upload' : 'Upload Chart'}
-              </Button>
-            )}
-            
-            {canStartVisit(appointment) && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => onStartVisit?.(appointment.id, appointment.patientId, appointment.encounterId)}
-                className="shadow-sm hover:shadow-md transition-shadow"
-              >
-                <Play className="w-4 h-4 mr-2" />
-                {compact ? 'Start' : 'Start Visit'}
-              </Button>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+        </CardContent>
+      </Card>
+    )
+  }
 
   // Day View Component
   const DayView = () => {
