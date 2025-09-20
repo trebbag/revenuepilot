@@ -2464,6 +2464,7 @@ __metadata:
   languageName: node
   linkType: hard
 
+
 "@testing-library/dom@npm:^10.4.1":
   version: 10.4.1
   resolution: "@testing-library/dom@npm:10.4.1"
@@ -2479,6 +2480,7 @@ __metadata:
   checksum: 10c0/19ce048012d395ad0468b0dbcc4d0911f6f9e39464d7a8464a587b29707eed5482000dad728f5acc4ed314d2f4d54f34982999a114d2404f36d048278db815b1
   languageName: node
   linkType: hard
+
 
 "@testing-library/jest-dom@npm:^6.8.0":
   version: 6.8.0
