@@ -376,7 +376,6 @@ export function NoteEditor({
         content:
           typeof contentOverride === "string" ? contentOverride : noteContentRef.current
       }
-
       const createPromise = (async () => {
         try {
           const response = await fetchWithAuth("/api/notes/create", {
@@ -1264,6 +1263,10 @@ export function NoteEditor({
     return undefined
   }, [visitSession?.startTime])
 
+  const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
+  const hasRecordedTime = totalDisplayTime > 0
+  const isEditorDisabled = isFinalized || !visitStarted
+
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
   const criticalIssues = activeIssues.filter(issue => issue.severity === 'critical')
@@ -1327,7 +1330,6 @@ export function NoteEditor({
 
   const handleSaveDraft = () => {
     // TODO: Save draft and navigate to drafts page
-    console.log("Saving draft and exiting...")
   }
 
   const canStartVisit = useMemo(() => {
@@ -1446,10 +1448,6 @@ export function NoteEditor({
     currentSessionTime,
     isFinalized
   ])
-
-  const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
-  const isEditorDisabled = isFinalized || !visitStarted
-  const hasRecordedTime = totalDisplayTime > 0
 
   return (
     <div className="flex flex-col flex-1">

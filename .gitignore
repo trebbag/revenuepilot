@@ -33,6 +33,8 @@ backend/venv/
 backend/requirements.lock
 # Logs and coverage
 *.log
+playwright-report/
+test-results/
 
 # Electron icons
 assets/*.icns
