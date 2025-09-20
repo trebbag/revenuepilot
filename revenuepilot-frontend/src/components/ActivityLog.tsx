@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
@@ -24,9 +24,14 @@ import {
   Eye,
   EyeOff,
   Server,
-  Key
+  Key,
+  Loader2,
+  RefreshCcw
 } from "lucide-react"
 import { DateRange } from "react-day-picker"
+
+import { useActivityLog } from "../hooks/useActivityLog"
+import type { ActivityEntry } from "../hooks/useActivityLog"
 
 interface ActivityLogProps {
   currentUser: {
@@ -39,20 +44,6 @@ interface ActivityLogProps {
   userRole: 'admin' | 'user'
 }
 
-interface ActivityEntry {
-  id: string
-  timestamp: string
-  action: string
-  category: 'documentation' | 'schedule' | 'settings' | 'auth' | 'system' | 'backend'
-  description: string
-  userId: string
-  userName: string
-  severity: 'info' | 'warning' | 'error' | 'success'
-  details?: Record<string, any>
-  ipAddress?: string
-  userAgent?: string
-}
-
 export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [dateRange, setDateRange] = useState<DateRange | undefined>()
@@ -60,214 +51,21 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
   const [selectedSeverity, setSelectedSeverity] = useState<string>("all")
   const [searchQuery, setSearchQuery] = useState("")
 
-  // Mock activity data - in a real app, this would come from an API
-  const generateMockActivity = (): ActivityEntry[] => {
-    const baseActivities: ActivityEntry[] = [
-      {
-        id: "act-001",
-        timestamp: "2024-03-14T15:30:22Z",
-        action: "Note Created",
-        category: "documentation",
-        description: "Created new SOAP note for patient PT-2024-0156",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "success",
-        details: { patientId: "PT-2024-0156", noteType: "SOAP", template: "Wellness Visit" }
-      },
-      {
-        id: "act-002",
-        timestamp: "2024-03-14T15:28:15Z",
-        action: "Code Added",
-        category: "documentation", 
-        description: "Added CPT code 99213 to active note",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "info",
-        details: { code: "99213", codeType: "CPT", confidence: 87 }
-      },
-      {
-        id: "act-003",
-        timestamp: "2024-03-14T15:25:44Z",
-        action: "Visit Started",
-        category: "schedule",
-        description: "Started documentation for scheduled appointment",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "info",
-        details: { appointmentId: "apt-001", patientId: "PT-2024-0156" }
-      },
-      {
-        id: "act-004",
-        timestamp: "2024-03-14T14:45:33Z",
-        action: "Settings Updated",
-        category: "settings",
-        description: "Updated AI suggestion preferences",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "info",
-        details: { section: "AI Preferences", changes: ["Auto-suggest enabled", "Confidence threshold: 80%"] }
-      },
-      {
-        id: "act-005",
-        timestamp: "2024-03-14T14:22:17Z",
-        action: "Draft Saved",
-        category: "documentation",
-        description: "Auto-saved draft note for patient PT-2024-0143",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "success",
-        details: { draftId: "draft-015", patientId: "PT-2024-0143", autoSave: true }
-      },
-      {
-        id: "act-006",
-        timestamp: "2024-03-14T13:55:28Z",
-        action: "Login",
-        category: "auth",
-        description: "User successfully logged into the system",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "success",
-        details: { loginMethod: "password", sessionId: "sess-abc123" },
-        ipAddress: "192.168.1.45",
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      },
-      {
-        id: "act-007",
-        timestamp: "2024-03-14T13:18:45Z",
-        action: "Schedule Updated",
-        category: "schedule",
-        description: "Modified appointment time for patient PT-2024-0089",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "info",
-        details: { appointmentId: "apt-003", oldTime: "10:00", newTime: "10:15" }
-      },
-      {
-        id: "act-008",
-        timestamp: "2024-03-14T12:35:12Z",
-        action: "Analytics Viewed",
-        category: "system",
-        description: "Accessed performance analytics dashboard",
-        userId: currentUser.id,
-        userName: currentUser.name,
-        severity: "info",
-        details: { section: "Performance Metrics", duration: "5 minutes" }
-      }
-    ]
-
-    // Add backend activities for admin view
-    const backendActivities: ActivityEntry[] = [
-      {
-        id: "back-001",
-        timestamp: "2024-03-14T15:30:25Z",
-        action: "Database Write",
-        category: "backend",
-        description: "Note data persisted to primary database",
-        userId: "system",
-        userName: "System",
-        severity: "success",
-        details: { operation: "INSERT", table: "clinical_notes", rows: 1, duration: "45ms" }
-      },
-      {
-        id: "back-002",
-        timestamp: "2024-03-14T15:28:18Z",
-        action: "AI API Call",
-        category: "backend",
-        description: "Code suggestion request processed",
-        userId: "system",
-        userName: "AI Service",
-        severity: "success",
-        details: { endpoint: "/api/codes/suggest", responseTime: "234ms", tokens: 1250 }
-      },
-      {
-        id: "back-003",
-        timestamp: "2024-03-14T15:25:47Z",
-        action: "Cache Update",
-        category: "backend",
-        description: "Patient data cache refreshed",
-        userId: "system",
-        userName: "Cache Service",
-        severity: "info",
-        details: { cacheKey: "patient:PT-2024-0156", ttl: "30 minutes" }
-      },
-      {
-        id: "back-004",
-        timestamp: "2024-03-14T14:45:36Z",
-        action: "Config Update",
-        category: "backend",
-        description: "User preferences updated in configuration store",
-        userId: "system",
-        userName: "Config Service",
-        severity: "success",
-        details: { configPath: "/users/user-001/preferences", changeCount: 2 }
-      },
-      {
-        id: "back-005",
-        timestamp: "2024-03-14T14:22:20Z",
-        action: "Backup Created",
-        category: "backend",
-        description: "Automated backup of draft note data",
-        userId: "system",
-        userName: "Backup Service",
-        severity: "success",
-        details: { backupId: "bk-20240314-142220", size: "2.3MB", location: "s3://backups/" }
-      },
-      {
-        id: "back-006",
-        timestamp: "2024-03-14T13:55:31Z",
-        action: "Auth Token",
-        category: "backend",
-        description: "JWT token generated and stored",
-        userId: "system",
-        userName: "Auth Service", 
-        severity: "success",
-        details: { tokenType: "access", expiresIn: "8 hours", algorithm: "RS256" }
-      },
-      {
-        id: "back-007",
-        timestamp: "2024-03-14T13:18:48Z",
-        action: "Queue Message",
-        category: "backend",
-        description: "Schedule update event queued for processing",
-        userId: "system",
-        userName: "Message Queue",
-        severity: "info",
-        details: { queue: "schedule-updates", messageId: "msg-789", delay: "0ms" }
-      },
-      {
-        id: "back-008",
-        timestamp: "2024-03-14T12:35:15Z",
-        action: "Metrics Export",
-        category: "backend",
-        description: "Analytics data exported to metrics collector",
-        userId: "system",
-        userName: "Metrics Service",
-        severity: "info",
-        details: { metricsCount: 47, exportFormat: "JSON", destination: "monitoring" }
-      }
-    ]
-
-    return showAdvanced ? [...baseActivities, ...backendActivities] : baseActivities
-  }
-
-  const mockActivities = generateMockActivity()
-
-  // Filter activities based on current filters
-  const filteredActivities = mockActivities.filter(activity => {
-    if (selectedCategory !== "all" && activity.category !== selectedCategory) {
-      return false
+  useEffect(() => {
+    if (!showAdvanced && selectedCategory === "backend") {
+      setSelectedCategory("all")
     }
-    if (selectedSeverity !== "all" && activity.severity !== selectedSeverity) {
-      return false
-    }
-    if (searchQuery && !activity.description.toLowerCase().includes(searchQuery.toLowerCase()) && 
-        !activity.action.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false
-    }
-    return true
+  }, [showAdvanced, selectedCategory])
+
+  const { entries, rawEntries, loading, error, refresh } = useActivityLog({
+    dateRange,
+    category: selectedCategory,
+    severity: selectedSeverity,
+    search: searchQuery,
+    includeBackend: showAdvanced
   })
 
-  const getCategoryIcon = (category: string) => {
+  const getCategoryIcon = (category: ActivityEntry["category"]) => {
     switch (category) {
       case 'documentation': return <FileText className="w-4 h-4" />
       case 'schedule': return <Calendar className="w-4 h-4" />
@@ -279,7 +77,7 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
     }
   }
 
-  const getCategoryColor = (category: string) => {
+  const getCategoryColor = (category: ActivityEntry["category"]) => {
     switch (category) {
       case 'documentation': return 'text-blue-600 bg-blue-50 border-blue-200'
       case 'schedule': return 'text-purple-600 bg-purple-50 border-purple-200'
@@ -291,7 +89,7 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
     }
   }
 
-  const getSeverityIcon = (severity: string) => {
+  const getSeverityIcon = (severity: ActivityEntry["severity"]) => {
     switch (severity) {
       case 'success': return <CheckCircle2 className="w-4 h-4 text-green-600" />
       case 'warning': return <AlertTriangle className="w-4 h-4 text-yellow-600" />
@@ -331,6 +129,18 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
               {showAdvanced ? "Hide Backend Activity" : "Show Backend Activity"}
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex items-center gap-2"
+            onClick={() => {
+              void refresh()
+            }}
+            disabled={loading}
+          >
+            <RefreshCcw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
           <Button variant="outline" size="sm" className="flex items-center gap-2">
             <Download className="w-4 h-4" />
             Export Log
@@ -414,11 +224,19 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
             <div className="flex items-center gap-2">
               <Activity className="w-4 h-4" />
               <CardTitle className="text-lg">Recent Activity</CardTitle>
-              <Badge variant="secondary">{filteredActivities.length} entries</Badge>
+              <Badge variant="secondary">{entries.length} entries</Badge>
             </div>
-            <div className="flex items-center gap-2 text-sm text-stone-600">
-              <Clock className="w-4 h-4" />
-              Auto-refreshes every 30 seconds
+            <div className="flex items-center gap-3 text-sm text-stone-600">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4" />
+                Auto-refreshes every 60 seconds
+              </div>
+              {loading && (
+                <div className="flex items-center gap-2 text-stone-500">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Refreshing</span>
+                </div>
+              )}
             </div>
           </div>
           {showAdvanced && (
@@ -432,13 +250,49 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
         <CardContent className="p-0">
           <ScrollArea className="h-[600px]">
             <div className="space-y-1 p-6 pt-0">
-              {filteredActivities.length === 0 ? (
+              {error && (
+                <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-red-600" />
+                    <div className="space-y-3">
+                      <p className="text-sm text-red-700">{error}</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          void refresh()
+                        }}
+                        className="flex items-center gap-2"
+                      >
+                        <RefreshCcw className="w-4 h-4" />
+                        Retry
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {loading && rawEntries.length === 0 && (
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-stone-500">
+                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <p>Loading activity log...</p>
+                </div>
+              )}
+
+              {!loading && !error && rawEntries.length === 0 && (
+                <div className="text-center py-12">
+                  <Activity className="w-12 h-12 text-stone-300 mx-auto mb-4" />
+                  <p className="text-stone-500">No activity has been recorded yet.</p>
+                </div>
+              )}
+
+              {!loading && !error && rawEntries.length > 0 && entries.length === 0 && (
                 <div className="text-center py-12">
                   <Activity className="w-12 h-12 text-stone-300 mx-auto mb-4" />
                   <p className="text-stone-500">No activities match your current filters</p>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
+                  <Button
+                    variant="outline"
+                    size="sm"
                     className="mt-4"
                     onClick={() => {
                       setSelectedCategory("all")
@@ -450,64 +304,82 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
                     Clear Filters
                   </Button>
                 </div>
-              ) : (
-                filteredActivities.map((activity, index) => (
-                  <div key={activity.id}>
-                    <div className="flex items-start gap-4 p-4 rounded-lg hover:bg-stone-50 transition-colors">
-                      <div className="flex-shrink-0">
-                        {getSeverityIcon(activity.severity)}
-                      </div>
-                      
-                      <div className="flex-1 min-w-0 space-y-2">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex items-center gap-3">
-                            <h4 className="font-medium text-stone-900">{activity.action}</h4>
-                            <Badge 
-                              variant="outline" 
-                              className={`text-xs px-2 py-1 border ${getCategoryColor(activity.category)}`}
-                            >
-                              <span className="flex items-center gap-1">
-                                {getCategoryIcon(activity.category)}
-                                {activity.category}
-                              </span>
-                            </Badge>
-                            {activity.userId === "system" && (
-                              <Badge variant="outline" className="text-xs px-2 py-1 bg-gray-100 border-gray-200">
-                                System
+              )}
+
+              {entries.length > 0 && (
+                <div className="space-y-1">
+                  {loading && (
+                    <div className="flex items-center gap-2 rounded-lg bg-stone-50 px-4 py-3 text-sm text-stone-500">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Refreshing activity…</span>
+                    </div>
+                  )}
+                  {entries.map((activity, index) => (
+                    <div key={activity.id}>
+                      <div className="flex items-start gap-4 p-4 rounded-lg hover:bg-stone-50 transition-colors">
+                        <div className="flex-shrink-0">
+                          {getSeverityIcon(activity.severity)}
+                        </div>
+
+                        <div className="flex-1 min-w-0 space-y-2">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                              <h4 className="font-medium text-stone-900">{activity.action}</h4>
+                              <Badge
+                                variant="outline"
+                                className={`text-xs px-2 py-1 border ${getCategoryColor(activity.category)}`}
+                              >
+                                <span className="flex items-center gap-1">
+                                  {getCategoryIcon(activity.category)}
+                                  {activity.category}
+                                </span>
                               </Badge>
+                              {activity.userId === "system" && (
+                                <Badge variant="outline" className="text-xs px-2 py-1 bg-gray-100 border-gray-200">
+                                  System
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 text-sm text-stone-500 flex-shrink-0">
+                              <Clock className="w-3 h-3" />
+                              {formatTimestamp(activity.timestamp)}
+                            </div>
+                          </div>
+
+                          <p className="text-stone-600 text-sm leading-relaxed">{activity.description}</p>
+
+                          <div className="flex items-center gap-4 text-xs text-stone-500">
+                            <div className="flex items-center gap-1">
+                              <User className="w-3 h-3" />
+                              {activity.userName}
+                              {activity.userId === currentUser.id && (
+                                <Badge
+                                  variant="outline"
+                                  className="ml-2 bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-600"
+                                >
+                                  You
+                                </Badge>
+                              )}
+                            </div>
+                            {activity.ipAddress && (
+                              <div className="flex items-center gap-1">
+                                <span>IP:</span>
+                                <code className="bg-stone-100 px-1 rounded text-xs">{activity.ipAddress}</code>
+                              </div>
+                            )}
+                            {activity.details && (
+                              <div className="flex items-center gap-1">
+                                <span>•</span>
+                                <span>{Object.keys(activity.details).length} details</span>
+                              </div>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 text-sm text-stone-500 flex-shrink-0">
-                            <Clock className="w-3 h-3" />
-                            {formatTimestamp(activity.timestamp)}
-                          </div>
-                        </div>
-                        
-                        <p className="text-stone-600 text-sm leading-relaxed">{activity.description}</p>
-                        
-                        <div className="flex items-center gap-4 text-xs text-stone-500">
-                          <div className="flex items-center gap-1">
-                            <User className="w-3 h-3" />
-                            {activity.userName}
-                          </div>
-                          {activity.ipAddress && (
-                            <div className="flex items-center gap-1">
-                              <span>IP:</span>
-                              <code className="bg-stone-100 px-1 rounded text-xs">{activity.ipAddress}</code>
-                            </div>
-                          )}
-                          {activity.details && (
-                            <div className="flex items-center gap-1">
-                              <span>•</span>
-                              <span>{Object.keys(activity.details).length} details</span>
-                            </div>
-                          )}
                         </div>
                       </div>
+                      {index < entries.length - 1 && <Separator className="my-1" />}
                     </div>
-                    {index < filteredActivities.length - 1 && <Separator className="my-1" />}
-                  </div>
-                ))
+                  ))}
+                </div>
               )}
             </div>
           </ScrollArea>
