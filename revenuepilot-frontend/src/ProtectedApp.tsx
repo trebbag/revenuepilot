@@ -1116,6 +1116,7 @@ export function ProtectedApp() {
                     prePopulatedPatient={prePopulatedPatient}
                     selectedCodes={selectedCodes}
                     selectedCodesList={selectedCodesList}
+                    onNavigateToDrafts={() => handleNavigate('drafts')}
                   />
                   <SelectedCodesBar
                     selectedCodes={selectedCodes}
