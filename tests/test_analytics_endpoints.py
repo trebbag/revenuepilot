@@ -35,6 +35,7 @@ def setup_module(module):
             "revenue": 100.0,
             "denial": False,
             "deficiency": False,
+            "details": {"clinic": "north-clinic", "payer": "acme-health"},
         },
         {
             "eventType": "note_closed",
@@ -44,19 +45,27 @@ def setup_module(module):
             "revenue": 150.0,
             "denial": True,
             "deficiency": True,
+            "details": {"clinic": "uptown-clinic", "payer": "northcare"},
         },
-        {"eventType": "beautify", "timestamp": ts(2024, 1, 11, 11), "clinician": "alice"},
+        {
+            "eventType": "beautify",
+            "timestamp": ts(2024, 1, 11, 11),
+            "clinician": "alice",
+            "details": {"clinic": "north-clinic", "payer": "acme-health"},
+        },
         {
             "eventType": "suggest",
             "timestamp": ts(2024, 1, 20, 9),
             "clinician": "alice",
             "compliance": ["Missing ROS"],
+            "details": {"clinic": "north-clinic", "payer": "acme-health"},
         },
         {
             "eventType": "suggest",
             "timestamp": ts(2024, 3, 5, 8, 30),
             "clinician": "bob",
             "compliance": ["Incomplete history"],
+            "details": {"clinic": "uptown-clinic", "payer": "northcare"},
         },
     ]
     for ev in events:
@@ -119,6 +128,86 @@ def test_coding_revenue_compliance():
     data = resp.json()
     assert data['compliance_counts'] == {'Missing ROS': 1, 'Incomplete history': 1}
     assert data['total_flags'] == 2
+
+
+def test_filtered_analytics_queries():
+    client = TestClient(main.app)
+    admin_token = main.create_token('admin', 'admin')
+
+    resp = client.get(
+        '/api/analytics/usage',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        params={'start': '2024-02-01', 'clinic': 'uptown-clinic', 'payer': 'northcare'},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['total_notes'] == 1
+    assert data['dailyUsage'] == [{'date': '2024-02-15', 'count': 1}]
+    assert data['weeklyTrend'] == [{'week': '2024-07', 'count': 1}]
+
+    resp = client.get(
+        '/api/analytics/coding-accuracy',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        params={'payer': 'acme-health'},
+    )
+    assert resp.status_code == 200
+    coding_data = resp.json()
+    assert coding_data['total_notes'] == 1
+    assert coding_data['denials'] == 0
+    assert coding_data['deficiencies'] == 0
+    assert coding_data['accuracy'] == 1
+
+    resp = client.get(
+        '/api/analytics/revenue',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        params={'clinician': 'alice', 'end': '2024-01-31'},
+    )
+    assert resp.status_code == 200
+    revenue_data = resp.json()
+    assert revenue_data['total_revenue'] == 100.0
+    assert revenue_data['revenue_by_code'] == {'99213': 100.0}
+
+    resp = client.get(
+        '/api/analytics/compliance',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        params={'clinic': 'uptown-clinic'},
+    )
+    assert resp.status_code == 200
+    compliance_data = resp.json()
+    assert compliance_data['compliance_counts'] == {'Incomplete history': 1}
+    assert compliance_data['total_flags'] == 1
+
+    resp = client.get(
+        '/api/analytics/revenue',
+        headers={'Authorization': f'Bearer {admin_token}'},
+        params={'start': '2024-03-01'},
+    )
+    assert resp.status_code == 200
+    assert resp.json()['total_revenue'] == 0.0
+
+
+def test_user_filter_scope_is_enforced():
+    client = TestClient(main.app)
+    alice_token = main.create_token('alice', 'user')
+
+    resp = client.get(
+        '/api/analytics/usage',
+        headers={'Authorization': f'Bearer {alice_token}'},
+        params={'clinician': 'bob', 'clinic': 'uptown-clinic'},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['total_notes'] == 0
+    assert data['dailyUsage'] == []
+    assert data['weeklyTrend'] == []
+
+    resp = client.get(
+        '/api/analytics/revenue',
+        headers={'Authorization': f'Bearer {alice_token}'},
+        params={'clinician': 'bob'},
+    )
+    assert resp.status_code == 200
+    assert resp.json()['total_revenue'] == 0.0
 
 
 def test_confidence_analytics_endpoint():
