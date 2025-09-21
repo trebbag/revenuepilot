@@ -22,7 +22,9 @@ def setup_module(module):
         'CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL, username TEXT, action TEXT, details TEXT)'
     )
     main.ensure_settings_table(main.db_conn)
-    auth.register_user(main.db_conn, 'admin', 'secret', 'admin')
+    main.configure_auth_session_factory(main.db_conn)
+    with main.auth_session_scope() as session:
+        auth.register_user(session, 'admin', 'secret', 'admin')
 
 
 def test_register_and_login():

@@ -14,17 +14,18 @@ def client(monkeypatch):
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     _init_core_tables(conn)
-    auth.register_user(
-        conn,
-        "bootstrap-admin",
-        "admin-pass",
-        role="admin",
-        email="bootstrap-admin@example.test",
-        name="Bootstrap Admin",
-    )
-    conn.commit()
     main.db_conn = conn
+    main.configure_auth_session_factory(conn)
     monkeypatch.setattr(main, "db_conn", conn)
+    with main.auth_session_scope() as session:
+        auth.register_user(
+            session,
+            "bootstrap-admin",
+            "admin-pass",
+            role="admin",
+            email="bootstrap-admin@example.test",
+            name="Bootstrap Admin",
+        )
     return TestClient(main.app)
 
 
@@ -51,15 +52,15 @@ def test_namespaced_register_allows_idempotent_calls(client):
 
 
 def test_namespaced_login_returns_session_payload(client):
-    auth.register_user(
-        main.db_conn,
-        "workflow-user",
-        "complex-pass",
-        role="analyst",
-        email="workflow@example.test",
-        name="Workflow Analyst",
-    )
-    main.db_conn.commit()
+    with main.auth_session_scope() as session:
+        auth.register_user(
+            session,
+            "workflow-user",
+            "complex-pass",
+            role="analyst",
+            email="workflow@example.test",
+            name="Workflow Analyst",
+        )
 
     response = client.post(
         "/api/auth/login",
@@ -77,8 +78,8 @@ def test_namespaced_login_returns_session_payload(client):
 
 
 def test_logout_revokes_status(client):
-    auth.register_user(main.db_conn, "temp-user", "pw")
-    main.db_conn.commit()
+    with main.auth_session_scope() as session:
+        auth.register_user(session, "temp-user", "pw")
     login = client.post(
         "/api/auth/login",
         json={"username": "temp-user", "password": "pw"},
