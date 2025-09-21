@@ -3,8 +3,8 @@ import { motion } from "motion/react"
 import {
   TrendingUp,
   TrendingDown,
-  Calendar, 
-  Download, 
+  Calendar,
+  Download,
   Filter,
   Users,
   FileText,
@@ -19,8 +19,11 @@ import {
   Award,
   Zap,
   Brain,
-  Shield
+  Shield,
+  Building2,
+  CreditCard
 } from "lucide-react"
+import type { DateRange } from "react-day-picker"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
@@ -114,6 +117,174 @@ interface DataState<T> {
   error: string | null
 }
 
+type DatePreset = '7days' | '30days' | '90days' | 'custom'
+
+interface AnalyticsFilters {
+  datePreset: DatePreset
+  customRange: DateRange | null
+  clinician: string | null
+  clinic: string | null
+  payer: string | null
+}
+
+interface StoredAnalyticsFilters {
+  datePreset?: DatePreset
+  customRange?: {
+    from?: string | null
+    to?: string | null
+  }
+  clinician?: string | null
+  clinic?: string | null
+  payer?: string | null
+}
+
+function createDefaultFilters(): AnalyticsFilters {
+  return {
+    datePreset: '30days',
+    customRange: null,
+    clinician: null,
+    clinic: null,
+    payer: null
+  }
+}
+
+function normalizeFilterValue(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null
+  }
+  const text = String(value).trim()
+  if (!text) {
+    return null
+  }
+  const lowered = text.toLowerCase()
+  if (lowered === 'all' || lowered === 'any' || lowered === '*') {
+    return null
+  }
+  return text
+}
+
+function isValidDate(value: Date | undefined | null): value is Date {
+  return value instanceof Date && !Number.isNaN(value.getTime())
+}
+
+function serializeFilters(filters: AnalyticsFilters): StoredAnalyticsFilters {
+  const payload: StoredAnalyticsFilters = {
+    datePreset: filters.datePreset,
+    clinician: filters.clinician,
+    clinic: filters.clinic,
+    payer: filters.payer
+  }
+
+  if (filters.datePreset === 'custom' && filters.customRange) {
+    const from = filters.customRange.from
+    const to = filters.customRange.to
+    if (isValidDate(from) || isValidDate(to)) {
+      payload.customRange = {
+        from: isValidDate(from) ? from.toISOString() : null,
+        to: isValidDate(to) ? to.toISOString() : null
+      }
+    }
+  }
+
+  return payload
+}
+
+function deserializeFilters(raw: unknown): AnalyticsFilters {
+  const base = createDefaultFilters()
+  if (!raw || typeof raw !== 'object') {
+    return base
+  }
+
+  const record = raw as Record<string, unknown>
+  const preset = normalizeFilterValue(record.datePreset)
+  if (preset === '7days' || preset === '30days' || preset === '90days' || preset === 'custom') {
+    base.datePreset = preset
+  }
+
+  base.clinician = normalizeFilterValue(record.clinician)
+  base.clinic = normalizeFilterValue(record.clinic)
+  base.payer = normalizeFilterValue(record.payer)
+
+  if (base.datePreset === 'custom') {
+    const custom = record.customRange
+    if (custom && typeof custom === 'object') {
+      const customRecord = custom as Record<string, unknown>
+      const parseDate = (value: unknown): Date | undefined => {
+        const parsed = normalizeFilterValue(value)
+        if (!parsed) {
+          return undefined
+        }
+        const dt = new Date(parsed)
+        return Number.isNaN(dt.getTime()) ? undefined : dt
+      }
+
+      const from = parseDate(customRecord.from)
+      const to = parseDate(customRecord.to)
+      if (from) {
+        base.customRange = { from, to: to ?? from }
+      }
+    }
+  } else {
+    base.customRange = null
+  }
+
+  return base
+}
+
+function resolveDateRange(filters: AnalyticsFilters): { start?: Date; end?: Date } {
+  if (filters.datePreset === 'custom') {
+    const from = filters.customRange?.from
+    if (!isValidDate(from)) {
+      return {}
+    }
+    const toValue = filters.customRange?.to
+    const start = new Date(from)
+    const end = isValidDate(toValue) ? new Date(toValue) : new Date(from)
+    end.setHours(23, 59, 59, 999)
+    start.setHours(0, 0, 0, 0)
+    return { start, end }
+  }
+
+  const end = new Date()
+  const start = new Date(end)
+  start.setHours(0, 0, 0, 0)
+  switch (filters.datePreset) {
+    case '7days':
+      start.setDate(start.getDate() - 6)
+      break
+    case '30days':
+      start.setDate(start.getDate() - 29)
+      break
+    case '90days':
+      start.setDate(start.getDate() - 89)
+      break
+    default:
+      break
+  }
+  return { start, end }
+}
+
+function buildAnalyticsQuery(filters: AnalyticsFilters): string {
+  const params = new URLSearchParams()
+  const { start, end } = resolveDateRange(filters)
+  if (isValidDate(start)) {
+    params.set('start', start.toISOString())
+  }
+  if (isValidDate(end)) {
+    params.set('end', end.toISOString())
+  }
+  if (filters.clinician) {
+    params.set('clinician', filters.clinician)
+  }
+  if (filters.clinic) {
+    params.set('clinic', filters.clinic)
+  }
+  if (filters.payer) {
+    params.set('payer', filters.payer)
+  }
+  return params.toString()
+}
+
 interface MetricCardProps {
   title: string
   value: string | number
@@ -131,6 +302,8 @@ interface BillingCodingDashboardProps {
   codingState: DataState<CodingAccuracyAnalyticsResponse>
   usageState: DataState<UsageAnalyticsResponse>
   currencyFormatter: Intl.NumberFormat
+  filters: AnalyticsFilters
+  onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onRefresh: () => void
 }
 
@@ -139,6 +312,8 @@ interface NoteQualityDashboardProps {
   complianceState: DataState<ComplianceAnalyticsResponse>
   codingState: DataState<CodingAccuracyAnalyticsResponse>
   draftState: DataState<DraftAnalyticsResponse>
+  filters: AnalyticsFilters
+  onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onRefresh: () => void
 }
 
@@ -183,17 +358,41 @@ function MetricCard({ title, value, baseline, change, changeType, trend, icon: I
 }
 
 interface DashboardFiltersProps {
-  onDateRangeChange: (range: any) => void
-  onClinicianChange: (clinician: string) => void
+  filters: AnalyticsFilters
+  onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onExport: () => void
 }
 
-function DashboardFilters({ onDateRangeChange, onClinicianChange, onExport }: DashboardFiltersProps) {
+function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFiltersProps) {
+  const handleDatePresetChange = (value: string) => {
+    const preset = value as DatePreset
+    onFiltersChange({
+      datePreset: preset,
+      customRange: preset === 'custom' ? filters.customRange : null
+    })
+  }
+
+  const handleRangeChange = (range: DateRange | undefined) => {
+    onFiltersChange({ customRange: range ?? null })
+  }
+
+  const handleClinicianChange = (value: string) => {
+    onFiltersChange({ clinician: value === 'all' ? null : value })
+  }
+
+  const handleClinicChange = (value: string) => {
+    onFiltersChange({ clinic: value === 'all' ? null : value })
+  }
+
+  const handlePayerChange = (value: string) => {
+    onFiltersChange({ payer: value === 'all' ? null : value })
+  }
+
   return (
-    <div className="flex items-center gap-4 mb-6">
+    <div className="flex flex-wrap items-center gap-4 mb-6">
       <div className="flex items-center gap-2">
         <Calendar className="w-4 h-4 text-muted-foreground" />
-        <Select defaultValue="30days">
+        <Select value={filters.datePreset} onValueChange={handleDatePresetChange}>
           <SelectTrigger className="w-[180px]">
             <SelectValue placeholder="Select date range" />
           </SelectTrigger>
@@ -205,22 +404,60 @@ function DashboardFilters({ onDateRangeChange, onClinicianChange, onExport }: Da
           </SelectContent>
         </Select>
       </div>
-      
+
+      {filters.datePreset === 'custom' && (
+        <DatePickerWithRange
+          className="w-[280px]"
+          date={filters.customRange ?? undefined}
+          onDateChange={handleRangeChange}
+        />
+      )}
+
       <div className="flex items-center gap-2">
         <Users className="w-4 h-4 text-muted-foreground" />
-        <Select defaultValue="all">
+        <Select value={filters.clinician ?? 'all'} onValueChange={handleClinicianChange}>
           <SelectTrigger className="w-[180px]">
             <SelectValue placeholder="Select clinician" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Clinicians</SelectItem>
-            <SelectItem value="dr-johnson">Dr. Johnson</SelectItem>
-            <SelectItem value="dr-smith">Dr. Smith</SelectItem>
-            <SelectItem value="np-williams">NP Williams</SelectItem>
+            <SelectItem value="alice">Dr. Alice</SelectItem>
+            <SelectItem value="bob">Dr. Bob</SelectItem>
+            <SelectItem value="carol">NP Carol</SelectItem>
           </SelectContent>
         </Select>
       </div>
-      
+
+      <div className="flex items-center gap-2">
+        <Building2 className="w-4 h-4 text-muted-foreground" />
+        <Select value={filters.clinic ?? 'all'} onValueChange={handleClinicChange}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue placeholder="Select clinic" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Clinics</SelectItem>
+            <SelectItem value="north-clinic">North Clinic</SelectItem>
+            <SelectItem value="uptown-clinic">Uptown Clinic</SelectItem>
+            <SelectItem value="southside-clinic">Southside Clinic</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <CreditCard className="w-4 h-4 text-muted-foreground" />
+        <Select value={filters.payer ?? 'all'} onValueChange={handlePayerChange}>
+          <SelectTrigger className="w-[200px]">
+            <SelectValue placeholder="Select payer" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Payers</SelectItem>
+            <SelectItem value="acme-health">Acme Health</SelectItem>
+            <SelectItem value="northcare">NorthCare</SelectItem>
+            <SelectItem value="mediplus">MediPlus</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       <Button onClick={onExport} variant="outline" size="sm" className="ml-auto">
         <Download className="w-4 h-4 mr-2" />
         Export PDF
@@ -229,7 +466,7 @@ function DashboardFilters({ onDateRangeChange, onClinicianChange, onExport }: Da
   )
 }
 
-function BillingCodingDashboard({ revenueState, codingState, usageState, currencyFormatter, onRefresh }: BillingCodingDashboardProps) {
+function BillingCodingDashboard({ revenueState, codingState, usageState, currencyFormatter, filters, onFiltersChange, onRefresh }: BillingCodingDashboardProps) {
   const palette = useMemo(() => ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#6b7280', '#0ea5e9', '#f97316'], [])
 
   const revenueLineData = useMemo(() => {
@@ -301,8 +538,8 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
   return (
     <div className="space-y-6">
       <DashboardFilters
-        onDateRangeChange={() => {}}
-        onClinicianChange={() => {}}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
         onExport={() => console.log('Export billing dashboard')}
       />
 
@@ -462,7 +699,12 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
   )
 }
 
-function HealthOutcomesDashboard() {
+interface HealthOutcomesDashboardProps {
+  filters: AnalyticsFilters
+  onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
+}
+
+function HealthOutcomesDashboard({ filters, onFiltersChange }: HealthOutcomesDashboardProps) {
   const outcomeData = [
     { name: 'Jan', satisfaction: 4.2, readmissions: 8, outcomes: 87 },
     { name: 'Feb', satisfaction: 4.4, readmissions: 6, outcomes: 89 },
@@ -474,9 +716,9 @@ function HealthOutcomesDashboard() {
 
   return (
     <div className="space-y-6">
-      <DashboardFilters 
-        onDateRangeChange={() => {}}
-        onClinicianChange={() => {}}
+      <DashboardFilters
+        filters={filters}
+        onFiltersChange={onFiltersChange}
         onExport={() => console.log('Export health outcomes dashboard')}
       />
       
@@ -568,7 +810,7 @@ function HealthOutcomesDashboard() {
   )
 }
 
-function NoteQualityDashboard({ usageState, complianceState, codingState, draftState, onRefresh }: NoteQualityDashboardProps) {
+function NoteQualityDashboard({ usageState, complianceState, codingState, draftState, filters, onFiltersChange, onRefresh }: NoteQualityDashboardProps) {
   const usageTrend = usageState.data?.daily_trends ?? []
   const complianceTrendMap = useMemo(() => {
     const map = new Map<string, ComplianceTrendPoint>()
@@ -634,8 +876,8 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
   return (
     <div className="space-y-6">
       <DashboardFilters
-        onDateRangeChange={() => {}}
-        onClinicianChange={() => {}}
+        filters={filters}
+        onFiltersChange={onFiltersChange}
         onExport={() => console.log('Export note quality dashboard')}
       />
 
@@ -759,7 +1001,12 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
   )
 }
 
-function StaffPerformanceDashboard() {
+interface StaffPerformanceDashboardProps {
+  filters: AnalyticsFilters
+  onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
+}
+
+function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanceDashboardProps) {
   const staffData = [
     { name: 'Dr. Johnson', notes: 145, accuracy: 94, efficiency: 87, revenue: 28450 },
     { name: 'Dr. Smith', notes: 132, accuracy: 91, efficiency: 92, revenue: 25680 },
@@ -779,9 +1026,9 @@ function StaffPerformanceDashboard() {
         </p>
       </div>
 
-      <DashboardFilters 
-        onDateRangeChange={() => {}}
-        onClinicianChange={() => {}}
+      <DashboardFilters
+        filters={filters}
+        onFiltersChange={onFiltersChange}
         onExport={() => console.log('Export staff performance dashboard')}
       />
       
@@ -881,6 +1128,39 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
   })
   const [sessionHydrated, setSessionHydrated] = useState(false)
   const [refreshCounter, setRefreshCounter] = useState(0)
+  const [filters, setFilters] = useState<AnalyticsFilters>(() => createDefaultFilters())
+  const serializedFilters = useMemo(() => serializeFilters(filters), [filters])
+
+  const handleFiltersChange = useCallback((updates: Partial<AnalyticsFilters>) => {
+    setFilters(prev => {
+      const next: AnalyticsFilters = {
+        ...prev,
+        customRange: updates.customRange !== undefined ? updates.customRange : prev.customRange
+      }
+
+      if (updates.datePreset) {
+        next.datePreset = updates.datePreset
+      }
+
+      if (next.datePreset !== 'custom') {
+        next.customRange = null
+      }
+
+      if (updates.clinician !== undefined) {
+        next.clinician = normalizeFilterValue(updates.clinician)
+      }
+
+      if (updates.clinic !== undefined) {
+        next.clinic = normalizeFilterValue(updates.clinic)
+      }
+
+      if (updates.payer !== undefined) {
+        next.payer = normalizeFilterValue(updates.payer)
+      }
+
+      return next
+    })
+  }, [])
 
   const loadAnalyticsData = useCallback(
     async (signal?: AbortSignal) => {
@@ -900,11 +1180,14 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         return "Unable to load analytics."
       }
 
+      const query = buildAnalyticsQuery(filters)
+      const suffix = query ? `?${query}` : ""
+
       const [usageResult, codingResult, revenueResult, complianceResult, draftsResult] = await Promise.allSettled([
-        apiFetchJson<UsageAnalyticsResponse>("/api/analytics/usage", { signal }),
-        apiFetchJson<CodingAccuracyAnalyticsResponse>("/api/analytics/coding-accuracy", { signal }),
-        apiFetchJson<RevenueAnalyticsResponse>("/api/analytics/revenue", { signal }),
-        apiFetchJson<ComplianceAnalyticsResponse>("/api/analytics/compliance", { signal }),
+        apiFetchJson<UsageAnalyticsResponse>(`/api/analytics/usage${suffix}`, { signal }),
+        apiFetchJson<CodingAccuracyAnalyticsResponse>(`/api/analytics/coding-accuracy${suffix}`, { signal }),
+        apiFetchJson<RevenueAnalyticsResponse>(`/api/analytics/revenue${suffix}`, { signal }),
+        apiFetchJson<ComplianceAnalyticsResponse>(`/api/analytics/compliance${suffix}`, { signal }),
         apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal })
       ])
 
@@ -978,7 +1261,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         }))
       }
     },
-    []
+    [filters]
   )
 
   useEffect(() => {
@@ -1004,12 +1287,18 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
     const controller = new AbortController()
     let mounted = true
 
-    apiFetchJson<{ analyticsPreferences?: { activeTab?: string } }>("/api/user/session", { signal: controller.signal })
+    apiFetchJson<{ analyticsPreferences?: { activeTab?: string; filters?: StoredAnalyticsFilters } }>("/api/user/session", { signal: controller.signal })
       .then(data => {
-        if (!mounted || !data?.analyticsPreferences?.activeTab) {
+        if (!mounted || !data?.analyticsPreferences) {
           return
         }
-        setActiveTab(data.analyticsPreferences.activeTab)
+        const prefs = data.analyticsPreferences
+        if (prefs.activeTab) {
+          setActiveTab(prefs.activeTab)
+        }
+        if (prefs.filters !== undefined) {
+          setFilters(deserializeFilters(prefs.filters))
+        }
       })
       .catch(error => {
         if ((error as DOMException)?.name !== "AbortError") {
@@ -1038,7 +1327,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
       apiFetch("/api/user/session", {
         method: "PUT",
         jsonBody: {
-          analyticsPreferences: { activeTab }
+          analyticsPreferences: { activeTab, filters: serializedFilters }
         },
         signal: controller.signal
       }).catch(error => {
@@ -1052,7 +1341,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
       window.clearTimeout(timeout)
       controller.abort()
     }
-  }, [activeTab, sessionHydrated])
+  }, [activeTab, serializedFilters, sessionHydrated])
 
   return (
     <div className="p-6 space-y-6">
@@ -1099,12 +1388,14 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
             codingState={codingAccuracyState}
             usageState={usageState}
             currencyFormatter={currencyFormatter}
+            filters={filters}
+            onFiltersChange={handleFiltersChange}
             onRefresh={handleRefresh}
           />
         </TabsContent>
 
         <TabsContent value="outcomes" className="space-y-6">
-          <HealthOutcomesDashboard />
+          <HealthOutcomesDashboard filters={filters} onFiltersChange={handleFiltersChange} />
         </TabsContent>
 
         <TabsContent value="quality" className="space-y-6">
@@ -1113,12 +1404,14 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
             complianceState={complianceState}
             codingState={codingAccuracyState}
             draftState={draftAnalyticsState}
+            filters={filters}
+            onFiltersChange={handleFiltersChange}
             onRefresh={handleRefresh}
           />
         </TabsContent>
 
         <TabsContent value="staff" className="space-y-6">
-          <StaffPerformanceDashboard />
+          <StaffPerformanceDashboard filters={filters} onFiltersChange={handleFiltersChange} />
         </TabsContent>
       </Tabs>
     </div>

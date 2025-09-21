@@ -138,7 +138,10 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 ### Administrative & operational views
 
 - **Dashboard** – Admin-only charts summarise baseline vs current usage,
-  revenue metrics and denial rates, with export to PDF support.【F:revenuepilot-frontend/src/components/Dashboard.tsx†L1-L192】
+  revenue metrics and denial rates, with export to PDF support. Filter
+  controls persist per user, letting analysts scope analytics by date
+  presets or custom ranges alongside clinician, clinic and payer
+  selections that flow through to the backend query parameters.【F:revenuepilot-frontend/src/components/Analytics.tsx†L185-L314】【F:backend/main.py†L9206-L9706】
 - **Audit & activity logs** – Recent events stream from `/events` while
   structured audit entries are available under `/api/activity/log`.【F:revenuepilot-frontend/src/components/ActivityLog.tsx†L1-L156】【F:revenuepilot-frontend/src/hooks/useActivityLog.ts†L241-L276】
 - **Configuration & preferences** – Clinician settings, API keys, EHR integration,
