@@ -423,28 +423,62 @@ function resolveRequestInfo(input: RequestInfo | URL): RequestInfo | URL {
 }
 
 export function resolveWebsocketUrl(path: string): string {
-  const base = resolveApiBaseUrl()
-  if (base) {
+  if (!path) {
+    return path
+  }
+
+  if (ABSOLUTE_URL_RE.test(path)) {
     try {
-      const baseUrl = new URL(base)
-      const baseHref = baseUrl.href.endsWith("/") ? baseUrl.href : `${baseUrl.href}/`
-      const relative = path.startsWith("/") ? path.slice(1) : path
-      const wsUrl = new URL(relative, baseHref)
-      wsUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:"
-      return wsUrl.toString()
+      const absolute = new URL(path)
+      if (absolute.protocol === "http:") {
+        absolute.protocol = "ws:"
+      } else if (absolute.protocol === "https:") {
+        absolute.protocol = "wss:"
+      }
+      return absolute.toString()
     } catch {
-      // fall through to origin resolution
+      return path
     }
   }
 
-  if (typeof window !== "undefined") {
-    const origin = window.location.origin
-    const wsUrl = new URL(path, origin)
-    wsUrl.protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    return wsUrl.toString()
+  const base = resolveApiBaseUrl()
+  let origin: string | null = null
+  let protocolSource: string | null = null
+
+  if (base) {
+    try {
+      const baseUrl = new URL(base)
+      origin = baseUrl.origin
+      protocolSource = baseUrl.protocol
+    } catch {
+      origin = null
+      protocolSource = null
+    }
   }
 
-  return path
+  if (!origin && typeof window !== "undefined") {
+    try {
+      const windowOrigin = new URL(window.location.origin)
+      origin = windowOrigin.origin
+      protocolSource = window.location.protocol
+    } catch {
+      origin = null
+    }
+  }
+
+  if (!origin) {
+    return path
+  }
+
+  try {
+    const relative = path.startsWith("/") ? path : `/${path}`
+    const resolved = new URL(relative, origin)
+    const protocol = protocolSource === "https:" ? "wss:" : "ws:"
+    resolved.protocol = protocol
+    return resolved.toString()
+  } catch {
+    return path
+  }
 }
 
 export interface BuildAuthHeadersOptions {
