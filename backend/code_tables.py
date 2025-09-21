@@ -65,6 +65,7 @@ DEFAULT_CPT_CODES: Dict[str, dict] = {
     },
 }
 
+
 DEFAULT_ICD10_CODES: Dict[str, dict] = {
     "E11.9": {
         "description": "Type 2 diabetes mellitus without complications",
@@ -159,6 +160,12 @@ DEFAULT_HCPCS_CODES: Dict[str, dict] = {
         ],
     },
 }
+
+# Legacy mutable mappings kept for compatibility with older code paths and
+# tests that patch in-memory datasets directly.
+CPT_CODES: Dict[str, dict] = dict(DEFAULT_CPT_CODES)
+ICD10_CODES: Dict[str, dict] = dict(DEFAULT_ICD10_CODES)
+HCPCS_CODES: Dict[str, dict] = dict(DEFAULT_HCPCS_CODES)
 
 
 def _resolve_connection(session: sqlite3.Connection | None) -> sqlite3.Connection | None:
