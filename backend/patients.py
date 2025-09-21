@@ -23,6 +23,8 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+from backend.time_utils import ensure_utc, from_epoch_seconds
+
 
 _DB_CONN: Optional[sqlite3.Connection] = None
 
@@ -84,6 +86,19 @@ def _deserialize_json_list(value: Any) -> List[str]:
     return []
 
 
+def _normalise_timestamp(value: Any) -> Any:
+    """Return ISO 8601 text for epoch ``value`` when possible."""
+
+    dt = from_epoch_seconds(value)
+    if dt is None:
+        return value
+    dt_utc = ensure_utc(dt).replace(microsecond=0)
+    text = dt_utc.isoformat()
+    if text.endswith("+00:00"):
+        return text[:-6] + "Z"
+    return text
+
+
 def _calculate_age(dob_str: Optional[str]) -> Optional[int]:
     """Return the approximate age in years for the given ISO date string."""
 
@@ -118,7 +133,7 @@ def _format_patient_row(row: Mapping[str, Any]) -> Dict[str, Any]:
         "age": _calculate_age(data.get("dob")),
         "gender": data.get("gender"),
         "insurance": data.get("insurance"),
-        "lastVisit": data.get("last_visit"),
+        "lastVisit": _normalise_timestamp(data.get("last_visit")),
         "allergies": _deserialize_json_list(data.get("allergies")),
         "medications": _deserialize_json_list(data.get("medications")),
     }
@@ -158,7 +173,9 @@ def _normalize_remote_patient(data: Mapping[str, Any]) -> Dict[str, Any]:
         "age": data.get("age"),
         "gender": data.get("gender"),
         "insurance": data.get("insurance"),
-        "lastVisit": data.get("lastVisit") or data.get("last_visit"),
+        "lastVisit": _normalise_timestamp(
+            data.get("lastVisit") or data.get("last_visit")
+        ),
         "allergies": _deserialize_json_list(data.get("allergies")),
         "medications": _deserialize_json_list(data.get("medications")),
     }
@@ -406,7 +423,7 @@ def get_encounter(
     encounter = {
         "encounterId": row["encounter_id"],
         "patientId": row["encounter_patient_id"],
-        "date": row["date"],
+        "date": _normalise_timestamp(row["date"]),
         "type": row["type"],
         "provider": row["provider"],
         "description": row["description"],
