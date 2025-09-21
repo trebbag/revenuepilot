@@ -730,23 +730,161 @@ export async function getSuggestions(text, context = {}) {
  * @param {string[]} codes Optional billing codes
  * @returns {Promise<{interval:string|null, ics:string|null}>}
  */
-export async function scheduleFollowUp(text, codes = []) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  const token =
-    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  const headers = token
-    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
-    : { 'Content-Type': 'application/json' };
-  const resp = await fetch(`${baseUrl}/schedule`, {
+export async function scheduleFollowUp(payload, codes = []) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const body = (() => {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const normalised = { ...payload };
+      if (!normalised.text) normalised.text = '';
+      if (!Array.isArray(normalised.codes)) normalised.codes = [];
+      return normalised;
+    }
+    return { text: payload || '', codes: Array.isArray(codes) ? codes : [] };
+  })();
+  const resp = await fetch(`${baseUrl}/followup`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ text, codes }),
+    body: JSON.stringify(body),
   });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = 'Failed to fetch follow-up recommendation';
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return await resp.json();
+}
+
+function normaliseDateTimeInput(value) {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'number') {
+    const dt = new Date(value);
+    return Number.isNaN(dt.getTime()) ? undefined : dt.toISOString();
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const padded =
+      trimmed.length === 16 && trimmed.includes('T') ? `${trimmed}:00` : trimmed;
+    const dt = new Date(padded);
+    if (!Number.isNaN(dt.getTime())) {
+      return dt.toISOString();
+    }
+    return trimmed;
+  }
+  return undefined;
+}
+
+export async function listScheduleAppointments() {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader();
+  const resp = await fetch(`${baseUrl}/api/schedule/appointments`, {
+    method: 'GET',
+    headers,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to load appointments');
+  }
+  return await resp.json();
+}
+
+export async function createScheduleAppointment(appt = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const body = {
+    patient: appt.patient || '',
+    reason: appt.reason || '',
+    start: normaliseDateTimeInput(appt.start),
+  };
+  if (!body.patient) throw new Error('patient is required');
+  if (!body.reason) throw new Error('reason is required');
+  if (!body.start) throw new Error('start is required');
+  if (appt.end) body.end = normaliseDateTimeInput(appt.end);
+  if (appt.provider) body.provider = appt.provider;
+  if (appt.patientId) body.patientId = appt.patientId;
+  if (appt.encounterId) body.encounterId = appt.encounterId;
+  if (appt.location) body.location = appt.location;
+  const resp = await fetch(`${baseUrl}/schedule`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = 'Failed to create appointment';
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return await resp.json();
+}
+
+export async function exportAppointmentIcs(id) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/schedule/export`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id }),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to export appointment');
+  }
+  const data = await resp.json();
+  return data?.ics || '';
+}
+
+export async function scheduleBulkOperations(request = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const updates = Array.isArray(request.updates) ? request.updates : [];
+  const payload = {
+    updates: updates.map((item) => {
+      const mapped = {
+        id: item.id,
+        action: item.action,
+      };
+      if (item.time) {
+        const normalised = normaliseDateTimeInput(item.time);
+        if (normalised) mapped.time = normalised;
+      }
+      return mapped;
+    }),
+  };
+  if (request.provider) payload.provider = request.provider;
+  const resp = await fetch(`${baseUrl}/api/schedule/bulk-operations`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to update appointments');
   }
   return await resp.json();
 }

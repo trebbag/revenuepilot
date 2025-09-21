@@ -49,8 +49,8 @@ The production UI lives under `src/` and is also exposed via the
   accounts and shows the audit log component inline.【F:src/components/AdminUsers.jsx†L1-L120】
 - **`Notifications.jsx`** lists notification events, unread counts and
   quick actions sourced from `/api/notifications/*` endpoints.【F:src/components/Notifications.jsx†L1-L200】
-- **`FollowUpScheduler.jsx`** and `Scheduler.tsx` manage appointment data,
-  ICS exports and bulk actions against the scheduling API.【F:src/components/FollowUpScheduler.jsx†L1-L160】【F:backend/scheduling.py†L1-L240】
+- **`Scheduler.tsx`** manages follow-up recommendations, appointment CRUD,
+  ICS exports and bulk actions against the scheduling API.【F:src/components/Scheduler.tsx†L1-L260】【F:backend/scheduling.py†L500-L980】
 
 ### Infrastructure helpers
 
