@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
+import time
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 import json
 import os
+import sqlite3
 
 
 # Default intervals for broad condition categories.  These are defined as
@@ -223,7 +225,31 @@ from threading import Lock
 
 _APPOINTMENTS: list[dict] = []
 _APPT_LOCK = Lock()
-_NEXT_ID = 1
+_NEXT_ID = 1000
+
+_DB_CONN: Optional[sqlite3.Connection] = None
+
+
+def configure_database(conn: sqlite3.Connection) -> None:
+    """Cache *conn* so scheduling helpers can query real data."""
+
+    global _DB_CONN
+    _DB_CONN = conn
+
+
+def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[sqlite3.Connection]:
+    """Return an active SQLite connection if available."""
+
+    if conn is not None:
+        return conn
+    if _DB_CONN is not None:
+        return _DB_CONN
+    try:  # Late import avoids circular dependency during module import.
+        from backend import main  # type: ignore
+
+        return getattr(main, "db_conn", None)
+    except Exception:
+        return None
 
 _DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
 
@@ -241,12 +267,263 @@ _STATUS_ACTION_MAP = {
 _ALLOWED_STATUSES = {"scheduled", "in-progress", "completed", "cancelled"}
 
 
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    """Coerce *value* into a ``datetime`` when possible."""
+
+    if value in (None, "", b""):
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value))
+        except (TypeError, ValueError, OSError):
+            return None
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        normalised = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            return datetime.fromisoformat(normalised)
+        except ValueError:
+            pass
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(text, fmt)
+                if fmt == "%Y-%m-%d":
+                    return dt.replace(hour=9, minute=0, second=0, microsecond=0)
+                return dt
+            except ValueError:
+                continue
+    return None
+
+
+def _serialize_datetime(dt: Optional[datetime]) -> Optional[str]:
+    if not isinstance(dt, datetime):
+        return None
+    return dt.replace(microsecond=0).isoformat()
+
+
+_STATUS_REMAP = {
+    "started": "in-progress",
+    "start": "in-progress",
+    "active": "in-progress",
+    "in_progress": "in-progress",
+    "checkin": "check-in",
+    "checked-in": "check-in",
+    "checked_in": "check-in",
+    "check-in": "check-in",
+    "complete": "completed",
+    "finished": "completed",
+    "cancel": "cancelled",
+    "canceled": "cancelled",
+    "no-show": "no show",
+    "no_show": "no show",
+}
+
+
+def _normalise_status(value: Optional[str]) -> str:
+    if not value:
+        return "scheduled"
+    normalised = value.strip().lower().replace(" ", "-")
+    return _STATUS_REMAP.get(normalised, normalised or "scheduled")
+
+
+def _load_visit_sessions(conn: sqlite3.Connection) -> Dict[int, sqlite3.Row]:
+    """Return a mapping of encounter_id -> latest visit session row."""
+
+    rows = conn.execute(
+        "SELECT id, encounter_id, status, start_time, end_time, data, updated_at "
+        "FROM visit_sessions"
+    ).fetchall()
+    latest: Dict[int, sqlite3.Row] = {}
+    for row in rows:
+        encounter_id = row["encounter_id"]
+        if encounter_id is None:
+            continue
+        existing = latest.get(encounter_id)
+        candidate_ts = row["updated_at"] if row["updated_at"] is not None else 0
+        if existing is None:
+            latest[encounter_id] = row
+            continue
+        existing_ts = (
+            existing["updated_at"] if existing["updated_at"] is not None else 0
+        )
+        if candidate_ts > existing_ts:
+            latest[encounter_id] = row
+        elif candidate_ts == existing_ts and row["id"] > existing["id"]:
+            latest[encounter_id] = row
+    return latest
+
+
+def _build_visit_summary(
+    encounter_id: int,
+    patient_id: Optional[int],
+    patient_name: str,
+    provider: Optional[str],
+    reason: str,
+    start: Optional[datetime],
+    end: Optional[datetime],
+    status: str,
+    *,
+    last_visit: Optional[str] = None,
+    encounter_type: Optional[str] = None,
+    insurance: Optional[str] = None,
+    session_row: Optional[sqlite3.Row] = None,
+) -> Dict[str, Any]:
+    """Assemble a structured visit summary payload."""
+
+    duration_minutes: Optional[int] = None
+    if start and end:
+        delta = end - start
+        duration_minutes = max(0, int(delta.total_seconds() // 60))
+
+    summary: Dict[str, Any] = {
+        "encounterId": str(encounter_id),
+        "patientId": str(patient_id) if patient_id is not None else None,
+        "patientName": patient_name,
+        "provider": provider,
+        "chiefComplaint": reason,
+        "status": status,
+        "startTime": _serialize_datetime(start),
+        "endTime": _serialize_datetime(end),
+        "durationMinutes": duration_minutes,
+        "documentationComplete": status in {"completed", "cancelled"},
+        "lastVisit": last_visit,
+        "encounterType": encounter_type,
+    }
+
+    if insurance:
+        summary["insurance"] = insurance
+
+    if session_row is not None:
+        session_data = session_row["data"]
+        if session_data:
+            try:
+                parsed = json.loads(session_data)
+                if isinstance(parsed, dict):
+                    summary["session"] = parsed
+            except json.JSONDecodeError:
+                summary["session"] = session_data
+        if session_row["updated_at"] is not None:
+            summary["sessionUpdatedAt"] = _serialize_datetime(
+                _parse_datetime(session_row["updated_at"])
+            )
+
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
+    """Return appointments derived from persisted encounter data."""
+
+    encounter_rows = conn.execute(
+        """
+        SELECT
+            e.id AS encounter_id,
+            e.patient_id,
+            e.date,
+            e.type,
+            e.provider,
+            e.description,
+            p.first_name,
+            p.last_name,
+            p.mrn,
+            p.last_visit,
+            p.insurance
+        FROM encounters e
+        LEFT JOIN patients p ON p.id = e.patient_id
+        ORDER BY e.date IS NULL, e.date, e.id
+        """
+    ).fetchall()
+
+    sessions = _load_visit_sessions(conn)
+    appointments: list[dict] = []
+
+    for row in encounter_rows:
+        encounter_id = row["encounter_id"]
+        patient_id = row["patient_id"]
+        session_row = sessions.get(encounter_id)
+
+        start_dt = _parse_datetime(
+            session_row["start_time"] if session_row else row["date"]
+        )
+        end_dt = _parse_datetime(session_row["end_time"] if session_row else None)
+        if start_dt is None:
+            # Default to encounter date at 9am when only the date is provided.
+            start_dt = _parse_datetime(row["date"])
+        if start_dt is None:
+            start_dt = datetime.utcnow().replace(microsecond=0)
+        if end_dt is None:
+            end_dt = start_dt + _DEFAULT_APPOINTMENT_DURATION
+
+        patient_first = row["first_name"] or ""
+        patient_last = row["last_name"] or ""
+        name_parts = [part for part in (patient_first, patient_last) if part]
+        patient_name = " ".join(name_parts) if name_parts else (
+            row["mrn"] or f"Patient {encounter_id}"
+        )
+
+        provider = (row["provider"] or "").strip() or None
+        reason = (row["description"] or row["type"] or "Follow-up").strip()
+        status_raw = session_row["status"] if session_row else None
+        status = _normalise_status(status_raw)
+        encounter_type = (row["type"] or "").strip() or None
+
+        location = "Virtual" if (
+            encounter_type and encounter_type.lower().startswith("tele")
+        ) else "Main Clinic"
+
+        summary = _build_visit_summary(
+            encounter_id,
+            patient_id,
+            patient_name,
+            provider,
+            reason,
+            start_dt,
+            end_dt,
+            status,
+            last_visit=row["last_visit"],
+            encounter_type=encounter_type,
+            insurance=row["insurance"],
+            session_row=session_row,
+        )
+
+        appointments.append(
+            {
+                "id": int(encounter_id),
+                "patient": patient_name,
+                "patientId": str(patient_id) if patient_id is not None else None,
+                "encounterId": str(encounter_id),
+                "reason": reason,
+                "start": _serialize_datetime(start_dt) or start_dt.isoformat(),
+                "end": _serialize_datetime(end_dt) or end_dt.isoformat(),
+                "provider": provider,
+                "status": status,
+                "location": location,
+                "visitSummary": summary,
+            }
+        )
+
+    return appointments
+
+
 def create_appointment(
     patient: str,
     reason: str,
     start: datetime,
     end: Optional[datetime] = None,
     provider: Optional[str] = None,
+    *,
+    patient_id: Optional[str] = None,
+    encounter_id: Optional[str] = None,
+    location: Optional[str] = None,
+    visit_summary: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """Create an appointment record and return it.
 
@@ -260,6 +537,7 @@ def create_appointment(
     if end < start:
         # Normalise invalid ranges by swapping; keeps function total.
         start, end = end, start
+    location_normalised = (location or "").strip() or "Main Clinic"
     rec = {
         "id": _NEXT_ID,
         "patient": patient,
@@ -268,7 +546,28 @@ def create_appointment(
         "end": end.replace(microsecond=0).isoformat(),
         "provider": provider,
         "status": "scheduled",
+        "patientId": patient_id,
+        "encounterId": encounter_id,
+        "location": location_normalised,
+        "visitSummary": None,
     }
+    summary_payload: Optional[Mapping[str, Any]]
+    if visit_summary is not None:
+        summary_payload = visit_summary
+    else:
+        summary_payload = _build_visit_summary(
+            _NEXT_ID,
+            None,
+            patient,
+            provider,
+            reason,
+            start,
+            end,
+            "scheduled",
+            encounter_type=None,
+        )
+    if summary_payload:
+        rec["visitSummary"] = dict(summary_payload)
     with _APPT_LOCK:
         _APPOINTMENTS.append(rec)
         _NEXT_ID += 1
@@ -277,8 +576,21 @@ def create_appointment(
 
 def list_appointments() -> list[dict]:
     """Return all appointments sorted by start time."""
+
+    connection = _resolve_connection()
+    records: list[dict] = []
+    if connection is not None:
+        try:
+            records.extend(_load_db_appointments(connection))
+        except sqlite3.Error:
+            # Fall back to in-memory records if the query fails.
+            pass
+
     with _APPT_LOCK:
-        return sorted(_APPOINTMENTS, key=lambda r: r["start"])  # shallow copies fine
+        for rec in _APPOINTMENTS:
+            records.append(dict(rec))
+
+    return sorted(records, key=lambda r: r.get("start") or "")
 
 
 def get_appointment(appt_id: int) -> Optional[dict]:
@@ -351,6 +663,178 @@ def _reschedule_locked(rec: dict, new_start: datetime) -> bool:
     return True
 
 
+def _apply_in_memory_operation(
+    rec: dict,
+    action: str,
+    provider: Optional[str],
+    new_start: Optional[datetime],
+) -> bool:
+    existing_provider = _normalise_provider(rec.get("provider"))
+    if provider:
+        if existing_provider and existing_provider.casefold() != provider.casefold():
+            return False
+        if not existing_provider:
+            rec["provider"] = provider
+
+    if not rec.get("status"):
+        rec["status"] = "scheduled"
+
+    action_lower = action.lower()
+    if action_lower == "reschedule":
+        if new_start is None:
+            return False
+        return _reschedule_locked(rec, new_start)
+
+    status = _STATUS_ACTION_MAP.get(action_lower)
+    if status:
+        rec["status"] = status
+        return True
+
+    if action_lower in _ALLOWED_STATUSES:
+        rec["status"] = action_lower
+        return True
+
+    return False
+
+
+def _apply_db_bulk_operation(
+    conn: sqlite3.Connection,
+    encounter_id: int,
+    action: str,
+    provider: Optional[str],
+    new_start: Optional[datetime],
+) -> bool:
+    try:
+        encounter = conn.execute(
+            "SELECT id, provider FROM encounters WHERE id=?",
+            (encounter_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+
+    if encounter is None:
+        return False
+
+    provider_value = (
+        encounter["provider"]
+        if hasattr(encounter, "keys")
+        else encounter[1]  # type: ignore[index]
+    )
+    existing_provider = _normalise_provider(provider_value)
+    if provider:
+        if existing_provider and existing_provider.casefold() != provider.casefold():
+            return False
+        if not existing_provider:
+            conn.execute(
+                "UPDATE encounters SET provider=? WHERE id=?",
+                (provider, encounter_id),
+            )
+            existing_provider = provider
+
+    action_lower = action.lower()
+    if action_lower == "reschedule":
+        if new_start is None:
+            conn.commit()
+            return False
+        session_row = conn.execute(
+            """
+            SELECT id, start_time, end_time
+            FROM visit_sessions
+            WHERE encounter_id=?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (encounter_id,),
+        ).fetchone()
+        duration = _DEFAULT_APPOINTMENT_DURATION
+        if session_row:
+            start_value = (
+                session_row["start_time"]
+                if hasattr(session_row, "keys")
+                else session_row[1]  # type: ignore[index]
+            )
+            end_value = (
+                session_row["end_time"]
+                if hasattr(session_row, "keys")
+                else session_row[2]  # type: ignore[index]
+            )
+            start_dt = _parse_datetime(start_value)
+            end_dt = _parse_datetime(end_value)
+            if start_dt and end_dt and end_dt > start_dt:
+                duration = end_dt - start_dt
+        start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
+        end_dt = new_start + duration
+        end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
+        now_ts = time.time()
+        if session_row:
+            session_id = (
+                session_row["id"]
+                if hasattr(session_row, "keys")
+                else session_row[0]  # type: ignore[index]
+            )
+            conn.execute(
+                """
+                UPDATE visit_sessions
+                   SET start_time=?, end_time=?, status=?, updated_at=?
+                 WHERE id=?
+                """,
+                (start_iso, end_iso, "scheduled", now_ts, session_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (encounter_id, "scheduled", start_iso, end_iso, now_ts),
+            )
+        conn.execute(
+            "UPDATE encounters SET date=? WHERE id=?",
+            (start_iso, encounter_id),
+        )
+        conn.commit()
+        return True
+
+    status = _STATUS_ACTION_MAP.get(action_lower)
+    if not status and action_lower in _ALLOWED_STATUSES:
+        status = action_lower
+    if not status:
+        conn.commit()
+        return False
+
+    now_ts = time.time()
+    session_row = conn.execute(
+        """
+        SELECT id
+        FROM visit_sessions
+        WHERE encounter_id=?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        """,
+        (encounter_id,),
+    ).fetchone()
+    if session_row:
+        session_id = (
+            session_row["id"]
+            if hasattr(session_row, "keys")
+            else session_row[0]  # type: ignore[index]
+        )
+        conn.execute(
+            "UPDATE visit_sessions SET status=?, updated_at=? WHERE id=?",
+            (status, now_ts, session_id),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
+            VALUES (?, ?, NULL, NULL, ?)
+            """,
+            (encounter_id, status, now_ts),
+        )
+    conn.commit()
+    return True
+
+
 def apply_bulk_operations(
     updates: Sequence[Mapping[str, Any]],
     provider: Optional[str] = None,
@@ -375,6 +859,7 @@ def apply_bulk_operations(
     succeeded = 0
     failed = 0
     provider_normalised = _normalise_provider(provider)
+    connection = _resolve_connection()
 
     for update in updates:
         if not isinstance(update, Mapping):
@@ -412,50 +897,40 @@ def apply_bulk_operations(
             failed += 1
             continue
 
+        handled = False
+        success = False
         with _APPT_LOCK:
             rec = _find_appointment_locked(appt_id)
-            if rec is None:
+            if rec is not None:
+                handled = True
+                success = _apply_in_memory_operation(
+                    rec, action, provider_normalised, new_start
+                )
+
+        if handled:
+            if success:
+                succeeded += 1
+            else:
                 failed += 1
-                continue
+            continue
 
-            existing_provider = _normalise_provider(rec.get("provider"))
-            if provider_normalised:
-                if existing_provider and existing_provider.casefold() != provider_normalised.casefold():
-                    failed += 1
-                    continue
-                if not existing_provider:
-                    rec["provider"] = provider_normalised
-
-            if not rec.get("status"):
-                rec["status"] = "scheduled"
-
-            if action.lower() == "reschedule":
-                if new_start is None:
-                    failed += 1
-                    continue
-                if _reschedule_locked(rec, new_start):
+        if connection is not None:
+            try:
+                if _apply_db_bulk_operation(
+                    connection, appt_id, action, provider_normalised, new_start
+                ):
                     succeeded += 1
-                else:
-                    failed += 1
-                continue
+                    continue
+            except sqlite3.Error:
+                pass
 
-            status = _STATUS_ACTION_MAP.get(action.lower())
-            if status:
-                rec["status"] = status
-                succeeded += 1
-                continue
-
-            if action.lower() in _ALLOWED_STATUSES:
-                rec["status"] = action.lower()
-                succeeded += 1
-                continue
-
-            failed += 1
+        failed += 1
 
     return succeeded, failed
 
 # Re-export public API surface for explicit imports elsewhere.
 __all__ = [
+    "configure_database",
     "recommend_follow_up",
     "export_ics",
     "create_appointment",

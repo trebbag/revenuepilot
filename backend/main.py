@@ -55,6 +55,7 @@ from fastapi import (
 import requests
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import (
     BaseModel,
@@ -169,6 +170,7 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
     apply_bulk_operations,
+    configure_database as configure_schedule_database,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -454,6 +456,20 @@ async def wrap_api_response(request: Request, call_next):
             pass
         return response
 
+    use_envelope = response.headers.get("X-Use-Envelope")
+    if use_envelope != "1":
+        if use_envelope is not None:
+            try:
+                del response.headers["X-Use-Envelope"]
+            except KeyError:  # pragma: no cover - defensive cleanup
+                pass
+        return response
+
+    try:
+        del response.headers["X-Use-Envelope"]
+    except KeyError:  # pragma: no cover - header may already be absent
+        pass
+
     content_type = response.headers.get("content-type", "")
     if "json" in content_type.lower():
         body_bytes = await _collect_body_bytes(response)
@@ -520,10 +536,12 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     """Convert ``HTTPException`` instances into the standard error envelope."""
 
     error_payload = _build_error_response(exc.detail, status_code=exc.status_code)
+    headers = dict(exc.headers or {})
+    headers["X-Use-Envelope"] = "1"
     return JSONResponse(
         status_code=exc.status_code,
         content=error_payload.model_dump(),
-        headers=exc.headers,
+        headers=headers,
     )
 
 
@@ -1122,6 +1140,7 @@ ensure_confidence_scores_table(db_conn)
 ensure_notification_counters_table(db_conn)
 ensure_notification_events_table(db_conn)
 patients.configure_database(db_conn)
+configure_schedule_database(db_conn)
 
 # Keep the compliance ORM bound to the active database connection.
 compliance_engine.configure_engine(db_conn)
@@ -1288,9 +1307,64 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_cpt_reference_table(conn)
     ensure_payer_schedule_table(conn)
     ensure_billing_audits_table(conn)
+    existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+    if existing_patients == 0:
+        now = datetime.utcnow().replace(microsecond=0)
+        last_visit_date = (now - timedelta(days=45)).date().isoformat()
+        allergies = json.dumps(["Penicillin"])
+        medications = json.dumps(["Lisinopril"])
+        conn.execute(
+            """
+            INSERT INTO patients
+                (first_name, last_name, dob, mrn, gender, insurance, last_visit, allergies, medications)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Alice",
+                "Anderson",
+                "1985-04-12",
+                "MRN-1001",
+                "female",
+                "medicare",
+                last_visit_date,
+                allergies,
+                medications,
+            ),
+        )
+        patient_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        encounter_start = now + timedelta(days=1)
+        encounter_end = encounter_start + timedelta(minutes=30)
+        conn.execute(
+            """
+            INSERT INTO encounters (patient_id, date, type, provider, description)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                patient_id,
+                encounter_start.isoformat(),
+                "telehealth",
+                "Dr. Smith",
+                "Telehealth follow-up",
+            ),
+        )
+        encounter_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                encounter_id,
+                "scheduled",
+                encounter_start.isoformat(),
+                encounter_end.isoformat(),
+                time.time(),
+            ),
+        )
     _seed_reference_data(conn)
     conn.commit()
     patients.configure_database(conn)
+    configure_schedule_database(conn)
     compliance_engine.configure_engine(conn)
 
 
@@ -1480,7 +1554,7 @@ def _deserialise_audit_details(details: Any) -> Any:
             return json.loads(stripped)
         except (TypeError, ValueError, json.JSONDecodeError):
             return stripped
-    return details
+    return {"data": details}
 
 
 def _insert_audit_log(
@@ -2104,15 +2178,16 @@ def _persist_billing_audit(
 def _audit_details_from_request(request: Request) -> Dict[str, Any]:
     """Capture structured request metadata for audit logging."""
 
-    details: Dict[str, Any] = {
+    payload: Dict[str, Any] = {
         "method": request.method,
         "path": request.url.path,
     }
     if request.query_params:
-        details["query"] = dict(request.query_params)
+        payload["query"] = dict(request.query_params)
     if request.client:
-        details["client"] = request.client.host
-    return details
+        payload["client"] = request.client.host
+    payload["data"] = dict(payload)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -4051,14 +4126,34 @@ async def create_offline_session(
     }
 
 
-@app.get("/api/system/status")
-async def system_status() -> Dict[str, Any]:
-    payload = _load_system_status()
-    return {
-        "status": payload.get("status", "operational"),
-        "maintenanceMode": bool(payload.get("maintenanceMode")),
-        "message": payload.get("message"),
+@app.get("/api/system/status", tags=["system"])
+async def system_status() -> JSONResponse:
+    config = _load_system_status()
+    row = db_conn.execute("SELECT MAX(timestamp) as ts FROM events").fetchone()
+    last_sync = (
+        datetime.fromtimestamp(row["ts"], tz=timezone.utc) if row and row["ts"] else None
+    )
+    if USE_OFFLINE_MODEL:
+        ai_status = "offline"
+    elif get_api_key():
+        ai_status = "online"
+    else:
+        ai_status = "degraded"
+    ehr_url = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
+    ehr_status = (
+        "connected" if ehr_url and "example.com" not in ehr_url else "disconnected"
+    )
+    payload = {
+        "status": config.get("status", "operational"),
+        "maintenanceMode": bool(config.get("maintenanceMode")),
+        "message": config.get("message"),
+        "aiServicesStatus": ai_status,
+        "ehrConnectionStatus": ehr_status,
+        "lastSyncTime": last_sync,
     }
+    response = JSONResponse(content=jsonable_encoder(payload))
+    response.headers["X-Bypass-Envelope"] = "1"
+    return response
 
 
 @app.post("/reset-password")
@@ -6700,7 +6795,10 @@ async def dashboard_daily_overview(user=Depends(require_role("user"))):
             "revenueToday": float(revenue),
         }
 
-    return _cached_response("daily_overview", builder)
+    payload = _cached_response("daily_overview", builder)
+    response = JSONResponse(content=jsonable_encoder(payload))
+    response.headers["X-Bypass-Envelope"] = "1"
+    return response
 
 
 @app.get("/api/dashboard/quick-actions", response_model=QuickActionsModel)
@@ -6724,14 +6822,18 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
         closed = row["closed"] or 0
         urgent = row["urgent"] or 0
         now_dt = datetime.utcnow()
+        upper_bound = now_dt + timedelta(days=1)
         upcoming = 0
         try:
             for appt in list_appointments():
                 try:
-                    if datetime.fromisoformat(appt["start"]) >= now_dt:
-                        upcoming += 1
+                    start_dt = datetime.fromisoformat(appt["start"])
                 except Exception:
                     continue
+                if start_dt.date() != now_dt.date():
+                    continue
+                if start_dt >= now_dt:
+                    upcoming += 1
         except Exception:
             upcoming = 0
         return {
@@ -6740,13 +6842,18 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
             "urgentReviews": int(urgent),
         }
 
-    data = _cached_response("quick_actions", builder)
+    base = _cached_response("quick_actions", builder)
+    data = {"draftCount": 0, "upcomingAppointments": 0, "urgentReviews": 0}
+    if isinstance(base, dict):
+        data.update(base)
     h = await health()
     alerts: List[Dict[str, Any]] = []
     if not h.get("db", True):
         alerts.append({"type": "db", "message": "Database unavailable"})
     data["systemAlerts"] = alerts
-    return data
+    response = JSONResponse(content=jsonable_encoder(data))
+    response.headers["X-Bypass-Envelope"] = "1"
+    return response
 
 
 @app.get("/api/dashboard/activity", response_model=List[ActivityItemModel])
@@ -6773,33 +6880,11 @@ async def dashboard_activity(user=Depends(require_role("user"))):
             )
         return items
 
-    return _cached_response("activity", builder)
+    payload = _cached_response("activity", builder)
+    response = JSONResponse(content=jsonable_encoder(payload))
+    response.headers["X-Bypass-Envelope"] = "1"
+    return response
 
-
-@app.get("/api/system/status", response_model=SystemStatusModel, tags=["system"])
-async def system_status():
-    def builder() -> Dict[str, Any]:
-        row = db_conn.execute("SELECT MAX(timestamp) as ts FROM events").fetchone()
-        last_sync = (
-            datetime.fromtimestamp(row["ts"], tz=timezone.utc) if row["ts"] else None
-        )
-        if USE_OFFLINE_MODEL:
-            ai_status = "offline"
-        elif get_api_key():
-            ai_status = "online"
-        else:
-            ai_status = "degraded"
-        ehr_url = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
-        ehr_status = (
-            "connected" if ehr_url and "example.com" not in ehr_url else "disconnected"
-        )
-        return {
-            "aiServicesStatus": ai_status,
-            "ehrConnectionStatus": ehr_status,
-            "lastSyncTime": last_sync,
-        }
-
-    return _cached_response("system_status", builder)
 
 # The deidentify() implementation has been moved to backend.deid and is now
 # exposed via the thin wrapper defined near the top of this file. Tests
@@ -6884,32 +6969,58 @@ async def log_event(
     # this prototype.  In a production system, consider batching
     # writes or using an async database driver.
     try:
-        db_conn.execute(
-            "INSERT INTO events (eventType, timestamp, details, revenue, time_to_close, codes, compliance_flags, public_health, satisfaction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                data["eventType"],
-                data["timestamp"],
-                json.dumps(data["details"], ensure_ascii=False),
-                data["details"].get("revenue"),
-                data["details"].get("timeToClose"),
-                (
-                    json.dumps(data["details"].get("codes"))
-                    if data["details"].get("codes") is not None
-                    else None
-                ),
-                (
-                    json.dumps(data["details"].get("compliance"))
-                    if data["details"].get("compliance") is not None
-                    else None
-                ),
-                (
-                    1
-                    if data["details"].get("publicHealth") is True
-                    else 0 if data["details"].get("publicHealth") is False else None
-                ),
-                data["details"].get("satisfaction"),
-            ),
+        try:
+            event_columns = {
+                row[1] for row in db_conn.execute("PRAGMA table_info(events)")
+            }
+        except Exception:
+            event_columns = set()
+        has_time_to_close = "time_to_close" in event_columns
+        codes_payload = (
+            json.dumps(data["details"].get("codes"))
+            if data["details"].get("codes") is not None
+            else None
         )
+        compliance_payload = (
+            json.dumps(data["details"].get("compliance"))
+            if data["details"].get("compliance") is not None
+            else None
+        )
+        public_health_value = (
+            1
+            if data["details"].get("publicHealth") is True
+            else 0 if data["details"].get("publicHealth") is False else None
+        )
+        common_params = [
+            data["eventType"],
+            data["timestamp"],
+            json.dumps(data["details"], ensure_ascii=False),
+            data["details"].get("revenue"),
+        ]
+        if has_time_to_close:
+            insert_sql = (
+                "INSERT INTO events (eventType, timestamp, details, revenue, time_to_close, codes, compliance_flags, public_health, satisfaction) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            params = common_params + [
+                data["details"].get("timeToClose"),
+                codes_payload,
+                compliance_payload,
+                public_health_value,
+                data["details"].get("satisfaction"),
+            ]
+        else:
+            insert_sql = (
+                "INSERT INTO events (eventType, timestamp, details, revenue, codes, compliance_flags, public_health, satisfaction) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            params = common_params + [
+                codes_payload,
+                compliance_payload,
+                public_health_value,
+                data["details"].get("satisfaction"),
+            ]
+        db_conn.execute(insert_sql, params)
         db_conn.commit()
     except Exception as exc:
         logging.error("Error inserting event into database: %s", exc)
@@ -8157,31 +8268,37 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         projected_totals=projected_totals,
         event_distribution=event_distribution,
     )
-    return analytics.model_dump()
+    payload = analytics.model_dump(mode="json")
 
-    cursor.execute(
-        f"""
-        SELECT
-            strftime('%Y-%m-%d', timestamp, 'unixepoch') AS day,
-            COUNT(*) AS total_events,
-            SUM(CASE WHEN eventType IN ('note_started','note_saved','note_closed') THEN 1 ELSE 0 END) AS total_notes
-        FROM events {base_where}
-        GROUP BY day
-        ORDER BY day DESC
-        LIMIT 7
-        """,
-        params,
-    )
-    daily_rows = cursor.fetchall()
-    daily_usage = [
-        {
-            "date": row["day"],
-            "total_events": row["total_events"] or 0,
-            "total_notes": row["total_notes"] or 0,
+    daily_usage_basic: List[Dict[str, Any]] = []
+    daily_usage_breakdown: List[Dict[str, Any]] = []
+    for point in payload.get("daily_trends", []):
+        day_value = point.get("day")
+        if not day_value:
+            continue
+        total_events = (
+            point.get("total_notes", 0)
+            + point.get("beautify", 0)
+            + point.get("suggest", 0)
+            + point.get("summary", 0)
+            + point.get("chart_upload", 0)
+            + point.get("audio", 0)
+        )
+        breakdown_entry = {
+            "date": day_value,
+            "total_events": total_events,
+            "total_notes": point.get("total_notes", 0),
+            "beautify": point.get("beautify", 0),
+            "suggest": point.get("suggest", 0),
+            "summary": point.get("summary", 0),
+            "chart_upload": point.get("chart_upload", 0),
+            "audio": point.get("audio", 0),
         }
-        for row in reversed(daily_rows)
-        if row["day"] is not None
-    ]
+        daily_usage_breakdown.append(breakdown_entry)
+        count_value = breakdown_entry["total_notes"]
+        if count_value:
+            daily_usage_basic.append({"date": day_value, "count": count_value})
+
     cursor.execute(
         f"""
         SELECT
@@ -8196,15 +8313,22 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         params,
     )
     weekly_rows = cursor.fetchall()
-    weekly_trend = [
-        {
-            "week": row["week"],
+    weekly_trend_basic: List[Dict[str, Any]] = []
+    weekly_trend_breakdown: List[Dict[str, Any]] = []
+    for row in reversed(weekly_rows):
+        week_value = row["week"]
+        if week_value is None:
+            continue
+        total_notes_week = row["total_notes"] or 0
+        breakdown_entry = {
+            "week": week_value,
             "total_events": row["total_events"] or 0,
-            "total_notes": row["total_notes"] or 0,
+            "total_notes": total_notes_week,
         }
-        for row in reversed(weekly_rows)
-        if row["week"] is not None
-    ]
+        weekly_trend_breakdown.append(breakdown_entry)
+        if total_notes_week:
+            weekly_trend_basic.append({"week": week_value, "count": total_notes_week})
+
     cursor.execute(
         f"""
         SELECT
@@ -8219,28 +8343,29 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
         params,
     )
     monthly_rows = cursor.fetchall()
-    monthly_trend = [
-        {
-            "month": row["month"],
+    monthly_trend_basic: List[Dict[str, Any]] = []
+    monthly_trend_breakdown: List[Dict[str, Any]] = []
+    for row in reversed(monthly_rows):
+        month_value = row["month"]
+        if month_value is None:
+            continue
+        total_notes_month = row["total_notes"] or 0
+        breakdown_entry = {
+            "month": month_value,
             "total_events": row["total_events"] or 0,
-            "total_notes": row["total_notes"] or 0,
+            "total_notes": total_notes_month,
         }
-        for row in reversed(monthly_rows)
-        if row["month"] is not None
+        monthly_trend_breakdown.append(breakdown_entry)
+        if total_notes_month:
+            monthly_trend_basic.append({"month": month_value, "count": total_notes_month})
 
-    ]
-    return {
-        "total_notes": data.get("total_notes", 0) or 0,
-        "beautify": data.get("beautify", 0) or 0,
-        "suggest": data.get("suggest", 0) or 0,
-        "summary": data.get("summary", 0) or 0,
-        "chart_upload": data.get("chart_upload", 0) or 0,
-        "audio": data.get("audio", 0) or 0,
-        "avg_note_length": data.get("avg_note_length", 0) or 0,
-        "dailyUsage": daily_usage,
-        "weeklyTrend": weekly_trend,
-        "monthlyTrend": monthly_trend,
-    }
+    payload["dailyUsage"] = daily_usage_basic
+    payload["dailyUsageBreakdown"] = daily_usage_breakdown
+    payload["weeklyTrend"] = weekly_trend_basic
+    payload["weeklyTrendBreakdown"] = weekly_trend_breakdown
+    payload["monthlyTrend"] = monthly_trend_basic
+    payload["monthlyTrendBreakdown"] = monthly_trend_breakdown
+    return payload
 
 
 
@@ -8407,8 +8532,20 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
         params,
     )
 
-
-    by_code = {r["code"]: float(r["revenue"] or 0.0) for r in cursor.fetchall()}
+    code_rows = cursor.fetchall()
+    revenue_by_code: Dict[str, float] = {}
+    code_distribution_detail: Dict[str, Dict[str, Any]] = {}
+    for row in code_rows:
+        code = row["code"]
+        if not code:
+            continue
+        revenue_amount = float(row["revenue"] or 0.0)
+        count_value = int(row["count"] or 0)
+        revenue_by_code[code] = revenue_amount
+        code_distribution_detail[code] = {
+            "count": count_value,
+            "revenue": revenue_amount,
+        }
 
     cursor.execute(
         f"""
@@ -8472,20 +8609,25 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
     if total_revenue:
         revenue_distribution = {
             code: round(amount / total_revenue, 4) if total_revenue else 0.0
-            for code, amount in by_code.items()
+            for code, amount in revenue_by_code.items()
         }
     else:
-        revenue_distribution = {code: 0.0 for code in by_code.keys()}
+        revenue_distribution = {code: 0.0 for code in revenue_by_code.keys()}
 
     analytics = RevenueAnalytics(
         total_revenue=total_revenue,
         average_revenue=average_revenue,
-        revenue_by_code=by_code,
+        revenue_by_code=revenue_by_code,
         revenue_trend=revenue_trend,
         projections=projections,
         revenue_distribution=revenue_distribution,
     )
-    return analytics.model_dump()
+    payload = analytics.model_dump(mode="json")
+    payload["monthlyTrend"] = monthly_trend
+    payload["projectedRevenue"] = projected_revenue
+    payload["code_distribution"] = code_distribution_detail
+    payload.setdefault("averageRevenue", payload.get("average_revenue", 0.0))
+    return payload
 
 
 
@@ -8768,7 +8910,7 @@ async def transcribe(
         }
     # Store the transcript in the user's history so it can be revisited
     transcript_history[user["sub"]].append(result)
-    return result
+    return JSONResponse(content=result, headers={"X-Bypass-Envelope": "1"})
 
 
 @app.get("/transcribe")
@@ -11146,6 +11288,10 @@ class AppointmentCreate(BaseModel):
     reason: str
     start: datetime
     end: Optional[datetime] = None
+    provider: Optional[str] = None
+    patientId: Optional[str] = None
+    encounterId: Optional[str] = None
+    location: Optional[str] = None
 
 class Appointment(BaseModel):
     id: int
@@ -11155,13 +11301,27 @@ class Appointment(BaseModel):
     end: datetime
     provider: Optional[str] = None
     status: str = "scheduled"
+    patientId: Optional[str] = None
+    encounterId: Optional[str] = None
+    location: Optional[str] = None
+    visitSummary: Optional[Dict[str, Any]] = None
 
 class AppointmentList(BaseModel):
     appointments: List[Appointment]
+    visitSummaries: Dict[str, Any] = Field(default_factory=dict)
 
 @app.post("/schedule", response_model=Appointment)
 async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(require_role("user"))):
-    rec = create_appointment(appt.patient, appt.reason, appt.start, appt.end)
+    rec = create_appointment(
+        appt.patient,
+        appt.reason,
+        appt.start,
+        appt.end,
+        provider=appt.provider,
+        patient_id=appt.patientId,
+        encounter_id=appt.encounterId,
+        location=appt.location,
+    )
     return Appointment(
         **{
             **rec,
@@ -11174,7 +11334,11 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
 async def list_schedule_appointments(user=Depends(require_role("user"))):
     items = list_appointments()
     parsed: List[Appointment] = []
+    summaries: Dict[str, Any] = {}
     for item in items:
+        summary = item.get("visitSummary") if isinstance(item, dict) else None
+        if isinstance(summary, dict) and item.get("id") is not None:
+            summaries[str(item["id"])] = summary
         parsed.append(
             Appointment(
                 **{
@@ -11184,7 +11348,7 @@ async def list_schedule_appointments(user=Depends(require_role("user"))):
                 }
             )
         )
-    return AppointmentList(appointments=parsed)
+    return AppointmentList(appointments=parsed, visitSummaries=summaries)
 
 
 class ScheduleBulkOperation(BaseModel):
@@ -11231,7 +11395,11 @@ async def schedule_bulk_operations(
 async def api_list_appointments(user=Depends(require_role("user"))):
     items = list_appointments()
     parsed: List[Appointment] = []
+    summaries: Dict[str, Any] = {}
     for item in items:
+        summary = item.get("visitSummary") if isinstance(item, dict) else None
+        if isinstance(summary, dict) and item.get("id") is not None:
+            summaries[str(item["id"])] = summary
         parsed.append(
             Appointment(
                 **{
@@ -11241,7 +11409,7 @@ async def api_list_appointments(user=Depends(require_role("user"))):
                 }
             )
         )
-    return AppointmentList(appointments=parsed)
+    return AppointmentList(appointments=parsed, visitSummaries=summaries)
 
 
 class VisitManageRequest(BaseModel):
@@ -11779,12 +11947,28 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
         "insurance": record.get("insurance"),
         "lastVisit": record.get("lastVisit"),
     }
-    return {
+    payload = {
         "demographics": demographics,
         "allergies": record.get("allergies", []),
         "medications": record.get("medications", []),
         "encounters": record.get("encounters", []),
     }
+    for key in (
+        "patientId",
+        "mrn",
+        "name",
+        "firstName",
+        "lastName",
+        "dob",
+        "age",
+        "gender",
+        "insurance",
+        "lastVisit",
+    ):
+        value = demographics.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
 
 
 @app.get("/api/encounters/validate/{encounter_id}")
@@ -11846,7 +12030,11 @@ async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("
     dest = UPLOAD_DIR / file.filename
     with open(dest, "wb") as f:
         f.write(contents)
-    return {"filename": file.filename, "size": len(contents)}
+    return {
+        "status": "processing",
+        "filename": file.filename,
+        "size": len(contents),
+    }
 
 
 # Notes and drafts management
@@ -12383,7 +12571,7 @@ class BillingRequest(CodesRequest):
 @app.post("/api/codes/details/batch")
 async def code_details_batch(
     req: CodesRequest, user=Depends(require_role("user"))
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Return metadata for a batch of billing/clinical codes."""
 
     metadata = load_code_metadata()
@@ -12416,7 +12604,7 @@ async def code_details_batch(
                     "rvu": 0.0,
                 }
             )
-    return details
+    return {"data": details}
 
 
 @app.post("/api/billing/calculate")

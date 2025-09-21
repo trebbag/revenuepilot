@@ -30,13 +30,22 @@ import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 import type { FinalizeResult } from "./features/finalization"
 
 interface RawScheduleAppointment {
-  id: number
+  id: number | string
   patient: string
+  patientId?: string | number | null
+  encounterId?: string | number | null
   reason: string
   start: string
   end: string
   provider?: string | null
   status?: string | null
+  location?: string | null
+  visitSummary?: Record<string, unknown> | null
+}
+
+interface ScheduleApiResponse {
+  appointments?: RawScheduleAppointment[]
+  visitSummaries?: Record<string, Record<string, unknown>>
 }
 
 interface ScheduleAppointmentView {
@@ -57,6 +66,7 @@ interface ScheduleAppointmentView {
   priority: 'low' | 'medium' | 'high'
   isVirtual: boolean
   sourceStatus: string
+  visitSummary?: Record<string, unknown> | null
 }
 
 interface ScheduleDataState {
@@ -187,11 +197,11 @@ export function ProtectedApp() {
   const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
   const [ehrExportStatus, setEhrExportStatus] = useState<EhrExportState | null>(null)
 
-  const normalizeText = useCallback((value?: string | null, fallback = "") => {
-    if (!value) {
+  const normalizeText = useCallback((value?: string | number | null, fallback = "") => {
+    if (value === undefined || value === null) {
       return fallback
     }
-    const trimmed = value.trim()
+    const trimmed = String(value).trim()
     return trimmed.length > 0 ? trimmed : fallback
   }, [])
 
@@ -244,44 +254,107 @@ export function ProtectedApp() {
     return 'low'
   }, [])
 
-  const buildPatientEmail = useCallback((name: string, id: number) => {
-    const base = name.toLowerCase().replace(/[^a-z0-9]/g, '.') || `patient${id}`
-    return `${base}@example.com`
+  const buildPatientEmail = useCallback((name: string, id: number | string) => {
+    const baseName = name.toLowerCase().replace(/[^a-z0-9]/g, '.') || 'patient'
+    const idComponent = String(id ?? '').trim().replace(/[^a-z0-9]/g, '')
+    const suffix = idComponent.length > 0 ? `.${idComponent}` : ''
+    return `${baseName}${suffix}@example.com`
   }, [])
 
   const transformAppointment = useCallback(
     (raw: RawScheduleAppointment): ScheduleAppointmentView => {
-      const start = new Date(raw.start)
-      const end = new Date(raw.end)
+      const startCandidate = new Date(raw.start)
+      const start = Number.isNaN(startCandidate.getTime()) ? new Date() : startCandidate
+      const endCandidate = new Date(raw.end)
+      const end = Number.isNaN(endCandidate.getTime())
+        ? new Date(start.getTime() + 30 * 60 * 1000)
+        : endCandidate
       const durationMinutes = Math.max(15, Math.round((end.getTime() - start.getTime()) / (1000 * 60)) || 30)
-      const patientName = normalizeText(raw.patient, `Patient ${raw.id}`)
-      const provider = normalizeText(raw.provider, 'Unassigned')
-      const reason = normalizeText(raw.reason, 'Scheduled visit')
-      const status = mapScheduleStatus(raw.status)
-      const isVirtual = /virtual|telehealth|telemedicine/.test(reason.toLowerCase())
-      const location = isVirtual ? 'Virtual' : 'Main Clinic'
+
+      const summary =
+        raw.visitSummary && typeof raw.visitSummary === 'object'
+          ? (raw.visitSummary as Record<string, unknown>)
+          : null
+      const readString = (value: unknown): string | undefined => {
+        if (typeof value !== 'string') return undefined
+        const trimmed = value.trim()
+        return trimmed.length > 0 ? trimmed : undefined
+      }
+
+      const idString = typeof raw.id === 'string' ? raw.id : String(raw.id ?? '')
+      const idDigits = idString.replace(/[^0-9]/g, '')
+
+      const patientName = normalizeText(
+        readString(summary?.patientName) ?? raw.patient,
+        `Patient ${idString || '0'}`
+      )
+      const summaryReason = readString(summary?.chiefComplaint) ?? readString(summary?.reason)
+      const reason = normalizeText(summaryReason ?? raw.reason, 'Scheduled visit')
+      const summaryProvider = readString(summary?.provider)
+      const provider = normalizeText(summaryProvider ?? raw.provider, 'Unassigned')
+      const summaryStatus = readString(summary?.status)
+      const status = mapScheduleStatus(summaryStatus ?? raw.status)
+      const encounterType = readString(summary?.encounterType)
+      const rawLocation = readString(raw.location) ?? readString(summary?.location)
+      const isVirtual = Boolean(
+        (encounterType && /tele|virtual/.test(encounterType.toLowerCase())) ||
+          (rawLocation && /virtual/.test(rawLocation.toLowerCase())) ||
+          /virtual|telehealth|telemedicine/.test(reason.toLowerCase())
+      )
+      const location = normalizeText(rawLocation, isVirtual ? 'Virtual' : 'Main Clinic')
+
+      const patientIdSource =
+        raw.patientId ??
+        readString(summary?.patientId) ??
+        readString(summary?.patientID) ??
+        readString(summary?.mrn)
+      const fallbackPatientId = idDigits
+        ? `PT-${idDigits.padStart(4, '0')}`
+        : `PT-${(idString || '0').padStart(4, '0')}`
+      const patientId = normalizeText(patientIdSource, fallbackPatientId)
+
+      const encounterIdSource =
+        raw.encounterId ?? readString(summary?.encounterId) ?? readString(summary?.encounterID)
+      const fallbackEncounterId = idDigits
+        ? `ENC-${idDigits.padStart(4, '0')}`
+        : `ENC-${(idString || '0').padStart(4, '0')}`
+      const encounterId = normalizeText(encounterIdSource, fallbackEncounterId)
+
+      const documentationComplete =
+        typeof summary?.documentationComplete === 'boolean'
+          ? summary.documentationComplete
+          : undefined
+      const summaryNotes =
+        readString(summary?.summary) ?? readString(summary?.notes) ?? readString(summary?.chiefComplaint)
 
       return {
-        id: String(raw.id),
-        patientId: `PT-${String(raw.id).padStart(4, '0')}`,
-        encounterId: `ENC-${String(raw.id).padStart(4, '0')}`,
+        id: idString || patientId,
+        patientId,
+        encounterId,
         patientName,
         patientPhone: '(555) 000-0000',
-        patientEmail: buildPatientEmail(patientName, raw.id),
+        patientEmail: buildPatientEmail(patientName, raw.patientId ?? raw.id ?? patientId),
         appointmentTime: start.toISOString(),
         duration: durationMinutes,
         appointmentType: determineVisitType(reason),
         provider,
         location,
         status,
-        notes: reason,
-        fileUpToDate: status === 'Completed',
+        notes: summaryNotes ?? reason,
+        fileUpToDate: documentationComplete ?? status === 'Completed',
         priority: determinePriority(start, status, reason),
         isVirtual,
-        sourceStatus: normalizeText(raw.status, 'scheduled')
+        sourceStatus: normalizeText(summaryStatus ?? raw.status, 'scheduled'),
+        visitSummary: summary,
       }
     },
-    [buildPatientEmail, determinePriority, determineVisitType, mapScheduleStatus, normalizeText]
+    [
+      buildPatientEmail,
+      determinePriority,
+      determineVisitType,
+      mapScheduleStatus,
+      normalizeText
+    ]
   )
 
   const statusToAction = useCallback((status: ScheduleAppointmentView['status']): string | null => {
@@ -439,14 +512,20 @@ export function ProtectedApp() {
       setAppointmentsState(prev => ({ ...prev, loading: true, error: null }))
 
       try {
-        const response = await apiFetchJson<{ appointments?: RawScheduleAppointment[] }>(
+        const response = await apiFetchJson<ScheduleApiResponse>(
           '/api/schedule/appointments',
           { signal, returnNullOnEmpty: true }
         )
         if (signal?.aborted) {
           return
         }
-        const transformed = (response?.appointments ?? []).map(transformAppointment)
+        const summaries = response?.visitSummaries ?? {}
+        const transformed = (response?.appointments ?? []).map(appt => {
+          const idKey = appt?.id !== undefined && appt?.id !== null ? String(appt.id) : undefined
+          const summary = idKey ? summaries[idKey] : undefined
+          const enriched = summary && !appt.visitSummary ? { ...appt, visitSummary: summary } : appt
+          return transformAppointment(enriched)
+        })
         setAppointmentsState({ data: transformed, loading: false, error: null })
       } catch (error) {
         if ((error as DOMException)?.name === 'AbortError') {
