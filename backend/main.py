@@ -3269,18 +3269,7 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     ensure_shared_workflow_sessions_table(db_conn)
     ensure_notification_counters_table(db_conn)
     client_host = request.client.host if request.client else None
-    user_agent = request.headers.get("user-agent")
-    cutoff = time.time() - 15 * 60
-    recent_failures = db_conn.execute(
-        "SELECT COUNT(*) FROM audit_log WHERE username=? AND action='failed_login' AND timestamp>?",
-        (model.username, cutoff),
-    ).fetchone()[0]
-    if recent_failures >= 5:
-        raise HTTPException(
-            status_code=status.HTTP_423_LOCKED,
-            detail="Account locked due to failed login attempts",
-        )
-
+    user_agent_header = request.headers.get("user-agent")
 
     identifier = model.emailOrUsername or ""
     normalized_identifier = _normalize_identifier(identifier)
@@ -3311,6 +3300,9 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
                     "clinicCode": model.clinicCode,
                     "client": ip_address,
                 },
+                success=False,
+                ip_address=client_host,
+                user_agent=user_agent_header,
             )
             _enforce_login_rate_limit()
             raise HTTPException(
@@ -3326,6 +3318,9 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
             normalized_identifier,
             "failed_login",
             {"reason": "unknown_user", "client": ip_address, "clinicCode": model.clinicCode},
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent_header,
         )
         _enforce_login_rate_limit()
         raise HTTPException(
@@ -3344,11 +3339,10 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
                 "lockedUntil": locked_until,
                 "clinicCode": model.clinicCode,
                 "reason": "invalid credentials",
-
             },
             success=False,
             ip_address=client_host,
-            user_agent=user_agent,
+            user_agent=user_agent_header,
         )
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -3374,7 +3368,14 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
         }
         if lock_until:
             detail_payload["lockedUntil"] = lock_until
-        _insert_audit_log(user_row["username"], "failed_login", detail_payload)
+        _insert_audit_log(
+            user_row["username"],
+            "failed_login",
+            detail_payload,
+            success=False,
+            ip_address=client_host,
+            user_agent=user_agent_header,
+        )
         _enforce_login_rate_limit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -3388,28 +3389,8 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     db_conn.commit()
     LOGIN_RATE_LIMITER.reset(limiter_key)
 
-
     settings, session_state = _load_user_preferences(user_row["id"])
     user_agent = _user_agent(request)
-
-    _create_auth_session(
-        user_id,
-        access_token,
-        refresh_token,
-        offline=False,
-        ip_address=client_host,
-        user_agent=user_agent,
-    )
-
-    _insert_audit_log(
-        model.username,
-        "login",
-        {"client": client_host},
-        success=True,
-        ip_address=client_host,
-        user_agent=user_agent,
-    )
-
 
     if _row_get(user_row, "mfa_enabled"):
         session_token, code, method = _create_mfa_challenge(
