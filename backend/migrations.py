@@ -2,54 +2,21 @@ import json
 import sqlite3
 from typing import Any, Iterable, Optional, Tuple
 
+from backend import models as db_models
+
 
 
 def ensure_clinics_table(conn: sqlite3.Connection) -> None:
     """Ensure the clinics table exists for multi-tenant deployments."""
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clinics (
-            id TEXT PRIMARY KEY,
-            code TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            settings TEXT,
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        )
-        """
-    )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_clinics_code ON clinics(code)"
-    )
-    conn.commit()
+    db_models.create_tables(conn, db_models.clinics)
 
 
 def ensure_users_table(conn: sqlite3.Connection) -> None:
     """Ensure the users table matches the authentication specification."""
 
     ensure_clinics_table(conn)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            email TEXT UNIQUE,
-            password_hash TEXT NOT NULL,
-            name TEXT,
-            role TEXT NOT NULL,
-            clinic_id TEXT,
-            mfa_enabled INTEGER NOT NULL DEFAULT 0,
-            mfa_secret TEXT,
-            account_locked_until REAL,
-            failed_login_attempts INTEGER NOT NULL DEFAULT 0,
-            last_login REAL,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            updated_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            FOREIGN KEY(clinic_id) REFERENCES clinics(id)
-        )
-        """
-    )
+    db_models.create_tables(conn, db_models.users)
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
 
@@ -110,28 +77,6 @@ def ensure_users_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def ensure_clinics_table(conn: sqlite3.Connection) -> None:
-    """Ensure the ``clinics`` table exists for multi-tenant deployments."""
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clinics (
-            id TEXT PRIMARY KEY,
-            code TEXT UNIQUE NOT NULL,
-            name TEXT,
-            settings TEXT,
-            active INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now'))
-        )
-        """
-    )
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_clinic_code ON clinics(code)"
-
-    )
-    conn.commit()
-
-
 def ensure_settings_table(conn: sqlite3.Connection) -> None:
     """Ensure the settings table exists with all required columns.
 
@@ -140,25 +85,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
     and adds any new columns required by the application.
     """
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS settings ("
-        "user_id INTEGER PRIMARY KEY,"
-        "theme TEXT NOT NULL,"
-        "categories TEXT NOT NULL DEFAULT '{}',"
-        "rules TEXT NOT NULL DEFAULT '[]',"
-        "lang TEXT NOT NULL DEFAULT 'en',"
-        "summary_lang TEXT NOT NULL DEFAULT 'en',"
-        "specialty TEXT,"
-        "payer TEXT,"
-        "region TEXT,"
-        "template INTEGER,"
-        "use_local_models INTEGER NOT NULL DEFAULT 0,"
-        "agencies TEXT NOT NULL DEFAULT '[]',"
-        "use_offline_mode INTEGER NOT NULL DEFAULT 0,"
-        "layout_prefs TEXT NOT NULL DEFAULT '{}',"
-        "FOREIGN KEY(user_id) REFERENCES users(id)"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.settings)
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
 
@@ -219,16 +146,7 @@ def ensure_settings_table(conn: sqlite3.Connection) -> None:
 def ensure_user_profile_table(conn: sqlite3.Connection) -> None:
     """Ensure the user_profile table exists for storing profile data."""
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_profile ("
-        "user_id INTEGER PRIMARY KEY,"
-        "current_view TEXT,"
-        "clinic TEXT,"
-        "preferences TEXT,"
-        "ui_preferences TEXT,"
-        "FOREIGN KEY(user_id) REFERENCES users(id)"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.user_profile)
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)")}
     if "current_view" not in columns:
@@ -244,17 +162,7 @@ def ensure_user_profile_table(conn: sqlite3.Connection) -> None:
 
 def ensure_templates_table(conn: sqlite3.Connection) -> None:
     """Ensure the templates table exists for storing note templates."""
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS templates ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "user TEXT,"
-        "clinic TEXT,"
-        "specialty TEXT,"
-        "payer TEXT,"
-        "name TEXT,"
-        "content TEXT"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.templates)
     # Add missing columns for backwards compatibility
     columns = {row[1] for row in conn.execute("PRAGMA table_info(templates)")}
     if "specialty" not in columns:
@@ -556,22 +464,27 @@ def ensure_billing_audits_table(conn: sqlite3.Connection) -> None:
 def ensure_patients_table(conn: sqlite3.Connection) -> None:
     """Ensure the patients table exists for storing patient demographics."""
 
+    db_models.create_tables(conn, db_models.patients)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_last_first ON patients(last_name, first_name)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients(mrn)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_patients_dob ON patients(dob)"
+    )
+    conn.commit()
+
 
 def ensure_refresh_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
     """Ensure the refresh_tokens table exists for storing hashed tokens."""
 
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS refresh_tokens ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT," \
-        "user_id INTEGER NOT NULL," \
-        "token_hash TEXT NOT NULL," \
-        "expires_at REAL NOT NULL," \
-        "FOREIGN KEY(user_id) REFERENCES users(id)"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.refresh_tokens)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id)"
     )
+    conn.commit()
 
 
 def ensure_notes_table(conn: sqlite3.Connection) -> None:
@@ -637,52 +550,10 @@ def ensure_exports_table(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
-def ensure_patients_table(conn: sqlite3.Connection) -> None:  # pragma: no cover
-    """Ensure the patients table exists."""
-
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS patients ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "first_name TEXT,"
-        "last_name TEXT,"
-        "dob TEXT,"
-        "mrn TEXT,"
-        "gender TEXT,"
-        "insurance TEXT,"
-        "last_visit TEXT,"
-        "allergies TEXT,"
-        "medications TEXT"
-        ")"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_patients_last_first ON patients(last_name, first_name)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_patients_mrn ON patients(mrn)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_patients_dob ON patients(dob)"
-    )
-    conn.commit()
-
-
-
 def ensure_encounters_table(conn: sqlite3.Connection) -> None:
     """Ensure the encounters table exists for tracking patient encounters."""
 
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS encounters ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "patient_id INTEGER NOT NULL,"
-        "date TEXT,"
-        "type TEXT,"
-        "provider TEXT,"
-        "description TEXT,"
-        "FOREIGN KEY(patient_id) REFERENCES patients(id)"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.encounters)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_encounters_patient ON encounters(patient_id)"
     )
@@ -696,19 +567,7 @@ def ensure_encounters_table(conn: sqlite3.Connection) -> None:
 def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
     """Ensure the visit_sessions table exists for visit timing data."""
 
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS visit_sessions ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "encounter_id INTEGER NOT NULL,"
-        "status TEXT NOT NULL,"
-        "start_time TEXT,"
-        "end_time TEXT,"
-        "data TEXT,"
-        "updated_at REAL,"
-        "FOREIGN KEY(encounter_id) REFERENCES encounters(id)"
-        ")"
-    )
+    db_models.create_tables(conn, db_models.visit_sessions)
     conn.commit()
 
 def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
@@ -716,24 +575,7 @@ def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover 
 
 
     ensure_users_table(conn)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            token_hash TEXT,
-            refresh_token_hash TEXT,
-            expires_at REAL NOT NULL,
-            created_at REAL NOT NULL,
-            last_accessed REAL NOT NULL,
-            ip_address TEXT,
-            user_agent TEXT,
-            offline_session INTEGER NOT NULL DEFAULT 0,
-            metadata TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-        """
-    )
+    db_models.create_tables(conn, db_models.sessions)
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "token_hash" not in columns:
@@ -774,19 +616,7 @@ def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover 
 def ensure_password_reset_tokens_table(conn: sqlite3.Connection) -> None:
     """Ensure the password reset token table exists."""
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS password_reset_tokens (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            token_hash TEXT NOT NULL,
-            expires_at REAL NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-        """
-    )
+    db_models.create_tables(conn, db_models.password_reset_tokens)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_reset_user ON password_reset_tokens(user_id)"
     )
@@ -796,21 +626,7 @@ def ensure_password_reset_tokens_table(conn: sqlite3.Connection) -> None:
 def ensure_mfa_challenges_table(conn: sqlite3.Connection) -> None:
     """Ensure the temporary MFA challenge table exists."""
 
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS mfa_challenges (
-            session_token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            code_hash TEXT NOT NULL,
-            method TEXT NOT NULL,
-            expires_at REAL NOT NULL,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            last_sent REAL NOT NULL,
-            remember_me INTEGER NOT NULL DEFAULT 0,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-        """
-    )
+    db_models.create_tables(conn, db_models.mfa_challenges)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(mfa_challenges)")}
     if "remember_me" not in columns:
         conn.execute(
@@ -846,32 +662,6 @@ def ensure_mfa_challenges_table(conn: sqlite3.Connection) -> None:
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)"
-    )
-    conn.commit()
-
-
-def ensure_password_reset_tokens_table(conn: sqlite3.Connection) -> None:
-    """Ensure the password_reset_tokens table exists."""
-
-    ensure_users_table(conn)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS password_reset_tokens (
-            id TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL,
-            token_hash TEXT NOT NULL,
-            expires_at REAL NOT NULL,
-            used INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_password_reset_user ON password_reset_tokens(user_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_password_reset_expiry ON password_reset_tokens(expires_at)"
     )
     conn.commit()
 
