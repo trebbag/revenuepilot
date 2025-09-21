@@ -22,6 +22,7 @@ import threading
 import uuid
 import secrets
 import math
+import sqlalchemy as sa
 from contextvars import ContextVar
 from pathlib import Path
 from collections import defaultdict, deque
@@ -126,9 +127,18 @@ from backend.key_manager import (
     store_key,
     store_secret,
 )  # type: ignore
+from backend.db.models import (
+    CPTCode,
+    CPTReference,
+    ComplianceRuleCatalogEntry,
+    HCPCSCode,
+    ICD10Code,
+    PayerSchedule,
+)
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 from backend.migrations import (  # type: ignore
+    create_all_tables,
     ensure_users_table,
     ensure_clinics_table,
     ensure_settings_table,
@@ -171,6 +181,7 @@ from backend.migrations import (  # type: ignore
     seed_hcpcs_codes,
     seed_cpt_reference,
     seed_payer_schedules,
+    session_scope,
 )
 from backend.templates import (
     TemplateModel,
@@ -1355,21 +1366,7 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
         pass
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-# Ensure the events table exists with the latest schema.
-ensure_events_table(db_conn)
-ensure_exports_table(db_conn)
-ensure_patients_table(db_conn)
-ensure_encounters_table(db_conn)
-ensure_visit_sessions_table(db_conn)
-ensure_note_auto_saves_table(db_conn)
-ensure_note_versions_table(db_conn)
-ensure_notifications_table(db_conn)
-ensure_event_aggregates_table(db_conn)
-ensure_compliance_issues_table(db_conn)
-ensure_compliance_rules_table(db_conn)
-ensure_confidence_scores_table(db_conn)
-ensure_notification_counters_table(db_conn)
-ensure_notification_events_table(db_conn)
+create_all_tables(db_conn)
 patients.configure_database(db_conn)
 configure_schedule_database(db_conn)
 
@@ -1424,74 +1421,78 @@ _prune_analytics_if_needed()
 # defaults when the application starts with an empty database.
 def _seed_reference_data(conn: sqlite3.Connection) -> None:
     try:
-        existing_rules = conn.execute(
-            "SELECT COUNT(*) FROM compliance_rule_catalog"
-        ).fetchone()[0]
-    except sqlite3.Error as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "compliance_rules_table_inspect_failed", error=str(exc)
-        )
-        return
+        with session_scope(conn) as session:
+            existing_rules = session.scalar(
+                sa.select(sa.func.count()).select_from(ComplianceRuleCatalogEntry)
+            )
+            if not existing_rules:
+                seed_compliance_rules(session, compliance_engine.get_rules())
 
-    try:
-        if existing_rules == 0:
-            seed_compliance_rules(conn, compliance_engine.get_rules())
+            metadata = load_code_metadata()
+            cpt_metadata = {
+                code: info
+                for code, info in metadata.items()
+                if (info.get("type") or "").upper() == "CPT"
+            }
 
-        metadata = load_code_metadata()
-        cpt_metadata = {
-            code: info
-            for code, info in metadata.items()
-            if (info.get("type") or "").upper() == "CPT"
-        }
+            existing_cpt_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(CPTCode)
+            )
+            if not existing_cpt_codes:
+                seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items())
 
-        existing_cpt_codes = conn.execute("SELECT COUNT(*) FROM cpt_codes").fetchone()[0]
-        if existing_cpt_codes == 0:
-            seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items())
+            existing_icd_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(ICD10Code)
+            )
+            if not existing_icd_codes:
+                seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items())
 
-        existing_icd_codes = conn.execute("SELECT COUNT(*) FROM icd10_codes").fetchone()[0]
-        if existing_icd_codes == 0:
-            seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items())
+            existing_hcpcs_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(HCPCSCode)
+            )
+            if not existing_hcpcs_codes:
+                seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items())
 
-        existing_hcpcs_codes = conn.execute("SELECT COUNT(*) FROM hcpcs_codes").fetchone()[0]
-        if existing_hcpcs_codes == 0:
-            seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items())
+            existing_cpt = session.scalar(
+                sa.select(sa.func.count()).select_from(CPTReference)
+            )
+            if not existing_cpt:
+                seed_cpt_reference(session, cpt_metadata.items())
 
-        existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
-        if existing_cpt == 0:
-            seed_cpt_reference(conn, cpt_metadata.items())
-
-        existing_schedules = conn.execute(
-            "SELECT COUNT(*) FROM payer_schedules"
-        ).fetchone()[0]
-        if existing_schedules == 0:
-            schedules = []
-            for code, info in cpt_metadata.items():
-                reimbursement = info.get("reimbursement")
-                if reimbursement in (None, ""):
-                    continue
-                rvu_value = info.get("rvu")
-                base_amount = float(reimbursement)
-                schedules.append(
-                    {
-                        "payer_type": "commercial",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": base_amount,
-                        "rvu": rvu_value,
-                    }
-                )
-                schedules.append(
-                    {
-                        "payer_type": "medicare",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": round(base_amount * 0.8, 2),
-                        "rvu": rvu_value,
-                    }
-                )
-            seed_payer_schedules(conn, schedules)
-
-        conn.commit()
+            existing_schedules = session.scalar(
+                sa.select(sa.func.count()).select_from(PayerSchedule)
+            )
+            if not existing_schedules:
+                schedules = []
+                for code, info in cpt_metadata.items():
+                    reimbursement = info.get("reimbursement")
+                    if reimbursement in (None, ""):
+                        continue
+                    try:
+                        base_amount = float(reimbursement)
+                    except (TypeError, ValueError):
+                        continue
+                    rvu_value = info.get("rvu")
+                    schedules.append(
+                        {
+                            "payer_type": "commercial",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": base_amount,
+                            "rvu": rvu_value,
+                        }
+                    )
+                    schedules.append(
+                        {
+                            "payer_type": "medicare",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": round(base_amount * 0.8, 2),
+                            "rvu": rvu_value,
+                        }
+                    )
+                if schedules:
+                    seed_payer_schedules(session, schedules)
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("reference_data_seed_failed", error=str(exc))
 
@@ -1504,42 +1505,7 @@ def get_db() -> sqlite3.Connection:
 
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
-    ensure_users_table(conn)
-    ensure_clinics_table(conn)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
-    )
-
-    ensure_audit_log_table(conn)
-    ensure_settings_table(conn)
-    ensure_templates_table(conn)
-    ensure_user_profile_table(conn)
-    ensure_events_table(conn)
-    ensure_refresh_table(conn)
-    ensure_session_table(conn)
-    ensure_password_reset_tokens_table(conn)
-    ensure_mfa_challenges_table(conn)
-    ensure_notes_table(conn)
-    ensure_error_log_table(conn)
-    ensure_exports_table(conn)
-    ensure_patients_table(conn)
-    ensure_encounters_table(conn)
-    ensure_visit_sessions_table(conn)
-    ensure_note_auto_saves_table(conn)
-    ensure_session_state_table(conn)
-    ensure_shared_workflow_sessions_table(conn)
-    ensure_compliance_issues_table(conn)
-    ensure_compliance_issue_history_table(conn)
-    ensure_compliance_rules_table(conn)
-    ensure_confidence_scores_table(conn)
-    ensure_notification_counters_table(conn)
-    ensure_compliance_rule_catalog_table(conn)
-    ensure_cpt_codes_table(conn)
-    ensure_icd10_codes_table(conn)
-    ensure_hcpcs_codes_table(conn)
-    ensure_cpt_reference_table(conn)
-    ensure_payer_schedule_table(conn)
-    ensure_billing_audits_table(conn)
+    create_all_tables(conn)
     existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     if existing_patients == 0:
         now = datetime.utcnow().replace(microsecond=0)
@@ -1605,18 +1571,6 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
 ensure_users_table(db_conn)
 ensure_clinics_table(db_conn)
 ensure_audit_log_table(db_conn)
-
-# Table recording failed logins and administrative actions for auditing.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS audit_log ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "timestamp REAL NOT NULL,"
-    "username TEXT,"
-    "action TEXT NOT NULL,"
-    "details TEXT"
-    ")"
-)
-db_conn.commit()
 
 
 # Persisted user preferences for theme, enabled categories and custom rules.

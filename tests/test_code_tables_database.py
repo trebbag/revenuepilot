@@ -16,63 +16,63 @@ def db(monkeypatch):
 
 
 def test_validate_cpt_reads_database(db):
-    migrations.seed_cpt_codes(
-        db,
-        [
-            (
-                "97777",
-                {
-                    "description": "Remote physiologic monitoring, complex",
-                    "rvu": 2.75,
-                    "reimbursement": 180.0,
-                    "documentation": {"required": ["device data review"], "recommended": ["patient contact"], "examples": []},
-                    "icd10_prefixes": ["Z99"],
-                    "demographics": {"minAge": 18, "allowedGenders": ["any"]},
-                    "encounterTypes": ["telehealth"],
-                    "specialties": ["family medicine"],
-                },
-            )
-        ],
-        overwrite=True,
-    )
-    migrations.seed_icd10_codes(
-        db,
-        [
-            (
-                "Z99.10",
-                {
-                    "description": "Dependence on respirator",
-                    "clinicalContext": "Home ventilator check",
-                    "contraindications": [],
-                    "documentation": {"required": ["ventilator settings recorded"]},
-                    "demographics": {"minAge": 18, "allowedGenders": ["any"]},
-                    "encounterTypes": ["telehealth"],
-                    "specialties": ["family medicine"],
-                },
-            )
-        ],
-        overwrite=True,
-    )
-    migrations.seed_hcpcs_codes(
-        db,
-        [
-            (
-                "G9001",
-                {
-                    "description": "Coordinated care fee, initial",
-                    "rvu": 0.5,
-                    "reimbursement": 45.0,
-                    "coverage": {"status": "covered", "notes": "Requires care plan."},
-                    "documentation": {"required": ["care plan"], "recommended": ["follow-up notes"]},
-                    "demographics": {"allowedGenders": ["any"]},
-                    "encounterTypes": ["telehealth"],
-                    "specialties": ["care coordination"],
-                },
-            )
-        ],
-        overwrite=True,
-    )
-    db.commit()
+    with migrations.session_scope(db) as session:
+        migrations.seed_cpt_codes(
+            session,
+            [
+                (
+                    "97777",
+                    {
+                        "description": "Remote physiologic monitoring, complex",
+                        "rvu": 2.75,
+                        "reimbursement": 180.0,
+                        "documentation": {"required": ["device data review"], "recommended": ["patient contact"], "examples": []},
+                        "icd10_prefixes": ["Z99"],
+                        "demographics": {"minAge": 18, "allowedGenders": ["any"]},
+                        "encounterTypes": ["telehealth"],
+                        "specialties": ["family medicine"],
+                    },
+                )
+            ],
+            overwrite=True,
+        )
+        migrations.seed_icd10_codes(
+            session,
+            [
+                (
+                    "Z99.10",
+                    {
+                        "description": "Dependence on respirator",
+                        "clinicalContext": "Home ventilator check",
+                        "contraindications": [],
+                        "documentation": {"required": ["ventilator settings recorded"]},
+                        "demographics": {"minAge": 18, "allowedGenders": ["any"]},
+                        "encounterTypes": ["telehealth"],
+                        "specialties": ["family medicine"],
+                    },
+                )
+            ],
+            overwrite=True,
+        )
+        migrations.seed_hcpcs_codes(
+            session,
+            [
+                (
+                    "G9001",
+                    {
+                        "description": "Coordinated care fee, initial",
+                        "rvu": 0.5,
+                        "reimbursement": 45.0,
+                        "coverage": {"status": "covered", "notes": "Requires care plan."},
+                        "documentation": {"required": ["care plan"], "recommended": ["follow-up notes"]},
+                        "demographics": {"allowedGenders": ["any"]},
+                        "encounterTypes": ["telehealth"],
+                        "specialties": ["care coordination"],
+                    },
+                )
+            ],
+            overwrite=True,
+        )
 
     result = code_tables.validate_cpt("97777", age=32, gender="female", encounter_type="telehealth", specialty="family medicine", session=db)
     assert result["valid"] is True
@@ -92,37 +92,37 @@ def test_validate_cpt_reads_database(db):
 
 
 def test_calculate_billing_uses_payer_override(db):
-    migrations.seed_cpt_codes(
-        db,
-        [
-            (
-                "97778",
-                {
-                    "description": "Remote monitoring treatment",
-                    "rvu": 1.5,
-                    "reimbursement": 90.0,
-                    "documentation": {"required": ["treatment log"]},
-                    "icd10_prefixes": ["Z99"],
-                    "demographics": {"minAge": 18, "allowedGenders": ["any"]},
-                },
-            )
-        ],
-        overwrite=True,
-    )
-    migrations.seed_cpt_reference(
-        db,
-        [("97778", {"description": "Remote monitoring treatment", "rvu": 1.5, "reimbursement": 90.0})],
-        overwrite=True,
-    )
-    migrations.seed_payer_schedules(
-        db,
-        [
-            {"payer_type": "medicare", "location": "", "code": "97778", "reimbursement": 120.0, "rvu": 1.6},
-            {"payer_type": "medicare", "location": "nw", "code": "97778", "reimbursement": 150.0, "rvu": 1.8},
-        ],
-        overwrite=True,
-    )
-    db.commit()
+    with migrations.session_scope(db) as session:
+        migrations.seed_cpt_codes(
+            session,
+            [
+                (
+                    "97778",
+                    {
+                        "description": "Remote monitoring treatment",
+                        "rvu": 1.5,
+                        "reimbursement": 90.0,
+                        "documentation": {"required": ["treatment log"]},
+                        "icd10_prefixes": ["Z99"],
+                        "demographics": {"minAge": 18, "allowedGenders": ["any"]},
+                    },
+                )
+            ],
+            overwrite=True,
+        )
+        migrations.seed_cpt_reference(
+            session,
+            [("97778", {"description": "Remote monitoring treatment", "rvu": 1.5, "reimbursement": 90.0})],
+            overwrite=True,
+        )
+        migrations.seed_payer_schedules(
+            session,
+            [
+                {"payer_type": "medicare", "location": "", "code": "97778", "reimbursement": 120.0, "rvu": 1.6},
+                {"payer_type": "medicare", "location": "nw", "code": "97778", "reimbursement": 150.0, "rvu": 1.8},
+            ],
+            overwrite=True,
+        )
 
     billing = code_tables.calculate_billing(["97778"], payer_type="medicare", location="NW", session=db)
     assert billing["totalEstimated"] == pytest.approx(150.0)
