@@ -1,10 +1,13 @@
 import { motion } from "motion/react"
-import { Check, Settings } from "lucide-react"
+import { AlertTriangle, Check, Settings } from "lucide-react"
+
+type StepStatus = "pending" | "in-progress" | "completed" | "blocked"
 
 interface Step {
   id: number;
   title: string;
   description: string;
+  status?: StepStatus;
 }
 
 interface ProgressIndicatorProps {
@@ -15,9 +18,42 @@ interface ProgressIndicatorProps {
 
 export function ProgressIndicator({ steps, currentStep, onStepClick }: ProgressIndicatorProps) {
   const getStepProgress = () => {
-    const totalSteps = steps.length - 1; // 6 total positions (1-6)
-    const currentPosition = currentStep - 1; // Adjust for 1-based indexing
-    return (currentPosition / totalSteps) * 100;
+    if (steps.length <= 1) {
+      return 0;
+    }
+
+    const normalizedStatuses = steps.map(step => {
+      if (step.status) {
+        return step.status;
+      }
+      if (step.id < currentStep) {
+        return "completed" as StepStatus;
+      }
+      if (step.id === currentStep) {
+        return "in-progress" as StepStatus;
+      }
+      return "pending" as StepStatus;
+    });
+
+    const highestCompletedIndex = normalizedStatuses.reduce(
+      (acc, status, index) => (status === "completed" ? Math.max(acc, index) : acc),
+      -1
+    );
+    const firstActiveIndex = normalizedStatuses.findIndex(status =>
+      status === "in-progress" || status === "blocked"
+    );
+
+    let progressIndex: number;
+    if (firstActiveIndex !== -1) {
+      progressIndex = firstActiveIndex;
+    } else if (highestCompletedIndex >= 0) {
+      progressIndex = highestCompletedIndex + 1;
+    } else {
+      progressIndex = Math.max(0, currentStep - 1);
+    }
+
+    const clamped = Math.max(0, Math.min(steps.length - 1, progressIndex));
+    return (clamped / (steps.length - 1)) * 100;
   };
 
   return (
@@ -51,10 +87,16 @@ export function ProgressIndicator({ steps, currentStep, onStepClick }: ProgressI
             {/* Step indicators positioned to align with progress track */}
             <div className="absolute top-1/2 -translate-y-1/2 w-full px-8 flex justify-between items-center z-10">
               {steps.map((step, index) => {
-                const isCompleted = step.id < currentStep;
-                const isCurrent = step.id === currentStep;
-                const isPairedStep = step.id === 1 || step.id === 2; // Code Review and Suggestion Review
-                const isFirstOfPair = step.id === 1;
+                const status: StepStatus = step.status
+                  ? step.status
+                  : step.id < currentStep
+                    ? "completed"
+                    : step.id === currentStep
+                      ? "in-progress"
+                      : "pending";
+                const isCompleted = status === "completed";
+                const isInProgress = status === "in-progress";
+                const isBlocked = status === "blocked";
 
                 return (
                   <motion.div
@@ -69,23 +111,25 @@ export function ProgressIndicator({ steps, currentStep, onStepClick }: ProgressI
                       className={`
                         w-12 h-12 rounded-full flex items-center justify-center cursor-pointer
                         transition-all duration-300 group relative
-                        ${isCompleted 
+                        ${isBlocked
+                          ? 'bg-gradient-to-br from-red-500 to-rose-600 text-white shadow-lg ring-2 ring-red-300/60'
+                          : isCompleted
                           ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-lg'
-                          : isCurrent
+                          : isInProgress
                           ? 'bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-xl ring-2 ring-blue-300/50'
                           : 'bg-white border-2 border-slate-300 text-slate-600 hover:border-blue-400 hover:shadow-lg'
                         }
                       `}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.98 }}
-                      animate={isCurrent ? {
+                      animate={isInProgress ? {
                         boxShadow: [
                           "0 6px 20px rgba(59, 130, 246, 0.25)",
                           "0 10px 30px rgba(59, 130, 246, 0.35)",
                           "0 6px 20px rgba(59, 130, 246, 0.25)"
                         ]
                       } : {}}
-                      transition={{ duration: 2, repeat: isCurrent ? Infinity : 0, ease: "easeInOut" }}
+                      transition={{ duration: 2, repeat: isInProgress ? Infinity : 0, ease: "easeInOut" }}
                     >
                       {isCompleted ? (
                         <motion.div
@@ -95,6 +139,8 @@ export function ProgressIndicator({ steps, currentStep, onStepClick }: ProgressI
                         >
                           <Check size={16} />
                         </motion.div>
+                      ) : isBlocked ? (
+                        <AlertTriangle size={16} />
                       ) : step.id === 0 ? (
                         <Settings size={14} />
                       ) : (
@@ -116,10 +162,12 @@ export function ProgressIndicator({ steps, currentStep, onStepClick }: ProgressI
                       transition={{ delay: index * 0.07 + 0.3 }}
                     >
                       <div className={`text-sm font-medium transition-colors duration-300 whitespace-nowrap ${
-                        isCompleted 
-                          ? 'text-emerald-600' 
-                          : isCurrent 
-                          ? 'text-blue-600' 
+                        isBlocked
+                          ? 'text-red-600'
+                          : isCompleted
+                          ? 'text-emerald-600'
+                          : isInProgress
+                          ? 'text-blue-600'
                           : 'text-slate-600'
                       }`}>
                         {step.title}

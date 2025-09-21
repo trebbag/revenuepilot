@@ -22,6 +22,7 @@ import {
   FinalizationWizardAdapter,
   type FinalizationWizardLaunchOptions
 } from "./components/FinalizationWizardAdapter"
+import type { StoredFinalizationSession } from "./features/finalization/workflowTypes"
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
@@ -173,16 +174,100 @@ export function ProtectedApp() {
 
   const { selectedCodes, selectedCodesList, addedCodes, isSuggestionPanelOpen, layout } = sessionState
   const isFinalizationView = currentView === 'finalization'
+  const finalizationSessionSnapshot = useMemo<StoredFinalizationSession | null>(() => {
+    if (!finalizationRequest) {
+      return null
+    }
+    const sessions = sessionState.finalizationSessions
+    if (!sessions || Object.keys(sessions).length === 0) {
+      return null
+    }
+
+    const normalize = (value?: string | number | null): string => {
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        return String(value).trim().toLowerCase()
+      }
+      if (typeof value === 'string') {
+        const trimmed = value.trim()
+        return trimmed.length > 0 ? trimmed.toLowerCase() : ''
+      }
+      return ''
+    }
+
+    const normalizedNoteId = normalize(finalizationRequest.noteId ?? null)
+    const normalizedEncounterId = normalize(finalizationRequest.patientInfo?.encounterId ?? null)
+    const normalizedPatientId = normalize(finalizationRequest.patientInfo?.patientId ?? null)
+
+    const entries = Object.values(sessions).filter(
+      (entry): entry is StoredFinalizationSession => Boolean(entry && typeof entry === 'object')
+    )
+
+    if (!entries.length) {
+      return null
+    }
+
+    const sorted = entries.slice().sort((a, b) => {
+      const parseTimestamp = (input?: string | null) => {
+        if (typeof input !== 'string') {
+          return 0
+        }
+        const timestamp = Date.parse(input)
+        return Number.isNaN(timestamp) ? 0 : timestamp
+      }
+      const bTime = parseTimestamp(b.updatedAt ?? b.createdAt)
+      const aTime = parseTimestamp(a.updatedAt ?? a.createdAt)
+      return bTime - aTime
+    })
+
+    if (normalizedNoteId) {
+      const match = sorted.find(
+        session => normalize(session.noteId ?? null) === normalizedNoteId
+      )
+      if (match) {
+        return match
+      }
+    }
+
+    if (normalizedEncounterId) {
+      const match = sorted.find(
+        session => normalize(session.encounterId ?? null) === normalizedEncounterId
+      )
+      if (match) {
+        return match
+      }
+    }
+
+    if (normalizedPatientId) {
+      const match = sorted.find(
+        session => normalize(session.patientId ?? null) === normalizedPatientId
+      )
+      if (match) {
+        return match
+      }
+    }
+
+    return null
+  }, [finalizationRequest, sessionState.finalizationSessions])
+
   const finalizationAdapterProps = useMemo(() => {
     if (!finalizationRequest) {
       return null
     }
-    const { onClose: _onClose, displayMode, ...rest } = finalizationRequest
+    const {
+      onClose: _onClose,
+      displayMode,
+      initialPreFinalizeResult,
+      initialSessionSnapshot,
+      ...rest
+    } = finalizationRequest
+    const snapshot = finalizationSessionSnapshot ?? initialSessionSnapshot ?? null
     return {
       ...rest,
-      displayMode: displayMode ?? 'embedded'
+      displayMode: displayMode ?? 'embedded',
+      initialPreFinalizeResult: initialPreFinalizeResult ?? snapshot?.lastPreFinalize ?? null,
+      initialSessionSnapshot: snapshot ?? null
     }
-  }, [finalizationRequest])
+  }, [finalizationRequest, finalizationSessionSnapshot])
 
   const [appointmentsState, setAppointmentsState] = useState<ScheduleDataState>({
     data: null,
