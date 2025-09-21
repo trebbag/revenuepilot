@@ -23,6 +23,8 @@ llama-cpp-python
 requests-mock
 cryptography
 bleach
-SQLAlchemy
-alembic
+SQLAlchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.2
+
 

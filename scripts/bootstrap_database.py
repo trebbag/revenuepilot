@@ -51,6 +51,7 @@ USER_ENV_VARS = {
 }
 
 
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -62,23 +63,24 @@ def apply_migrations(database_path: Path) -> None:
     cfg.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
     command.upgrade(cfg, "head")
 
+SCHEMA_FUNCTIONS: Iterable = (migrations.create_all_tables,)
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    for func in SCHEMA_FUNCTIONS:
+        func(conn)
+    conn.commit()
+
+
 
 def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
     compliance_rules = compliance.get_rules()
-    migrations.seed_compliance_rules(conn, compliance_rules, overwrite=overwrite)
-
-    migrations.seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items(), overwrite=overwrite)
-    migrations.seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items(), overwrite=overwrite)
-    migrations.seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items(), overwrite=overwrite)
-
     metadata = load_code_metadata()
     cpt_metadata: Dict[str, Dict[str, object]] = {}
     for code, info in metadata.items():
         code_type = str(info.get("type") or "").upper()
         if code_type == "CPT":
             cpt_metadata[code] = info
-
-    migrations.seed_cpt_reference(conn, cpt_metadata.items(), overwrite=overwrite)
 
     schedules: List[Dict[str, object]] = []
     for code, info in cpt_metadata.items():
@@ -94,7 +96,7 @@ def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
                 "payer_type": "commercial",
                 "location": "",
                 "code": code,
-                "reimbursement": round(base_amount, 2),
+                "reimbursement": base_amount,
                 "rvu": info.get("rvu"),
             }
         )
@@ -108,10 +110,14 @@ def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
             }
         )
 
-    if schedules:
-        migrations.seed_payer_schedules(conn, schedules, overwrite=overwrite)
-
-    conn.commit()
+    with migrations.session_scope(conn) as session:
+        migrations.seed_compliance_rules(session, compliance_rules, overwrite=overwrite)
+        migrations.seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items(), overwrite=overwrite)
+        migrations.seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items(), overwrite=overwrite)
+        migrations.seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items(), overwrite=overwrite)
+        migrations.seed_cpt_reference(session, cpt_metadata.items(), overwrite=overwrite)
+        if schedules:
+            migrations.seed_payer_schedules(session, schedules, overwrite=overwrite)
 
 
 def _resolve_user_spec(role: str, args: argparse.Namespace) -> Dict[str, str]:
