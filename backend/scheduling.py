@@ -7,13 +7,14 @@ can be added to a calendar client.
 """
 from __future__ import annotations
 
-import re
-from datetime import datetime, timedelta
-import time
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 import json
 import os
 import sqlite3
+import re
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
+
+from backend.time_utils import ensure_utc, from_epoch_seconds, to_epoch_seconds, utc_now
 
 
 # Default intervals for broad condition categories.  These are defined as
@@ -185,7 +186,7 @@ def export_ics(interval: str, summary: str = DEFAULT_EVENT_SUMMARY) -> Optional[
 
     value = int(match.group(1))
     unit = match.group(2).lower()
-    now = datetime.utcnow()
+    now = utc_now()
     if unit.startswith("day"):
         dt = now + timedelta(days=value)
     elif unit.startswith("week"):
@@ -203,7 +204,8 @@ def export_ics(interval: str, summary: str = DEFAULT_EVENT_SUMMARY) -> Optional[
         except ValueError:
             dt = now + timedelta(days=365 * value)
 
-    fmt = dt.strftime("%Y%m%dT%H%M%SZ")
+    dt_utc = ensure_utc(dt)
+    fmt = dt_utc.strftime("%Y%m%dT%H%M%SZ")
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -275,12 +277,11 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
     if value in (None, "", b""):
         return None
     if isinstance(value, datetime):
-        return value
+        return ensure_utc(value)
     if isinstance(value, (int, float)):
-        try:
-            return datetime.fromtimestamp(float(value))
-        except (TypeError, ValueError, OSError):
-            return None
+        dt_epoch = from_epoch_seconds(value)
+        if dt_epoch is not None:
+            return dt_epoch
     if isinstance(value, (bytes, bytearray)):
         try:
             value = value.decode("utf-8")
@@ -290,17 +291,20 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
         text = value.strip()
         if not text:
             return None
+        dt_epoch = from_epoch_seconds(text)
+        if dt_epoch is not None:
+            return dt_epoch
         normalised = text[:-1] + "+00:00" if text.endswith("Z") else text
         try:
-            return datetime.fromisoformat(normalised)
+            return ensure_utc(datetime.fromisoformat(normalised))
         except ValueError:
             pass
         for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
             try:
                 dt = datetime.strptime(text, fmt)
                 if fmt == "%Y-%m-%d":
-                    return dt.replace(hour=9, minute=0, second=0, microsecond=0)
-                return dt
+                    dt = dt.replace(hour=9, minute=0, second=0, microsecond=0)
+                return ensure_utc(dt)
             except ValueError:
                 continue
     return None
@@ -309,7 +313,11 @@ def _parse_datetime(value: Any) -> Optional[datetime]:
 def _serialize_datetime(dt: Optional[datetime]) -> Optional[str]:
     if not isinstance(dt, datetime):
         return None
-    return dt.replace(microsecond=0).isoformat()
+    dt_utc = ensure_utc(dt).replace(microsecond=0)
+    text = dt_utc.isoformat()
+    if text.endswith("+00:00"):
+        return text[:-6] + "Z"
+    return text
 
 
 _STATUS_REMAP = {
@@ -460,7 +468,7 @@ def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
             # Default to encounter date at 9am when only the date is provided.
             start_dt = _parse_datetime(row["date"])
         if start_dt is None:
-            start_dt = datetime.utcnow().replace(microsecond=0)
+            start_dt = ensure_utc(utc_now()).replace(microsecond=0)
         if end_dt is None:
             end_dt = start_dt + _DEFAULT_APPOINTMENT_DURATION
 
@@ -534,8 +542,11 @@ def create_appointment(
     strings for JSON serialisation.
     """
     global _NEXT_ID
+    start = ensure_utc(start)
     if end is None:
         end = start + _DEFAULT_APPOINTMENT_DURATION
+    else:
+        end = ensure_utc(end)
     if end < start:
         # Normalise invalid ranges by swapping; keeps function total.
         start, end = end, start
@@ -544,8 +555,8 @@ def create_appointment(
         "id": _NEXT_ID,
         "patient": patient,
         "reason": reason,
-        "start": start.replace(microsecond=0).isoformat(),
-        "end": end.replace(microsecond=0).isoformat(),
+        "start": _serialize_datetime(start) or ensure_utc(start).replace(microsecond=0).isoformat(),
+        "end": _serialize_datetime(end) or ensure_utc(end).replace(microsecond=0).isoformat(),
         "provider": provider,
         "status": "scheduled",
         "patientId": patient_id,
@@ -608,16 +619,15 @@ def export_appointment_ics(appt: Mapping[str, Any]) -> Optional[str]:  # type: i
 
     Falls back to ``export_ics`` using a generic interval if parsing fails.
     """
-    try:
-        start = datetime.fromisoformat(appt["start"])
-        end = datetime.fromisoformat(appt["end"])
-    except Exception:
+    start = _parse_datetime(appt.get("start"))
+    end = _parse_datetime(appt.get("end"))
+    if start is None or end is None:
         # Use generic follow-up export for robustness.
         return export_ics(DEFAULT_GENERIC_INTERVAL)
 
     def _fmt(dt: datetime) -> str:
-        # Treat naive datetimes as UTC for simplicity.
-        return dt.strftime("%Y%m%dT%H%M%SZ")
+        dt_utc = ensure_utc(dt)
+        return dt_utc.strftime("%Y%m%dT%H%M%SZ")
 
     summary = f"{DEFAULT_EVENT_SUMMARY}: {appt.get('reason','')}".strip()
     lines = [
@@ -650,8 +660,10 @@ def _find_appointment_locked(appt_id: int) -> Optional[dict]:
 
 def _reschedule_locked(rec: dict, new_start: datetime) -> bool:
     try:
-        old_start = datetime.fromisoformat(rec["start"])
-        old_end = datetime.fromisoformat(rec["end"])
+        old_start = _parse_datetime(rec["start"])
+        old_end = _parse_datetime(rec["end"])
+        if old_start is None or old_end is None:
+            raise ValueError
         duration = old_end - old_start
     except Exception:
         duration = _DEFAULT_APPOINTMENT_DURATION
@@ -659,8 +671,10 @@ def _reschedule_locked(rec: dict, new_start: datetime) -> bool:
     if duration.total_seconds() <= 0:
         duration = _DEFAULT_APPOINTMENT_DURATION
 
-    rec["start"] = new_start.replace(microsecond=0).isoformat()
-    rec["end"] = (new_start + duration).replace(microsecond=0).isoformat()
+    new_start_utc = ensure_utc(new_start)
+    rec["start"] = _serialize_datetime(new_start_utc) or new_start_utc.replace(microsecond=0).isoformat()
+    end_utc = ensure_utc(new_start_utc + duration)
+    rec["end"] = _serialize_datetime(end_utc) or end_utc.replace(microsecond=0).isoformat()
     rec["status"] = "scheduled"
     return True
 
@@ -685,7 +699,7 @@ def _apply_in_memory_operation(
     if action_lower == "reschedule":
         if new_start is None:
             return False
-        return _reschedule_locked(rec, new_start)
+        return _reschedule_locked(rec, ensure_utc(new_start))
 
     status = _STATUS_ACTION_MAP.get(action_lower)
     if status:
@@ -738,6 +752,7 @@ def _apply_db_bulk_operation(
         if new_start is None:
             conn.commit()
             return False
+        new_start = ensure_utc(new_start)
         session_row = conn.execute(
             """
             SELECT id, start_time, end_time
@@ -765,9 +780,9 @@ def _apply_db_bulk_operation(
             if start_dt and end_dt and end_dt > start_dt:
                 duration = end_dt - start_dt
         start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
-        end_dt = new_start + duration
+        end_dt = ensure_utc(new_start + duration)
         end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
-        now_ts = time.time()
+        now_ts = to_epoch_seconds(utc_now())
         if session_row:
             session_id = (
                 session_row["id"]
@@ -804,7 +819,7 @@ def _apply_db_bulk_operation(
         conn.commit()
         return False
 
-    now_ts = time.time()
+    now_ts = to_epoch_seconds(utc_now())
     session_row = conn.execute(
         """
         SELECT id
@@ -884,20 +899,13 @@ def apply_bulk_operations(
             continue
 
         time_value = update.get("time")
-        new_start: Optional[datetime]
         if time_value is None:
             new_start = None
-        elif isinstance(time_value, datetime):
-            new_start = time_value
-        elif isinstance(time_value, str):
-            try:
-                new_start = datetime.fromisoformat(time_value)
-            except ValueError:
+        else:
+            new_start = _parse_datetime(time_value)
+            if new_start is None:
                 failed += 1
                 continue
-        else:
-            failed += 1
-            continue
 
         handled = False
         success = False
