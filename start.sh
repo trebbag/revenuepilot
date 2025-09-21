@@ -9,6 +9,28 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
+export ENVIRONMENT="${ENVIRONMENT:-development}"
+
+if [ -x "backend/venv/bin/python" ]; then
+  BACKEND_PYTHON="backend/venv/bin/python"
+else
+  BACKEND_PYTHON="python3"
+fi
+
+"$BACKEND_PYTHON" - <<'PY'
+import os
+import secrets
+
+from backend import key_manager
+
+env = os.getenv("ENVIRONMENT", "development").lower()
+if env in {"development", "dev", "local"}:
+    key_manager.ensure_local_secret("jwt", "JWT_SECRET", lambda: secrets.token_urlsafe(48))
+    key_manager.ensure_local_secret(
+        "openai", "OPENAI_API_KEY", lambda: "sk-local-" + secrets.token_hex(16)
+    )
+PY
+
 echo "Starting backend (FastAPI) on port 8000..."
 
 # Start backend in background.  --reload enables live code reloading.

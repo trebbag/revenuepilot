@@ -1,7 +1,14 @@
 /* @vitest-environment jsdom */
-import { render, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { render, cleanup, fireEvent, waitFor, screen, act } from '@testing-library/react';
 import { vi, expect, test, afterEach } from 'vitest';
 import { useState } from 'react';
+
+const transcriptionStreamHandlers = [];
+const complianceStreamHandlers = [];
+const codesStreamHandlers = [];
+const collaborationStreamHandlers = [];
+let latestSuggestionPanelProps = null;
+let suggestionPanelRenderCount = 0;
 
 vi.mock('../../api.js', () => ({
   fetchLastTranscript: vi.fn().mockResolvedValue({ provider: 'Hi there', patient: '' }),
@@ -12,6 +19,12 @@ vi.mock('../../api.js', () => ({
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   exportToEhr: vi.fn().mockResolvedValue({ status: 'exported' }),
   logEvent: vi.fn().mockResolvedValue(undefined),
+  searchPatients: vi.fn().mockResolvedValue({ results: [] }),
+  validateEncounter: vi.fn().mockResolvedValue({
+    status: 'valid',
+    valid: true,
+    encounterId: '42',
+  }),
   startVisitSession: vi
     .fn()
     .mockResolvedValue({
@@ -27,13 +40,56 @@ vi.mock('../../api.js', () => ({
       startTime: '2023-01-01T00:00:00.000Z',
       endTime: null,
     }),
+  connectTranscriptionStream: vi.fn((options = {}) => {
+    if (typeof options.onEvent === 'function') {
+      transcriptionStreamHandlers.push(options.onEvent);
+    }
+    return { close: vi.fn() };
+  }),
+  connectComplianceStream: vi.fn((options = {}) => {
+    if (typeof options.onEvent === 'function') {
+      complianceStreamHandlers.push(options.onEvent);
+    }
+    return { close: vi.fn() };
+  }),
+  connectCodesStream: vi.fn((options = {}) => {
+    if (typeof options.onEvent === 'function') {
+      codesStreamHandlers.push(options.onEvent);
+    }
+    return { close: vi.fn() };
+  }),
+  connectCollaborationStream: vi.fn((options = {}) => {
+    if (typeof options.onEvent === 'function') {
+      collaborationStreamHandlers.push(options.onEvent);
+    }
+    return { close: vi.fn() };
+  }),
 }));
 
 // mock typed client wrappers
 vi.mock('../../api/client.ts', () => ({
   beautifyNote: vi.fn().mockResolvedValue('Beautified Text'),
-  getSuggestions: vi.fn().mockResolvedValue({ codes: [{ code: '99213', rationale: 'Low complexity' }], compliance: ['Add ROS'], publicHealth: [], differentials: [] }),
+  getSuggestions: vi
+    .fn()
+    .mockResolvedValue({
+      codes: [{ code: '99213', rationale: 'Low complexity' }],
+      compliance: ['Add ROS'],
+      publicHealth: [],
+      differentials: [],
+    }),
 }));
+
+vi.mock('../SuggestionPanel.jsx', async () => {
+  const actual = await vi.importActual('../SuggestionPanel.jsx');
+  return {
+    __esModule: true,
+    default: vi.fn((props) => {
+      suggestionPanelRenderCount += 1;
+      latestSuggestionPanelProps = props;
+      return actual.default(props);
+    }),
+  };
+});
 
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
@@ -43,6 +99,10 @@ import {
   startVisitSession,
   updateVisitSession,
   logEvent,
+  connectTranscriptionStream,
+  connectComplianceStream,
+  connectCodesStream,
+  connectCollaborationStream,
 } from '../../api.js';
 import { beautifyNote, getSuggestions } from '../../api/client.ts';
 
@@ -50,6 +110,12 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  transcriptionStreamHandlers.length = 0;
+  complianceStreamHandlers.length = 0;
+  codesStreamHandlers.length = 0;
+  collaborationStreamHandlers.length = 0;
+  latestSuggestionPanelProps = null;
+  suggestionPanelRenderCount = 0;
 });
 
 test('record button toggles recording state', async () => {
@@ -188,6 +254,108 @@ test('tab switching triggers beautify fetch', async () => {
   fireEvent.click(getByText('Beautified'));
   await findByText('Beautified Text');
   expect(beautifyNote).toHaveBeenCalledWith('<p>draft text</p>', { specialty: undefined, payer: undefined });
+});
+
+test('connects to visit session streams and renders live updates', async () => {
+  render(<NoteEditor id="session" value="" onChange={() => {}} />);
+
+  const patientInput = await screen.findByLabelText('Patient ID');
+  fireEvent.change(patientInput, {
+    target: { value: 'PX1' },
+  });
+  const encounterInput = await screen.findByLabelText('Encounter ID');
+  fireEvent.change(encounterInput, {
+    target: { value: '42' },
+  });
+
+  await waitFor(() => expect(connectTranscriptionStream).toHaveBeenCalled());
+  await waitFor(() => expect(connectComplianceStream).toHaveBeenCalled());
+  await waitFor(() => expect(connectCodesStream).toHaveBeenCalled());
+  await waitFor(() => expect(connectCollaborationStream).toHaveBeenCalled());
+
+  const transcriptionHandler =
+    transcriptionStreamHandlers[transcriptionStreamHandlers.length - 1];
+  const complianceHandler =
+    complianceStreamHandlers[complianceStreamHandlers.length - 1];
+  const codesHandler = codesStreamHandlers[codesStreamHandlers.length - 1];
+  const collabHandler =
+    collaborationStreamHandlers[collaborationStreamHandlers.length - 1];
+
+  expect(typeof transcriptionHandler).toBe('function');
+  expect(typeof complianceHandler).toBe('function');
+  expect(typeof codesHandler).toBe('function');
+  expect(typeof collabHandler).toBe('function');
+
+  await screen.findByText('Add ROS');
+  const renderCountBefore = suggestionPanelRenderCount;
+
+  act(() => {
+    transcriptionHandler?.({ event: 'connected', sessionId: 'ws-trans' });
+  });
+  act(() => {
+    transcriptionHandler?.({
+      eventId: 1,
+      transcript: 'interim note',
+      isInterim: true,
+      speakerLabel: 'patient',
+    });
+  });
+  act(() => {
+    transcriptionHandler?.({
+      eventId: 2,
+      transcript: 'final patient note',
+      isInterim: false,
+      speakerLabel: 'patient',
+    });
+  });
+
+  await waitFor(() => expect(screen.getByText(/final patient note/i)).toBeTruthy());
+
+  act(() => {
+    complianceHandler?.({
+      eventId: 3,
+      message: 'Live compliance alert',
+      severity: 'warning',
+      timestamp: '2023-01-01T00:00:10Z',
+    });
+  });
+
+  await waitFor(() => {
+    expect(suggestionPanelRenderCount).toBeGreaterThan(renderCountBefore);
+  });
+
+  const renderCountBeforeCodes = suggestionPanelRenderCount;
+  act(() => {
+    codesHandler?.({
+      eventId: 4,
+      code: 'Z1234',
+      rationale: 'Streaming code',
+    });
+  });
+  await waitFor(() => {
+    expect(suggestionPanelRenderCount).toBeGreaterThan(renderCountBeforeCodes);
+  });
+
+  act(() => {
+    collabHandler?.({
+      eventId: 5,
+      participants: [{ userId: 'abc', name: 'Dr Demo' }],
+    });
+  });
+
+  await waitFor(() => expect(screen.getByText('Collaborators')).toBeTruthy());
+  expect(screen.getByText('Dr Demo')).toBeTruthy();
+
+  act(() => {
+    collabHandler?.({
+      eventId: 6,
+      conflicts: ['Simultaneous edits detected'],
+    });
+  });
+
+  await waitFor(() =>
+    expect(screen.getByText(/Simultaneous edits detected/i)).toBeTruthy(),
+  );
 });
 
 // Utility to mock Quill selection APIs that break in jsdom

@@ -18,6 +18,9 @@ Key capabilities include:
 - **Rich clinical workspace** with draft and beautified tabs, template
   insertion, chart uploads, transcript review and clipboard/export
   helpers.【F:src/App.jsx†L1-L118】【F:src/components/NoteEditor.jsx†L1-L120】
+- **Finalization workflow** guiding six-step validation, attestation and
+  dispatch from a dedicated view that persists session context per
+  patient encounter.【F:src/components/WorkflowView.jsx†L1-L420】【F:src/App.jsx†L600-L840】
 - **AI assistance** for beautification, coding, compliance, public health,
   differential diagnoses and follow-up scheduling, with offline and local
   model fallbacks.【F:backend/main.py†L9755-L11904】【F:backend/openai_client.py†L1-L117】
@@ -69,9 +72,11 @@ Use the helper script to launch FastAPI and the Vite frontend together.
 ./start.ps1           # Windows PowerShell
 ```
 
-The script runs `backend/venv/bin/uvicorn backend.main:app --reload` on
-port 8000, exports `VITE_API_URL` and starts the frontend dev server.
-Stopping the frontend terminates the backend process automatically.【F:start.sh†L1-L32】
+The script provisions local JWT and mock OpenAI secrets via the backend
+secrets manager, runs `backend/venv/bin/uvicorn backend.main:app
+--reload` on port 8000, exports `VITE_API_URL` and starts the frontend
+dev server. Stopping the frontend terminates the backend process
+automatically.【F:start.sh†L1-L48】
 
 For manual startup, activate the virtualenv and run the servers
 separately:
@@ -120,6 +125,15 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
   transcripts and merges segments into the note. The backend supports
   Whisper, local models and offline fallbacks.【F:src/components/TranscriptView.jsx†L1-L200】【F:backend/audio_processing.py†L1-L200】
 
+### Finalisation workflow
+
+- **Session orchestration** – Launch the workflow view from the toolbar or
+  sidebar to create sessions, inspect step status and sync progress with
+  the backend state machine.【F:src/App.jsx†L600-L880】【F:src/components/WorkflowView.jsx†L1-L420】
+- **Validation & attestation panels** – Trigger note validation, review
+  reimbursement details, record attestation metadata and monitor dispatch
+  results without leaving the workspace.【F:src/components/WorkflowView.jsx†L130-L370】
+
 ### Administrative & operational views
 
 - **Dashboard** – Admin-only charts summarise baseline vs current usage,
@@ -132,8 +146,8 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 - **Notifications & surveys** – Persistent notifications, unread counts
   and satisfaction surveys are surfaced in the React shell and persisted
   through `/api/notifications` endpoints.【F:src/components/Notifications.jsx†L1-L200】【F:backend/main.py†L6530-L6636】
-- **Scheduling** – Follow-up recommendations export calendar events while
-  the scheduler module manages appointments and bulk operations.【F:src/components/FollowUpScheduler.jsx†L1-L160】【F:backend/scheduling.py†L1-L240】
+- **Scheduling** – The Scheduler view combines follow-up recommendations with
+  appointment creation, exports and bulk status updates backed by the scheduling module.【F:src/components/Scheduler.tsx†L1-L260】【F:backend/scheduling.py†L500-L980】
 
 ### Backend services
 
@@ -169,14 +183,20 @@ Key environment variables can be supplied via `.env` or exported before
 runtime:
 
 - `VITE_API_URL` – Frontend API base URL (set automatically by `start.sh`).
-- `OPENAI_API_KEY` – Backend OpenAI key, alternatively stored via
-  `/apikey` and `backend/openai_key.txt`.
+- `OPENAI_API_KEY` and `OPENAI_API_KEY_ROTATED_AT` – Backend OpenAI key
+  plus ISO-8601 rotation timestamp supplied by the external secrets
+  manager. `/apikey` persists development overrides through the secrets
+  repository.
 - `USE_OFFLINE_MODEL`, `USE_LOCAL_MODELS`, `LOCAL_*_MODEL` – Offline/local
   AI behaviour toggles.【F:backend/openai_client.py†L1-L117】
 - `FHIR_SERVER_URL` and related auth variables – Configure FHIR export
   destinations.【F:backend/ehr_integration.py†L30-L180】
-- `REVENUEPILOT_DB_PATH`, `JWT_SECRET`, `METRICS_LOOKBACK_DAYS` – Database
-  location, token signing secret and analytics retention window.【F:backend/main.py†L600-L760】
+- `REVENUEPILOT_DB_PATH`, `JWT_SECRET`, `JWT_SECRET_ROTATED_AT`,
+  `METRICS_LOOKBACK_DAYS` – Database location, token signing secret with
+  rotation metadata, and analytics retention window.【F:backend/main.py†L600-L760】
+- `SECRETS_BACKEND`, `SECRETS_FALLBACK`, `SECRET_MAX_AGE_DAYS` – Control
+  whether secrets are loaded from environment managers only or allow the
+  encrypted local fallback, and configure stale-secret enforcement.【F:backend/key_manager.py†L85-L230】
 
 See `docs/LOCAL_MODELS.md` for detailed offline model guidance and
 `docs/DESKTOP_BUILD.md` for packaging environment variables.
@@ -208,6 +228,14 @@ aggregated operational summary is available at `/status/alerts` and is
 surfaced on the admin dashboard for quick triage. Deployment pipelines
 should configure log shipping to handle JSON payloads and register the
 Prometheus endpoint with the monitoring stack.【F:backend/main.py†L231-L362】【F:src/components/Dashboard.jsx†L1-L220】
+
+Production deployments should source `OPENAI_API_KEY`, `JWT_SECRET` and
+other credentials from an external secrets manager (Vault, SSM, etc.)
+and provide the corresponding `*_ROTATED_AT` metadata so the backend can
+enforce rotation policies. Set `SECRETS_BACKEND=env` and leave
+`SECRETS_FALLBACK=never` in hosted environments; the development scripts
+only provision local fallbacks when `ENVIRONMENT` is a development value.【F:backend/key_manager.py†L85-L230】【F:start.sh†L1-L48】
+
 
 ## Additional references
 

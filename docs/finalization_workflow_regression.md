@@ -99,7 +99,7 @@ Use the following ordered script (also encoded in the accompanying Postman colle
    ```
    *Verify:* the session response now contains `attestation.billingValidation`, `attestation.attestation`, and `stepStates[4].status === "completed"`.
 
-4. **Dispatch finalized note**  
+4. **Dispatch finalized note**
    `POST /api/v1/workflow/<session-id>/step6/dispatch`
    ```json
    {
@@ -141,9 +141,32 @@ Use the following ordered script (also encoded in the accompanying Postman colle
    ```
    *Verify:* `dispatch.dispatchStatus.dispatchCompleted` is `true`, `result.exportReady` is `true`, and reimbursement totals carry through.
 
-5. **Optional checks**  
-   - `GET /api/v1/workflow/sessions/<session-id>` to confirm persisted attestation/dispatch payloads.  
+5. **Optional checks**
+   - `GET /api/v1/workflow/sessions/<session-id>` to confirm persisted attestation/dispatch payloads.
    - `DELETE /api/v1/workflow/sessions/<session-id>` to clean up test data.
+
+## 🖥️ Frontend workflow walkthrough
+
+With the dedicated workflow view in the React shell you can execute the
+same six steps end-to-end without Postman:
+
+1. **Open the workflow view** – From the toolbar or sidebar choose
+   “Workflow”, confirm the patient and encounter identifiers are set and
+   click **Create session**. The panel lists the six steps and their
+   status in real time.
+2. **Validate from the UI** – Press **Run validation** to send the
+   current note to `/api/v1/notes/{encounter}/content`. The validation
+   summary and reimbursement totals are rendered inline, mirroring the API
+   payload.
+3. **Record attestation** – Fill in the attested-by and statement fields
+   in the attestation card and submit. Step five flips to “completed” and
+   the attestation summary reflects the captured metadata.
+4. **Dispatch** – Choose the destination and delivery method then submit
+   the dispatch form. The result JSON is shown for quick verification and
+   step six finalises.
+
+Repeat the flow after edits to confirm session IDs persist per patient and
+encounter and that step states synchronise with the backend responses.
 
 ## 📬 Postman Collection
 

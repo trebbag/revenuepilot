@@ -730,23 +730,161 @@ export async function getSuggestions(text, context = {}) {
  * @param {string[]} codes Optional billing codes
  * @returns {Promise<{interval:string|null, ics:string|null}>}
  */
-export async function scheduleFollowUp(text, codes = []) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  const token =
-    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  const headers = token
-    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
-    : { 'Content-Type': 'application/json' };
-  const resp = await fetch(`${baseUrl}/schedule`, {
+export async function scheduleFollowUp(payload, codes = []) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const body = (() => {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      const normalised = { ...payload };
+      if (!normalised.text) normalised.text = '';
+      if (!Array.isArray(normalised.codes)) normalised.codes = [];
+      return normalised;
+    }
+    return { text: payload || '', codes: Array.isArray(codes) ? codes : [] };
+  })();
+  const resp = await fetch(`${baseUrl}/followup`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ text, codes }),
+    body: JSON.stringify(body),
   });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = 'Failed to fetch follow-up recommendation';
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return await resp.json();
+}
+
+function normaliseDateTimeInput(value) {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === 'number') {
+    const dt = new Date(value);
+    return Number.isNaN(dt.getTime()) ? undefined : dt.toISOString();
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    const padded =
+      trimmed.length === 16 && trimmed.includes('T') ? `${trimmed}:00` : trimmed;
+    const dt = new Date(padded);
+    if (!Number.isNaN(dt.getTime())) {
+      return dt.toISOString();
+    }
+    return trimmed;
+  }
+  return undefined;
+}
+
+export async function listScheduleAppointments() {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader();
+  const resp = await fetch(`${baseUrl}/api/schedule/appointments`, {
+    method: 'GET',
+    headers,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to load appointments');
+  }
+  return await resp.json();
+}
+
+export async function createScheduleAppointment(appt = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const body = {
+    patient: appt.patient || '',
+    reason: appt.reason || '',
+    start: normaliseDateTimeInput(appt.start),
+  };
+  if (!body.patient) throw new Error('patient is required');
+  if (!body.reason) throw new Error('reason is required');
+  if (!body.start) throw new Error('start is required');
+  if (appt.end) body.end = normaliseDateTimeInput(appt.end);
+  if (appt.provider) body.provider = appt.provider;
+  if (appt.patientId) body.patientId = appt.patientId;
+  if (appt.encounterId) body.encounterId = appt.encounterId;
+  if (appt.location) body.location = appt.location;
+  const resp = await fetch(`${baseUrl}/schedule`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = 'Failed to create appointment';
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  return await resp.json();
+}
+
+export async function exportAppointmentIcs(id) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/schedule/export`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ id }),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to export appointment');
+  }
+  const data = await resp.json();
+  return data?.ics || '';
+}
+
+export async function scheduleBulkOperations(request = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const updates = Array.isArray(request.updates) ? request.updates : [];
+  const payload = {
+    updates: updates.map((item) => {
+      const mapped = {
+        id: item.id,
+        action: item.action,
+      };
+      if (item.time) {
+        const normalised = normaliseDateTimeInput(item.time);
+        if (normalised) mapped.time = normalised;
+      }
+      return mapped;
+    }),
+  };
+  if (request.provider) payload.provider = request.provider;
+  const resp = await fetch(`${baseUrl}/api/schedule/bulk-operations`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to update appointments');
   }
   return await resp.json();
 }
@@ -1349,6 +1487,179 @@ export async function autoSaveNote(noteId, content) {
   }
 }
 
+function unwrapWorkflowPayload(data) {
+  if (data && typeof data === 'object' && data.data && typeof data.data === 'object') {
+    return data.data;
+  }
+  return data;
+}
+
+export async function createWorkflowSession(payload = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function getWorkflowSession(sessionId) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader();
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions/${sessionId}`, {
+    method: 'GET',
+    headers,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function updateWorkflowStep(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions/${sessionId}/step`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function attestWorkflowSession(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/${sessionId}/step5/attest`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function dispatchWorkflowSession(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/${sessionId}/step6/dispatch`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function updateWorkflowNoteContent(encounterId, payload = {}) {
+  if (!encounterId) throw new Error('encounterId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/notes/${encodeURIComponent(encounterId)}/content`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
 /**
  * Fetch code metadata with offline cache fallback.
  * @param {string[]} codes
@@ -1815,25 +2126,34 @@ export async function markAllNotificationsRead() {
   return { unreadCount: normaliseCount(data.unreadCount) };
 }
 
-export function connectNotificationsStream({
+function mergeParams(...sources) {
+  const combined = {};
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || value === null || value === '') continue;
+      combined[key] = value;
+    }
+  }
+  return combined;
+}
+
+function connectWebsocketStream(path, {
   onEvent,
-  onCount,
   onError,
   onOpen,
   onClose,
   reconnectDelayMs = 2000,
   maxRetries = Infinity,
   websocketFactory,
+  params = {},
+  getParams,
 } = {}) {
   if (typeof window === 'undefined') {
     return { close() {} };
   }
-  const url = resolveWebsocketUrl('/ws/notifications');
+  const baseUrl = resolveWebsocketUrl(path);
   const token = localStorage.getItem('token');
-  const target = new URL(url);
-  if (token) {
-    target.searchParams.set('token', token);
-  }
   const factory =
     typeof websocketFactory === 'function'
       ? websocketFactory
@@ -1843,29 +2163,22 @@ export function connectNotificationsStream({
   let closed = false;
   let attempts = 0;
 
+  const computeTargetUrl = () => {
+    const target = new URL(baseUrl);
+    if (token) target.searchParams.set('token', token);
+    const dynamicParams = typeof getParams === 'function' ? getParams() : {};
+    const merged = mergeParams(params, dynamicParams);
+    for (const [key, value] of Object.entries(merged)) {
+      target.searchParams.set(key, String(value));
+    }
+    return target.toString();
+  };
+
   const clearTimer = () => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-  };
-
-  const emitCount = (data) => {
-    if (!data || typeof onCount !== 'function') return;
-    const notifications =
-      typeof data.notifications === 'number'
-        ? data.notifications
-        : typeof data.unreadCount === 'number'
-          ? data.unreadCount
-          : undefined;
-    const drafts =
-      typeof data.drafts === 'number' ? data.drafts : undefined;
-    if (notifications === undefined && drafts === undefined) return;
-    onCount({
-      notifications: notifications !== undefined ? normaliseCount(notifications) : undefined,
-      drafts: drafts !== undefined ? normaliseCount(drafts) : undefined,
-      raw: data,
-    });
   };
 
   const scheduleReconnect = () => {
@@ -1885,8 +2198,9 @@ export function connectNotificationsStream({
   };
 
   const connect = () => {
+    const targetUrl = computeTargetUrl();
     try {
-      socket = factory(target.toString());
+      socket = factory(targetUrl);
     } catch (err) {
       onError?.(err);
       scheduleReconnect();
@@ -1900,9 +2214,8 @@ export function connectNotificationsStream({
     socket.addEventListener?.('message', (event) => {
       try {
         const payload =
-          typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+          typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
         onEvent?.(payload);
-        emitCount(payload);
       } catch (err) {
         onError?.(err);
       }
@@ -1933,6 +2246,108 @@ export function connectNotificationsStream({
       }
     },
   };
+}
+
+export function connectNotificationsStream(options = {}) {
+  const { onCount, onEvent: userOnEvent, ...rest } = options;
+  const emitCount = (data) => {
+    if (!data || typeof onCount !== 'function') return;
+    const notifications =
+      typeof data.notifications === 'number'
+        ? data.notifications
+        : typeof data.unreadCount === 'number'
+          ? data.unreadCount
+          : undefined;
+    const drafts =
+      typeof data.drafts === 'number' ? data.drafts : undefined;
+    if (notifications === undefined && drafts === undefined) return;
+    onCount({
+      notifications: notifications !== undefined ? normaliseCount(notifications) : undefined,
+      drafts: drafts !== undefined ? normaliseCount(drafts) : undefined,
+      raw: data,
+    });
+  };
+  return connectWebsocketStream('/ws/notifications', {
+    ...rest,
+    onEvent: (payload) => {
+      userOnEvent?.(payload);
+      emitCount(payload);
+    },
+  });
+}
+
+export function connectTranscriptionStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/transcription', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectComplianceStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/compliance', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectCodesStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/codes', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectCollaborationStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  noteId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    {
+      visit_session_id: visitSessionId,
+      encounter_id: encounterId,
+      patient_id: patientId,
+      note_id: noteId,
+    },
+    params,
+  );
+  return connectWebsocketStream('/ws/collaboration', {
+    ...rest,
+    params: staticParams,
+  });
 }
 
 export async function getUserSession() {

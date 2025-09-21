@@ -137,6 +137,7 @@ function SuggestionPanel({
     }
     return items.map((item, idx) => {
       if (type === 'codes' && typeof item === 'object' && item !== null) {
+        const isLive = Boolean(item.live || item.streaming);
         const text = item.rationale
           ? `${item.code} — ${item.rationale}`
           : item.code;
@@ -155,6 +156,18 @@ function SuggestionPanel({
             >
               {item.code}
             </strong>
+            {isLive ? (
+              <span
+                style={{
+                  marginLeft: '0.5em',
+                  fontSize: '0.75em',
+                  color: '#2563eb',
+                  textTransform: 'uppercase',
+                }}
+              >
+                {t('suggestion.liveBadge', 'Live')}
+              </span>
+            ) : null}
             {item.rationale ? ` — ${item.rationale}` : ''}
             {item.upgrade_to && (
               <span
@@ -268,14 +281,49 @@ function SuggestionPanel({
           </li>
         );
       }
+      const isObject = typeof item === 'object' && item !== null;
+      const textValue = isObject
+        ? item.text || item.message || item.description || item.code || item.summary
+        : item;
+      const isLive = isObject && Boolean(item.live || item.streaming);
+      const severity = isObject && (item.severity || item.level);
       return (
         <li
           key={idx}
-          title={item}
+          title={typeof textValue === 'string' ? textValue : undefined}
           style={{ cursor: 'pointer' }}
-          onClick={() => onInsert && onInsert(item)}
+          onClick={() => {
+            if (!onInsert) return;
+            if (typeof textValue === 'string' && textValue.trim()) {
+              onInsert(textValue);
+            }
+          }}
         >
-          {item}
+          {typeof textValue === 'string' ? textValue : ''}
+          {isLive ? (
+            <span
+              style={{
+                marginLeft: '0.5em',
+                fontSize: '0.75em',
+                color: '#2563eb',
+                textTransform: 'uppercase',
+              }}
+            >
+              {t('suggestion.liveBadge', 'Live')}
+            </span>
+          ) : null}
+          {severity ? (
+            <span
+              style={{
+                marginLeft: '0.5em',
+                fontSize: '0.75em',
+                color: '#b45309',
+                textTransform: 'uppercase',
+              }}
+            >
+              {severity}
+            </span>
+          ) : null}
         </li>
       );
     });

@@ -8,6 +8,28 @@ Write-Host "Starting RevenuePilot development environment..."
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $scriptDir
 
+if (-not $env:ENVIRONMENT) {
+    $env:ENVIRONMENT = "development"
+}
+$pythonExe = Join-Path $scriptDir 'backend\venv\Scripts\python.exe'
+if (-not (Test-Path $pythonExe)) {
+    $pythonExe = 'python'
+}
+$provisionScript = @'
+import os
+import secrets
+
+from backend import key_manager
+
+env = os.getenv("ENVIRONMENT", "development").lower()
+if env in {"development", "dev", "local"}:
+    key_manager.ensure_local_secret("jwt", "JWT_SECRET", lambda: secrets.token_urlsafe(48))
+    key_manager.ensure_local_secret(
+        "openai", "OPENAI_API_KEY", lambda: "sk-local-" + secrets.token_hex(16)
+    )
+'@
+& $pythonExe -c $provisionScript
+
 Write-Host "Starting backend (FastAPI) on port 8000..."
 $uvicornPath = Join-Path $scriptDir 'backend\venv\Scripts\uvicorn.exe'
 $backend = Start-Process $uvicornPath -ArgumentList 'backend.main:app --reload --port 8000' -PassThru

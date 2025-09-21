@@ -4,6 +4,7 @@ import {
   useRef,
   forwardRef,
   useImperativeHandle,
+  useMemo,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -16,6 +17,10 @@ import {
   validateEncounter,
   startVisitSession,
   updateVisitSession,
+  connectTranscriptionStream,
+  connectComplianceStream,
+  connectCodesStream,
+  connectCollaborationStream,
 } from '../api.js';
 import SuggestionPanel from './SuggestionPanel.jsx';
 import { beautifyNote, getSuggestions } from '../api/client.ts';
@@ -154,8 +159,8 @@ const NoteEditor = forwardRef(function NoteEditor(
     mode = 'draft',
     specialty,
     payer,
-    onSpecialtyChange,
-    onPayerChange,
+    onSpecialtyChange = () => {},
+    onPayerChange = () => {},
     defaultTemplateId,
     onTemplateChange,
     codes = [],
@@ -163,8 +168,6 @@ const NoteEditor = forwardRef(function NoteEditor(
     encounterId = '',
     onPatientIdChange = () => {},
     onEncounterChange = () => {},
-    onSpecialtyChange = () => {},
-    onPayerChange = () => {},
     role = '',
     settingsState = null,
   },
@@ -205,7 +208,6 @@ const NoteEditor = forwardRef(function NoteEditor(
     details: null,
   });
   const [validatedEncounter, setValidatedEncounter] = useState(null);
-  const debounceRef = useRef(null); // ensure present after modifications
   const patientSuggestionHideRef = useRef(null);
   const patientFocusedRef = useRef(false);
   const selectingPatientRef = useRef(false);
@@ -218,10 +220,89 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [visitSession, rawSetVisitSession] = useState(null);
   const [sessionError, setSessionError] = useState('');
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
-  const debounceRef = useRef(null); // ensure present after modifications
+  const suggestionDebounceRef = useRef(null);
   const sessionStateRef = useRef(null);
   const sessionKeyRef = useRef('');
   const sessionTimerRef = useRef(null);
+  const resetStreamSessions = () => {
+    streamSessionsRef.current = {
+      transcription: { sessionId: '', lastEventId: null },
+      compliance: { sessionId: '', lastEventId: null },
+      codes: { sessionId: '', lastEventId: null },
+      collaboration: { sessionId: '', lastEventId: null },
+    };
+  };
+  const cleanupActiveStreams = () => {
+    const subscriptions = activeStreamsRef.current?.subscriptions;
+    if (subscriptions) {
+      Object.values(subscriptions).forEach((sub) => {
+        try {
+          sub?.close?.();
+        } catch (err) {
+          /* ignore */
+        }
+      });
+    }
+    activeStreamsRef.current = { sessionKey: null, subscriptions: {} };
+    resetStreamSessions();
+  };
+  const touchStreamMetadata = (name, payload) => {
+    const target = streamSessionsRef.current?.[name];
+    if (!target) return;
+    if (payload?.event === 'connected') {
+      if (payload.sessionId) target.sessionId = String(payload.sessionId);
+      else if (payload.session_id) target.sessionId = String(payload.session_id);
+    }
+    if (typeof payload?.eventId === 'number') target.lastEventId = payload.eventId;
+    else if (typeof payload?.event_id === 'number') target.lastEventId = payload.event_id;
+  };
+  const formatSpeakerLabel = (value) => {
+    const normalized = (value || '').toString().trim().toLowerCase();
+    if (!normalized) return 'Provider';
+    if (normalized.includes('patient')) return 'Patient';
+    if (normalized.includes('scribe')) return 'Scribe';
+    if (normalized.includes('nurse')) return 'Nurse';
+    if (normalized.includes('assistant')) return 'Assistant';
+    return 'Provider';
+  };
+  const resolveSpeakerKey = (value) => {
+    const normalized = (value || '').toString().trim().toLowerCase();
+    if (normalized.includes('patient')) return 'patient';
+    return 'provider';
+  };
+  const normaliseCollaborator = (entry) => {
+    if (!entry) return null;
+    if (typeof entry === 'string') {
+      const trimmed = entry.trim();
+      if (!trimmed) return null;
+      return { id: trimmed, name: trimmed };
+    }
+    if (typeof entry !== 'object') return null;
+    const idValue =
+      entry.userId || entry.id || entry.user || entry.email || entry.handle || entry.name;
+    if (!idValue) return null;
+    const nameValue =
+      entry.displayName || entry.name || entry.fullName || entry.userId || String(idValue);
+    const colour = entry.color || entry.colour || entry.presenceColor || '';
+    return {
+      id: String(idValue),
+      name: String(nameValue),
+      role: entry.role || entry.title || '',
+      color: colour ? String(colour) : '',
+    };
+  };
+  const [streamingCodes, setStreamingCodes] = useState([]);
+  const [streamingCompliance, setStreamingCompliance] = useState([]);
+  const [collaborators, setCollaborators] = useState([]);
+  const [collaborationConflicts, setCollaborationConflicts] = useState([]);
+  const [collaborationStatus, setCollaborationStatus] = useState('');
+  const streamSessionsRef = useRef({
+    transcription: { sessionId: '', lastEventId: null },
+    compliance: { sessionId: '', lastEventId: null },
+    codes: { sessionId: '', lastEventId: null },
+    collaboration: { sessionId: '', lastEventId: null },
+  });
+  const activeStreamsRef = useRef({ sessionKey: null, subscriptions: {} });
   const setSessionState = (valueOrUpdater) => {
     rawSetVisitSession((prev) => {
       const next =
@@ -260,6 +341,65 @@ const NoteEditor = forwardRef(function NoteEditor(
     });
     return counts;
   })();
+  const combinedSuggestions = useMemo(() => {
+    const base = suggestions || {};
+    const arrayOrEmpty = (value) => (Array.isArray(value) ? value : []);
+    const uniqueBy = (primary, secondary, keyFn) => {
+      const map = new Map();
+      primary.forEach((item) => {
+        const key = keyFn(item);
+        if (!key) return;
+        map.set(key, item);
+      });
+      secondary.forEach((item) => {
+        const key = keyFn(item);
+        if (!key || map.has(key)) return;
+        map.set(key, item);
+      });
+      return Array.from(map.values());
+    };
+    const codeKey = (item) => {
+      if (!item) return null;
+      if (typeof item === 'string') return item;
+      if (typeof item === 'object') {
+        return (
+          item.id ||
+          item.code ||
+          item.text ||
+          item.rationale ||
+          item.message ||
+          JSON.stringify(item)
+        );
+      }
+      return String(item);
+    };
+    const complianceKey = (item) => {
+      if (!item) return null;
+      if (typeof item === 'string') return item;
+      if (typeof item === 'object') {
+        return (
+          item.id ||
+          item.text ||
+          item.message ||
+          item.summary ||
+          item.description ||
+          JSON.stringify(item)
+        );
+      }
+      return String(item);
+    };
+    const mergedCodes = uniqueBy(streamingCodes, arrayOrEmpty(base.codes), codeKey);
+    const mergedCompliance = uniqueBy(
+      streamingCompliance,
+      arrayOrEmpty(base.compliance),
+      complianceKey,
+    );
+    return {
+      ...base,
+      codes: mergedCodes,
+      compliance: mergedCompliance,
+    };
+  }, [suggestions, streamingCodes, streamingCompliance]);
 
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
@@ -268,16 +408,8 @@ const NoteEditor = forwardRef(function NoteEditor(
   const patientFieldId = `${sanitizedId}-patient-id`;
   const encounterFieldId = `${sanitizedId}-encounter-id`;
 
-  const handlePatientInputChange = (e) => {
-    const val = e.target.value;
-    setPatientInput(val);
-    if (onPatientIdChange) onPatientIdChange(val);
-  };
-
-  const handleEncounterInputChange = (e) => {
-    const val = e.target.value;
-    setEncounterInput(val);
-    if (onEncounterIdChange) onEncounterIdChange(val);
+  const handleEncounterInputChange = (event) => {
+    setEncounterInput(event.target.value);
   };
 
   useEffect(() => {
@@ -372,7 +504,21 @@ const NoteEditor = forwardRef(function NoteEditor(
         patient: data.patient || '',
       });
       if (onTranscriptChange) onTranscriptChange(data);
-      setSegments(data.segments || []);
+      const hydratedSegments = Array.isArray(data.segments)
+        ? data.segments.map((seg) => {
+            const speakerRaw =
+              seg?.speaker || seg?.speakerLabel || seg?.role || seg?.participant || '';
+            const text = seg?.text || seg?.transcript || '';
+            return {
+              ...seg,
+              speaker: formatSpeakerLabel(speakerRaw),
+              speakerKey: resolveSpeakerKey(speakerRaw),
+              text,
+              isInterim: Boolean(seg?.isInterim),
+            };
+          })
+        : [];
+      setSegments(hydratedSegments);
       setFetchError(data.error || '');
     } catch (err) {
       setFetchError(t('noteEditor.failedToLoadTranscript'));
@@ -788,6 +934,275 @@ const NoteEditor = forwardRef(function NoteEditor(
   }, [patientInput, encounterInput, mode, t]);
 
   useEffect(() => {
+    const sessionId = visitSession?.sessionId
+      ? String(visitSession.sessionId)
+      : '';
+    if (!sessionId) {
+      cleanupActiveStreams();
+      setStreamingCodes([]);
+      setStreamingCompliance([]);
+      setCollaborators([]);
+      setCollaborationConflicts([]);
+      setCollaborationStatus('');
+      return () => {};
+    }
+    if (activeStreamsRef.current.sessionKey === sessionId) {
+      return () => {};
+    }
+    cleanupActiveStreams();
+    setStreamingCodes([]);
+    setStreamingCompliance([]);
+    setCollaborators([]);
+    setCollaborationConflicts([]);
+    setCollaborationStatus('');
+    activeStreamsRef.current.sessionKey = sessionId;
+    const baseParams = {
+      visit_session_id: sessionId,
+      encounter_id: visitSession?.encounterId || '',
+      patient_id:
+        visitSession?.patientId || selectedPatientId || patientInput || patientId || '',
+    };
+    const subscriptions = {};
+    const dynamicParamsFor = (key) => () => {
+      const meta = streamSessionsRef.current?.[key];
+      if (!meta) return {};
+      const result = {};
+      if (meta.sessionId) result.session_id = meta.sessionId;
+      if (meta.lastEventId) result.last_event_id = meta.lastEventId;
+      return result;
+    };
+    const handleTranscription = (payload) => {
+      if (!payload) return;
+      touchStreamMetadata('transcription', payload);
+      if (payload.event === 'connected') return;
+      const text =
+        payload.transcript || payload.text || payload.message || payload.partial || '';
+      if (!text) return;
+      const speakerRaw =
+        payload.speakerLabel || payload.speaker || payload.role || payload.participant || '';
+      const speakerKey = resolveSpeakerKey(speakerRaw);
+      const speakerLabel = formatSpeakerLabel(speakerRaw);
+      setCurrentSpeaker(speakerKey);
+      setSegments((prev) => {
+        const list = Array.isArray(prev) ? [...prev] : [];
+        if (payload.isInterim) {
+          const idx = list.findIndex(
+            (item) =>
+              item?.isInterim &&
+              (item.speakerKey === speakerKey ||
+                (item.speaker || '').toLowerCase() === speakerLabel.toLowerCase()),
+          );
+          const interimEntry = {
+            speaker: speakerLabel,
+            speakerKey,
+            text,
+            isInterim: true,
+            timestamp: payload.timestamp || Date.now(),
+            eventId: payload.eventId,
+          };
+          if (idx >= 0) list[idx] = interimEntry;
+          else list.push(interimEntry);
+          return list.slice(-50);
+        }
+        const filtered = list.filter(
+          (item) =>
+            !(
+              item?.isInterim &&
+              (item.speakerKey === speakerKey ||
+                (item.speaker || '').toLowerCase() === speakerLabel.toLowerCase())
+            ),
+        );
+        filtered.push({
+          speaker: speakerLabel,
+          speakerKey,
+          text,
+          isInterim: false,
+          timestamp: payload.timestamp || Date.now(),
+          eventId: payload.eventId,
+        });
+        return filtered.slice(-50);
+      });
+      if (!payload.isInterim) {
+        setTranscript((prev) => {
+          const key = speakerKey === 'patient' ? 'patient' : 'provider';
+          const existing = prev?.[key] ? String(prev[key]) : '';
+          const trimmed = existing.trim();
+          const joined = trimmed ? `${trimmed}\n${text}` : text;
+          return { ...prev, [key]: joined };
+        });
+      }
+    };
+    const handleCompliance = (payload) => {
+      if (!payload) return;
+      touchStreamMetadata('compliance', payload);
+      if (payload.event === 'connected') return;
+      const items = [];
+      if (Array.isArray(payload.issues) && payload.issues.length) {
+        payload.issues.forEach((issue, index) => {
+          if (!issue) return;
+          const message =
+            typeof issue === 'string'
+              ? issue
+              : issue.message || issue.summary || issue.description || issue.code;
+          if (!message) return;
+          items.push({
+            id: `${
+              payload.eventId ?? payload.analysisId ?? payload.timestamp ?? 'issue'
+            }-${index}`,
+            text: message,
+            severity: issue.severity || payload.severity || 'info',
+            live: true,
+            timestamp: payload.timestamp || Date.now(),
+          });
+        });
+      } else {
+        const message = payload.message || payload.description || '';
+        if (message) {
+          items.push({
+            id: String(payload.eventId ?? payload.analysisId ?? payload.timestamp ?? message),
+            text: message,
+            severity: payload.severity || 'info',
+            live: true,
+            timestamp: payload.timestamp || Date.now(),
+          });
+        }
+      }
+      if (!items.length) return;
+      setStreamingCompliance((prev) => {
+        const map = new Map(
+          (Array.isArray(prev) ? prev : []).map((entry) => [entry.id || entry.text, entry]),
+        );
+        items.forEach((entry) => {
+          map.set(entry.id || entry.text, entry);
+        });
+        return Array.from(map.values()).slice(-50);
+      });
+    };
+    const handleCodes = (payload) => {
+      if (!payload) return;
+      touchStreamMetadata('codes', payload);
+      if (payload.event === 'connected') return;
+      const codeValue =
+        payload.code ||
+        payload.codeValue ||
+        payload.code_id ||
+        payload.icd ||
+        payload.cpt ||
+        '';
+      const rationale =
+        payload.rationale ||
+        payload.description ||
+        payload.details ||
+        payload.message ||
+        '';
+      if (!codeValue && !rationale) return;
+      const entry = {
+        id: String(payload.eventId ?? codeValue ?? rationale ?? Date.now()),
+        code: codeValue ? String(codeValue) : '',
+        rationale: rationale ? String(rationale) : '',
+        type: payload.type || '',
+        confidence: payload.confidence,
+        live: true,
+        timestamp: payload.timestamp || Date.now(),
+      };
+      setStreamingCodes((prev) => {
+        const map = new Map(
+          (Array.isArray(prev) ? prev : []).map((item) => [item.id || item.code || item.rationale, item]),
+        );
+        map.set(entry.id || entry.code || entry.rationale, entry);
+        return Array.from(map.values()).slice(-50);
+      });
+    };
+    const handleCollaboration = (payload) => {
+      if (!payload) return;
+      touchStreamMetadata('collaboration', payload);
+      if (payload.event === 'connected') return;
+      if (payload.event === 'collaboration_clear' || payload.presence === 'clear') {
+        setCollaborators([]);
+      }
+      const participants = payload.participants || payload.users || payload.presence;
+      if (Array.isArray(participants)) {
+        const normalised = participants
+          .map((entry) => normaliseCollaborator(entry))
+          .filter(Boolean);
+        if (normalised.length) {
+          setCollaborators(normalised);
+        }
+      } else if (payload.userId || payload.user || payload.name) {
+        const participant = normaliseCollaborator(payload);
+        if (participant) {
+          setCollaborators((prev) => {
+            const map = new Map((prev || []).map((item) => [item.id, item]));
+            map.set(participant.id, participant);
+            return Array.from(map.values());
+          });
+        }
+      }
+      if (payload.event === 'collaboration_left' && (payload.userId || payload.user)) {
+        const departing = String(payload.userId || payload.user);
+        setCollaborators((prev) => prev.filter((person) => person.id !== departing));
+      }
+      if (payload.conflicts !== undefined) {
+        const list = Array.isArray(payload.conflicts)
+          ? payload.conflicts
+          : payload.conflicts
+            ? [payload.conflicts]
+            : [];
+        setCollaborationConflicts(list.filter(Boolean));
+      } else if (
+        payload.event === 'collaboration_resolved' ||
+        payload.event === 'collaboration_sync'
+      ) {
+        setCollaborationConflicts([]);
+      }
+      if (payload.status) {
+        setCollaborationStatus(String(payload.status));
+      }
+    };
+    subscriptions.transcription = connectTranscriptionStream({
+      params: baseParams,
+      getParams: dynamicParamsFor('transcription'),
+      onEvent: handleTranscription,
+    });
+    subscriptions.compliance = connectComplianceStream({
+      params: baseParams,
+      getParams: dynamicParamsFor('compliance'),
+      onEvent: handleCompliance,
+    });
+    subscriptions.codes = connectCodesStream({
+      params: baseParams,
+      getParams: dynamicParamsFor('codes'),
+      onEvent: handleCodes,
+    });
+    subscriptions.collaboration = connectCollaborationStream({
+      params: baseParams,
+      noteId: id || '',
+      getParams: dynamicParamsFor('collaboration'),
+      onEvent: handleCollaboration,
+    });
+    activeStreamsRef.current.subscriptions = subscriptions;
+    return () => {
+      Object.values(subscriptions).forEach((sub) => {
+        try {
+          sub?.close?.();
+        } catch (err) {
+          /* ignore */
+        }
+      });
+      resetStreamSessions();
+      activeStreamsRef.current = { sessionKey: null, subscriptions: {} };
+    };
+  }, [
+    visitSession?.sessionId,
+    visitSession?.encounterId,
+    visitSession?.patientId,
+    patientInput,
+    selectedPatientId,
+    patientId,
+    id,
+  ]);
+
+  useEffect(() => {
     const session = visitSession;
     if (!session?.startTime) {
       setSessionElapsedSeconds(0);
@@ -828,6 +1243,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         clearInterval(sessionTimerRef.current);
         sessionTimerRef.current = null;
       }
+      cleanupActiveStreams();
       pauseVisitSession('exit', { skipStateUpdate: true });
     };
   }, []);
@@ -921,6 +1337,106 @@ const NoteEditor = forwardRef(function NoteEditor(
         ? t('noteEditor.visitSessionPaused')
         : t('noteEditor.visitSessionActive')
     : '';
+
+  const collaboratorPresence =
+    collaborators.length > 0 ? (
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
+          alignItems: 'center',
+          marginBottom: '0.5rem',
+        }}
+      >
+        <span style={{ fontWeight: 600 }}>
+          {t('noteEditor.collaborators', 'Collaborators')}
+        </span>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          {collaborators.map((person) => {
+            const initials = person.name
+              ? person.name
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .map((part) => part[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase()
+              : '?';
+            return (
+              <span
+                key={person.id}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.4rem',
+                  padding: '0.25rem 0.5rem',
+                  borderRadius: '999px',
+                  backgroundColor: '#eef2ff',
+                  color: '#1f2937',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: '1.75rem',
+                    height: '1.75rem',
+                    borderRadius: '999px',
+                    backgroundColor: person.color || '#4f46e5',
+                    color: '#fff',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 600,
+                  }}
+                >
+                  {initials}
+                </span>
+                <span>{person.name}</span>
+                {person.role ? (
+                  <span style={{ fontSize: '0.75rem', color: '#4b5563' }}>
+                    {person.role}
+                  </span>
+                ) : null}
+              </span>
+            );
+          })}
+        </div>
+        {collaborationStatus ? (
+          <span style={{ marginLeft: 'auto', color: '#4b5563', fontSize: '0.85rem' }}>
+            {t('noteEditor.collaborationStatus', {
+              defaultValue: 'Status: {{status}}',
+              status: collaborationStatus,
+            })}
+          </span>
+        ) : null}
+      </div>
+    ) : null;
+
+  const collaborationConflictBanner =
+    collaborationConflicts.length > 0 ? (
+      <div
+        role="status"
+        style={{
+          background: '#fff3cd',
+          border: '1px solid #ffeeba',
+          borderRadius: '4px',
+          padding: '0.75rem',
+          marginBottom: '0.75rem',
+        }}
+      >
+        <strong>{t('noteEditor.collaborationConflict', 'Collaboration conflict')}</strong>
+        <ul style={{ marginTop: '0.5rem', marginBottom: 0, paddingLeft: '1.25rem' }}>
+          {collaborationConflicts.map((conflict, idx) => {
+            const text =
+              typeof conflict === 'string'
+                ? conflict
+                : conflict?.message || conflict?.text || conflict?.description;
+            return <li key={idx}>{text || t('noteEditor.collaborationUnknown', 'An issue occurred')}</li>;
+          })}
+        </ul>
+      </div>
+    ) : null;
 
   const visitSessionControls = (
     <div
@@ -1018,10 +1534,19 @@ const NoteEditor = forwardRef(function NoteEditor(
               key={i}
               style={{
                 backgroundColor:
-                  currentSpeaker === s.speaker ? '#fff3cd' : undefined,
+                  currentSpeaker &&
+                  (s.speakerKey ? currentSpeaker === s.speakerKey : false)
+                    ? '#fff3cd'
+                    : undefined,
+                fontStyle: s.isInterim ? 'italic' : 'normal',
               }}
             >
               <strong>{s.speaker}:</strong> {s.text}
+              {s.isInterim ? (
+                <span style={{ marginLeft: '0.5rem', color: '#555' }}>
+                  {t('noteEditor.liveInterim', 'live')}
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -1291,15 +1816,16 @@ const NoteEditor = forwardRef(function NoteEditor(
   }, [activeTab, value, specialty, payer]);
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
+    if (suggestionDebounceRef.current)
+      clearTimeout(suggestionDebounceRef.current);
+    suggestionDebounceRef.current = setTimeout(() => {
       setSuggestLoading(true);
       getSuggestions(value || '', { specialty, payer })
         .then((res) => setSuggestions(res))
         .catch(() => setSuggestions(null))
         .finally(() => setSuggestLoading(false));
     }, 400);
-    return () => clearTimeout(debounceRef.current);
+    return () => clearTimeout(suggestionDebounceRef.current);
   }, [value, specialty, payer]);
 
   const handleUndo = () => {
@@ -1457,6 +1983,8 @@ const NoteEditor = forwardRef(function NoteEditor(
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
           {metadataBar}
           {visitSessionControls}
+          {collaboratorPresence}
+          {collaborationConflictBanner}
 
           <div
             style={{
@@ -1617,14 +2145,18 @@ const NoteEditor = forwardRef(function NoteEditor(
             <div style={{ flex: 1, overflow: 'auto', marginTop: '0.5rem' }}>
               <SuggestionPanel
                 suggestions={
-                  suggestions || {
+                  combinedSuggestions || {
                     codes: [],
                     compliance: [],
                     publicHealth: [],
                     differentials: [],
                   }
                 }
-                loading={suggestLoading}
+                loading={
+                  suggestLoading &&
+                  !streamingCodes.length &&
+                  !streamingCompliance.length
+                }
                 settingsState={settingsState}
                 text={value}
                 fetchSuggestions={(text) =>
@@ -1733,6 +2265,8 @@ const NoteEditor = forwardRef(function NoteEditor(
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {metadataBar}
         {visitSessionControls}
+        {collaboratorPresence}
+        {collaborationConflictBanner}
         <div
           style={{
             marginBottom: '0.5rem',

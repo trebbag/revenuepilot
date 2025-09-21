@@ -59,8 +59,10 @@ function Sidebar({ collapsed, toggleCollapsed, onNavigate, role, onLogout }) {
 
   const items = [
     { key: 'note', label: t('sidebar.notes') },
+    { key: 'workflow', label: t('sidebar.workflow') },
     { key: 'drafts', label: t('sidebar.drafts'), badge: formatBadge(counts.drafts) },
     { key: 'notifications', label: t('sidebar.notifications'), badge: formatBadge(counts.notifications) },
+    { key: 'scheduler', label: t('sidebar.scheduler') },
     { key: 'dashboard', label: t('sidebar.analytics') },
     { key: 'logs', label: t('sidebar.logs') },
     { key: 'settings', label: t('sidebar.settings') },
