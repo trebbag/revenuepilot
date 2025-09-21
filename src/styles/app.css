@@ -237,6 +237,31 @@ textarea:focus {
   padding-left: 0.75rem; /* ensure visual separation from editor */
 }
 
+.suggestion-panel__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.suggestion-panel__controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.suggestion-panel__controls select {
+  min-width: 140px;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--disabled);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
 .suggestion-panel .card {
   padding: 0.5rem;
   font-size: 0.875rem;

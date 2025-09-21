@@ -118,12 +118,15 @@ const NoteEditor = forwardRef(function NoteEditor(
     mode = 'draft',
     specialty,
     payer,
+    onSpecialtyChange,
+    onPayerChange,
     defaultTemplateId,
     onTemplateChange,
     codes = [],
     patientId = '',
     encounterId = '',
     role = '',
+    settingsState = null,
   },
   ref,
 ) {
@@ -816,13 +819,15 @@ const NoteEditor = forwardRef(function NoteEditor(
                   }
                 }
                 loading={suggestLoading}
-                settingsState={null}
+                settingsState={settingsState}
                 text={value}
                 fetchSuggestions={(text) =>
                   getSuggestions(text, { specialty, payer }).then(
                     setSuggestions,
                   )
                 }
+                onSpecialtyChange={onSpecialtyChange}
+                onPayerChange={onPayerChange}
                 onInsert={(text) => {
                   const match = text.match(/^([A-Z0-9.]+)/i);
                   const codeOnly = match ? match[1] : text;
@@ -1071,12 +1076,14 @@ const NoteEditor = forwardRef(function NoteEditor(
             }
           }
           loading={suggestLoading}
-          settingsState={null}
+          settingsState={settingsState}
           /* Provide text so internal debounce logic may run if needed */
           text={localValue}
           fetchSuggestions={(text) =>
             getSuggestions(text, { specialty, payer }).then(setSuggestions)
           }
+          onSpecialtyChange={onSpecialtyChange}
+          onPayerChange={onPayerChange}
           onInsert={(text) => {
             const match = text.match(/^([A-Z0-9.]+)/i);
             const codeOnly = match ? match[1] : text;

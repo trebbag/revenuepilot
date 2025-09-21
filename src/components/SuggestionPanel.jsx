@@ -21,27 +21,36 @@ function SuggestionPanel({
   text,
   fetchSuggestions,
   calendarSummary,
+  onSpecialtyChange: parentSpecialtyChange,
+  onPayerChange: parentPayerChange,
 }) {
   const { t } = useTranslation();
   const [showPublicHealth, setShowPublicHealth] = useState(true);
-  // Use specialty/payer provided by parent (do not render controls here)
   const parentSpecialty = (settingsState && settingsState.specialty) || '';
   const parentPayer = (settingsState && settingsState.payer) || '';
+  const [specialty, setSpecialty] = useState(parentSpecialty);
+  const [payer, setPayer] = useState(parentPayer);
   // Debounce backend suggestion calls.  When `text` changes rapidly we clear
   // the previous timeout and only invoke `fetchSuggestions` once the user has
   // paused typing for 300ms.
   const debounceRef = useRef();
   useEffect(() => {
+    setSpecialty((prev) => (prev === parentSpecialty ? prev : parentSpecialty));
+  }, [parentSpecialty]);
+  useEffect(() => {
+    setPayer((prev) => (prev === parentPayer ? prev : parentPayer));
+  }, [parentPayer]);
+  useEffect(() => {
     if (!fetchSuggestions || typeof text !== 'string') return undefined;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       fetchSuggestions(text, {
-        specialty: parentSpecialty,
-        payer: parentPayer,
+        specialty,
+        payer,
       });
     }, 300);
     return () => clearTimeout(debounceRef.current);
-  }, [text, fetchSuggestions, parentSpecialty, parentPayer]);
+  }, [text, fetchSuggestions, specialty, payer]);
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
 
   const cards = [];
@@ -272,25 +281,53 @@ function SuggestionPanel({
     });
   };
 
-  const specialtyOptions = ['cardiology', 'paediatrics', 'geriatrics'];
-  const payerOptions = ['medicare', 'medicaid', 'aetna'];
+  const specialtyOptions = ['', 'cardiology', 'dermatology', 'paediatrics', 'geriatrics'];
+  const payerOptions = ['', 'medicare', 'medicaid', 'aetna'];
 
-  const onSpecialtyChange = (e) => {
-    const value = e.target.value;
+  const handleSpecialtyChange = (event) => {
+    const value = event.target.value;
     setSpecialty(value);
-    if (text && fetchSuggestions)
-      fetchSuggestions(text, { specialty: value, payer });
+    if (typeof parentSpecialtyChange === 'function') {
+      parentSpecialtyChange(value);
+    }
   };
 
-  const onPayerChange = (e) => {
-    const value = e.target.value;
+  const handlePayerChange = (event) => {
+    const value = event.target.value;
     setPayer(value);
-    if (text && fetchSuggestions)
-      fetchSuggestions(text, { specialty, payer: value });
+    if (typeof parentPayerChange === 'function') {
+      parentPayerChange(value);
+    }
   };
 
   return (
     <div className={`suggestion-panel ${className}`}>
+      <div className="suggestion-panel__controls">
+        <label htmlFor="suggestion-specialty">
+          {t('settings.specialty')}
+          <select
+            id="suggestion-specialty"
+            value={specialty}
+            onChange={handleSpecialtyChange}
+          >
+            {specialtyOptions.map((option) => (
+              <option key={option || 'default'} value={option}>
+                {option ? t(`settings.specialties.${option}`) : '--'}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label htmlFor="suggestion-payer">
+          {t('settings.payer')}
+          <select id="suggestion-payer" value={payer} onChange={handlePayerChange}>
+            {payerOptions.map((option) => (
+              <option key={option || 'default'} value={option}>
+                {option ? t(`settings.payers.${option}`) : '--'}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       {cards.map(({ type, key, title, items }) => (
         <div key={type} className={`card ${type}`}>
           <div

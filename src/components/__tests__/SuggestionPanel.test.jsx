@@ -165,20 +165,41 @@ test('debounces backend calls on rapid input', async () => {
   vi.useRealTimers();
 });
 
-test('changing specialty or payer triggers fetch', () => {
-  const fetchSuggestions = vi.fn();
-  const { getByLabelText } = render(
-    <SuggestionPanel
-      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
-      settingsState={{ specialty: '', payer: '' }}
-      text="note"
-      fetchSuggestions={fetchSuggestions}
-    />,
-  );
-  fireEvent.change(getByLabelText('Specialty'), { target: { value: 'cardiology' } });
-  expect(fetchSuggestions).toHaveBeenLastCalledWith('note', { specialty: 'cardiology', payer: '' });
-  fireEvent.change(getByLabelText('Payer'), { target: { value: 'medicare' } });
-  expect(fetchSuggestions).toHaveBeenLastCalledWith('note', { specialty: 'cardiology', payer: 'medicare' });
+test('changing specialty or payer triggers fetch and notifies parent', () => {
+  vi.useFakeTimers();
+  try {
+    const fetchSuggestions = vi.fn();
+    const handleSpecialtyChange = vi.fn();
+    const handlePayerChange = vi.fn();
+    const { getByLabelText } = render(
+      <SuggestionPanel
+        suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+        settingsState={{ specialty: '', payer: '' }}
+        text="note"
+        fetchSuggestions={fetchSuggestions}
+        onSpecialtyChange={handleSpecialtyChange}
+        onPayerChange={handlePayerChange}
+      />,
+    );
+    fireEvent.change(getByLabelText('Specialty'), { target: { value: 'cardiology' } });
+    expect(handleSpecialtyChange).toHaveBeenCalledWith('cardiology');
+    vi.advanceTimersByTime(300);
+    expect(fetchSuggestions).toHaveBeenCalledTimes(1);
+    expect(fetchSuggestions).toHaveBeenLastCalledWith('note', {
+      specialty: 'cardiology',
+      payer: '',
+    });
+    fireEvent.change(getByLabelText('Payer'), { target: { value: 'medicare' } });
+    expect(handlePayerChange).toHaveBeenCalledWith('medicare');
+    vi.advanceTimersByTime(300);
+    expect(fetchSuggestions).toHaveBeenCalledTimes(2);
+    expect(fetchSuggestions).toHaveBeenLastCalledWith('note', {
+      specialty: 'cardiology',
+      payer: 'medicare',
+    });
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test('handles missing or invalid differential scores gracefully', () => {
