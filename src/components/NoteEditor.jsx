@@ -12,6 +12,8 @@ import {
   transcribeAudio,
   exportToEhr,
   logEvent,
+  searchPatients,
+  validateEncounter,
 } from '../api.js';
 import SuggestionPanel from './SuggestionPanel.jsx';
 import { beautifyNote, getSuggestions } from '../api/client.ts';
@@ -43,6 +45,20 @@ const quillFormats = [
   'list',
   'bullet',
 ];
+
+function describePatient(patient) {
+  if (!patient || typeof patient !== 'object') return '';
+  const parts = [];
+  if (patient.name) parts.push(patient.name);
+  const extras = [];
+  if (patient.mrn) extras.push(`MRN ${patient.mrn}`);
+  if (patient.dob) extras.push(patient.dob);
+  if (!parts.length && patient.patientId) parts.push(`ID ${patient.patientId}`);
+  const base = parts.join(' · ');
+  const extra = extras.join(' · ');
+  if (base && extra) return `${base} · ${extra}`;
+  return base || extra || (patient.patientId ? String(patient.patientId) : '');
+}
 
 // Maximum number of history entries to retain for undo/redo in beautified mode
 const HISTORY_LIMIT = 20;
@@ -123,6 +139,10 @@ const NoteEditor = forwardRef(function NoteEditor(
     codes = [],
     patientId = '',
     encounterId = '',
+    onPatientIdChange = () => {},
+    onEncounterChange = () => {},
+    onSpecialtyChange = () => {},
+    onPayerChange = () => {},
     role = '',
   },
   ref,
@@ -150,8 +170,28 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [panelOpen, setPanelOpen] = useState(true); // responsive suggestion panel
   const [isNarrow, setIsNarrow] = useState(false);
   const [patientInput, setPatientInput] = useState(patientId || '');
+  const [selectedPatient, setSelectedPatient] = useState(null);
+  const [selectedPatientId, setSelectedPatientId] = useState(patientId || '');
+  const [patientSuggestions, setPatientSuggestions] = useState([]);
+  const [patientLookupStatus, setPatientLookupStatus] = useState('idle');
+  const [showPatientSuggestions, setShowPatientSuggestions] = useState(false);
   const [encounterInput, setEncounterInput] = useState(encounterId || '');
+  const [encounterStatus, setEncounterStatus] = useState({
+    state: 'idle',
+    message: '',
+    details: null,
+  });
+  const [validatedEncounter, setValidatedEncounter] = useState(null);
   const debounceRef = useRef(null); // ensure present after modifications
+  const patientSuggestionHideRef = useRef(null);
+  const patientFocusedRef = useRef(false);
+  const selectingPatientRef = useRef(false);
+  const onPatientIdChangeRef = useRef(onPatientIdChange);
+  const onEncounterChangeRef = useRef(onEncounterChange);
+  const onSpecialtyChangeRef = useRef(onSpecialtyChange);
+  const onPayerChangeRef = useRef(onPayerChange);
+  const emittedEncounterRef = useRef('');
+  const prevEncounterPropRef = useRef(encounterId);
   const classifiedCounts = (() => {
     const counts = {
       Condition: 0,
@@ -185,8 +225,52 @@ const NoteEditor = forwardRef(function NoteEditor(
   const audioRef = useRef(null);
 
   useEffect(() => {
+    onPatientIdChangeRef.current = onPatientIdChange;
+  }, [onPatientIdChange]);
+  useEffect(() => {
+    onEncounterChangeRef.current = onEncounterChange;
+  }, [onEncounterChange]);
+  useEffect(() => {
+    onSpecialtyChangeRef.current = onSpecialtyChange;
+  }, [onSpecialtyChange]);
+  useEffect(() => {
+    onPayerChangeRef.current = onPayerChange;
+  }, [onPayerChange]);
+
+  useEffect(() => () => {
+    if (patientSuggestionHideRef.current) {
+      clearTimeout(patientSuggestionHideRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
     if (mode === 'draft') setLocalValue(value || '');
   }, [value, mode]);
+
+  useEffect(() => {
+    const normalized = patientId ? String(patientId) : '';
+    if (normalized === selectedPatientId) return;
+    setSelectedPatient(null);
+    setSelectedPatientId(normalized);
+    setPatientInput(normalized);
+    setEncounterInput('');
+    setValidatedEncounter(null);
+    setEncounterStatus({ state: 'idle', message: '', details: null });
+    emittedEncounterRef.current = '';
+  }, [patientId, selectedPatientId]);
+
+  useEffect(() => {
+    const normalized = encounterId ? String(encounterId) : '';
+    const prevNormalized = prevEncounterPropRef.current
+      ? String(prevEncounterPropRef.current)
+      : '';
+    if (normalized === prevNormalized) return;
+    prevEncounterPropRef.current = normalized;
+    setEncounterInput(normalized);
+    setValidatedEncounter(null);
+    setEncounterStatus({ state: 'idle', message: '', details: null });
+    if (!normalized) emittedEncounterRef.current = '';
+  }, [encounterId]);
 
   useEffect(() => {
     if (mode !== 'beautified') return;
@@ -245,6 +329,115 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (mode === 'draft') loadTranscript();
   }, [mode]);
 
+  useEffect(() => {
+    const term = (patientInput || '').trim();
+    if (selectingPatientRef.current) {
+      selectingPatientRef.current = false;
+      setPatientLookupStatus('idle');
+      setPatientSuggestions([]);
+      setShowPatientSuggestions(false);
+      return;
+    }
+    if (!term) {
+      setPatientSuggestions([]);
+      setPatientLookupStatus('idle');
+      if (!patientFocusedRef.current) setShowPatientSuggestions(false);
+      return;
+    }
+    if (term.length < 2) {
+      setPatientSuggestions([]);
+      setPatientLookupStatus('short');
+      if (patientFocusedRef.current) setShowPatientSuggestions(true);
+      return;
+    }
+    let active = true;
+    setPatientLookupStatus('loading');
+    if (patientFocusedRef.current) setShowPatientSuggestions(true);
+    searchPatients(term, { limit: 10 })
+      .then((data) => {
+        if (!active) return;
+        const combined = [
+          ...(Array.isArray(data?.patients) ? data.patients : []),
+          ...(Array.isArray(data?.externalPatients)
+            ? data.externalPatients
+            : []),
+        ];
+        setPatientSuggestions(combined);
+        setPatientLookupStatus(combined.length ? 'done' : 'empty');
+        if (!patientFocusedRef.current && !combined.length)
+          setShowPatientSuggestions(false);
+        else if (patientFocusedRef.current) setShowPatientSuggestions(true);
+      })
+      .catch(() => {
+        if (!active) return;
+        setPatientSuggestions([]);
+        setPatientLookupStatus('error');
+        if (patientFocusedRef.current) setShowPatientSuggestions(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [patientInput]);
+
+  useEffect(() => {
+    const encounterCb = onEncounterChangeRef.current;
+    const term = (encounterInput || '').trim();
+    if (!term) {
+      setEncounterStatus({ state: 'idle', message: '', details: null });
+      setValidatedEncounter(null);
+      if (encounterCb && emittedEncounterRef.current !== '') {
+        emittedEncounterRef.current = '';
+        encounterCb('');
+      }
+      return;
+    }
+    let active = true;
+    setEncounterStatus({ state: 'loading', message: '', details: null });
+    validateEncounter(term, selectedPatientId || patientId || '', {
+      debounceMs: 160,
+    })
+      .then((result) => {
+        if (!active) return;
+        const valid = Boolean(result?.valid);
+        const message = valid
+          ? t('noteEditor.encounterValid')
+          : (result?.errors && result.errors.length
+              ? result.errors[0]
+              : t('noteEditor.encounterInvalid'));
+        setEncounterStatus({
+          state: valid ? 'valid' : 'invalid',
+          message,
+          details: result,
+        });
+        setValidatedEncounter(result);
+        if (encounterCb) {
+          const emittedId = valid
+            ? String(result?.encounterId ?? term)
+            : '';
+          if (emittedEncounterRef.current !== emittedId) {
+            emittedEncounterRef.current = emittedId;
+            encounterCb(emittedId, result);
+          }
+        }
+      })
+      .catch((err) => {
+        if (!active) return;
+        setValidatedEncounter(null);
+        const message =
+          err?.name === 'AbortError'
+            ? t('noteEditor.encounterError')
+            : err?.message || t('noteEditor.encounterError');
+        setEncounterStatus({ state: 'error', message, details: null });
+        if (encounterCb && emittedEncounterRef.current !== '') {
+          emittedEncounterRef.current = '';
+          encounterCb('', undefined);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [encounterInput, patientId, selectedPatientId, t]);
+
   const handleTextAreaChange = (e) => {
     const newVal = e.target.value;
     setLocalValue(newVal);
@@ -300,6 +493,90 @@ const NoteEditor = forwardRef(function NoteEditor(
   };
 
   useImperativeHandle(ref, () => ({ insertAtCursor: insertText }));
+
+  const handlePatientFocus = () => {
+    patientFocusedRef.current = true;
+    if (patientSuggestionHideRef.current) {
+      clearTimeout(patientSuggestionHideRef.current);
+      patientSuggestionHideRef.current = null;
+    }
+    if ((patientInput || '').trim()) setShowPatientSuggestions(true);
+  };
+
+  const handlePatientBlur = () => {
+    if (patientSuggestionHideRef.current) {
+      clearTimeout(patientSuggestionHideRef.current);
+    }
+    patientSuggestionHideRef.current = setTimeout(() => {
+      patientFocusedRef.current = false;
+      setShowPatientSuggestions(false);
+    }, 120);
+  };
+
+  const handlePatientInputChange = (event) => {
+    const next = event.target.value;
+    if (patientSuggestionHideRef.current) {
+      clearTimeout(patientSuggestionHideRef.current);
+      patientSuggestionHideRef.current = null;
+    }
+    if (!patientFocusedRef.current) patientFocusedRef.current = true;
+    if (selectedPatientId) {
+      const label = selectedPatient
+        ? describePatient(selectedPatient)
+        : selectedPatientId;
+      if (next.trim() !== label.trim()) {
+        const hadSelection = Boolean(selectedPatientId);
+        setSelectedPatient(null);
+        setSelectedPatientId('');
+        setValidatedEncounter(null);
+        setEncounterStatus({ state: 'idle', message: '', details: null });
+        if (hadSelection) {
+          setEncounterInput('');
+          const patientCb = onPatientIdChangeRef.current;
+          if (patientCb) patientCb('');
+          if (emittedEncounterRef.current !== '') {
+            emittedEncounterRef.current = '';
+            const encounterCb = onEncounterChangeRef.current;
+            if (encounterCb) encounterCb('');
+          }
+        }
+      }
+    }
+    setPatientInput(next);
+    if (next.trim()) {
+      setShowPatientSuggestions(true);
+    } else {
+      setShowPatientSuggestions(false);
+      setPatientLookupStatus('idle');
+      setPatientSuggestions([]);
+    }
+  };
+
+  const handlePatientSelect = (patient) => {
+    selectingPatientRef.current = true;
+    if (patientSuggestionHideRef.current) {
+      clearTimeout(patientSuggestionHideRef.current);
+      patientSuggestionHideRef.current = null;
+    }
+    const idValue = patient?.patientId ? String(patient.patientId) : '';
+    setSelectedPatient(patient || null);
+    setSelectedPatientId(idValue);
+    setPatientInput(describePatient(patient) || idValue);
+    setPatientSuggestions([]);
+    setPatientLookupStatus('idle');
+    setShowPatientSuggestions(false);
+    const patientCb = onPatientIdChangeRef.current;
+    if (patientCb) patientCb(idValue);
+    setEncounterInput('');
+    setValidatedEncounter(null);
+    setEncounterStatus({ state: 'idle', message: '', details: null });
+    if (emittedEncounterRef.current !== '') {
+      emittedEncounterRef.current = '';
+      const encounterCb = onEncounterChangeRef.current;
+      if (encounterCb) encounterCb('');
+    }
+  };
+
   const handleTemplateClick = (tpl) => {
     insertText(tpl.content);
     if (onTemplateChange) onTemplateChange(tpl.id);
@@ -478,6 +755,245 @@ const NoteEditor = forwardRef(function NoteEditor(
   // Templates dropdown visibility state (rendered above the editor)
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
 
+  const patientSuggestionListId =
+    (id ? `${id}-patient-suggestions` : 'note-patient-suggestions') +
+    '-menu';
+  const encounterStatusColor =
+    encounterStatus.state === 'valid'
+      ? '#2f6b2f'
+      : encounterStatus.state === 'loading'
+        ? '#555'
+        : encounterStatus.state === 'idle'
+          ? '#555'
+          : '#b03030';
+
+  const metadataBar = (
+    <div
+      style={{
+        display: 'grid',
+        gap: '0.75rem',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+        marginBottom: '0.75rem',
+      }}
+    >
+      <div style={{ position: 'relative' }}>
+        <label
+          htmlFor={`${id || 'note'}-patient-field`}
+          style={{ fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}
+        >
+          {t('noteEditor.patientLabel')}
+        </label>
+        <input
+          id={`${id || 'note'}-patient-field`}
+          type="text"
+          value={patientInput}
+          onChange={handlePatientInputChange}
+          onFocus={handlePatientFocus}
+          onBlur={handlePatientBlur}
+          placeholder={t('noteEditor.patientSearchPlaceholder')}
+          aria-autocomplete="list"
+          aria-controls={patientSuggestionListId}
+          aria-expanded={showPatientSuggestions}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}
+        />
+        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+          {t('noteEditor.patientLookupHint')}
+        </small>
+        {selectedPatientId && (
+          <small
+            style={{ display: 'block', marginTop: '0.25rem', color: '#2f6b2f' }}
+          >
+            {t('noteEditor.patientSelected', {
+              name: selectedPatient?.name || selectedPatientId,
+              id: selectedPatientId,
+            })}
+          </small>
+        )}
+        {showPatientSuggestions && (
+          <div
+            id={patientSuggestionListId}
+            role="listbox"
+            style={{
+              position: 'absolute',
+              top: 'calc(100% + 4px)',
+              left: 0,
+              right: 0,
+              maxHeight: '220px',
+              overflowY: 'auto',
+              background: '#fff',
+              border: '1px solid #ccc',
+              borderRadius: '4px',
+              boxShadow: '0 8px 18px rgba(0,0,0,0.12)',
+              zIndex: 40,
+            }}
+          >
+            {patientLookupStatus === 'loading' && (
+              <div style={{ padding: '0.5rem', color: '#555' }}>
+                {t('noteEditor.patientLookupLoading')}
+              </div>
+            )}
+            {patientLookupStatus === 'short' && (
+              <div style={{ padding: '0.5rem', color: '#555' }}>
+                {t('noteEditor.patientLookupShort')}
+              </div>
+            )}
+            {patientLookupStatus === 'error' && (
+              <div style={{ padding: '0.5rem', color: '#b03030' }}>
+                {t('noteEditor.patientLookupError')}
+              </div>
+            )}
+            {patientLookupStatus === 'empty' && (
+              <div style={{ padding: '0.5rem', color: '#555' }}>
+                {t('noteEditor.patientLookupEmpty')}
+              </div>
+            )}
+            {patientLookupStatus === 'done' &&
+              patientSuggestions.map((patient, idx) => {
+                const key = `${patient?.patientId || 'ext'}-${idx}`;
+                const primary = describePatient(patient);
+                const secondaryParts = [];
+                if (patient?.dob) secondaryParts.push(patient.dob);
+                if (patient?.insurance) secondaryParts.push(patient.insurance);
+                const secondary = secondaryParts.join(' · ');
+                return (
+                  <button
+                    type="button"
+                    key={key}
+                    role="option"
+                    onMouseDown={(ev) => ev.preventDefault()}
+                    onClick={() => handlePatientSelect(patient)}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '0.5rem 0.75rem',
+                      border: 'none',
+                      background: 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{primary}</div>
+                    {secondary && (
+                      <div style={{ fontSize: '0.75rem', color: '#555' }}>
+                        {secondary}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+          </div>
+        )}
+      </div>
+      <div>
+        <label
+          htmlFor={`${id || 'note'}-encounter-field`}
+          style={{ fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}
+        >
+          {t('noteEditor.encounterLabel')}
+        </label>
+        <input
+          id={`${id || 'note'}-encounter-field`}
+          type="text"
+          value={encounterInput}
+          onChange={(e) => {
+            const val = e.target.value;
+            setEncounterInput(val);
+            if (!val.trim()) {
+              setEncounterStatus({ state: 'idle', message: '', details: null });
+              setValidatedEncounter(null);
+              if (emittedEncounterRef.current !== '') {
+                emittedEncounterRef.current = '';
+                const encounterCb = onEncounterChangeRef.current;
+                if (encounterCb) encounterCb('');
+              }
+            }
+          }}
+          placeholder={t('noteEditor.encounterPlaceholder')}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}
+        />
+        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+          {t('noteEditor.encounterHint')}
+        </small>
+        {encounterStatus.message && (
+          <small
+            style={{
+              display: 'block',
+              marginTop: '0.25rem',
+              color: encounterStatusColor,
+            }}
+          >
+            {encounterStatus.state === 'loading'
+              ? t('noteEditor.encounterChecking')
+              : encounterStatus.message}
+          </small>
+        )}
+      </div>
+      <div>
+        <label
+          htmlFor={`${id || 'note'}-specialty-field`}
+          style={{ fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}
+        >
+          {t('settings.specialty')}
+        </label>
+        <input
+          id={`${id || 'note'}-specialty-field`}
+          type="text"
+          value={specialty || ''}
+          onChange={(e) => {
+            if (onSpecialtyChangeRef.current) {
+              onSpecialtyChangeRef.current(e.target.value);
+            }
+          }}
+          placeholder={t('noteEditor.specialtyPlaceholder')}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}
+        />
+      </div>
+      <div>
+        <label
+          htmlFor={`${id || 'note'}-payer-field`}
+          style={{ fontWeight: 600, display: 'block', marginBottom: '0.25rem' }}
+        >
+          {t('settings.payer')}
+        </label>
+        <input
+          id={`${id || 'note'}-payer-field`}
+          type="text"
+          value={payer || ''}
+          onChange={(e) => {
+            if (onPayerChangeRef.current) {
+              onPayerChangeRef.current(e.target.value);
+            }
+          }}
+          placeholder={t('noteEditor.payerPlaceholder')}
+          style={{
+            width: '100%',
+            padding: '0.5rem',
+            border: '1px solid #ccc',
+            borderRadius: '4px',
+          }}
+        />
+        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+          {t('noteEditor.payerHint')}
+        </small>
+      </div>
+    </div>
+  );
+
   useEffect(() => {
     if (activeTab === 'beautified') {
       let cancelled = false;
@@ -533,11 +1049,23 @@ const NoteEditor = forwardRef(function NoteEditor(
     const codeValues = selectedCodes.length
       ? selectedCodes
       : (codes || []).map((c) => (typeof c === 'string' ? c : c.code));
+    const exportPatientId =
+      selectedPatientId || patientId || patientInput || '';
+    const exportEncounterId = (() => {
+      if (validatedEncounter?.encounterId || validatedEncounter?.encounter_id)
+        return String(
+          validatedEncounter.encounterId ??
+            validatedEncounter.encounter_id,
+        );
+      if (encounterInput) return encounterInput;
+      if (encounterId) return String(encounterId);
+      return '';
+    })();
     const res = await exportToEhr(
       value,
       codeValues,
-      patientInput, // use live input
-      encounterInput, // use live input
+      exportPatientId,
+      exportEncounterId,
       [],
       [],
       true,
@@ -649,6 +1177,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         }}
       >
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {metadataBar}
           <div
             style={{
               marginBottom: '0.5rem',
@@ -920,6 +1449,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   return (
     <div style={{ display: 'flex', width: '100%', height: '100%' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        {metadataBar}
         <div
           style={{
             marginBottom: '0.5rem',

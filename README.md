@@ -9,6 +9,16 @@ and a suggestion panel) and uses a clean, high‑contrast colour palette.  The s
 fully functional on its own—it requires you to install dependencies and wrap the React
 app into an Electron shell for desktop deployment.
 
+## Patient lookup & encounter validation
+
+The draft editor exposes a lookup bar above the note where you can search the mock EHR directory
+by patient name, MRN or identifier. Suggestions stream in as you type and are cached for quick
+re‑use. Selecting a patient persists the ID for auto‑save, analytics and export workflows so
+returning to the chart reloads the draft immediately. The encounter field next to it validates the
+identifier with the backend and surfaces helpful messages when an encounter is missing or mapped to
+another patient. Clearing either field resets the linkage so you never attach notes to the wrong
+record.
+
 ## Running locally
 
 ### Quick start

@@ -63,7 +63,7 @@ allowing a user's preferences to follow them across devices.
 
 ## Data Flow
 
-1. A clinician types or pastes a note into the rich‑text editor.  Drafts are stored locally using the patient ID as the key.
+1. A clinician uses the lookup field above the editor to search for a patient by name, MRN or identifier, then types or pastes a note into the rich‑text editor.  Drafts are stored locally using the selected patient ID so reopening the chart restores the in‑progress note.
 2. When the user clicks **Beautify**, the frontend strips HTML tags and sends the plain note to `/beautify`.  The backend de‑identifies the text, calls the beautify prompt via OpenAI and returns a cleaned version.  On failure it uppercases the note as a fallback.
 3. When the user clicks **Suggest**, the frontend concatenates the note with any uploaded chart text, audio transcript and custom rules, then calls `/suggest`.  The backend de‑identifies the text, builds a prompt instructing the model to return JSON with codes, compliance tips, public‑health suggestions and differentials.  If the LLM call fails, a rule‑based fallback provides basic suggestions.
 4. When the user clicks **Summarize**, the frontend sends the note, chart and audio transcript to `/summarize`.  The backend de‑identifies and calls the summary prompt; on failure it truncates the note as a fallback.
