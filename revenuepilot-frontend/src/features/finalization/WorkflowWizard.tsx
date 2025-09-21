@@ -389,7 +389,7 @@ export function FinalizationWizard({
   const normalizedSelected = useMemo(
     () => normalizeCodeItems(selectedCodes),
     [selectedCodes],
-  );
+  )
   const normalizedSuggested = useMemo(
     () => normalizeCodeItems(suggestedCodes),
     [suggestedCodes],
