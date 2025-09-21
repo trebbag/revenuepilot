@@ -12277,7 +12277,7 @@ def _get_draft_count() -> int:
     if not row:
         return 0
     try:
-        value = row["total"] if "total" in row.keys() else row[0]
+        value = row["total"]
     except Exception:
         value = 0
     try:
