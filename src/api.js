@@ -1480,6 +1480,45 @@ export async function putUserSession(state) {
   return await resp.json();
 }
 
+export async function startVisitSession({ encounterId }) {
+  const encounter = Number.parseInt(encounterId, 10);
+  if (!Number.isFinite(encounter)) {
+    throw new Error('encounterId is required to start a visit session');
+  }
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await rawFetch(`${baseUrl}/api/visits/session`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ encounter_id: encounter }),
+  });
+  if (!resp.ok) throw new Error('Failed to start visit session');
+  const data = await resp.json().catch(() => ({}));
+  return data;
+}
+
+export async function updateVisitSession({ sessionId, action }) {
+  if (!sessionId) throw new Error('sessionId is required to update session');
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await rawFetch(`${baseUrl}/api/visits/session`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ session_id: sessionId, action }),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error('Failed to update visit session');
+  return data;
+}
+
 export function getBackendBaseUrl() {
   return resolveBaseUrl();
 }

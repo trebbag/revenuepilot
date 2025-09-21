@@ -166,7 +166,14 @@
     "loadingTranscript": "Loading transcript...",
     "recording": "Recording...",
     "transcribing": "Transcribing...",
-    "segments": "Segments"
+    "segments": "Segments",
+    "patientIdLabel": "Patient ID",
+    "encounterIdLabel": "Encounter ID",
+    "visitDuration": "Visit Duration",
+    "visitSessionError": "Unable to start visit session",
+    "visitSessionActive": "Visit active",
+    "visitSessionPaused": "Visit paused",
+    "visitSessionComplete": "Visit complete"
   },
   "settings": {
     "title": "Settings",
