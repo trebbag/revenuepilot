@@ -1,6 +1,6 @@
 import { Fragment } from "react"
 
-import { cn } from "../ui/utils"
+import { cn } from "../../../components/ui/utils"
 import { Button } from "./Button"
 
 interface FooterLinksProps {

@@ -8,6 +8,8 @@ import { DualRichTextEditor } from "./DualRichTextEditor"
 
 type CodeStatus = 'pending' | 'confirmed' | 'completed' | 'in-progress';
 
+export type StepStatus = 'pending' | 'in-progress' | 'completed' | 'blocked';
+
 export type CodeClassification = 'code' | 'prevention' | 'diagnosis' | 'differential';
 
 export interface WizardCodeItem extends Record<string, unknown> {
@@ -111,6 +113,8 @@ export interface WizardStepData {
   totalSuggestions?: number;
   items?: NormalizedWizardCodeItem[];
   progressSteps?: WizardProgressStep[];
+  status?: StepStatus;
+  progress?: number;
   originalContent?: string;
   beautifiedContent?: string;
   patientSummaryContent?: string;
@@ -153,6 +157,8 @@ export interface FinalizationWizardProps {
   transcriptEntries?: VisitTranscriptEntry[];
   blockingIssues?: string[];
   stepOverrides?: WizardStepOverride[];
+  initialStep?: number;
+  canFinalize?: boolean;
   onClose?: (result?: FinalizeResult) => void;
   onFinalize?: (
     request: FinalizeRequest
@@ -382,6 +388,8 @@ export function FinalizationWizard({
   transcriptEntries,
   blockingIssues,
   stepOverrides,
+  initialStep = 1,
+  canFinalize = true,
   onClose,
   onFinalize,
   onStepChange,
@@ -452,7 +460,14 @@ export function FinalizationWizard({
   const [summaryContent, setSummaryContent] = useState<string>(() =>
     buildPatientSummary(defaultNoteRef.current, patientMetadata),
   )
-  const [currentStep, setCurrentStep] = useState<number>(1)
+  const sanitizedInitialStep =
+    Number.isFinite(initialStep) && initialStep >= 1
+      ? Math.floor(initialStep)
+      : 1
+  const [currentStep, setCurrentStep] = useState<number>(
+    () => sanitizedInitialStep,
+  )
+  const lastInitialStepRef = useRef<number>(sanitizedInitialStep)
   const [activeItemData, setActiveItemData] = useState<
     NormalizedWizardCodeItem | null
   >(null)
@@ -466,6 +481,17 @@ export function FinalizationWizard({
   const [finalizeResult, setFinalizeResult] = useState<
     FinalizeResult | null
   >(null)
+
+  useEffect(() => {
+    const nextInitial =
+      Number.isFinite(initialStep) && initialStep >= 1
+        ? Math.floor(initialStep)
+        : 1
+    if (lastInitialStepRef.current !== nextInitial) {
+      lastInitialStepRef.current = nextInitial
+      setCurrentStep(nextInitial)
+    }
+  }, [initialStep])
 
   useEffect(() => {
     if (finalizeResult) {
@@ -501,10 +527,14 @@ export function FinalizationWizard({
   }, [incomingNoteContent, patientMetadata, noteContent])
 
   useEffect(() => {
-    if (!normalizedSelected.length && !normalizedSuggested.length) {
-      setCurrentStep(3);
+    if (
+      !normalizedSelected.length &&
+      !normalizedSuggested.length &&
+      currentStep < 3
+    ) {
+      setCurrentStep(3)
     }
-  }, [normalizedSelected.length, normalizedSuggested.length])
+  }, [currentStep, normalizedSelected.length, normalizedSuggested.length])
 
   const steps = useMemo<WizardStepData[]>(() => {
     const complianceDescription = formatComplianceSummary(
@@ -520,11 +550,23 @@ export function FinalizationWizard({
       ? finalizeResult.exportReady
         ? 'Note finalized and ready for export'
         : 'Finalized with outstanding issues that need review'
+      : !canFinalize
+      ? 'Resolve validation blockers before dispatching the note'
       : outstandingBlocking.length
       ? `Review ${outstandingBlocking.length} blocking issue${
           outstandingBlocking.length === 1 ? '' : 's'
         } before dispatch`
       : 'Final confirmation and submission';
+
+    const defaultStatusForStep = (stepId: number): StepStatus => {
+      if (currentStep > stepId) {
+        return 'completed';
+      }
+      if (currentStep === stepId) {
+        return 'in-progress';
+      }
+      return 'pending';
+    };
 
     const baseSteps: WizardStepData[] = [
       {
@@ -536,6 +578,7 @@ export function FinalizationWizard({
         totalSelected: normalizedSelected.length,
         totalSuggestions: normalizedSuggested.length,
         items: normalizedSelected,
+        status: defaultStatusForStep(1),
       },
       {
         id: 2,
@@ -546,6 +589,7 @@ export function FinalizationWizard({
         totalSelected: normalizedSelected.length,
         totalSuggestions: normalizedSuggested.length,
         items: normalizedSuggested,
+        status: defaultStatusForStep(2),
       },
       {
         id: 3,
@@ -553,6 +597,7 @@ export function FinalizationWizard({
         description: 'AI beautification and enhancement',
         type: 'loading',
         progressSteps: composeProgressSteps,
+        status: defaultStatusForStep(3),
       },
       {
         id: 4,
@@ -562,18 +607,21 @@ export function FinalizationWizard({
         originalContent: noteContent,
         beautifiedContent,
         patientSummaryContent: summaryContent,
+        status: defaultStatusForStep(4),
       },
       {
         id: 5,
         title: 'Billing & Attest',
         description: complianceDescription,
         type: 'placeholder',
+        status: defaultStatusForStep(5),
       },
       {
         id: 6,
         title: 'Sign & Dispatch',
         description: finalizeDescription,
         type: 'dispatch',
+        status: defaultStatusForStep(6),
       },
     ];
 
@@ -595,6 +643,9 @@ export function FinalizationWizard({
     overridesMap,
     isFinalizing,
     finalizeResult,
+    canFinalize,
+    blockingIssues,
+    currentStep,
   ]);
 
   useEffect(() => {
@@ -849,6 +900,8 @@ export function FinalizationWizard({
       setIsFinalizing(false);
     }
   }, [buildFinalizeRequest, onFinalize]);
+
+  const finalizeDisabled = isFinalizing || !canFinalize;
 
   const dispatchButtonLabel = isFinalizing
     ? 'Finalizing...'
@@ -1123,15 +1176,22 @@ export function FinalizationWizard({
                   </motion.button>
 
                   {currentStepData.type === 'dispatch' ? (
-                    <motion.button
-                      onClick={handleFinalize}
-                      className="px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg font-medium hover:from-green-600 hover:to-emerald-700 transition-all disabled:opacity-60"
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      disabled={isFinalizing}
-                    >
-                      {dispatchButtonLabel}
-                    </motion.button>
+                    <div className="flex flex-col items-center">
+                      <motion.button
+                        onClick={handleFinalize}
+                        className="px-6 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg font-medium hover:from-green-600 hover:to-emerald-700 transition-all disabled:opacity-60"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        disabled={finalizeDisabled}
+                      >
+                        {dispatchButtonLabel}
+                      </motion.button>
+                      {!canFinalize && (
+                        <p className="mt-2 text-sm text-red-600 text-center">
+                          Complete validation requirements before finalizing.
+                        </p>
+                      )}
+                    </div>
                   ) : (
                     <motion.button
                       onClick={() => goToStep(currentStepData.id + 1)}

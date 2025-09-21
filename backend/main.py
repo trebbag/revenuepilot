@@ -2568,10 +2568,13 @@ def _load_user_preferences(user_id: int) -> Tuple[Dict[str, Any], Dict[str, Any]
     else:
         settings = UserSettings().model_dump()
 
-    session_row = db_conn.execute(
-        "SELECT data FROM session_state WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
+    try:
+        session_row = db_conn.execute(
+            "SELECT data FROM session_state WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        session_row = None
     if session_row and session_row["data"]:
         session_state = _normalize_session_state(session_row["data"])
     else:
@@ -4381,6 +4384,7 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
         "SELECT layout_prefs FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
         (user["sub"],),
     ).fetchone()
+
     data: Dict[str, Any] = {}
     if row and row["layout_prefs"]:
         try:
@@ -4394,11 +4398,17 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
     return {"success": True, "data": data}
 
 
+
 @app.put("/api/user/layout-preferences")
 async def put_layout_preferences(
     prefs: Dict[str, Any], user=Depends(require_role("user"))
 ) -> Response:
-    data = json.dumps(prefs)
+    core: Dict[str, Any]
+    if "data" in prefs and isinstance(prefs["data"], dict):
+        core = dict(prefs["data"])
+    else:
+        core = {key: value for key, value in prefs.items() if key not in {"success", "data"}}
+    data = json.dumps(core)
     row = db_conn.execute(
         "SELECT id FROM users WHERE username= ?",
         (user["sub"],),
@@ -4421,6 +4431,7 @@ async def put_layout_preferences(
         "SELECT layout_prefs FROM settings WHERE user_id=?",
         (uid,),
     ).fetchone()
+
     data_payload: Dict[str, Any] = {}
     if stored and stored["layout_prefs"]:
         try:
@@ -4436,6 +4447,7 @@ async def put_layout_preferences(
     elif isinstance(prefs, dict):
         data_payload = prefs
     return JSONResponse(content={"success": True, "data": data_payload})
+
 
 
 class ErrorLogModel(BaseModel):
@@ -4488,6 +4500,74 @@ class UserProfile(BaseModel):
 
 class UiPreferencesModel(BaseModel):
     uiPreferences: Dict[str, Any] = Field(default_factory=dict)
+
+
+def _build_user_profile_payload(username: str) -> Dict[str, Any]:
+    """Assemble the profile payload for ``username`` combining settings and UI prefs."""
+
+    user_row = db_conn.execute(
+        "SELECT id, username, name, email, role, clinic_id FROM users WHERE username=?",
+        (username,),
+    ).fetchone()
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_id = user_row["id"]
+    profile_row = db_conn.execute(
+        "SELECT current_view, clinic, preferences, ui_preferences FROM user_profile WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+
+    current_view: Optional[str] = None
+    clinic = user_row["clinic_id"]
+    stored_preferences: Dict[str, Any] = {}
+    ui_preferences: Dict[str, Any] = {}
+
+    if profile_row:
+        current_view = profile_row["current_view"]
+        if profile_row["clinic"]:
+            clinic = profile_row["clinic"]
+        raw_prefs = profile_row["preferences"]
+        if raw_prefs:
+            try:
+                parsed = json.loads(raw_prefs)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                stored_preferences = parsed
+        raw_ui = profile_row["ui_preferences"]
+        if raw_ui:
+            try:
+                parsed_ui = json.loads(raw_ui)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed_ui = None
+            if isinstance(parsed_ui, dict):
+                ui_preferences = parsed_ui
+
+    settings, _ = _load_user_preferences(user_id)
+    combined_preferences = copy.deepcopy(settings)
+    if stored_preferences:
+        combined_preferences.update(stored_preferences)
+
+    name = user_row["name"] or user_row["username"]
+    email = user_row["email"]
+    role = user_row["role"]
+
+    payload = {
+        "id": user_id,
+        "username": user_row["username"],
+        "name": name,
+        "email": email,
+        "role": role,
+        "permissions": [role],
+        "clinic": clinic,
+        "clinicId": clinic,
+        "currentView": current_view,
+        "preferences": combined_preferences,
+        "uiPreferences": ui_preferences,
+        "specialty": combined_preferences.get("specialty"),
+    }
+    return payload
 
 
 _DEFAULT_SELECTED_CODES: Dict[str, int] = {
@@ -5905,6 +5985,7 @@ def _sync_selected_codes_to_session_state(
 
 @app.get("/api/user/profile")
 async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
+
     base_profile = UserProfile().model_dump()
     defaults = UserSettings().model_dump()
     normalized_defaults = _normalize_ui_preferences_payload(base_profile.get("uiPreferences", {}))
@@ -5993,6 +6074,7 @@ async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]
     return result
 
 
+
 @app.put("/api/user/profile")
 async def update_user_profile(
     profile: UserProfile, user=Depends(require_role("user"))
@@ -6017,6 +6099,7 @@ async def update_user_profile(
     )
     db_conn.commit()
     return await get_user_profile(user=user)
+
 
 
 @app.get("/api/user/current-view")
@@ -12962,10 +13045,52 @@ async def search_notes(
 
 @app.get("/api/analytics/drafts")
 async def draft_analytics(user=Depends(require_role("user"))):
-    total = db_conn.execute(
-        "SELECT COUNT(*) FROM notes WHERE status='draft'"
-    ).fetchone()[0]
-    return {"drafts": total}
+    rows = db_conn.execute(
+        "SELECT id, content, status, created_at, updated_at FROM notes WHERE status='draft'"
+    ).fetchall()
+
+    total = len(rows)
+    durations: List[float] = []
+    stale = 0
+    now = time.time()
+    ordered_notes: List[Tuple[float, Dict[str, Any]]] = []
+
+    for row in rows:
+        created = float(row["created_at"]) if row["created_at"] else 0.0
+        updated = float(row["updated_at"]) if row["updated_at"] else created
+        if created and updated and updated >= created:
+            durations.append(updated - created)
+        reference = updated or created
+        if reference and now - reference >= 7 * 24 * 60 * 60:
+            stale += 1
+        formatted = _format_note_row(row)
+        ordered_notes.append((reference, formatted))
+
+    average_completion_minutes = 0.0
+    if durations:
+        average_completion_minutes = round((sum(durations) / len(durations)) / 60.0, 2)
+
+    abandonment_rate = round(stale / total, 4) if total else 0.0
+
+    recent_activity: List[Dict[str, Any]] = []
+    for _reference, note in sorted(ordered_notes, key=lambda item: item[0] or 0.0, reverse=True)[:5]:
+        recent_activity.append(
+            {
+                "id": note.get("id"),
+                "title": note.get("title"),
+                "status": note.get("status"),
+                "patientName": note.get("patientName"),
+                "lastModified": note.get("lastModified") or note.get("createdAt"),
+            }
+        )
+
+    return {
+        "drafts": total,
+        "averageCompletionTimeMinutes": average_completion_minutes,
+        "abandonmentRate": abandonment_rate,
+        "staleDrafts": stale,
+        "recentActivity": recent_activity,
+    }
 
 
 @app.post("/api/notes/bulk-operations")

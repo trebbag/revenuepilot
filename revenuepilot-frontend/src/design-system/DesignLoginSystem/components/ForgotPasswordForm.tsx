@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react"
 import { ArrowLeft, Mail, CheckCircle } from "lucide-react"
 
-import { apiFetch } from "../../lib/api"
+import { DesignLoginSystemApi, DesignLoginSystemError } from "../types"
 import { Alert } from "./Alert"
 import { Button } from "./Button"
 import { Card, CardContent, CardFooter, CardHeader } from "./Card"
@@ -12,15 +12,9 @@ type ForgotPasswordState = "input" | "loading" | "success" | "error"
 type ErrorType = "invalid_email" | "user_not_found" | "server_error" | "rate_limited" | null
 
 interface ForgotPasswordFormProps {
+  authApi: Pick<DesignLoginSystemApi, "forgotPassword">
   onBackToLogin: () => void
   multiTenant?: boolean
-}
-
-interface ForgotPasswordResponse {
-  error?: string
-  detail?: string
-  message?: string
-  [key: string]: unknown
 }
 
 function normalizeString(value: unknown): string {
@@ -31,29 +25,7 @@ function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
 
-function mapErrorType(response: Response, data: ForgotPasswordResponse | null): ErrorType {
-  if (response.status === 404) {
-    return "user_not_found"
-  }
-  if (response.status === 429) {
-    return "rate_limited"
-  }
-
-  const message = normalizeString(data?.error ?? data?.detail ?? data?.message)
-  if (message) {
-    const lower = message.toLowerCase()
-    if (lower.includes("not found")) {
-      return "user_not_found"
-    }
-    if (lower.includes("rate")) {
-      return "rate_limited"
-    }
-  }
-
-  return "server_error"
-}
-
-export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: ForgotPasswordFormProps) {
+export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false }: ForgotPasswordFormProps) {
   const [state, setState] = useState<ForgotPasswordState>("input")
   const [errorType, setErrorType] = useState<ErrorType>(null)
   const [clinicCode, setClinicCode] = useState("")
@@ -85,26 +57,27 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
     }
   }, [])
 
+  const mapErrorToState = useCallback((error: unknown): ErrorType => {
+    if (error instanceof DesignLoginSystemError) {
+      if (error.code === "user_not_found" || error.code === "rate_limited") {
+        return error.code
+      }
+      return "server_error"
+    }
+    if (typeof error === "string") {
+      return error as ErrorType
+    }
+    return "server_error"
+  }, [])
+
   const submitRequest = useCallback(
     async (targetEmail: string) => {
-      const payload: Record<string, unknown> = { email: targetEmail }
-      if (multiTenant) {
-        payload.clinicCode = normalizeString(clinicCode)
-      }
-
-      const response = await apiFetch("/api/auth/forgot-password", {
-        method: "POST",
-        jsonBody: payload,
-        skipAuth: true
+      await authApi.forgotPassword({
+        email: targetEmail,
+        clinicCode: multiTenant ? normalizeString(clinicCode) : undefined
       })
-
-      const data = (await response.json().catch(() => null)) as ForgotPasswordResponse | null
-
-      if (!response.ok) {
-        throw mapErrorType(response, data)
-      }
     },
-    [clinicCode, multiTenant]
+    [authApi, clinicCode, multiTenant]
   )
 
   const handleSubmit = useCallback(
@@ -126,12 +99,11 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
         await submitRequest(trimmedEmail)
         setState("success")
       } catch (error) {
-        const mapped = typeof error === "string" ? (error as ErrorType) : null
-        setErrorType(mapped ?? "server_error")
+        setErrorType(mapErrorToState(error))
         setState("error")
       }
     },
-    [canSubmit, email, submitRequest]
+    [canSubmit, email, mapErrorToState, submitRequest]
   )
 
   const handleTryAgain = useCallback(() => {
@@ -151,11 +123,10 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
       await submitRequest(submittedEmail)
       setState("success")
     } catch (error) {
-      const mapped = typeof error === "string" ? (error as ErrorType) : null
-      setErrorType(mapped ?? "server_error")
+      setErrorType(mapErrorToState(error))
       setState("error")
     }
-  }, [submitRequest, submittedEmail])
+  }, [mapErrorToState, submitRequest, submittedEmail])
 
   if (state === "success") {
     return (
@@ -198,10 +169,6 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
                 </div>
               </div>
             </CardContent>
-
-            <CardFooter>
-              <FooterLinks />
-            </CardFooter>
           </Card>
         </div>
       </div>
@@ -213,13 +180,9 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
       <div className="w-full max-w-md">
         <Card size="lg">
           <CardHeader
-            logo={
-              <div className="w-16 h-16 bg-primary/10 rounded-xl flex items-center justify-center">
-                <Mail className="w-8 h-8 text-primary" />
-              </div>
-            }
-            title="Reset your password"
-            subtitle="Enter your email and we'll send you reset instructions"
+            icon={<Mail className="w-10 h-10 text-primary" />}
+            title="Forgot password"
+            subtitle="We'll email you a reset link"
           />
 
           <CardContent>
@@ -230,6 +193,18 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              <TextField
+                type="email"
+                label="Work email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={setEmail}
+                iconLeft="mail"
+                required
+                disabled={state === "loading"}
+                id="reset-email"
+              />
+
               {multiTenant && (
                 <TextField
                   type="text"
@@ -239,32 +214,9 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
                   onChange={setClinicCode}
                   required
                   disabled={state === "loading"}
-                  id="clinic-code"
-                  state={
-                    state === "error" && errorType === "invalid_email" && !normalizeString(clinicCode)
-                      ? "error"
-                      : "default"
-                  }
+                  id="reset-clinic-code"
                 />
               )}
-
-              <TextField
-                type="email"
-                label="Email Address"
-                placeholder="Enter your email address"
-                value={email}
-                onChange={setEmail}
-                iconLeft="mail"
-                required
-                disabled={state === "loading"}
-                id="email"
-                autoComplete="email"
-                state={
-                  state === "error" && errorType === "invalid_email" && !isValidEmail(normalizeString(email))
-                    ? "error"
-                    : "default"
-                }
-              />
 
               <Button
                 type="submit"
@@ -272,23 +224,23 @@ export function ForgotPasswordForm({ onBackToLogin, multiTenant = false }: Forgo
                 size="lg"
                 fullWidth
                 loading={state === "loading"}
-                disabled={state === "loading" || !canSubmit}
+                disabled={!canSubmit || state === "loading"}
               >
                 Send reset link
               </Button>
-            </form>
 
-            <div className="mt-6 text-center flex flex-col gap-3">
-              {state === "error" && (
-                <Button variant="secondary" fullWidth onClick={handleTryAgain} disabled={state === "loading"}>
-                  Try again
-                </Button>
-              )}
-
-              <Button variant="link" onClick={onBackToLogin} iconLeft={<ArrowLeft className="w-4 h-4" />}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="lg"
+                fullWidth
+                onClick={onBackToLogin}
+                iconLeft={<ArrowLeft className="w-4 h-4" />}
+                disabled={state === "loading"}
+              >
                 Back to sign in
               </Button>
-            </div>
+            </form>
           </CardContent>
 
           <CardFooter>
