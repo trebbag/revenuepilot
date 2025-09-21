@@ -18,6 +18,9 @@ Key capabilities include:
 - **Rich clinical workspace** with draft and beautified tabs, template
   insertion, chart uploads, transcript review and clipboard/export
   helpers.【F:src/App.jsx†L1-L118】【F:src/components/NoteEditor.jsx†L1-L120】
+- **Finalization workflow** guiding six-step validation, attestation and
+  dispatch from a dedicated view that persists session context per
+  patient encounter.【F:src/components/WorkflowView.jsx†L1-L420】【F:src/App.jsx†L600-L840】
 - **AI assistance** for beautification, coding, compliance, public health,
   differential diagnoses and follow-up scheduling, with offline and local
   model fallbacks.【F:backend/main.py†L9755-L11904】【F:backend/openai_client.py†L1-L117】
@@ -119,6 +122,15 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 - **Transcription tools** – Optional visit recording captures diarised
   transcripts and merges segments into the note. The backend supports
   Whisper, local models and offline fallbacks.【F:src/components/TranscriptView.jsx†L1-L200】【F:backend/audio_processing.py†L1-L200】
+
+### Finalisation workflow
+
+- **Session orchestration** – Launch the workflow view from the toolbar or
+  sidebar to create sessions, inspect step status and sync progress with
+  the backend state machine.【F:src/App.jsx†L600-L880】【F:src/components/WorkflowView.jsx†L1-L420】
+- **Validation & attestation panels** – Trigger note validation, review
+  reimbursement details, record attestation metadata and monitor dispatch
+  results without leaving the workspace.【F:src/components/WorkflowView.jsx†L130-L370】
 
 ### Administrative & operational views
 

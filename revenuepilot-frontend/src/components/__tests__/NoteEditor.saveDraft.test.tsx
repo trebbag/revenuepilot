@@ -67,6 +67,17 @@ vi.mock("../../contexts/AuthContext", () => ({
   })
 }))
 
+vi.mock("../../contexts/SessionContext", () => ({
+  useSession: () => ({
+    state: {
+      finalizationSessions: {}
+    },
+    hydrated: true,
+    syncing: false,
+    actions: {}
+  })
+}))
+
 import { NoteEditor } from "../NoteEditor"
 
 vi.mock("../../lib/api", async () => {
@@ -307,9 +318,10 @@ describe("NoteEditor manual draft save", () => {
     })
 
     const autoSaveCall = fetchMock.mock.calls.find(
-      ([input, init]) => resolveUrl(input).includes("/api/notes/auto-save") && (init?.method ?? "GET").toUpperCase() === "PUT"
+      ([input, init]) =>
+        resolveUrl(input).includes("/api/notes/auto-save") && (init?.method ?? "GET").toUpperCase() === "POST"
     )
-    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ content: expect.any(String), note_id: expect.anything() })
+    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ content: expect.any(String), noteId: expect.anything() })
 
     const activityCall = fetchMock.mock.calls.find(
       ([input, init]) => resolveUrl(input) === "/api/activity/log" && (init?.method ?? "GET").toUpperCase() === "POST"
@@ -332,7 +344,7 @@ describe("NoteEditor manual draft save", () => {
     fireEvent.click(saveButton)
 
     const alert = await screen.findByRole("alert")
-    expect(alert).toHaveTextContent("Manual save failed")
+    expect(alert).toHaveTextContent("Unable to auto-save note")
 
     expect(onNavigate).not.toHaveBeenCalled()
     expect(toastError).toHaveBeenCalled()
@@ -376,8 +388,8 @@ describe("NoteEditor manual draft save", () => {
     const autoSaveCall = fetchMock.mock.calls.find(
       ([input, init]) =>
         resolveUrl(input) === "/api/notes/auto-save" &&
-        (init?.method ?? "GET").toUpperCase() === "PUT"
+        (init?.method ?? "GET").toUpperCase() === "POST"
     )
-    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ note_id: 42 })
+    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ noteId: "42" })
   })
 })

@@ -8,6 +8,7 @@ import Logs from './components/Logs.jsx';
 import Help from './components/Help.jsx';
 import Settings from './components/Settings.jsx';
 import TranscriptView from './components/TranscriptView.jsx';
+import WorkflowView from './components/WorkflowView.jsx';
 import {
   beautifyNote,
   logEvent,
@@ -99,6 +100,8 @@ function App() {
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const editorRef = useRef(null);
+  const workflowKeyRef = useRef('');
+  const [workflowSessionId, setWorkflowSessionId] = useState(null);
 
   // Keep track of previous draft text to detect when a new note is started
   const prevDraftRef = useRef('');
@@ -129,6 +132,49 @@ function App() {
   const prevPatientSelectionRef = useRef(patientID);
   const [noteId, setNoteId] = useState(null);
   const noteCreateInFlightRef = useRef(false);
+
+  const computeWorkflowStorageKey = (patient, encounter) => {
+    if (!patient) return '';
+    const normalizedPatient = String(patient).trim();
+    const normalizedEncounter = encounter ? String(encounter).trim() : 'default';
+    return `workflowSession_${normalizedPatient}_${normalizedEncounter}`;
+  };
+
+  useEffect(() => {
+    if (!patientID) {
+      workflowKeyRef.current = '';
+      setWorkflowSessionId(null);
+      return;
+    }
+    const key = computeWorkflowStorageKey(patientID, encounterID);
+    workflowKeyRef.current = key;
+    let stored = null;
+    try {
+      stored = localStorage.getItem(key);
+    } catch {
+      stored = null;
+    }
+    if (stored && stored !== 'null' && stored !== 'undefined') {
+      setWorkflowSessionId(stored);
+    } else {
+      setWorkflowSessionId(null);
+    }
+  }, [patientID, encounterID]);
+
+  const handleWorkflowSessionIdChange = (sessionId, encounterOverride) => {
+    if (!patientID) return;
+    const key = computeWorkflowStorageKey(patientID, encounterOverride || encounterID);
+    if (!key) return;
+    workflowKeyRef.current = key;
+    try {
+      if (sessionId) localStorage.setItem(key, sessionId);
+      else localStorage.removeItem(key);
+    } catch {
+      /* ignore quota errors */
+    }
+    setWorkflowSessionId(sessionId || null);
+  };
+
 
   useEffect(() => {
     if (
@@ -259,7 +305,15 @@ function App() {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('token');
       localStorage.removeItem('refreshToken');
+      if (workflowKeyRef.current) {
+        try {
+          localStorage.removeItem(workflowKeyRef.current);
+        } catch {
+          /* ignore */
+        }
+      }
     }
+    setWorkflowSessionId(null);
   };
 
   const handleUnauthorized = () => {
@@ -724,6 +778,13 @@ function App() {
               >
                 {loadingSummary ? t('app.summarizing') : t('app.summarize')}
               </button>
+              <button
+                type="button"
+                onClick={() => setView('workflow')}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                {t('app.workflow')}
+              </button>
 
               {/* Compact "More" menu that holds secondary actions to reduce toolbar width */}
               <div
@@ -911,6 +972,17 @@ function App() {
           {view === 'logs' && <Logs />}
           {view === 'admin-users' && userRole === 'admin' && (
             <AdminUsers token={token} />
+          )}
+          {view === 'workflow' && (
+            <WorkflowView
+              sessionId={workflowSessionId}
+              patientId={patientID}
+              encounterId={encounterID}
+              noteId={noteId}
+              noteContent={draftText}
+              suggestions={suggestions}
+              onSessionIdChange={handleWorkflowSessionIdChange}
+            />
           )}
         </div>
       </div>

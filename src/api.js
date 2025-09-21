@@ -1461,6 +1461,179 @@ export async function autoSaveNote(noteId, content) {
   }
 }
 
+function unwrapWorkflowPayload(data) {
+  if (data && typeof data === 'object' && data.data && typeof data.data === 'object') {
+    return data.data;
+  }
+  return data;
+}
+
+export async function createWorkflowSession(payload = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function getWorkflowSession(sessionId) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader();
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions/${sessionId}`, {
+    method: 'GET',
+    headers,
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function updateWorkflowStep(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/sessions/${sessionId}/step`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function attestWorkflowSession(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/${sessionId}/step5/attest`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function dispatchWorkflowSession(sessionId, payload = {}) {
+  if (!sessionId) throw new Error('sessionId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/workflow/${sessionId}/step6/dispatch`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (resp.status === 404) {
+    throw new Error('Not found');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
+export async function updateWorkflowNoteContent(encounterId, payload = {}) {
+  if (!encounterId) throw new Error('encounterId is required');
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const resp = await fetch(`${baseUrl}/api/v1/notes/${encodeURIComponent(encounterId)}/content`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`;
+    try {
+      const err = await resp.json();
+      message = err?.detail || err?.message || message;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(message);
+  }
+  const data = await resp.json().catch(() => ({}));
+  return unwrapWorkflowPayload(data);
+}
+
 /**
  * Fetch code metadata with offline cache fallback.
  * @param {string[]} codes
