@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import {
   ChevronLeft,
@@ -158,8 +158,19 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
   const adjustedActiveIndex = filteredItems.length > 0 ? Math.min(Math.max(0, activeItemIndex), filteredItems.length - 1) : 0;
   const activeItem = filteredItems.length > 0 ? filteredItems[adjustedActiveIndex] : null;
 
+  const hasContextEstablishedGap = Boolean(
+    activeItem &&
+      Array.isArray((activeItem as any).gaps) &&
+      (activeItem as any).gaps.some((gap: unknown) =>
+        typeof gap === 'string' && gap.toLowerCase().includes('context') && gap.toLowerCase().includes('established')
+      )
+  );
+
+  const showContextEstablishedBanner =
+    (typeof step?.id === 'number' && step.id === 1) || hasContextEstablishedGap;
+
   // Notify parent when active item changes
-  React.useEffect(() => {
+  useEffect(() => {
     if (onActiveItemChange) {
       onActiveItemChange(activeItem);
     }
@@ -850,10 +861,10 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
                           <HelpCircle size={12} className="text-slate-400 group-hover:text-blue-500 transition-colors duration-200" />
                         </motion.div>
                         
-                        <span className="text-xs text-slate-500 group-hover:text-blue-600 transition-colors duration-200 select-none">
-                          Why was this suggested?
-                        </span>
-                        
+                      <span className="text-xs text-slate-500 group-hover:text-blue-600 transition-colors duration-200 select-none">
+                        Why was this suggested?
+                      </span>
+
                         {/* Minimal tooltip */}
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 bg-slate-800/90 text-white text-xs rounded whitespace-nowrap shadow-md pointer-events-none z-30 opacity-0 group-hover:opacity-100 transition-opacity duration-200 backdrop-blur-sm">
                           Show evidence highlights
@@ -884,6 +895,11 @@ export function StepContent({ step, onNext, onPrevious, onActiveItemChange, onSh
                         />
                       </motion.div>
                     </div>
+                    {showContextEstablishedBanner && (
+                      <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                        Preventive care context established for this encounter. Documentation supports preventive screening and risk management requirements.
+                      </div>
+                    )}
                     <div className="flex items-center gap-3 text-xs">
                       <div className="flex items-center gap-1.5">
                         {getPriorityIndicator(activeItem.priority)}

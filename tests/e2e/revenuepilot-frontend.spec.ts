@@ -68,6 +68,55 @@ test.describe('RevenuePilot frontend integration flow', () => {
         value: MockMediaRecorder,
       });
 
+      class MockWebSocket {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
+
+        readyState = MockWebSocket.OPEN;
+        url: string;
+        protocol?: string | string[];
+        onopen: ((event: Event) => void) | null = null;
+        onmessage: ((event: MessageEvent) => void) | null = null;
+        onerror: ((event: Event) => void) | null = null;
+        onclose: ((event: CloseEvent) => void) | null = null;
+
+        constructor(url: string, protocols?: string | string[]) {
+          this.url = url;
+          this.protocol = protocols;
+          setTimeout(() => {
+            this.onopen?.(new Event('open'));
+          }, 0);
+        }
+
+        send(_data: ArrayBuffer | ArrayBufferView | Blob | string) {
+          // ignore outbound audio data
+        }
+
+        close() {
+          if (this.readyState === MockWebSocket.CLOSED) {
+            return;
+          }
+          this.readyState = MockWebSocket.CLOSED;
+          this.onclose?.(new CloseEvent('close'));
+        }
+
+        addEventListener() {
+          // noop
+        }
+
+        removeEventListener() {
+          // noop
+        }
+      }
+
+      Object.defineProperty(window, 'WebSocket', {
+        configurable: true,
+        writable: true,
+        value: MockWebSocket,
+      });
+
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
         writable: true,
@@ -81,7 +130,18 @@ test.describe('RevenuePilot frontend integration flow', () => {
   });
 
   test('auth handshake, analytics, activity log, and finalization wizard', async ({ page }) => {
+    await page.request.post('http://127.0.0.1:4010/__mock__/auth/state', {
+      data: { authenticated: false },
+    });
+
     await page.goto('/');
+
+    await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    await page.getByLabel('Email or Username').fill('clinician@exampleclinic.com');
+    await page.getByRole('textbox', { name: 'Password' }).fill('Clinician123!');
+    const signInButton = page.getByRole('button', { name: 'Sign in' });
+    await expect(signInButton).toBeEnabled();
+    await signInButton.click();
 
     await page
       .getByText('Signing you in', { exact: false })
@@ -120,7 +180,7 @@ test.describe('RevenuePilot frontend integration flow', () => {
 
     await sidebarNavItem('Activity Log').click();
     await expect(page.getByRole('heading', { name: 'Activity Log' }).first()).toBeVisible();
-    await expect(page.getByText('Note Created').first()).toBeVisible();
+    await expect(page.getByText('Finalized SOAP note', { exact: false }).first()).toBeVisible();
 
     await sidebarNavItem('Documentation').click();
 
@@ -146,7 +206,9 @@ test.describe('RevenuePilot frontend integration flow', () => {
     await expect(finalizeButton).toBeEnabled();
     await finalizeButton.click();
 
+    await page.waitForTimeout(1000);
     await expect(page.getByRole('heading', { name: 'Code Review' }).first()).toBeVisible();
+    await expect(page.getByText(/context established/i)).toBeVisible();
     await page.getByRole('button', { name: 'Next' }).click();
 
     await expect(page.getByRole('heading', { name: 'Suggestion Review' }).first()).toBeVisible();

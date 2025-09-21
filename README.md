@@ -79,6 +79,29 @@ This script invokes the installer and then runs `npm run electron:build`. Built 
 
    If you prefer not to use the UI, you can manually create the file `backend/openai_key.txt` containing your secret key and restart the server.
 
+### Environment configuration & database bootstrap
+
+Before running the full stack ensure the runtime environment is configured and the database is pre-seeded. The backend must always be started before the frontend so that the React application can hydrate its contexts from live API data.
+
+| Variable | Description |
+| --- | --- |
+| `REVENUEPILOT_DB_PATH` | Path to the SQLite database used by the backend. Defaults to the application data directory (e.g. `~/Library/Application Support/RevenuePilot/analytics.db`). |
+| `JWT_SECRET` | Secret used to sign JWT access and refresh tokens. **Required in production**. |
+| `REVENUEPILOT_ADMIN_USERNAME` / `REVENUEPILOT_ADMIN_PASSWORD` | Optional overrides for the seeded administrator account. |
+| `REVENUEPILOT_ANALYST_USERNAME` / `REVENUEPILOT_ANALYST_PASSWORD` | Optional overrides for the seeded analytics role. |
+| `REVENUEPILOT_CLINICIAN_USERNAME` / `REVENUEPILOT_CLINICIAN_PASSWORD` | Optional overrides for the default clinician role. |
+| `VITE_API_URL` | Frontend environment variable pointing at the running backend (e.g. `http://localhost:8000`). |
+
+Seed the database with the required compliance rules, code catalogues, payer schedules, and default user roles by running:
+
+```bash
+python scripts/bootstrap_database.py
+```
+
+The script creates admin, analyst, and clinician accounts using the credentials above (or the documented defaults) and ensures the reference data expected by the UI exists before first launch. To replace existing catalogues use `--overwrite-reference-data`; pass `--skip-user-seed` if you will provision accounts manually.
+
+Once the database is bootstrapped, start the backend (`uvicorn backend.main:app --reload --port 8000` or via `./start.sh`). After the API reports a successful startup, launch the frontend (`npm run dev` with `VITE_API_URL` set) so the React contexts can hydrate from the populated backend.
+
 ### JWT secret
 
 Authentication tokens issued by the backend are signed with a secret. In production the `JWT_SECRET` environment variable **must** be set before starting the server. If it is missing while `ENVIRONMENT` is anything other than `development`, the application will raise an error at startup. For local development the default `dev-secret` is used so you can run the app without additional configuration.

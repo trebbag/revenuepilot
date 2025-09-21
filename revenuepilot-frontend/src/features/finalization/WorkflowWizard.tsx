@@ -1134,6 +1134,11 @@ export function FinalizationWizard({
                               (finalizeResult.reimbursementSummary?.total ?? 0).toFixed(2)
                             }
                           </p>
+                          {finalizeResult.exportReady && (
+                            <p className="text-sm font-semibold text-emerald-600">
+                              Step completed • 100%
+                            </p>
+                          )}
                         </div>
                       ) : (
                         <p className="text-slate-500 italic">

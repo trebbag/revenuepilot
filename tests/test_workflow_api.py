@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from typing import Dict, Any
 
 import pytest
@@ -198,6 +199,8 @@ def test_workflow_session_lifecycle(client):
     assert note_response["sessionId"] == session_id
     validation = note_response["validation"]
     assert not validation["canFinalize"]
+
+
     assert "Content too short" in validation["issues"]["content"]
     assert "Invalid code 123" in validation["issues"]["codes"]
     assert note_response["session"]["blockingIssues"]
@@ -242,6 +245,64 @@ def test_workflow_session_lifecycle(client):
     dispatch_payload = unwrap(resp.json())
     assert dispatch_payload["result"]["exportReady"] is False
     assert "prevention" in dispatch_payload["result"]["issues"]
+
+
+def test_workflow_session_context_roundtrip(client):
+    token = main.create_token("alice", "user")
+    headers = auth_header(token)
+
+    collaborator_payload = [
+        {"userId": "alice", "displayName": "Dr. Alice", "status": "active"},
+        {"username": "mentor", "role": "analyst", "lastActiveAt": time.time() - 30},
+    ]
+    editor_payload = [
+        {"userId": "mentor", "cursor": {"line": 1, "column": 5}},
+        {"userId": "observer", "cursor": {"line": 0, "column": 0}},
+    ]
+    context_payload = {
+        "transcript": {"summary": "Patient reported improved symptoms."},
+        "draftPreview": "Lorem ipsum",
+    }
+
+    resp = client.post(
+        "/api/v1/workflow/sessions",
+        json={
+            "encounterId": "enc-ctx",
+            "patientId": "patient-ctx",
+            "noteId": "note-ctx",
+            "noteContent": "Initial note",
+            "context": context_payload,
+            "collaborators": collaborator_payload,
+            "activeEditors": editor_payload,
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.json()
+    created = unwrap(resp.json())
+    session_id = created["sessionId"]
+    assert created["context"]["transcript"]["summary"].startswith("Patient")
+    assert any(entry["userId"] == "mentor" for entry in created["collaborators"])
+    assert any(entry["userId"] == "observer" for entry in created["activeEditors"])
+
+    resp = client.post(
+        "/api/v1/workflow/sessions",
+        json={
+            "sessionId": session_id,
+            "encounterId": "enc-ctx",
+            "context": {"recentDecisions": ["Follow-up in 2 weeks"]},
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.json()
+    updated = unwrap(resp.json())
+    assert updated["context"]["transcript"]["summary"].startswith("Patient")
+    assert updated["context"]["recentDecisions"] == ["Follow-up in 2 weeks"]
+
+    resp = client.get(f"/api/v1/workflow/sessions/{session_id}", headers=headers)
+    assert resp.status_code == 200, resp.json()
+    fetched = unwrap(resp.json())
+    assert fetched["context"]["transcript"]["summary"].startswith("Patient")
+    assert fetched["context"]["recentDecisions"] == ["Follow-up in 2 weeks"]
 
 
 def test_workflow_session_tracks_collaboration_and_audit(client):

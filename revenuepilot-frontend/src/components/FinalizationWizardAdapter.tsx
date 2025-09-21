@@ -600,6 +600,9 @@ export function FinalizationWizardAdapter({
   )
   const preFinalizeResultRef = useRef<PreFinalizeCheckResponse | null>(initialPreFinalizeResult)
   const preFinalizeFingerprintRef = useRef<string | null>(null)
+  const lastFinalizeResultRef = useRef<FinalizeResult | null>(
+    initialSessionSnapshot?.lastFinalizeResult ?? null
+  )
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId ?? initialSessionSnapshot?.encounterId
@@ -1437,6 +1440,7 @@ export function FinalizationWizardAdapter({
         }
 
         const data = (await response.json()) as FinalizeResult & PreFinalizeCheckResponse
+        lastFinalizeResultRef.current = data
         setPreFinalizeResult(data)
         onPreFinalizeResult?.(data)
         setSessionData(prev => {
@@ -1505,7 +1509,8 @@ export function FinalizationWizardAdapter({
 
   const handleClose = useCallback(
     (result?: FinalizeResult) => {
-      onClose(result)
+      const payload = result ?? lastFinalizeResultRef.current ?? undefined
+      onClose(payload)
     },
     [onClose]
   )

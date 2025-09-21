@@ -145,6 +145,15 @@ export function ProtectedApp() {
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
   const [finalizationRequest, setFinalizationRequest] = useState<FinalizationWizardLaunchOptions | null>(null)
   const finalizationReturnViewRef = useRef<ViewKey>("app")
+  const [recentFinalization, setRecentFinalization] = useState<
+    | {
+        result: FinalizeResult
+        noteId?: string | null
+        encounterId?: string | null
+        patientId?: string | null
+      }
+    | null
+  >(null)
 
   const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
 
@@ -784,8 +793,17 @@ export function ProtectedApp() {
 
   const handleFinalizationViewClose = useCallback(
     (result?: FinalizeResult) => {
-      if (finalizationRequest?.onClose) {
-        finalizationRequest.onClose(result)
+      const request = finalizationRequest
+      if (request?.onClose) {
+        request.onClose(result)
+      }
+      if (result) {
+        setRecentFinalization({
+          result,
+          noteId: request?.noteId ?? null,
+          encounterId: request?.patientInfo?.encounterId ?? null,
+          patientId: request?.patientInfo?.patientId ?? null
+        })
       }
       setFinalizationRequest(null)
       setCurrentView(prev => {
@@ -1577,79 +1595,84 @@ export function ProtectedApp() {
 
             {accessMessage}
 
-            {isFinalizationView && finalizationAdapterProps ? (
-              <div className="flex-1 overflow-hidden p-6">
-                <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
-                  <FinalizationWizardAdapter
-                    isOpen
-                    onClose={handleFinalizationViewClose}
-                    {...finalizationAdapterProps}
-                  />
-                </div>
-              </div>
-            ) : (
-              <>
-                <ResizablePanelGroup
-                  direction="horizontal"
-                  className="flex-1"
-                  onLayout={handleLayoutChange}
-                >
-                  <ResizablePanel defaultSize={layout.noteEditor} minSize={50}>
-                    <div className="flex flex-col h-full">
-                      <NoteEditor
-                        prePopulatedPatient={prePopulatedPatient}
-                        initialNoteData={activeDraft ?? undefined}
-                        selectedCodes={selectedCodes}
-                        selectedCodesList={selectedCodesList}
-                        onNoteContentChange={setNoteEditorContent}
-                        onNavigateToDrafts={() => handleNavigate('drafts')}
-                        initialViewMode="draft"
-                        viewMode={noteViewMode}
-                        onViewModeChange={setNoteViewMode}
-                        beautifiedNote={beautifiedNoteState}
-                        onBeautifiedNoteChange={setBeautifiedNoteState}
-                        ehrExportState={ehrExportStatus}
-                        onEhrExportStateChange={setEhrExportStatus}
-                        onOpenFinalization={handleOpenFinalization}
-                      />
-                      <SelectedCodesBar
+            <div className="relative flex-1 overflow-hidden">
+              <ResizablePanelGroup
+                direction="horizontal"
+                className="flex-1"
+                onLayout={handleLayoutChange}
+              >
+                <ResizablePanel defaultSize={layout.noteEditor} minSize={50}>
+                  <div className="flex flex-col h-full">
+                    <NoteEditor
+                      prePopulatedPatient={prePopulatedPatient}
+                      initialNoteData={activeDraft ?? undefined}
+                      selectedCodes={selectedCodes}
+                      selectedCodesList={selectedCodesList}
+                      onNoteContentChange={setNoteEditorContent}
+                      onNavigateToDrafts={() => handleNavigate('drafts')}
+                      initialViewMode="draft"
+                      viewMode={noteViewMode}
+                      onViewModeChange={setNoteViewMode}
+                      beautifiedNote={beautifiedNoteState}
+                      onBeautifiedNoteChange={setBeautifiedNoteState}
+                      ehrExportState={ehrExportStatus}
+                      onEhrExportStateChange={setEhrExportStatus}
+                      recentFinalization={recentFinalization}
+                      onRecentFinalizationHandled={() => setRecentFinalization(null)}
+                      onOpenFinalization={handleOpenFinalization}
+                    />
+                    <SelectedCodesBar
+                      selectedCodes={selectedCodes}
+                      onUpdateCodes={() => undefined}
+                      selectedCodesList={selectedCodesList}
+                      onRemoveCode={handleRemoveCode}
+                      onChangeCategoryCode={handleChangeCategoryCode}
+                    />
+                  </div>
+                </ResizablePanel>
+
+                {isSuggestionPanelOpen && (
+                  <>
+                    <ResizableHandle />
+                    <ResizablePanel defaultSize={layout.suggestionPanel} minSize={25} maxSize={40}>
+                      <SuggestionPanel
+                        onClose={() => sessionActions.setSuggestionPanelOpen(false)}
                         selectedCodes={selectedCodes}
                         onUpdateCodes={() => undefined}
+                        onAddCode={handleAddCode}
+                        addedCodes={addedCodes}
+                        noteContent={noteEditorContent}
                         selectedCodesList={selectedCodesList}
-                        onRemoveCode={handleRemoveCode}
-                        onChangeCategoryCode={handleChangeCategoryCode}
+                      />
+                    </ResizablePanel>
+                  </>
+                )}
+              </ResizablePanelGroup>
+
+              {!isSuggestionPanelOpen && (
+                <button
+                  onClick={() => sessionActions.setSuggestionPanelOpen(true)}
+                  className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
+                >
+                  Show Suggestions
+                </button>
+              )}
+
+              {isFinalizationView && finalizationAdapterProps && (
+                <div className="absolute inset-0 z-50 flex">
+                  <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
+                  <div className="relative z-10 flex h-full w-full flex-col overflow-hidden p-6">
+                    <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+                      <FinalizationWizardAdapter
+                        isOpen
+                        onClose={handleFinalizationViewClose}
+                        {...finalizationAdapterProps}
                       />
                     </div>
-                  </ResizablePanel>
-
-                  {isSuggestionPanelOpen && (
-                    <>
-                      <ResizableHandle />
-                      <ResizablePanel defaultSize={layout.suggestionPanel} minSize={25} maxSize={40}>
-                        <SuggestionPanel
-                          onClose={() => sessionActions.setSuggestionPanelOpen(false)}
-                          selectedCodes={selectedCodes}
-                          onUpdateCodes={() => undefined}
-                          onAddCode={handleAddCode}
-                          addedCodes={addedCodes}
-                          noteContent={noteEditorContent}
-                          selectedCodesList={selectedCodesList}
-                        />
-                      </ResizablePanel>
-                    </>
-                  )}
-                </ResizablePanelGroup>
-
-                {!isSuggestionPanelOpen && (
-                  <button
-                    onClick={() => sessionActions.setSuggestionPanelOpen(true)}
-                    className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
-                  >
-                    Show Suggestions
-                  </button>
-                )}
-              </>
-            )}
+                  </div>
+                </div>
+              )}
+            </div>
           </main>
         </div>
       </SidebarProvider>
