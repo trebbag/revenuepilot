@@ -3,15 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "workspaces": [
-    "revenuepilot-frontend",
-    "finalization-wizard"
+    "revenuepilot-frontend"
   ],
   "description": "Clinical note taking app with FHIR export and offline/online AI features",
   "author": "RevenuePilot Team",
   "main": "electron/main.js",
   "scripts": {
     "dev": "npm --workspace revenuepilot-frontend run dev",
-    "build": "npm --workspace finalization-wizard run build && npm --workspace revenuepilot-frontend run build && node scripts/sync-frontend-build.js",
+    "build": "npm --workspace revenuepilot-frontend run build && node scripts/sync-frontend-build.js",
     "preview": "npm --workspace revenuepilot-frontend run preview",
     "electron:dev": "npm run build && npm run backend:prebuild && electron electron/main.js",
     "electron:build": "npm run build && npm run fetch-icons && npm run backend:prebuild && node -r dotenv/config scripts/check-build-env.js && node -r dotenv/config ./node_modules/.bin/electron-builder -mwl",

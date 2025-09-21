@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Sidebar, SidebarContent, SidebarProvider, SidebarTrigger } from "./components/ui/sidebar"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { NavigationSidebar } from "./components/NavigationSidebar"
@@ -18,11 +18,16 @@ import { FigmaComponentLibrary } from "./components/FigmaComponentLibrary"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { Button } from "./components/ui/button"
 import { Badge } from "./components/ui/badge"
+import {
+  FinalizationWizardAdapter,
+  type FinalizationWizardLaunchOptions
+} from "./components/FinalizationWizardAdapter"
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
 import { apiFetch, apiFetchJson } from "./lib/api"
 import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
+import type { FinalizeResult } from "./features/finalization"
 
 interface RawScheduleAppointment {
   id: number
@@ -98,6 +103,7 @@ const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
 const VIEW_LABELS: Record<ViewKey, string> = {
   home: "Home",
   app: "Documentation",
+  finalization: "Finalization",
   analytics: "Analytics",
   settings: "Settings",
   activity: "Activity Log",
@@ -125,6 +131,8 @@ export function ProtectedApp() {
   } | null>(null)
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
+  const [finalizationRequest, setFinalizationRequest] = useState<FinalizationWizardLaunchOptions | null>(null)
+  const finalizationReturnViewRef = useRef<ViewKey>("app")
 
   const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
 
@@ -153,6 +161,17 @@ export function ProtectedApp() {
   )
 
   const { selectedCodes, selectedCodesList, addedCodes, isSuggestionPanelOpen, layout } = sessionState
+  const isFinalizationView = currentView === 'finalization'
+  const finalizationAdapterProps = useMemo(() => {
+    if (!finalizationRequest) {
+      return null
+    }
+    const { onClose: _onClose, displayMode, ...rest } = finalizationRequest
+    return {
+      ...rest,
+      displayMode: displayMode ?? 'embedded'
+    }
+  }, [finalizationRequest])
 
   const [appointmentsState, setAppointmentsState] = useState<ScheduleDataState>({
     data: null,
@@ -584,6 +603,44 @@ export function ProtectedApp() {
     },
     [sessionActions]
   )
+
+  const handleOpenFinalization = useCallback(
+    (options: FinalizationWizardLaunchOptions) => {
+      finalizationReturnViewRef.current = currentView
+      setFinalizationRequest(options)
+      setCurrentView('finalization')
+    },
+    [currentView]
+  )
+
+  const handleFinalizationViewClose = useCallback(
+    (result?: FinalizeResult) => {
+      if (finalizationRequest?.onClose) {
+        finalizationRequest.onClose(result)
+      }
+      setFinalizationRequest(null)
+      setCurrentView(prev => {
+        if (prev !== 'finalization') {
+          return prev
+        }
+        const target =
+          finalizationReturnViewRef.current && finalizationReturnViewRef.current !== 'finalization'
+            ? finalizationReturnViewRef.current
+            : 'app'
+        finalizationReturnViewRef.current = 'app'
+        return target
+      })
+    },
+    [finalizationRequest]
+  )
+
+  useEffect(() => {
+    if (currentView !== 'finalization' && finalizationRequest) {
+      finalizationRequest.onClose?.()
+      setFinalizationRequest(null)
+      finalizationReturnViewRef.current = 'app'
+    }
+  }, [currentView, finalizationRequest])
 
   const handleLayoutChange = useCallback(
     (sizes: number[]) => {
@@ -1299,9 +1356,11 @@ export function ProtectedApp() {
             <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
               <div className="flex items-center gap-2">
                 <SidebarTrigger />
-                <h1 className="text-lg font-medium">Clinical Documentation Assistant</h1>
+                <h1 className="text-lg font-medium">
+                  {isFinalizationView ? "Finalization Wizard" : "Clinical Documentation Assistant"}
+                </h1>
                 <Badge variant="outline" className="ml-2">
-                  Active Session
+                  {isFinalizationView ? "Finalization Mode" : "Active Session"}
                 </Badge>
                 {prePopulatedPatient && (
                   <Badge variant="secondary" className="ml-2">
@@ -1310,6 +1369,11 @@ export function ProtectedApp() {
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {isFinalizationView && (
+                  <Button variant="outline" size="sm" onClick={() => handleFinalizationViewClose()}>
+                    Exit Finalization
+                  </Button>
+                )}
                 <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
                   Dashboard
                 </Button>
@@ -1344,60 +1408,75 @@ export function ProtectedApp() {
 
             {accessMessage}
 
-            <ResizablePanelGroup
-              direction="horizontal"
-              className="flex-1"
-              onLayout={handleLayoutChange}
-            >
-              <ResizablePanel defaultSize={layout.noteEditor} minSize={50}>
-                <div className="flex flex-col h-full">
-                  <NoteEditor
-                    prePopulatedPatient={prePopulatedPatient}
-                    initialNoteData={activeDraft ?? undefined}
-                    selectedCodes={selectedCodes}
-                    selectedCodesList={selectedCodesList}
-                    onNavigateToDrafts={() => handleNavigate('drafts')}
-                    initialViewMode="draft"
-                    viewMode={noteViewMode}
-                    onViewModeChange={setNoteViewMode}
-                    beautifiedNote={beautifiedNoteState}
-                    onBeautifiedNoteChange={setBeautifiedNoteState}
-                    ehrExportState={ehrExportStatus}
-                    onEhrExportStateChange={setEhrExportStatus}
-                  />
-                  <SelectedCodesBar
-                    selectedCodes={selectedCodes}
-                    onUpdateCodes={() => undefined}
-                    selectedCodesList={selectedCodesList}
-                    onRemoveCode={handleRemoveCode}
-                    onChangeCategoryCode={handleChangeCategoryCode}
+            {isFinalizationView && finalizationAdapterProps ? (
+              <div className="flex-1 overflow-hidden p-6">
+                <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
+                  <FinalizationWizardAdapter
+                    isOpen
+                    onClose={handleFinalizationViewClose}
+                    {...finalizationAdapterProps}
                   />
                 </div>
-              </ResizablePanel>
-
-              {isSuggestionPanelOpen && (
-                <>
-                  <ResizableHandle />
-                  <ResizablePanel defaultSize={layout.suggestionPanel} minSize={25} maxSize={40}>
-                    <SuggestionPanel
-                      onClose={() => sessionActions.setSuggestionPanelOpen(false)}
-                      selectedCodes={selectedCodes}
-                      onUpdateCodes={() => undefined}
-                      onAddCode={handleAddCode}
-                      addedCodes={addedCodes}
-                    />
+              </div>
+            ) : (
+              <>
+                <ResizablePanelGroup
+                  direction="horizontal"
+                  className="flex-1"
+                  onLayout={handleLayoutChange}
+                >
+                  <ResizablePanel defaultSize={layout.noteEditor} minSize={50}>
+                    <div className="flex flex-col h-full">
+                      <NoteEditor
+                        prePopulatedPatient={prePopulatedPatient}
+                        initialNoteData={activeDraft ?? undefined}
+                        selectedCodes={selectedCodes}
+                        selectedCodesList={selectedCodesList}
+                        onNavigateToDrafts={() => handleNavigate('drafts')}
+                        initialViewMode="draft"
+                        viewMode={noteViewMode}
+                        onViewModeChange={setNoteViewMode}
+                        beautifiedNote={beautifiedNoteState}
+                        onBeautifiedNoteChange={setBeautifiedNoteState}
+                        ehrExportState={ehrExportStatus}
+                        onEhrExportStateChange={setEhrExportStatus}
+                        onOpenFinalization={handleOpenFinalization}
+                      />
+                      <SelectedCodesBar
+                        selectedCodes={selectedCodes}
+                        onUpdateCodes={() => undefined}
+                        selectedCodesList={selectedCodesList}
+                        onRemoveCode={handleRemoveCode}
+                        onChangeCategoryCode={handleChangeCategoryCode}
+                      />
+                    </div>
                   </ResizablePanel>
-                </>
-              )}
-            </ResizablePanelGroup>
 
-            {!isSuggestionPanelOpen && (
-              <button
-                onClick={() => sessionActions.setSuggestionPanelOpen(true)}
-                className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
-              >
-                Show Suggestions
-              </button>
+                  {isSuggestionPanelOpen && (
+                    <>
+                      <ResizableHandle />
+                      <ResizablePanel defaultSize={layout.suggestionPanel} minSize={25} maxSize={40}>
+                        <SuggestionPanel
+                          onClose={() => sessionActions.setSuggestionPanelOpen(false)}
+                          selectedCodes={selectedCodes}
+                          onUpdateCodes={() => undefined}
+                          onAddCode={handleAddCode}
+                          addedCodes={addedCodes}
+                        />
+                      </ResizablePanel>
+                    </>
+                  )}
+                </ResizablePanelGroup>
+
+                {!isSuggestionPanelOpen && (
+                  <button
+                    onClick={() => sessionActions.setSuggestionPanelOpen(true)}
+                    className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
+                  >
+                    Show Suggestions
+                  </button>
+                )}
+              </>
             )}
           </main>
         </div>

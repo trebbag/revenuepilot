@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import "finalization-wizard/dist/style.css"
-
 import {
   FinalizationWizard,
   type FinalizeRequest,
@@ -10,7 +8,7 @@ import {
   type WizardCodeItem,
   type WizardComplianceItem,
   type WizardStepOverride
-} from "finalization-wizard"
+} from "../features/finalization"
 
 type FetchWithAuth = (
   input: RequestInfo | URL,
@@ -84,6 +82,14 @@ interface FinalizationWizardAdapterProps {
   fetchWithAuth: FetchWithAuth
   onPreFinalizeResult?: (result: PreFinalizeCheckResponse) => void
   onError?: (message: string, error?: unknown) => void
+  displayMode?: "overlay" | "embedded"
+}
+
+export type FinalizationWizardLaunchOptions = Omit<
+  FinalizationWizardAdapterProps,
+  "isOpen" | "onClose"
+> & {
+  onClose?: FinalizationWizardAdapterProps["onClose"]
 }
 
 type FinalizeRequestWithContext = FinalizeRequest & { noteId?: string }
@@ -873,7 +879,8 @@ export function FinalizationWizardAdapter({
   noteId,
   fetchWithAuth,
   onPreFinalizeResult,
-  onError
+  onError,
+  displayMode = "overlay"
 }: FinalizationWizardAdapterProps) {
   const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(null)
   const [wizardSuggestions, setWizardSuggestions] = useState<WizardCodeItem[]>([])
@@ -1580,27 +1587,33 @@ export function FinalizationWizardAdapter({
     return null
   }
 
+  const wizard = (
+    <FinalizationWizard
+      selectedCodes={selectedWizardCodes}
+      suggestedCodes={wizardSuggestions}
+      complianceItems={complianceWizardItems}
+      noteContent={sessionData?.noteContent ?? noteContent ?? ""}
+      patientMetadata={patientMetadata}
+      reimbursementSummary={reimbursementSummary}
+      transcriptEntries={sanitizedTranscripts}
+      blockingIssues={sessionData?.blockingIssues}
+      stepOverrides={mergedStepOverrides.length > 0 ? mergedStepOverrides : stepOverrides}
+      onFinalize={handleFinalize}
+      onClose={handleClose}
+    />
+  )
+
+  if (displayMode === "embedded") {
+    return <div className="flex h-full w-full flex-col overflow-hidden">{wizard}</div>
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex">
       <div
         className="absolute inset-0 bg-background/80 backdrop-blur-sm"
         onClick={() => onClose()}
       />
-      <div className="relative z-10 flex h-full w-full flex-col overflow-hidden">
-        <FinalizationWizard
-          selectedCodes={selectedWizardCodes}
-          suggestedCodes={wizardSuggestions}
-          complianceItems={complianceWizardItems}
-          noteContent={sessionData?.noteContent ?? noteContent ?? ""}
-          patientMetadata={patientMetadata}
-          reimbursementSummary={reimbursementSummary}
-          transcriptEntries={sanitizedTranscripts}
-          blockingIssues={sessionData?.blockingIssues}
-          stepOverrides={mergedStepOverrides.length > 0 ? mergedStepOverrides : stepOverrides}
-          onFinalize={handleFinalize}
-          onClose={handleClose}
-        />
-      </div>
+      <div className="relative z-10 flex h-full w-full flex-col overflow-hidden">{wizard}</div>
     </div>
   )
 }

@@ -21,11 +21,8 @@ import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
-import {
-  FinalizationWizardAdapter,
-  type PreFinalizeCheckResponse
-} from "./FinalizationWizardAdapter"
-import type { FinalizeResult } from "finalization-wizard"
+import { type FinalizationWizardLaunchOptions, type PreFinalizeCheckResponse } from "./FinalizationWizardAdapter"
+import type { FinalizeResult } from "../features/finalization"
 import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFetchOptions } from "../lib/api"
 import { useAuth } from "../contexts/AuthContext"
 
@@ -151,6 +148,7 @@ interface NoteEditorProps {
   onBeautifiedNoteChange?: (state: BeautifyResultState | null) => void
   ehrExportState?: EhrExportState | null
   onEhrExportStateChange?: (state: EhrExportState | null) => void
+  onOpenFinalization?: (options: FinalizationWizardLaunchOptions) => void
 }
 
 export function NoteEditor({
@@ -167,7 +165,8 @@ export function NoteEditor({
   beautifiedNote,
   onBeautifiedNoteChange,
   ehrExportState,
-  onEhrExportStateChange
+  onEhrExportStateChange,
+  onOpenFinalization
 }: NoteEditorProps) {
   const auth = useAuth()
   const [patientInputValue, setPatientInputValue] = useState(
@@ -248,7 +247,6 @@ export function NoteEditor({
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
   const [pausedTime, setPausedTime] = useState(initialRecordedSeconds)
 
-  const [showFinalizationWizard, setShowFinalizationWizard] = useState(false)
   const [isFinalized, setIsFinalized] = useState(false)
 
   const [noteId, setNoteId] = useState<string | null>(initialNoteData?.noteId ?? null)
@@ -1391,7 +1389,6 @@ export function NoteEditor({
 
   const handleFinalizationClose = useCallback(
     (result?: FinalizeResult) => {
-      setShowFinalizationWizard(false)
       if (!result) {
         return
       }
@@ -1523,9 +1520,38 @@ export function NoteEditor({
       return
     }
 
+    if (!onOpenFinalization) {
+      toast.error("Unable to open finalization wizard", {
+        description: "Finalization flow is not available in this view."
+      })
+      return
+    }
+
     try {
       await ensureNoteCreated()
-      setShowFinalizationWizard(true)
+
+      const launchOptions: FinalizationWizardLaunchOptions = {
+        selectedCodesList,
+        complianceIssues,
+        noteContent,
+        patientInfo: {
+          patientId: patientId.trim().length > 0 ? patientId.trim() : undefined,
+          encounterId,
+          name: patientDisplayName ?? null,
+          age: patientAgeValue ?? null,
+          sex: patientSexValue ?? null,
+          encounterDate: encounterDateValue ?? null
+        },
+        transcriptEntries,
+        fetchWithAuth,
+        noteId,
+        onPreFinalizeResult: handlePreFinalizeResult,
+        onError: handleFinalizationError,
+        onClose: handleFinalizationClose,
+        displayMode: "embedded"
+      }
+
+      onOpenFinalization(launchOptions)
     } catch (error) {
       const message =
         error instanceof Error
@@ -1535,7 +1561,26 @@ export function NoteEditor({
         description: message
       })
     }
-  }, [ensureNoteCreated, isFinalized])
+  }, [
+    complianceIssues,
+    encounterDateValue,
+    encounterId,
+    ensureNoteCreated,
+    fetchWithAuth,
+    handleFinalizationClose,
+    handleFinalizationError,
+    handlePreFinalizeResult,
+    isFinalized,
+    noteContent,
+    onOpenFinalization,
+    patientDisplayName,
+    patientId,
+    patientAgeValue,
+    patientSexValue,
+    selectedCodesList,
+    transcriptEntries,
+    noteId
+  ])
 
 
   const handleSaveDraft = useCallback(async () => {
@@ -2304,32 +2349,6 @@ export function NoteEditor({
           </div>
         </DialogContent>
       </Dialog>
-
-
-      {showFinalizationWizard && (
-        <FinalizationWizardAdapter
-          isOpen={showFinalizationWizard}
-          onClose={handleFinalizationClose}
-          selectedCodes={selectedCodes}
-          selectedCodesList={selectedCodesList}
-          complianceIssues={complianceIssues}
-          noteContent={noteContent}
-          patientInfo={{
-            patientId: patientId.trim().length > 0 ? patientId.trim() : undefined,
-            encounterId,
-            name: patientDisplayName ?? null,
-            age: patientAgeValue ?? null,
-            sex: patientSexValue ?? null,
-            encounterDate: encounterDateValue ?? null
-          }}
-          transcriptEntries={transcriptEntries}
-          fetchWithAuth={fetchWithAuth}
-          noteId={noteId}
-          onPreFinalizeResult={handlePreFinalizeResult}
-          onError={handleFinalizationError}
-        />
-      )}
-
     </div>
   )
 }
