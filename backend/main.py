@@ -4442,9 +4442,7 @@ async def put_layout_preferences(
             logging.getLogger(__name__).warning(
                 "Failed to deserialize layout preferences for user %s", uid
             )
-            if isinstance(prefs, dict):
-                data_payload = prefs
-    elif isinstance(prefs, dict):
+    if not data_payload and isinstance(prefs, dict):
         data_payload = prefs
     return JSONResponse(content={"success": True, "data": data_payload})
 
