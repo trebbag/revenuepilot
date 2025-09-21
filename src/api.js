@@ -30,6 +30,18 @@ function resolveBaseUrl() {
   return 'http://127.0.0.1:8000';
 }
 
+function resolveWebsocketUrl(path) {
+  const base = resolveBaseUrl();
+  try {
+    const url = new URL(path, base);
+    if (url.protocol === 'http:') url.protocol = 'ws:';
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    return url.toString();
+  } catch {
+    return `${base.replace(/^http/, 'ws')}${path}`;
+  }
+}
+
 let __lastBackendError = null; // store last connectivity error details
 export function getLastBackendError() {
   return __lastBackendError;
@@ -1452,6 +1464,216 @@ export async function getEvents() {
   } catch {
     throw new Error('Failed to fetch events');
   }
+}
+
+function normaliseCount(value) {
+  const num = Number.parseInt(value, 10);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return num;
+}
+
+export async function getNotificationCount() {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await fetch(`${baseUrl}/api/notifications/count`, {
+    headers,
+  });
+  if (!resp.ok) {
+    throw new Error('Failed to fetch notification counts');
+  }
+  const data = await resp.json().catch(() => ({}));
+  return {
+    notifications: normaliseCount(data.notifications ?? data.count),
+    drafts: normaliseCount(data.drafts),
+  };
+}
+
+export async function listNotifications({ limit = 20, offset = 0 } = {}) {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  const resp = await fetch(`${baseUrl}/api/notifications?${params.toString()}`, {
+    headers,
+  });
+  if (!resp.ok) {
+    throw new Error('Failed to fetch notifications');
+  }
+  const payload = await resp.json().catch(() => ({}));
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  return {
+    items,
+    unreadCount: normaliseCount(payload.unreadCount ?? payload.notifications),
+    total: normaliseCount(payload.total),
+    limit,
+    offset,
+    nextOffset:
+      typeof payload.nextOffset === 'number' ? payload.nextOffset : null,
+  };
+}
+
+export async function markNotificationRead(id) {
+  if (!id) throw new Error('id is required to mark notification read');
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/api/notifications/${encodeURIComponent(id)}/read`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  if (!resp.ok) {
+    throw new Error('Failed to mark notification read');
+  }
+  const data = await resp.json().catch(() => ({}));
+  return { unreadCount: normaliseCount(data.unreadCount) };
+}
+
+export async function markAllNotificationsRead() {
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token
+    ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+    : { 'Content-Type': 'application/json' };
+  const resp = await fetch(`${baseUrl}/api/notifications/read-all`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  });
+  if (!resp.ok) {
+    throw new Error('Failed to mark notifications read');
+  }
+  const data = await resp.json().catch(() => ({}));
+  return { unreadCount: normaliseCount(data.unreadCount) };
+}
+
+export function connectNotificationsStream({
+  onEvent,
+  onCount,
+  onError,
+  onOpen,
+  onClose,
+  reconnectDelayMs = 2000,
+  maxRetries = Infinity,
+  websocketFactory,
+} = {}) {
+  if (typeof window === 'undefined') {
+    return { close() {} };
+  }
+  const url = resolveWebsocketUrl('/ws/notifications');
+  const token = localStorage.getItem('token');
+  const target = new URL(url);
+  if (token) {
+    target.searchParams.set('token', token);
+  }
+  const factory =
+    typeof websocketFactory === 'function'
+      ? websocketFactory
+      : (endpoint) => new WebSocket(endpoint);
+  let socket = null;
+  let reconnectTimer = null;
+  let closed = false;
+  let attempts = 0;
+
+  const clearTimer = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const emitCount = (data) => {
+    if (!data || typeof onCount !== 'function') return;
+    const notifications =
+      typeof data.notifications === 'number'
+        ? data.notifications
+        : typeof data.unreadCount === 'number'
+          ? data.unreadCount
+          : undefined;
+    const drafts =
+      typeof data.drafts === 'number' ? data.drafts : undefined;
+    if (notifications === undefined && drafts === undefined) return;
+    onCount({
+      notifications: notifications !== undefined ? normaliseCount(notifications) : undefined,
+      drafts: drafts !== undefined ? normaliseCount(drafts) : undefined,
+      raw: data,
+    });
+  };
+
+  const scheduleReconnect = () => {
+    if (closed) return;
+    if (typeof maxRetries === 'number' && attempts >= maxRetries) {
+      return;
+    }
+    clearTimer();
+    const delay =
+      typeof reconnectDelayMs === 'function'
+        ? reconnectDelayMs(attempts + 1)
+        : reconnectDelayMs;
+    reconnectTimer = setTimeout(() => {
+      attempts += 1;
+      connect();
+    }, Math.max(0, delay || 0));
+  };
+
+  const connect = () => {
+    try {
+      socket = factory(target.toString());
+    } catch (err) {
+      onError?.(err);
+      scheduleReconnect();
+      return;
+    }
+    socket.addEventListener?.('open', () => {
+      attempts = 0;
+      clearTimer();
+      onOpen?.();
+    });
+    socket.addEventListener?.('message', (event) => {
+      try {
+        const payload =
+          typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        onEvent?.(payload);
+        emitCount(payload);
+      } catch (err) {
+        onError?.(err);
+      }
+    });
+    socket.addEventListener?.('error', (event) => {
+      onError?.(event);
+    });
+    socket.addEventListener?.('close', (event) => {
+      onClose?.(event);
+      if (!closed) {
+        scheduleReconnect();
+      }
+    });
+  };
+
+  connect();
+
+  return {
+    close() {
+      closed = true;
+      clearTimer();
+      if (socket && socket.readyState !== WebSocket.CLOSED) {
+        try {
+          socket.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    },
+  };
 }
 
 export async function getUserSession() {

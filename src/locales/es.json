@@ -83,6 +83,19 @@
     "none": "No hay borradores guardados.",
     "delete": "Eliminar borrador"
   },
+  "notifications": {
+    "title": "Notificaciones",
+    "loading": "Cargando notificaciones…",
+    "refresh": "Actualizar",
+    "refreshing": "Actualizando…",
+    "markAll": "Marcar todas como leídas",
+    "markRead": "Marcar como leída",
+    "read": "Leída",
+    "empty": "No hay notificaciones",
+    "error": "No se pueden cargar las notificaciones.",
+    "unreadCount": "{{count}} sin leer",
+    "untitled": "Notificación"
+  },
   "followUp": {
     "recommend": "Recomendar",
     "placeholder": "p. ej., 2 semanas"
@@ -264,6 +277,7 @@
   "sidebar": {
     "notes": "Notas",
     "drafts": "Borradores",
+    "notifications": "Notificaciones",
     "analytics": "Analíticas",
     "logs": "Registros",
     "settings": "Configuración",
