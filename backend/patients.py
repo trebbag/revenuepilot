@@ -14,17 +14,18 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urljoin
 
 import requests
 
+from sqlalchemy import and_, func, literal, or_, select
+from sqlalchemy.orm import Session
+
+from backend import models as sa_models
+
 logger = logging.getLogger(__name__)
-
-
-_DB_CONN: Optional[sqlite3.Connection] = None
 
 EHR_PATIENT_API_URL = os.getenv("EHR_PATIENT_API_URL")
 EHR_PATIENT_SEARCH_ENDPOINT = os.getenv("EHR_PATIENT_SEARCH_ENDPOINT", "/patients/search")
@@ -32,28 +33,6 @@ EHR_PATIENT_DETAIL_ENDPOINT = os.getenv("EHR_PATIENT_DETAIL_ENDPOINT", "/patient
 EHR_PATIENT_TIMEOUT = float(os.getenv("EHR_PATIENT_TIMEOUT", "5"))
 EHR_PATIENT_API_KEY = os.getenv("EHR_PATIENT_API_KEY")
 EHR_PATIENT_AUTH_HEADER = os.getenv("EHR_PATIENT_AUTH_HEADER", "Authorization")
-
-
-def configure_database(conn: sqlite3.Connection) -> None:
-    """Remember ``conn`` so helpers can be used without passing it explicitly."""
-
-    global _DB_CONN
-    _DB_CONN = conn
-
-
-def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[sqlite3.Connection]:
-    """Return a SQLite connection to use for queries."""
-
-    if conn is not None:
-        return conn
-    if _DB_CONN is not None:
-        return _DB_CONN
-    try:  # Late import to avoid circular dependency during module import.
-        from backend import main  # type: ignore
-
-        return getattr(main, "db_conn", None)
-    except Exception:
-        return None
 
 
 def _deserialize_json_list(value: Any) -> List[str]:
@@ -98,10 +77,29 @@ def _calculate_age(dob_str: Optional[str]) -> Optional[int]:
     return max(years, 0)
 
 
-def _format_patient_row(row: Mapping[str, Any]) -> Dict[str, Any]:
+def _row_to_mapping(row: Mapping[str, Any] | Any) -> Mapping[str, Any]:
+    if isinstance(row, Mapping):
+        return row
+    keys = (
+        "id",
+        "patient_id",
+        "first_name",
+        "last_name",
+        "dob",
+        "mrn",
+        "gender",
+        "insurance",
+        "last_visit",
+        "allergies",
+        "medications",
+    )
+    return {key: getattr(row, key, None) for key in keys}
+
+
+def _format_patient_row(row: Mapping[str, Any] | Any) -> Dict[str, Any]:
     """Normalise a patient row from SQLite into the API response format."""
 
-    data = dict(row)
+    data = dict(_row_to_mapping(row))
     patient_id = data.get("id") or data.get("patient_id")
     first = (data.get("first_name") or "").strip()
     last = (data.get("last_name") or "").strip()
@@ -226,36 +224,45 @@ def _fetch_remote_patients(
 
 
 def get_patient(
+    session: Session,
     patient_id: str | int,
     *,
-    conn: Optional[sqlite3.Connection] = None,
     include_encounters: bool = True,
     prefer_remote: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Return a patient record from the local dataset or EHR."""
 
     identifier = str(patient_id)
-    connection = _resolve_connection(conn)
-    row = None
-    if connection is not None:
-        try:
-            row = connection.execute(
-                "SELECT * FROM patients WHERE id = ?", (identifier,)
-            ).fetchone()
-        except sqlite3.Error:
-            row = None
-        if row is None:
-            try:
-                row = connection.execute(
-                    "SELECT * FROM patients WHERE mrn = ?", (identifier,)
-                ).fetchone()
-            except sqlite3.Error:
-                row = None
-    if row is not None:
-        patient = _format_patient_row(row)
-        if include_encounters and connection is not None and patient.get("patientId"):
+    patient_row: Optional[Mapping[str, Any]] = None
+    try:
+        patient_pk = int(identifier)
+    except (TypeError, ValueError):
+        patient_pk = None
+
+    if patient_pk is not None:
+        patient_row = (
+            session.execute(
+                select(sa_models.patients).where(sa_models.patients.c.id == patient_pk)
+            )
+            .mappings()
+            .first()
+        )
+
+    if patient_row is None:
+        patient_row = (
+            session.execute(
+                select(sa_models.patients).where(sa_models.patients.c.mrn == identifier)
+            )
+            .mappings()
+            .first()
+        )
+
+    if patient_row is not None:
+        patient = _format_patient_row(patient_row)
+        patient_pk_value = patient_row.get("id")
+        if include_encounters and patient_pk_value is not None:
             patient["encounters"] = list(
-                _load_encounters_for_patient(connection, int(patient["patientId"]))
+                _load_encounters_for_patient(session, int(patient_pk_value))
             )
         return patient
 
@@ -268,18 +275,24 @@ def get_patient(
 
 
 def _load_encounters_for_patient(
-    conn: sqlite3.Connection, patient_id: int
+    session: Session, patient_id: int
 ) -> Iterable[Dict[str, Any]]:
-    cursor = conn.execute(
-        """
-        SELECT id, patient_id, date, type, provider, description
-        FROM encounters
-        WHERE patient_id = ?
-        ORDER BY COALESCE(date, '') DESC, id DESC
-        """,
-        (patient_id,),
+    stmt = (
+        select(
+            sa_models.encounters.c.id,
+            sa_models.encounters.c.patient_id,
+            sa_models.encounters.c.date,
+            sa_models.encounters.c.type,
+            sa_models.encounters.c.provider,
+            sa_models.encounters.c.description,
+        )
+        .where(sa_models.encounters.c.patient_id == patient_id)
+        .order_by(
+            func.coalesce(sa_models.encounters.c.date, "").desc(),
+            sa_models.encounters.c.id.desc(),
+        )
     )
-    for row in cursor.fetchall():
+    for row in session.execute(stmt).mappings():
         yield {
             "encounterId": row["id"],
             "patientId": row["patient_id"],
@@ -291,52 +304,55 @@ def _load_encounters_for_patient(
 
 
 def search_patients(
+    session: Session,
     query: str,
     *,
-    conn: Optional[sqlite3.Connection] = None,
     limit: int = 25,
     offset: int = 0,
     fields: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Search for patients by multiple fields with pagination support."""
 
-    connection = _resolve_connection(conn)
     fields = fields or ("first_name", "last_name", "mrn", "dob")
-    like_terms: List[str] = []
-    params: List[str] = []
-
     tokens = [token.strip() for token in query.split() if token.strip()]
-    if tokens:
-        for token in tokens:
-            like = f"%{token}%"
-            clauses = [f"LOWER({field}) LIKE LOWER(?)" for field in fields]
-            clauses.append("LOWER(first_name || ' ' || last_name) LIKE LOWER(?)")
-            like_terms.append("(" + " OR ".join(clauses) + ")")
-            params.extend([like] * len(fields))
-            params.append(like)
-        where_clause = " WHERE " + " AND ".join(like_terms)
-    else:
-        where_clause = ""
 
-    total = 0
-    patients_local: List[Dict[str, Any]] = []
-    if connection is not None:
-        try:
-            total = connection.execute(
-                f"SELECT COUNT(*) FROM patients{where_clause}", params
-            ).fetchone()[0]
-            rows = connection.execute(
-                """
-                SELECT id, first_name, last_name, dob, mrn, gender, insurance, last_visit, allergies, medications
-                FROM patients
-            """
-                + where_clause
-                + " ORDER BY first_name COLLATE NOCASE, last_name COLLATE NOCASE, id LIMIT ? OFFSET ?",
-                params + [limit, offset],
-            ).fetchall()
-        except sqlite3.Error:
-            rows = []
-        patients_local = [_format_patient_row(row) for row in rows]
+    filters = []
+    if tokens:
+        full_name_expr = func.lower(
+            func.coalesce(sa_models.patients.c.first_name, "").op("||")(literal(" ")).op("||")(
+                func.coalesce(sa_models.patients.c.last_name, "")
+            )
+        )
+        for token in tokens:
+            like = f"%{token.lower()}%"
+            clauses = []
+            for field in fields:
+                column = getattr(sa_models.patients.c, field, None)
+                if column is None:
+                    continue
+                clauses.append(
+                    func.lower(func.coalesce(column, "")).like(like)
+                )
+            clauses.append(full_name_expr.like(like))
+            if clauses:
+                filters.append(or_(*clauses))
+
+    stmt = select(sa_models.patients)
+    count_stmt = select(func.count()).select_from(sa_models.patients)
+    if filters:
+        condition = and_(*filters)
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
+
+    stmt = stmt.order_by(
+        sa_models.patients.c.first_name.collate("NOCASE"),
+        sa_models.patients.c.last_name.collate("NOCASE"),
+        sa_models.patients.c.id,
+    ).limit(limit).offset(offset)
+
+    total = int(session.execute(count_stmt).scalar_one())
+    rows = session.execute(stmt).mappings().all()
+    patients_local = [_format_patient_row(row) for row in rows]
 
     pagination = {
         "query": query,
@@ -361,44 +377,41 @@ def search_patients(
 
 
 def get_encounter(
+    session: Session,
     encounter_id: int,
     *,
-    conn: Optional[sqlite3.Connection] = None,
     include_patient: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Return encounter metadata along with patient context when available."""
 
-    connection = _resolve_connection(conn)
-    if connection is None:
-        return None
-    try:
-        row = connection.execute(
-            """
-            SELECT
-                e.id AS encounter_id,
-                e.patient_id AS encounter_patient_id,
-                e.date,
-                e.type,
-                e.provider,
-                e.description,
-                p.id AS patient_id,
-                p.first_name,
-                p.last_name,
-                p.dob,
-                p.mrn,
-                p.gender,
-                p.insurance,
-                p.last_visit,
-                p.allergies,
-                p.medications
-            FROM encounters e
-            LEFT JOIN patients p ON e.patient_id = p.id
-            WHERE e.id = ?
-            """,
-            (encounter_id,),
-        ).fetchone()
-    except sqlite3.Error:
-        row = None
+    stmt = (
+        select(
+            sa_models.encounters.c.id.label("encounter_id"),
+            sa_models.encounters.c.patient_id.label("encounter_patient_id"),
+            sa_models.encounters.c.date,
+            sa_models.encounters.c.type,
+            sa_models.encounters.c.provider,
+            sa_models.encounters.c.description,
+            sa_models.patients.c.id.label("patient_id"),
+            sa_models.patients.c.first_name,
+            sa_models.patients.c.last_name,
+            sa_models.patients.c.dob,
+            sa_models.patients.c.mrn,
+            sa_models.patients.c.gender,
+            sa_models.patients.c.insurance,
+            sa_models.patients.c.last_visit,
+            sa_models.patients.c.allergies,
+            sa_models.patients.c.medications,
+        )
+        .select_from(
+            sa_models.encounters.outerjoin(
+                sa_models.patients,
+                sa_models.encounters.c.patient_id == sa_models.patients.c.id,
+            )
+        )
+        .where(sa_models.encounters.c.id == encounter_id)
+    )
+    row = session.execute(stmt).mappings().first()
 
     if row is None:
         return None
@@ -417,7 +430,6 @@ def get_encounter(
 
 
 __all__ = [
-    "configure_database",
     "get_patient",
     "search_patients",
     "get_encounter",

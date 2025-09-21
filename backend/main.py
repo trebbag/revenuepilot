@@ -1427,7 +1427,6 @@ def auth_session_scope() -> Iterator[SQLAlchemySession]:
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
-patients.configure_database(db_conn)
 configure_schedule_database(db_conn)
 
 
@@ -1665,7 +1664,6 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
         )
     _seed_reference_data(conn)
     conn.commit()
-    patients.configure_database(conn)
     configure_schedule_database(conn)
     compliance_engine.configure_engine(conn)
 
@@ -6343,12 +6341,27 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
     visit_summary: Dict[str, Any] = {}
 
     encounter_record: Optional[Dict[str, Any]] = None
+    patient_record: Optional[Dict[str, Any]] = None
     encounter_lookup = _coerce_int(encounter_id)
-    if encounter_lookup is not None:
+
+    need_patient_lookup = bool(patient_id)
+    need_encounter_lookup = encounter_lookup is not None
+    if need_patient_lookup or need_encounter_lookup:
         try:
-            encounter_record = patients.get_encounter(encounter_lookup)
+            with _template_session(db_conn) as sa_session:
+                if need_encounter_lookup and encounter_lookup is not None:
+                    try:
+                        encounter_record = patients.get_encounter(sa_session, encounter_lookup)
+                    except Exception:
+                        encounter_record = None
+                if need_patient_lookup:
+                    try:
+                        patient_record = patients.get_patient(sa_session, patient_id)  # type: ignore[arg-type]
+                    except Exception:
+                        patient_record = None
         except Exception:
-            encounter_record = None
+            pass
+
     if encounter_record:
         encounter_summary = {
             "encounterId": encounter_record.get("encounterId") or encounter_id,
@@ -6360,13 +6373,6 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
         }
         if isinstance(encounter_record.get("patient"), dict):
             context.setdefault("patientSnapshot", encounter_record["patient"])
-
-    patient_record: Optional[Dict[str, Any]] = None
-    if patient_id:
-        try:
-            patient_record = patients.get_patient(patient_id)
-        except Exception:
-            patient_record = None
     if not patient_record and encounter_record and isinstance(encounter_record.get("patient"), dict):
         patient_record = encounter_record.get("patient")
 
@@ -13359,11 +13365,11 @@ class VisitSessionUpdate(BaseModel):
 
 
 def _build_encounter_validation_response(
-    encounter_id: int, patient_id: Optional[str] = None
+    sa_session: Session, encounter_id: int, patient_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Return a normalized validation payload for *encounter_id*."""
 
-    encounter = patients.get_encounter(encounter_id)
+    encounter = patients.get_encounter(sa_session, encounter_id)
     if encounter is None:
         return {
             "valid": False,
@@ -13412,12 +13418,14 @@ async def search_patients_v2(
     offset: int = Query(0, ge=0),
     user=Depends(require_role("user")),
 ):
-    return patients.search_patients(q, limit=limit, offset=offset)
+    with _template_session(db_conn) as sa_session:
+        return patients.search_patients(sa_session, q, limit=limit, offset=offset)
 
 
 @app.get("/api/patients/{patient_id}")
 async def get_patient(patient_id: int, user=Depends(require_role("user"))):
-    record = patients.get_patient(patient_id)
+    with _template_session(db_conn) as sa_session:
+        record = patients.get_patient(sa_session, patient_id)
     if not record:
         raise HTTPException(status_code=404, detail="patient not found")
     demographics = {
@@ -13460,16 +13468,18 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
 async def validate_encounter_v2(
     encounter_id: int, user=Depends(require_role("user"))
 ):
-    return _build_encounter_validation_response(encounter_id)
+    with _template_session(db_conn) as sa_session:
+        return _build_encounter_validation_response(sa_session, encounter_id)
 
 
 @app.post("/api/encounters/validate")
 async def validate_encounter_post(
     payload: EncounterValidationRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    return _build_encounter_validation_response(
-        payload.encounter_id, patient_id=payload.patient_id
-    )
+    with _template_session(db_conn) as sa_session:
+        return _build_encounter_validation_response(
+            sa_session, payload.encounter_id, patient_id=payload.patient_id
+        )
 
 
 @app.post("/api/visits/session")
