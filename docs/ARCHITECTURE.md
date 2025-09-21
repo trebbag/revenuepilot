@@ -4,72 +4,75 @@ This document explains how the RevenuePilot application fits together. It
 is a companion to the handbook and should be used when making structural
 changes or onboarding new contributors.
 
-## Frontend (React / Vite)
+## Frontend (TypeScript / Vite workspace)
 
-The production UI lives under `src/` and is also exposed via the
-`revenuepilot-frontend` workspace for isolated Vite development.
+The canonical React codebase lives in `revenuepilot-frontend/src/`. The
+root `package.json` treats the Vite project as a workspace, builds it for
+Electron and copies the bundled assets into `electron/dist/` before
+packaging.【F:package.json†L1-L26】【F:scripts/sync-frontend-build.js†L7-L20】【F:electron/main.js†L273-L312】
 
 ### Application shell
 
-- **`App.jsx`** orchestrates authentication, view routing and the main
-  layout. It coordinates the draft/beautified editor tabs, the
-  suggestion panel, dashboard, logs, settings, drafts, admin, scheduler,
-  notifications and help views.【F:src/App.jsx†L1-L180】【F:src/App.jsx†L236-L360】
-- **`Sidebar.jsx`** exposes navigation with persisted collapse state and
-  unread notification badges supplied by the backend.【F:src/components/Sidebar.jsx†L1-L200】
-- **`Login.jsx`** issues registration/login requests, stores JWT access
-  and refresh tokens and kicks off refresh flows via `api.js`. It also
-  renders MFA prompts when configured.【F:src/components/Login.jsx†L1-L200】【F:src/api.js†L320-L520】
+- **`App.tsx`** wraps the entire UI in authentication and session
+  providers. It blocks access while tokens are refreshed or the persisted
+  workspace layout is loading, then hands off to the protected shell once
+  user and session state are hydrated.【F:revenuepilot-frontend/src/App.tsx†L1-L69】
+- **`ProtectedApp.tsx`** coordinates navigation and workspace layout. It
+  manages view state, selected code context, note editor content, the
+  finalisation workflow launcher and schedule pre-population while
+  gating protected views by permission.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L1-L195】【F:revenuepilot-frontend/src/ProtectedApp.tsx†L128-L205】
+- **`NavigationSidebar.tsx`** loads the current view, notification feed,
+  user profile and UI preferences from the backend, persists updates and
+  maintains websocket connections for live notification badges.【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L388-L520】【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L763-L819】
+- **`SessionContext.tsx`** hydrates layout preferences and selected code
+  state from `/api/user/session`, keeps local edits in sync with the
+  server and persists layout changes back to the backend with throttled
+  updates.【F:revenuepilot-frontend/src/contexts/SessionContext.tsx†L294-L438】
 
 ### Clinical workspace
 
-- **`NoteEditor.jsx`** wraps ReactQuill with custom toolbars, patient &
-  encounter fields, chart upload helpers, transcription controls and
-  template insertion. It surfaces auto-save state and delegates AI
-  actions to callbacks provided by `App.jsx`. When a visit session is
-  active it also attaches resilient websocket listeners for
-  transcription, compliance, coding and collaboration channels so that
-  interim transcripts, streaming alerts and presence indicators stay in
-  sync with the clinician’s workspace.【F:src/components/NoteEditor.jsx†L620-L930】【F:src/components/NoteEditor.jsx†L1320-L2050】
-- **`SuggestionPanel.jsx`** renders expandable cards for codes,
-  compliance, public health, differentials and follow-up. It debounces
-  backend calls, respects specialty/payer filters and exports follow-up
-  events via the scheduling API.【F:src/components/SuggestionPanel.jsx†L1-L160】
-- **`TranscriptView.jsx`** displays diarised transcript segments,
-  allowing clinicians to insert speaker-labelled snippets into the
-  draft. It highlights transcription errors surfaced by the backend.【F:src/components/TranscriptView.jsx†L1-L200】
-- **`TemplatesModal.jsx`** manages reusable note templates and persists
-  CRUD operations through the templates API, caching results offline when
-  possible.【F:src/components/TemplatesModal.jsx†L1-L200】【F:src/api.js†L1-L170】
+- **`NoteEditor.tsx`** handles patient search, encounter validation,
+  transcription streaming and note persistence. It debounces auto-save
+  requests, validates encounters, streams audio to `/api/transcribe/stream`
+  and polls AI compliance checks while updating the session context with
+  new drafts.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L800-L870】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1181-L1300】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1000-L1099】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1500-L1602】
+- **`SuggestionPanel.tsx`** requests code, compliance, prevention and
+  differential suggestions, debouncing note-content changes before
+  calling the AI endpoints and normalising responses for the clinician to
+  action.【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L162-L352】
+- **`SelectedCodesBar.tsx`** aggregates selected items, hydrates billing
+  and documentation insights, validates combinations and surfaces payer
+  warnings by querying the batching, billing and documentation APIs for
+  the active code set.【F:revenuepilot-frontend/src/components/SelectedCodesBar.tsx†L204-L373】
+- **`FinalizationWizardAdapter.tsx`** bridges the note view and finalised
+  workflow by translating session state into the wizard contract, running
+  pre-finalisation checks and posting `/api/notes/finalize` requests while
+  caching blocking issues and reimbursement summaries.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1433-L1479】
 
-### Administrative tooling
+### Administrative & operational views
 
-- **`Dashboard.jsx`** fetches baseline/current metrics, renders Chart.js
-  visualisations and offers PDF exports. The component gates access to
-  admin users by decoding the JWT role claim.【F:src/components/Dashboard.jsx†L1-L120】
-- **`Logs.jsx`** streams recent events and audit entries from the backend
-  for troubleshooting.【F:src/components/Logs.jsx†L1-L120】
-- **`AdminUsers.jsx`** lets administrators invite, update and deactivate
-  accounts and shows the audit log component inline.【F:src/components/AdminUsers.jsx†L1-L120】
-- **`Notifications.jsx`** lists notification events, unread counts and
-  quick actions sourced from `/api/notifications/*` endpoints.【F:src/components/Notifications.jsx†L1-L200】
-- **`Scheduler.tsx`** manages follow-up recommendations, appointment CRUD,
-  ICS exports and bulk actions against the scheduling API.【F:src/components/Scheduler.tsx†L1-L260】【F:backend/scheduling.py†L500-L980】
+- **`Dashboard.tsx`** loads daily metrics, quick actions, activity and
+  system status via dedicated APIs, surfaces loading/error states and
+  provides manual refresh controls for administrators.【F:revenuepilot-frontend/src/components/Dashboard.tsx†L1-L192】
+- **`Analytics.tsx`** drives usage, coding, revenue, compliance and draft
+  analytics tabs by issuing parallel API calls, reconciling errors and
+  feeding rich chart visualisations.【F:revenuepilot-frontend/src/components/Analytics.tsx†L885-L938】
+- **`Settings.tsx`** merges clinician preferences with administrative
+  configuration. It loads and persists user settings, EHR integration,
+  organisation metadata and security controls through the corresponding
+  REST endpoints with optimistic updates.【F:revenuepilot-frontend/src/components/Settings.tsx†L1254-L1412】
 
 ### Infrastructure helpers
 
-- **`api.js`** centralises HTTP calls, offline caching and the retry
-  queue. It resolves the backend base URL, attaches JWTs, refreshes
-  tokens and replays queued mutations when connectivity returns. The
-  module also exposes websocket helpers with automatic reconnection for
-  notifications, transcription, compliance, coding and collaboration
-  channels.【F:src/api.js†L1760-L2040】
-- **`context/` & `hooks/`** contain React context providers for settings,
-  notifications and analytics as well as custom hooks for polling and
-  keyboard shortcuts.【F:src/context/SettingsContext.jsx†L1-L160】
-- **Internationalisation** is configured via `i18n.js` with translation
-  bundles in `src/locales/`. Keys align with the backend prompt language
-  fields and user preferences.【F:src/i18n.js†L1-L120】【F:backend/main.py†L4239-L4333】
+- **`lib/api.ts`** stores tokens, resolves the API base URL, transparently
+  refreshes credentials and exposes helpers for authenticated fetches and
+  websocket URL construction used throughout the workspace.【F:revenuepilot-frontend/src/lib/api.ts†L1-L120】【F:revenuepilot-frontend/src/lib/api.ts†L180-L268】
+- **`contexts/` & `hooks/`** encapsulate shared session, auth and
+  analytics logic so that components consume consistent state and retry
+  semantics across the workspace.【F:revenuepilot-frontend/src/contexts/AuthContext.tsx†L1-L120】【F:revenuepilot-frontend/src/contexts/SessionContext.tsx†L274-L359】
+- **Internationalisation** is handled through the localisation helpers in
+  the workspace, mirroring the backend language preferences so prompts
+  and UI copy align with server-configured locales.【F:revenuepilot-frontend/src/contexts/SessionContext.tsx†L294-L324】【F:backend/main.py†L4239-L4333】
 
 ## Backend (FastAPI)
 

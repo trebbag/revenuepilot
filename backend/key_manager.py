@@ -55,6 +55,25 @@ class SecretRotationError(SecretError):
 _MISSING = object()
 
 
+class _SecretsBackend:
+    """Basic interface for external secrets backends."""
+
+    name = "external"
+    writable = False
+
+    def load(self, name: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        raise NotImplementedError
+
+    def store(self, name: str, value: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        raise SecretReadOnlyError(
+            "The configured secrets backend is read-only. Rotate secrets in the external manager."
+        )
+
+
+_BACKEND_CACHE: Optional[_SecretsBackend] = None
+_BACKEND_CACHE_NAME: Optional[str] = None
+
+
 def _metadata_file() -> Path:
     return _base_dir() / _METADATA_FILENAME
 
@@ -140,6 +159,267 @@ def _max_age_days(default: int) -> Optional[int]:
     return default
 
 
+def _backend_name() -> str:
+    backend = os.getenv("SECRETS_BACKEND", "auto").strip().lower()
+    if backend in {"", "auto"}:
+        return "file" if _is_dev_env() else "env"
+    return backend
+
+
+def _standardize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    normalized: Dict[str, Any] = {}
+    rotated = metadata.get("rotatedAt") or metadata.get("rotated_at")
+    if rotated:
+        normalized["rotatedAt"] = str(rotated)
+    version = metadata.get("version")
+    if version:
+        normalized["version"] = str(version)
+    expires = metadata.get("expiresAt") or metadata.get("expires_at")
+    if expires:
+        normalized["expiresAt"] = str(expires)
+    last_used = metadata.get("lastUsed") or metadata.get("last_used")
+    if last_used:
+        normalized["lastUsed"] = str(last_used)
+    source = metadata.get("source")
+    if source:
+        normalized["source"] = str(source)
+    return normalized
+
+
+def _record_backend_metadata(
+    name: str, metadata: Dict[str, Any], *, default_source: str
+) -> Dict[str, Any]:
+    normalized = _standardize_metadata(metadata)
+    source = normalized.get("source") or default_source
+    last_used = normalized["lastUsed"] if "lastUsed" in normalized else _MISSING
+    return _record_metadata(
+        name,
+        source=source,
+        rotated_at=normalized.get("rotatedAt"),
+        version=normalized.get("version"),
+        expires_at=normalized.get("expiresAt"),
+        last_used=last_used,
+    )
+
+
+def _get_backend() -> Optional[_SecretsBackend]:
+    backend_name = _backend_name()
+    if backend_name in {"env", "environment", "file", "local", "none"}:
+        return None
+
+    global _BACKEND_CACHE, _BACKEND_CACHE_NAME
+    if _BACKEND_CACHE and _BACKEND_CACHE_NAME == backend_name:
+        return _BACKEND_CACHE
+
+    if backend_name in {"aws", "aws-secrets-manager"}:
+        backend = _AWSSecretsManagerBackend()
+    elif backend_name in {"vault", "hashicorp", "hashicorp-vault"}:
+        backend = _VaultSecretsBackend()
+    else:
+        raise SecretError(f"Unknown secrets backend '{backend_name}'")
+
+    _BACKEND_CACHE = backend
+    _BACKEND_CACHE_NAME = backend_name
+    return backend
+
+
+class _AWSSecretsManagerBackend(_SecretsBackend):
+    name = "aws-secrets-manager"
+    writable = True
+
+    def __init__(self) -> None:
+        try:
+            import boto3
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise SecretError(
+                "boto3 is required for the AWS Secrets Manager backend. Install boto3 and retry."
+            ) from exc
+
+        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        if not region:
+            raise SecretError(
+                "AWS_REGION or AWS_DEFAULT_REGION must be set when using the AWS Secrets Manager backend."
+            )
+
+        self._client = boto3.client("secretsmanager", region_name=region)
+        self._resource_not_found = self._client.exceptions.ResourceNotFoundException
+        self._prefix = os.getenv("SECRETS_PREFIX", "RevenuePilot/")
+
+    def _secret_id(self, name: str) -> str:
+        prefix = self._prefix or ""
+        if "{name}" in prefix:
+            try:
+                return prefix.format(name=name)
+            except Exception as exc:
+                raise SecretError(
+                    f"SECRETS_PREFIX format is invalid for name '{name}': {exc}"
+                ) from exc
+        if prefix and not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+        return f"{prefix}{name}" if prefix else name
+
+    def load(self, name: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        secret_id = self._secret_id(name)
+        try:
+            response = self._client.get_secret_value(SecretId=secret_id)
+        except self._resource_not_found:
+            return None, {}
+        except Exception as exc:  # pragma: no cover - network errors
+            raise SecretError(
+                f"Failed to read secret '{secret_id}' from AWS Secrets Manager: {exc}"
+            ) from exc
+
+        secret_string = response.get("SecretString")
+        if not secret_string:
+            return None, {}
+
+        try:
+            payload = json.loads(secret_string)
+        except json.JSONDecodeError:
+            payload = {"value": secret_string}
+
+        value = payload.get("value")
+        if value is None:
+            value = secret_string
+
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        metadata = _standardize_metadata(metadata)
+        if not metadata.get("rotatedAt") and response.get("CreatedDate"):
+            metadata["rotatedAt"] = response["CreatedDate"].isoformat()
+        if not metadata.get("version") and response.get("VersionId"):
+            metadata["version"] = str(response["VersionId"])
+        metadata.setdefault("source", self.name)
+        return value, metadata
+
+    def store(self, name: str, value: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        secret_id = self._secret_id(name)
+        payload = {"value": value, "metadata": _standardize_metadata(metadata)}
+        body = json.dumps(payload)
+        metadata_out = payload["metadata"].copy()
+        try:
+            response = self._client.put_secret_value(
+                SecretId=secret_id,
+                SecretString=body,
+            )
+        except self._resource_not_found:
+            try:
+                response = self._client.create_secret(Name=secret_id, SecretString=body)
+            except Exception as exc:  # pragma: no cover - network errors
+                raise SecretError(
+                    f"Unable to create secret '{secret_id}' in AWS Secrets Manager: {exc}"
+                ) from exc
+        except Exception as exc:  # pragma: no cover - network errors
+            raise SecretError(
+                f"Unable to write secret '{secret_id}' to AWS Secrets Manager: {exc}"
+            ) from exc
+
+        if isinstance(response, dict):
+            version = response.get("VersionId") or response.get("ARN")
+            if version and not metadata_out.get("version"):
+                metadata_out["version"] = str(version)
+        metadata_out.setdefault("source", self.name)
+        if metadata_out.get("rotatedAt") is None:
+            metadata_out["rotatedAt"] = _now_iso()
+        return metadata_out
+
+
+class _VaultSecretsBackend(_SecretsBackend):
+    name = "hashicorp-vault"
+    writable = True
+
+    def __init__(self) -> None:
+        try:
+            import hvac
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise SecretError(
+                "hvac is required for the Vault secrets backend. Install hvac and retry."
+            ) from exc
+
+        url = os.getenv("VAULT_ADDR")
+        token = os.getenv("VAULT_TOKEN")
+        if not url or not token:
+            raise SecretError(
+                "VAULT_ADDR and VAULT_TOKEN must be set when using the Vault secrets backend."
+            )
+
+        namespace = os.getenv("VAULT_NAMESPACE") or None
+        self._client = hvac.Client(url=url, token=token, namespace=namespace)
+        if not self._client.is_authenticated():  # pragma: no cover - network check
+            raise SecretError("Failed to authenticate with Vault using the provided token.")
+
+        self._mount = os.getenv("VAULT_MOUNT", "secret")
+        self._base_path = os.getenv("VAULT_BASE_PATH", "revenuepilot")
+        self._path_template = os.getenv("VAULT_SECRET_TEMPLATE")
+        self._invalid_path = hvac.exceptions.InvalidPath
+
+    def _path(self, name: str) -> str:
+        if self._path_template:
+            try:
+                return self._path_template.format(name=name)
+            except Exception as exc:
+                raise SecretError(
+                    f"VAULT_SECRET_TEMPLATE format is invalid for name '{name}': {exc}"
+                ) from exc
+        base = (self._base_path or "").strip("/")
+        if not base:
+            return name
+        return f"{base}/{name}".strip("/")
+
+    def load(self, name: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        path = self._path(name)
+        try:
+            response = self._client.secrets.kv.v2.read_secret_version(
+                mount_point=self._mount,
+                path=path,
+            )
+        except self._invalid_path:
+            return None, {}
+        except Exception as exc:  # pragma: no cover - network errors
+            raise SecretError(f"Failed to read secret '{path}' from Vault: {exc}") from exc
+
+        data = response.get("data") or {}
+        secret_data = data.get("data") or {}
+        value = secret_data.get("value")
+        if value is None:
+            return None, {}
+        metadata = secret_data.get("metadata") if isinstance(secret_data.get("metadata"), dict) else {}
+        metadata = _standardize_metadata(metadata)
+        metadata.setdefault("source", self.name)
+        version_info = data.get("metadata") or {}
+        if version_info.get("version") and not metadata.get("version"):
+            metadata["version"] = str(version_info["version"])
+        if version_info.get("created_time") and not metadata.get("rotatedAt"):
+            metadata["rotatedAt"] = version_info["created_time"]
+        return value, metadata
+
+    def store(self, name: str, value: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        path = self._path(name)
+        normalized = _standardize_metadata(metadata)
+        payload = {"value": value, "metadata": normalized}
+        try:
+            response = self._client.secrets.kv.v2.create_or_update_secret(
+                mount_point=self._mount,
+                path=path,
+                secret=payload,
+            )
+        except Exception as exc:  # pragma: no cover - network errors
+            raise SecretError(f"Failed to write secret '{path}' to Vault: {exc}") from exc
+
+        metadata_out = normalized.copy()
+        if isinstance(response, dict):
+            data_meta = response.get("data") or {}
+            if data_meta.get("version") and not metadata_out.get("version"):
+                metadata_out["version"] = str(data_meta["version"])
+            if data_meta.get("created_time") and not metadata_out.get("rotatedAt"):
+                metadata_out["rotatedAt"] = data_meta["created_time"]
+        metadata_out.setdefault("source", self.name)
+        if metadata_out.get("rotatedAt") is None:
+            metadata_out["rotatedAt"] = _now_iso()
+        return metadata_out
+
+
 def _validate_rotation(
     name: str,
     metadata: Dict[str, Any],
@@ -221,43 +501,62 @@ def load_secret(
         )
         return env_value, metadata
 
-    entries = _load_all_keys()
-    entry = entries.get(name)
-    decrypted: Optional[str] = None
-    if entry and isinstance(entry.get("ciphertext"), str):
-        try:
-            decrypted = _decrypt_value(entry["ciphertext"])
-        except Exception:
-            decrypted = None
-    if decrypted:
-        os.environ[env_var] = decrypted
-        metadata = _get_metadata(name)
-        if not metadata or metadata.get("source") != "local-file":
-            metadata = _record_metadata(name, source="local-file")
-        _validate_rotation(
-            name,
-            metadata,
-            max_age_days=max_age_days,
-            allow_missing=allow_missing_rotation,
-        )
-        return decrypted, metadata
-
-    legacy_path = _legacy_file()
-    if legacy_path.exists():
-        try:
-            legacy_value = legacy_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            legacy_value = ""
-        if legacy_value:
-            os.environ[env_var] = legacy_value
-            metadata = _record_metadata(name, source="legacy-file")
+    backend = _get_backend()
+    if backend:
+        backend_value, backend_metadata = backend.load(name)
+        if backend_value:
+            metadata = _record_backend_metadata(
+                name,
+                backend_metadata,
+                default_source=backend.name,
+            )
             _validate_rotation(
                 name,
                 metadata,
                 max_age_days=max_age_days,
                 allow_missing=allow_missing_rotation,
             )
-            return legacy_value, metadata
+            os.environ[env_var] = backend_value
+            return backend_value, metadata
+
+    if allow_fallback:
+        entries = _load_all_keys()
+        entry = entries.get(name)
+        decrypted: Optional[str] = None
+        if entry and isinstance(entry.get("ciphertext"), str):
+            try:
+                decrypted = _decrypt_value(entry["ciphertext"])
+            except Exception:
+                decrypted = None
+        if decrypted:
+            os.environ[env_var] = decrypted
+            metadata = _get_metadata(name)
+            if not metadata or metadata.get("source") != "local-file":
+                metadata = _record_metadata(name, source="local-file")
+            _validate_rotation(
+                name,
+                metadata,
+                max_age_days=max_age_days,
+                allow_missing=allow_missing_rotation,
+            )
+            return decrypted, metadata
+
+        legacy_path = _legacy_file()
+        if legacy_path.exists():
+            try:
+                legacy_value = legacy_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                legacy_value = ""
+            if legacy_value:
+                os.environ[env_var] = legacy_value
+                metadata = _record_metadata(name, source="legacy-file")
+                _validate_rotation(
+                    name,
+                    metadata,
+                    max_age_days=max_age_days,
+                    allow_missing=allow_missing_rotation,
+                )
+                return legacy_value, metadata
 
     if required:
         raise SecretNotFoundError(
@@ -277,14 +576,31 @@ def store_secret(
     """Persist a secret via the writable backend or local fallback."""
 
     allow_fallback = _allow_fallback() if allow_fallback is None else allow_fallback
-    backend = os.getenv("SECRETS_BACKEND", "auto").lower()
-    if backend in {"env", "environment"} and not allow_fallback:
-        raise SecretReadOnlyError(
-            "The configured secrets backend is environment-managed; rotate the secret in the external store."
-        )
-
+    backend = _get_backend()
     rotated = _now_iso()
     version = str(uuid.uuid4())
+    metadata_payload: Dict[str, Any] = {
+        "rotatedAt": rotated,
+        "version": version,
+    }
+    if source:
+        metadata_payload["source"] = source
+
+    if backend:
+        if not backend.writable:
+            raise SecretReadOnlyError(
+                "The configured secrets backend is read-only; rotate the secret in the external manager."
+            )
+        metadata = backend.store(name, value, metadata_payload)
+        record = _record_backend_metadata(name, metadata, default_source=backend.name)
+        os.environ[env_var] = value
+        return record
+
+    if not allow_fallback:
+        raise SecretReadOnlyError(
+            "Cannot persist secret locally because the external backend is read-only and the fallback store is disabled."
+        )
+
     store_key(
         name,
         value,

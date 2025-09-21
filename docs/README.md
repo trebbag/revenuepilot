@@ -17,16 +17,16 @@ Key capabilities include:
 
 - **Rich clinical workspace** with draft and beautified tabs, template
   insertion, chart uploads, transcript review and clipboard/export
-  helpers.【F:src/App.jsx†L1-L118】【F:src/components/NoteEditor.jsx†L1-L120】
-- **Finalization workflow** guiding six-step validation, attestation and
-  dispatch from a dedicated view that persists session context per
-  patient encounter.【F:src/components/WorkflowView.jsx†L1-L420】【F:src/App.jsx†L600-L840】
+  helpers.【F:revenuepilot-frontend/src/App.tsx†L1-L69】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L800-L870】
+- **Finalization workflow** guiding validation, attestation and dispatch
+  from a dedicated wizard that preserves encounter context and returns the
+  clinician to the previous view when complete.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L785-L820】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1433-L1479】
 - **AI assistance** for beautification, coding, compliance, public health,
   differential diagnoses and follow-up scheduling, with offline and local
   model fallbacks.【F:backend/main.py†L9755-L11904】【F:backend/openai_client.py†L1-L117】
 - **Operational tooling** such as analytics dashboards, audit logs,
   notifications, workflow finalisation APIs and schedule management for
-  administrators.【F:src/components/Dashboard.jsx†L1-L120】【F:backend/main.py†L7536-L12239】
+  administrators.【F:revenuepilot-frontend/src/components/Dashboard.tsx†L1-L192】【F:backend/main.py†L7536-L12239】
 - **Packaging support** for Electron builds with code signing and update
   testing, plus scripts for fetching icons and bundling the backend.【F:package.json†L11-L94】【F:docs/DESKTOP_BUILD.md†L1-L68】
 
@@ -36,8 +36,8 @@ Key capabilities include:
 revenuepilot/
 ├── backend/                # FastAPI application, data models and seeds
 ├── docs/                   # Handbook (this file) and focused guides
-├── revenuepilot-frontend/  # Standalone workspace for Vite development
-├── src/                    # React application consumed by Electron
+├── revenuepilot-frontend/  # TypeScript workspace that builds the React UI
+├── src/                    # Legacy JavaScript shell retained for reference
 ├── tests/                  # Backend regression, workflow and API tests
 ├── scripts/                # Build helpers, icon fetcher and update server
 └── electron/               # Electron shell entrypoints
@@ -114,25 +114,26 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 - **Tabbed note editor** – Draft and beautified tabs share a rich-text
   editor with toolbar controls, patient/encounter tracking, chart upload
   support and audio transcription. Auto-save persists per patient and
-  encounter, with server-side versions tracked through the notes API.【F:src/App.jsx†L34-L236】【F:backend/main.py†L7970-L8046】
+  encounter, with server-side versions tracked through the notes API.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L1604-L1648】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L800-L870】【F:backend/main.py†L7970-L8046】
 - **Templates and snippets** – Base templates load from the backend with
-  offline caching and CRUD actions for user-defined templates. Templates
-  can be filtered by specialty and payer context.【F:src/components/TemplatesModal.jsx†L1-L200】【F:backend/templates.py†L1-L160】
+  offline fallbacks and CRUD actions for user-defined templates. Templates
+  can be filtered by specialty and payer context before being inserted
+  into the editor.【F:revenuepilot-frontend/src/components/RichTextEditor.tsx†L400-L441】【F:backend/templates.py†L1-L160】
 - **Suggestion panel** – Categorised AI suggestions (codes, compliance,
   public health, differentials, follow-up) respond to note edits,
-  specialty and payer selections, and can export calendar events.【F:src/components/SuggestionPanel.jsx†L1-L160】【F:backend/main.py†L11348-L12124】
+  specialty and payer selections, and can export calendar events.【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L162-L352】【F:backend/main.py†L11348-L12124】
 - **Transcription tools** – Optional visit recording captures diarised
   transcripts and merges segments into the note. The backend supports
-  Whisper, local models and offline fallbacks.【F:src/components/TranscriptView.jsx†L1-L200】【F:backend/audio_processing.py†L1-L200】
+  Whisper, local models and offline fallbacks.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1000-L1099】【F:backend/audio_processing.py†L1-L200】
 
 ### Finalisation workflow
 
-- **Session orchestration** – Launch the workflow view from the toolbar or
-  sidebar to create sessions, inspect step status and sync progress with
-  the backend state machine.【F:src/App.jsx†L600-L880】【F:src/components/WorkflowView.jsx†L1-L420】
+- **Session orchestration** – Launch the workflow from the toolbar or
+  sidebar, persist the current draft context and return clinicians to
+  their previous view after finishing finalisation.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L785-L820】【F:revenuepilot-frontend/src/ProtectedApp.tsx†L1661-L1670】
 - **Validation & attestation panels** – Trigger note validation, review
   reimbursement details, record attestation metadata and monitor dispatch
-  results without leaving the workspace.【F:src/components/WorkflowView.jsx†L130-L370】
+  results without leaving the workspace.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1433-L1479】
 
 ### Administrative & operational views
 
@@ -142,15 +143,15 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
   presets or custom ranges alongside clinician, clinic and payer
   selections that flow through to the backend query parameters.【F:revenuepilot-frontend/src/components/Analytics.tsx†L185-L314】【F:backend/main.py†L9206-L9706】
 - **Audit & activity logs** – Recent events stream from `/events` while
-  structured audit entries are available under `/api/activity/log`.【F:src/components/Logs.jsx†L1-L160】【F:backend/main.py†L7664-L8912】
-- **User management** – Admins invite, update and deactivate users via
-  JWT-protected endpoints. MFA, refresh tokens and session validation are
-  handled by the backend auth module.【F:src/components/AdminUsers.jsx†L1-L120】【F:backend/main.py†L3199-L4079】
-- **Notifications & surveys** – Persistent notifications, unread counts
-  and satisfaction surveys are surfaced in the React shell and persisted
-  through `/api/notifications` endpoints.【F:src/components/Notifications.jsx†L1-L200】【F:backend/main.py†L6530-L6636】
-- **Scheduling** – The Scheduler view combines follow-up recommendations with
-  appointment creation, exports and bulk status updates backed by the scheduling module.【F:src/components/Scheduler.tsx†L1-L260】【F:backend/scheduling.py†L500-L980】
+  structured audit entries are available under `/api/activity/log`.【F:revenuepilot-frontend/src/components/ActivityLog.tsx†L1-L156】【F:revenuepilot-frontend/src/hooks/useActivityLog.ts†L241-L276】
+- **Configuration & preferences** – Clinician settings, API keys, EHR integration,
+  organisation metadata and security controls are administered through the
+  workspace settings view with optimistic backend persistence.【F:revenuepilot-frontend/src/components/Settings.tsx†L1254-L1412】
+- **Notifications** – Persistent notifications, unread counts and quick actions
+  are surfaced in the shell and backed by `/api/notifications` endpoints and
+  websocket updates.【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L388-L520】【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L763-L819】
+- **Scheduling** – The schedule view combines follow-up recommendations with
+  appointment creation, exports and bulk status updates backed by the scheduling module.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L600-L653】【F:backend/scheduling.py†L500-L980】
 
 ### Backend services
 
@@ -170,15 +171,15 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 
 ### Frontend infrastructure
 
-- **Internationalisation** – `react-i18next` powers localisation with
-  JSON translation bundles stored under `src/locales/`. The language can
-  be selected in user settings and prompts honour `lang` fields.【F:src/i18n.js†L1-L120】【F:backend/main.py†L4239-L4333】
-- **Offline resilience** – Local caches retain templates, notes and code
-  metadata, while an offline queue replays mutations once connectivity is
-  restored.【F:src/api.js†L1-L170】【F:src/api.js†L170-L320】
 - **Authentication context** – JWT access and refresh tokens persist in
-  localStorage with automatic refresh handled by `refreshAccessToken` and
-  guarded routes in the React shell.【F:src/api.js†L320-L520】【F:src/components/Login.jsx†L1-L200】
+  storage with automatic refresh and logout handled by the auth provider
+  and API helpers.【F:revenuepilot-frontend/src/contexts/AuthContext.tsx†L1-L120】【F:revenuepilot-frontend/src/lib/api.ts†L1-L120】
+- **Session synchronisation** – Layout preferences, selected codes and
+  finalisation data hydrate from the backend and are persisted with
+  throttled updates as clinicians work.【F:revenuepilot-frontend/src/contexts/SessionContext.tsx†L294-L438】
+- **API utilities** – Shared fetch helpers resolve the API base URL,
+  attach credentials, manage refresh tokens and construct websocket URLs
+  for real-time features.【F:revenuepilot-frontend/src/lib/api.ts†L180-L268】
 
 ## Environment configuration
 
@@ -199,7 +200,61 @@ runtime:
   rotation metadata, and analytics retention window.【F:backend/main.py†L600-L760】
 - `SECRETS_BACKEND`, `SECRETS_FALLBACK`, `SECRET_MAX_AGE_DAYS` – Control
   whether secrets are loaded from environment managers only or allow the
-  encrypted local fallback, and configure stale-secret enforcement.【F:backend/key_manager.py†L85-L230】
+  encrypted local fallback, and configure stale-secret enforcement.
+- `SECRETS_PREFIX`, `AWS_REGION`, `VAULT_ADDR`, `VAULT_TOKEN`,
+  `VAULT_NAMESPACE`, `VAULT_MOUNT`, `VAULT_BASE_PATH` – Configure the
+  external secrets backend described below.【F:backend/key_manager.py†L85-L380】
+
+### Secrets management
+
+Production deployments must declare `SECRETS_BACKEND` to point at the
+authoritative store. Supported options are:
+
+- `aws` – Use AWS Secrets Manager. Set `AWS_REGION`/`AWS_DEFAULT_REGION`
+  and optionally `SECRETS_PREFIX` (e.g. `RevenuePilot/{name}`) to control
+  the secret naming scheme. Secrets are stored as JSON payloads of the
+  form:
+
+  ```json
+  {
+    "value": "<secret string>",
+    "metadata": {
+      "rotatedAt": "2024-01-15T00:00:00Z",
+      "version": "v3",
+      "expiresAt": "2024-04-15T00:00:00Z",
+      "source": "aws-secrets-manager"
+    }
+  }
+  ```
+
+  The helper automatically records the AWS version identifier and writes
+  fresh rotation timestamps when secrets are rotated via the API.
+
+- `vault` – Use HashiCorp Vault KV v2. Provide `VAULT_ADDR`,
+  `VAULT_TOKEN` and optionally `VAULT_NAMESPACE`. Secrets are stored at
+  `VAULT_MOUNT`/`VAULT_BASE_PATH/<name>` (override with
+  `VAULT_SECRET_TEMPLATE`) using the same JSON structure as above. The
+  KV metadata is mirrored into the local rotation ledger.
+
+- `env` – Treat process environment variables as read-only. Use this for
+  platforms that inject secrets at runtime; writing back is not
+  supported.
+
+Rotation metadata is mandatory outside development. Each secret should
+include:
+
+- `rotatedAt` – ISO-8601 timestamp in UTC.
+- `version` – Unique identifier for auditability (the backend will
+  generate a UUID if omitted).
+- `expiresAt` – Optional ISO-8601 timestamp matching your rotation
+  policy.
+- `source` – Human-readable description of the store (e.g.
+  `aws-secrets-manager`, `vault`).
+
+`backend/key_manager.py` persists the metadata locally for auditing and
+enforces freshness using `SECRET_MAX_AGE_DAYS`. The `start` scripts abort
+in non-development environments when secrets are missing or stale so the
+deployment pipeline can surface actionable errors.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】【F:start.ps1†L1-L64】
 
 See `docs/LOCAL_MODELS.md` for detailed offline model guidance and
 `docs/DESKTOP_BUILD.md` for packaging environment variables.
@@ -230,14 +285,16 @@ for workflow completions, AI failures and EHR export issues. An
 aggregated operational summary is available at `/status/alerts` and is
 surfaced on the admin dashboard for quick triage. Deployment pipelines
 should configure log shipping to handle JSON payloads and register the
-Prometheus endpoint with the monitoring stack.【F:backend/main.py†L231-L362】【F:src/components/Dashboard.jsx†L1-L220】
+Prometheus endpoint with the monitoring stack.【F:backend/main.py†L231-L362】【F:revenuepilot-frontend/src/components/Dashboard.tsx†L1-L192】
 
 Production deployments should source `OPENAI_API_KEY`, `JWT_SECRET` and
-other credentials from an external secrets manager (Vault, SSM, etc.)
-and provide the corresponding `*_ROTATED_AT` metadata so the backend can
-enforce rotation policies. Set `SECRETS_BACKEND=env` and leave
-`SECRETS_FALLBACK=never` in hosted environments; the development scripts
-only provision local fallbacks when `ENVIRONMENT` is a development value.【F:backend/key_manager.py†L85-L230】【F:start.sh†L1-L48】
+other credentials from an external secrets manager (AWS Secrets Manager,
+Vault, etc.) and provide the corresponding rotation metadata so the
+backend can enforce policies. Hosted environments should set
+`SECRETS_BACKEND` to the chosen integration (`aws`, `vault` or `env` for
+platform-provided variables) and leave `SECRETS_FALLBACK=never`; the
+development scripts only provision local fallbacks when `ENVIRONMENT` is
+a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】
 
 
 ## Additional references

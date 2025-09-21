@@ -24,7 +24,13 @@ codebase. Follow them for every change, regardless of size.
 - Secrets are sourced from the secrets manager. `install`/`start` scripts
   provision mock JWT and OpenAI values for development, but production
   deployments must inject real secrets (and `*_ROTATED_AT` metadata)
-  through the external store; never commit `.env` files.【F:install.sh†L1-L70】【F:start.sh†L1-L48】
+  through the external store; never commit `.env` files.【F:install.sh†L1-L70】【F:start.sh†L1-L64】
+- When `ENVIRONMENT` is not development, `start` scripts validate that the
+  configured backend (AWS Secrets Manager, Vault or environment
+  injection) already contains the required credentials plus rotation
+  metadata (`rotatedAt`, `version`, optionally `expiresAt`). Missing or
+  stale secrets cause an immediate failure so remediation happens before
+  deployment.【F:start.sh†L1-L64】【F:start.ps1†L1-L64】
 
 ## 3. Local CI checklist
 
