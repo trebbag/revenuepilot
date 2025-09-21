@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from "react"
 import { apiFetch, apiFetchJson } from "../lib/api"
+import type { StoredFinalizationSession } from "../features/finalization/workflowTypes"
 import { useAuth } from "./AuthContext"
 
 type CodeCategory = "codes" | "prevention" | "diagnoses" | "differentials"
@@ -44,6 +45,7 @@ interface SessionState {
   addedCodes: string[]
   isSuggestionPanelOpen: boolean
   layout: LayoutPreferences
+  finalizationSessions: Record<string, StoredFinalizationSession>
 }
 
 interface SessionContextValue {
@@ -56,6 +58,8 @@ interface SessionContextValue {
     changeCodeCategory: (code: SessionCode, newCategory: "diagnoses" | "differentials") => void
     setSuggestionPanelOpen: (open: boolean) => void
     setLayout: (layout: Partial<LayoutPreferences>) => void
+    storeFinalizationSession: (sessionId: string, session: StoredFinalizationSession) => void
+    clearFinalizationSession: (sessionId: string) => void
     refresh: () => Promise<void>
     reset: () => void
   }
@@ -69,6 +73,8 @@ type SessionAction =
   | { type: "changeCategory"; payload: { code: SessionCode; newCategory: "diagnoses" | "differentials" } }
   | { type: "setSuggestionPanelOpen"; payload: boolean }
   | { type: "setLayout"; payload: Partial<LayoutPreferences> }
+  | { type: "setFinalizationSession"; payload: { sessionId: string; session: StoredFinalizationSession } }
+  | { type: "clearFinalizationSession"; payload: { sessionId: string } }
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined)
 
@@ -134,7 +140,8 @@ function createInitialSessionState(): SessionState {
     layout: {
       noteEditor: 70,
       suggestionPanel: 30
-    }
+    },
+    finalizationSessions: {}
   }
 }
 
@@ -168,12 +175,27 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         suggestionPanel: typeof layout.suggestionPanel === "number" ? layout.suggestionPanel : base.layout.suggestionPanel
       }
 
+      const rawFinalization = session.finalizationSessions
+      const normalizedFinalization =
+        rawFinalization && typeof rawFinalization === "object"
+          ? Object.entries(rawFinalization).reduce<Record<string, StoredFinalizationSession>>(
+              (acc, [key, value]) => {
+                if (value && typeof value === "object") {
+                  acc[String(key)] = value as StoredFinalizationSession
+                }
+                return acc
+              },
+              {}
+            )
+          : { ...(state.finalizationSessions ?? base.finalizationSessions) }
+
       return {
         selectedCodes,
         selectedCodesList: list,
         addedCodes,
         isSuggestionPanelOpen,
-        layout: nextLayout
+        layout: nextLayout,
+        finalizationSessions: normalizedFinalization
       }
     }
     case "addCode": {
@@ -229,6 +251,21 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
             : state.layout.suggestionPanel
         }
       }
+    case "setFinalizationSession": {
+      const nextSessions = {
+        ...state.finalizationSessions,
+        [action.payload.sessionId]: action.payload.session
+      }
+      return { ...state, finalizationSessions: nextSessions }
+    }
+    case "clearFinalizationSession": {
+      if (!(action.payload.sessionId in state.finalizationSessions)) {
+        return state
+      }
+      const nextSessions = { ...state.finalizationSessions }
+      delete nextSessions[action.payload.sessionId]
+      return { ...state, finalizationSessions: nextSessions }
+    }
     default:
       return state
   }
@@ -318,9 +355,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       selectedCodes: state.selectedCodes,
       selectedCodesList: state.selectedCodesList,
       addedCodes: state.addedCodes,
-      isSuggestionPanelOpen: state.isSuggestionPanelOpen
+      isSuggestionPanelOpen: state.isSuggestionPanelOpen,
+      finalizationSessions: state.finalizationSessions
     }),
-    [state.selectedCodes, state.selectedCodesList, state.addedCodes, state.isSuggestionPanelOpen]
+    [
+      state.selectedCodes,
+      state.selectedCodesList,
+      state.addedCodes,
+      state.isSuggestionPanelOpen,
+      state.finalizationSessions
+    ]
   )
 
   const layoutPayload = useMemo(() => state.layout, [state.layout])
@@ -417,6 +461,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "changeCategory", payload: { code, newCategory } })
   }, [])
 
+  const storeFinalizationSession = useCallback(
+    (sessionId: string, session: StoredFinalizationSession) => {
+      dispatch({ type: "setFinalizationSession", payload: { sessionId, session } })
+    },
+    []
+  )
+
+  const clearFinalizationSession = useCallback((sessionId: string) => {
+    dispatch({ type: "clearFinalizationSession", payload: { sessionId } })
+  }, [])
+
   const setSuggestionPanelOpen = useCallback((open: boolean) => {
     dispatch({ type: "setSuggestionPanelOpen", payload: open })
   }, [])
@@ -436,11 +491,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         changeCodeCategory,
         setSuggestionPanelOpen,
         setLayout,
+        storeFinalizationSession,
+        clearFinalizationSession,
         refresh,
         reset
       }
     }),
-    [state, hydrated, syncing, addCode, removeCode, changeCodeCategory, setSuggestionPanelOpen, setLayout, refresh, reset]
+    [
+      state,
+      hydrated,
+      syncing,
+      addCode,
+      removeCode,
+      changeCodeCategory,
+      setSuggestionPanelOpen,
+      setLayout,
+      storeFinalizationSession,
+      clearFinalizationSession,
+      refresh,
+      reset
+    ]
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
