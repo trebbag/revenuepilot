@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
 import uuid
+from datetime import timedelta
 from typing import Optional, Tuple
 
 from passlib.context import CryptContext
@@ -15,6 +15,7 @@ from backend.migrations import (  # type: ignore
     ensure_settings_table,
     ensure_clinics_table,
 )
+from backend.time_utils import from_epoch_seconds, to_epoch_seconds, utc_now
 
 # Password hashing context using bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -119,7 +120,8 @@ def register_user(
 
     pwd_hash = hash_password(password)
 
-    now = time.time()
+    now_dt = utc_now()
+    now_ts = to_epoch_seconds(now_dt)
     resolved_email = email or f"{username}@example.test"
     resolved_name = name or username
 
@@ -141,7 +143,7 @@ def register_user(
                         name=code,
                         settings="{}",
                         active=1,
-                        created_at=now,
+                        created_at=now_ts,
                     )
                 )
 
@@ -156,8 +158,8 @@ def register_user(
             mfa_enabled=1 if mfa_enabled else 0,
             mfa_secret=mfa_secret,
             failed_login_attempts=0,
-            created_at=now,
-            updated_at=now,
+            created_at=now_ts,
+            updated_at=now_ts,
         )
     )
     user_id = int(result.inserted_primary_key[0])
@@ -180,7 +182,7 @@ def register_user(
     session.execute(
         update(users_table)
         .where(users_table.c.id == user_id)
-        .values(updated_at=now)
+        .values(updated_at=now_ts)
     )
     session.flush()
     return user_id
@@ -213,36 +215,41 @@ def authenticate_user(
         return None
 
     user_id = row["id"]
-    locked_until = row["account_locked_until"]
-    if locked_until and float(locked_until) > time.time():
+    locked_until_dt = from_epoch_seconds(row["account_locked_until"])
+    now_dt = utc_now()
+    if locked_until_dt and locked_until_dt > now_dt:
         return None
 
     if verify_password(password, row["password_hash"]):
-        now = time.time()
+        now_dt = utc_now()
+        now_ts = to_epoch_seconds(now_dt)
         session.execute(
             update(users_table)
             .where(users_table.c.id == user_id)
             .values(
                 failed_login_attempts=0,
                 account_locked_until=None,
-                last_login=now,
-                updated_at=now,
+                last_login=now_ts,
+                updated_at=now_ts,
             )
         )
         session.flush()
         return int(user_id), row["role"]
 
     attempts = (row["failed_login_attempts"] or 0) + 1
-    lock_until: Optional[float] = None
+    now_dt = utc_now()
+    now_ts = to_epoch_seconds(now_dt)
+    lock_until_ts: Optional[float] = None
     if attempts >= LOCKOUT_THRESHOLD:
-        lock_until = time.time() + LOCKOUT_DURATION_SECONDS
+        lock_until_dt = now_dt + timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        lock_until_ts = to_epoch_seconds(lock_until_dt)
     session.execute(
         update(users_table)
         .where(users_table.c.id == user_id)
         .values(
             failed_login_attempts=attempts,
-            account_locked_until=lock_until,
-            updated_at=time.time(),
+            account_locked_until=lock_until_ts,
+            updated_at=now_ts,
         )
     )
     session.flush()
