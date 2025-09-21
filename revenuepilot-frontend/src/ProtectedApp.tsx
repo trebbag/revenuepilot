@@ -140,6 +140,7 @@ export function ProtectedApp() {
     encounterId: string
   } | null>(null)
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
+  const [noteEditorContent, setNoteEditorContent] = useState<string>(activeDraft?.content ?? "")
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
   const [finalizationRequest, setFinalizationRequest] = useState<FinalizationWizardLaunchOptions | null>(null)
   const finalizationReturnViewRef = useRef<ViewKey>("app")
@@ -196,6 +197,10 @@ export function ProtectedApp() {
   const [noteViewMode, setNoteViewMode] = useState<NoteViewMode>("draft")
   const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
   const [ehrExportStatus, setEhrExportStatus] = useState<EhrExportState | null>(null)
+
+  useEffect(() => {
+    setNoteEditorContent(activeDraft?.content ?? "")
+  }, [activeDraft])
 
   const normalizeText = useCallback((value?: string | number | null, fallback = "") => {
     if (value === undefined || value === null) {
@@ -1511,6 +1516,7 @@ export function ProtectedApp() {
                         initialNoteData={activeDraft ?? undefined}
                         selectedCodes={selectedCodes}
                         selectedCodesList={selectedCodesList}
+                        onNoteContentChange={setNoteEditorContent}
                         onNavigateToDrafts={() => handleNavigate('drafts')}
                         initialViewMode="draft"
                         viewMode={noteViewMode}
@@ -1541,6 +1547,8 @@ export function ProtectedApp() {
                           onUpdateCodes={() => undefined}
                           onAddCode={handleAddCode}
                           addedCodes={addedCodes}
+                          noteContent={noteEditorContent}
+                          selectedCodesList={selectedCodesList}
                         />
                       </ResizablePanel>
                     </>

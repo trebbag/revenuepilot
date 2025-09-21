@@ -22,10 +22,10 @@ This document identifies every UI element in the RevenuePilot application that r
 | Element Name | Data Type & Structure | Expected Data Source | Update Trigger | Current Status |
 |--------------|----------------------|---------------------|----------------|----------------|
 | **Patient ID Validation & Autocomplete** | `Array<{ patientId: string, firstName: string, lastName: string, dob: string, mrn?: string }>` (max 10 results) | `/api/patients/search?q={query}` | On user typing (debounced 300ms) | ⚠️ **NEEDS IMPLEMENTATION** - Basic input field only |
-| **Encounter ID Validation** | `{ valid: boolean, encounterId: string, patientId: string, date: string, type: string, provider: string } \| { valid: false, error: string }` | `/api/encounters/validate/{id}` | On blur, on value change | ⚠️ **NEEDS IMPLEMENTATION** - No validation |
+| **Encounter ID Validation** | `{ valid: boolean, encounterId: string, patientId: string, date: string, type: string, provider: string } \| { valid: false, error: string }` | `POST /api/encounters/validate` | On blur, on value change | ⚠️ **NEEDS IMPLEMENTATION** - No validation |
 | **Visit Timer & Session Management** | `{ sessionId: string, startTime: string, pausedDuration: number, totalDuration: number, status: "active" \| "paused" \| "completed" }` | `/api/visits/session` | Visit start/stop, auto-save intervals | ⚠️ **NEEDS IMPLEMENTATION** - Client-side timer only |
 | **Speech-to-Text Transcription** | `{ transcript: string, confidence: number, isInterim: boolean, timestamp: number, speakerLabel?: "doctor" \| "patient" }` (streaming) | `/api/transcribe/stream` | While recording active | ⚠️ **NEEDS IMPLEMENTATION** - Mock data simulation |
-| **Real-time Compliance Analysis** | `Array<ComplianceIssue>` (see ComplianceIssue interface) | `/api/compliance/analyze` | Note content change, real-time analysis | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
+| **Real-time Compliance Analysis** | `Array<ComplianceIssue>` (see ComplianceIssue interface) | `POST /api/ai/compliance/check` | Note content change, real-time analysis | ⚠️ **NEEDS IMPLEMENTATION** - Static demo data |
 | **Note Auto-save** | `{ noteId: string, content: string, lastSaved: string, version: number, conflicts?: boolean }` | `/api/notes/auto-save` | Every 30 seconds during active session | ⚠️ **NEEDS IMPLEMENTATION** - No persistence |
 | **Finalization Workflow** | `{ canFinalize: boolean, requiredFields: Array<string>, missingDocumentation: Array<string>, estimatedReimbursement: number }` | `/api/notes/finalize-check` | Before finalization | ⚠️ **NEEDS IMPLEMENTATION** - Basic client validation only |
 
@@ -429,7 +429,7 @@ This enhanced analysis provides comprehensive backend integration requirements f
 |----------|--------|---------|---------------------------|----------|
 | `/api/patients/search` | GET | Patient search/autocomplete | `Query: { q }` → `Response: Array<{ patientId, name, dob, mrn }>` (max 10) | **CRITICAL** |
 | `/api/patients/{id}` | GET | Patient demographics/history | `Response: { demographics, allergies, medications, lastVisit, insurance }` | **HIGH** |
-| `/api/encounters/validate/{id}` | GET | Encounter validation | `Response: { valid, patientId, date, type, provider } \| { valid: false, error }` | **CRITICAL** |
+| `/api/encounters/validate` | POST | Encounter validation | `Request: { encounterId, patientId? }` → `Response: { valid, patientId, date, type, provider } \| { valid: false, error }` | **CRITICAL** |
 | `/api/visits/session` | POST/PUT | Visit session management | Start/pause/complete visit sessions with timing | **HIGH** |
 | `/api/charts/upload` | POST | Chart upload/processing | File upload with processing status tracking | **MEDIUM** |
 
@@ -687,7 +687,7 @@ NoteEditor receives prePopulatedPatient prop
 Backend Calls:
 - POST /api/visits/session (start visit)
 - GET /api/patients/{patientId} (patient demographics)
-- GET /api/encounters/validate/{encounterId}
+- POST /api/encounters/validate
 ```
 
 #### **2. AI Suggestion → Code Selection → Billing Flow:**

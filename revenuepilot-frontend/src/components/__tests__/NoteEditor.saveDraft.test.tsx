@@ -158,18 +158,48 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
     return new Response(JSON.stringify({ demographics: {} }), { status: 200 })
   }
 
-  if (url.startsWith("/api/encounters/validate/")) {
+  if (url === "/api/encounters/validate" && method === "POST") {
     return new Response(
       JSON.stringify({
         valid: true,
         encounter: {
-          encounterId: 1001,
-          patientId: "PT-42",
-          patient: { patientId: "PT-42" },
+          encounterId: init.jsonBody?.encounterId ?? init.jsonBody?.encounter_id ?? 1001,
+          patientId: init.jsonBody?.patientId ?? init.jsonBody?.patient_id ?? "PT-42",
+          patient: { patientId: init.jsonBody?.patientId ?? "PT-42" },
           date: "2024-03-14",
           type: "Consult",
           provider: "Dr. Example"
         }
+      }),
+      { status: 200 }
+    )
+  }
+
+  if (url === "/api/ai/compliance/check" && method === "POST") {
+    return new Response(
+      JSON.stringify({
+        alerts: [
+          {
+            id: "alert-1",
+            text: "Document review required for risk adjustment.",
+            category: "documentation",
+            priority: "medium",
+            confidence: 0.82,
+            reasoning: "Missing history of present illness section.",
+            ruleReferences: [
+              {
+                ruleId: "CMS-HCC",
+                citations: [
+                  {
+                    title: "CMS Risk Adjustment Guidelines",
+                    url: "https://example.org/cms/hcc",
+                    citation: "Section 3.1"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       }),
       { status: 200 }
     )

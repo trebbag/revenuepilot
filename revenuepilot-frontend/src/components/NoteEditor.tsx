@@ -35,6 +35,11 @@ interface ComplianceIssue {
   details: string
   suggestion: string
   learnMoreUrl?: string
+  confidence?: number | null
+  ruleReferences?: {
+    ruleId?: string
+    citations?: { title?: string; url?: string; citation?: string }[]
+  }[]
   dismissed?: boolean
 }
 
@@ -103,6 +108,29 @@ interface InitialNoteData {
   patientName?: string
 }
 
+const normalizeCodeValueForCompliance = (value: unknown): string | null => {
+  if (value && typeof value === "object" && "code" in (value as Record<string, unknown>)) {
+    return normalizeCodeValueForCompliance((value as { code?: unknown }).code)
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value)
+  }
+  return null
+}
+
+const createComplianceSignature = (content: string, codes: string[]): string => {
+  const normalizedContent = typeof content === "string" ? content : ""
+  const sortedCodes = [...codes]
+    .filter(code => typeof code === "string" && code.trim().length > 0)
+    .map(code => code.trim())
+    .sort()
+  return JSON.stringify({ content: normalizedContent, codes: sortedCodes })
+}
+
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
   const lower = text.toLowerCase()
   if (lower.includes("critical") || lower.includes("violation") || lower.includes("missing")) {
@@ -122,6 +150,17 @@ const slugify = (value: string) =>
     .slice(0, 40)
 
 type NoteViewMode = "draft" | "beautified"
+
+type AutoSaveTrigger = "debounced" | "interval" | "manual"
+
+interface PerformAutoSaveOptions {
+  reason?: AutoSaveTrigger
+  contentOverride?: string
+  noteIdOverride?: string
+  force?: boolean
+}
+
+const AUTO_SAVE_DEBOUNCE_MS = 5_000
 
 interface NoteEditorProps {
   prePopulatedPatient?: {
@@ -252,6 +291,8 @@ export function NoteEditor({
   const [noteId, setNoteId] = useState<string | null>(initialNoteData?.noteId ?? null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
+  const [autoSaveInFlight, setAutoSaveInFlight] = useState(false)
+  const [lastAutoSaveVersion, setLastAutoSaveVersion] = useState<number | null>(null)
   const [saveDraftLoading, setSaveDraftLoading] = useState(false)
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
 
@@ -325,6 +366,17 @@ export function NoteEditor({
     [ehrExportState, onEhrExportStateChange]
   )
 
+  const complianceCodeValues = useMemo(() => {
+    const unique = new Set<string>()
+    ;(selectedCodesList ?? []).forEach(item => {
+      const normalized = normalizeCodeValueForCompliance(item)
+      if (normalized) {
+        unique.add(normalized)
+      }
+    })
+    return Array.from(unique).sort()
+  }, [selectedCodesList])
+
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const encounterValidationAbortRef = useRef<AbortController | null>(null)
@@ -332,10 +384,14 @@ export function NoteEditor({
   const patientDetailsAbortRef = useRef<AbortController | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
-  const lastComplianceContentRef = useRef<string>(initialNoteData?.content ?? "")
+  const lastComplianceInputRef = useRef<string>(
+    createComplianceSignature(initialNoteData?.content ?? "", complianceCodeValues)
+  )
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveLastContentRef = useRef<string>(initialNoteData?.content ?? "")
+  const autoSavePromiseRef = useRef<Promise<boolean> | null>(null)
   const noteCreatePromiseRef = useRef<Promise<string> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -364,17 +420,18 @@ export function NoteEditor({
       .map((item, index) => {
         if (item && typeof item === "object") {
           const rawId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : undefined
+          const descriptionSource =
+            typeof item.description === "string" && item.description.trim().length > 0
+              ? item.description.trim()
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text.trim()
+                : undefined
           const titleCandidate =
             typeof item.title === "string" && item.title.trim().length > 0
               ? item.title.trim()
-              : typeof item.description === "string" && item.description.trim().length > 0
-                ? item.description.trim()
-                : undefined
+              : descriptionSource
           const title = titleCandidate ?? `Compliance issue ${index + 1}`
-          const description =
-            typeof item.description === "string" && item.description.trim().length > 0
-              ? item.description.trim()
-              : title
+          const description = descriptionSource ?? title
           const category =
             item.category === "documentation" ||
             item.category === "coding" ||
@@ -382,30 +439,93 @@ export function NoteEditor({
             item.category === "quality"
               ? item.category
               : "documentation"
+          const priority =
+            typeof item.priority === "string" && item.priority.trim().length > 0
+              ? item.priority.trim().toLowerCase()
+              : ""
           const severity =
             item.severity === "critical" ||
             item.severity === "warning" ||
             item.severity === "info"
               ? item.severity
-              : severityFromText(`${title} ${description}`)
+              : priority.includes("high") || priority.includes("critical")
+                ? "critical"
+                : priority.includes("medium") || priority.includes("warn")
+                  ? "warning"
+                  : priority.includes("low")
+                    ? "info"
+                    : severityFromText(`${title} ${description}`)
+          const normalizedReferences = Array.isArray(item.ruleReferences)
+            ? item.ruleReferences
+                .map((reference: any) => {
+                  const ruleId =
+                    typeof reference?.ruleId === "string" && reference.ruleId.trim().length > 0
+                      ? reference.ruleId.trim()
+                      : undefined
+                  const citations = Array.isArray(reference?.citations)
+                    ? reference.citations
+                        .map((citation: any) => {
+                          const citationTitle =
+                            typeof citation?.title === "string" && citation.title.trim().length > 0
+                              ? citation.title.trim()
+                              : undefined
+                          const citationUrl =
+                            typeof citation?.url === "string" && citation.url.trim().length > 0
+                              ? citation.url.trim()
+                              : undefined
+                          const citationText =
+                            typeof citation?.citation === "string" && citation.citation.trim().length > 0
+                              ? citation.citation.trim()
+                              : undefined
+                          if (!citationTitle && !citationUrl && !citationText) {
+                            return null
+                          }
+                          return { title: citationTitle, url: citationUrl, citation: citationText }
+                        })
+                        .filter((entry): entry is { title?: string; url?: string; citation?: string } => Boolean(entry))
+                    : []
+                  if (!ruleId && citations.length === 0) {
+                    return null
+                  }
+                  return { ruleId, citations }
+                })
+                .filter((entry): entry is { ruleId?: string; citations?: { title?: string; url?: string; citation?: string }[] } =>
+                  Boolean(entry)
+                )
+            : []
+          const primaryCitation = normalizedReferences
+            .flatMap(ref => ref.citations ?? [])
+            .find(citation => typeof citation?.url === "string" && citation.url.length > 0)
+          const reasoning =
+            typeof item.reasoning === "string" && item.reasoning.trim().length > 0
+              ? item.reasoning.trim()
+              : undefined
+          const detailsText =
+            typeof item.details === "string" && item.details.trim().length > 0
+              ? item.details.trim()
+              : reasoning ?? description
+          const suggestionText =
+            typeof item.suggestion === "string" && item.suggestion.trim().length > 0
+              ? item.suggestion.trim()
+              : reasoning ?? "Review the note content and update documentation to resolve this issue."
+          const confidenceValue =
+            typeof item.confidence === "number"
+              ? Math.round(Math.min(Math.max(item.confidence, 0), 1) * 100)
+              : undefined
           return {
             id: rawId ?? `issue-${slugify(title)}-${index}`,
             severity,
             title,
             description,
             category,
-            details:
-              typeof item.details === "string" && item.details.trim().length > 0
-                ? item.details.trim()
-                : description,
-            suggestion:
-              typeof item.suggestion === "string" && item.suggestion.trim().length > 0
-                ? item.suggestion.trim()
-                : "Review the note content and update documentation to resolve this issue.",
+            details: detailsText,
+            suggestion: suggestionText,
             learnMoreUrl:
               typeof item.learnMoreUrl === "string" && item.learnMoreUrl.trim().length > 0
                 ? item.learnMoreUrl.trim()
-                : undefined,
+                : primaryCitation?.url,
+            confidence: confidenceValue,
+            ruleReferences: normalizedReferences.length > 0 ? normalizedReferences : undefined,
             dismissed: Boolean(item.dismissed)
           } satisfies ComplianceIssue
         }
@@ -532,6 +652,111 @@ export function NoteEditor({
     [noteId, patientId, encounterId, fetchWithAuth],
   )
 
+  const performAutoSave = useCallback(
+    async (options?: PerformAutoSaveOptions): Promise<boolean> => {
+      const { reason = "debounced", contentOverride, noteIdOverride, force = false } = options ?? {}
+
+      if (isFinalized) {
+        return false
+      }
+
+      const trimmedPatientId = patientId.trim()
+      if (!trimmedPatientId) {
+        return false
+      }
+
+      const content =
+        typeof contentOverride === "string" ? contentOverride : noteContentRef.current ?? ""
+
+      if (!force && content === autoSaveLastContentRef.current) {
+        return false
+      }
+
+      if (autoSavePromiseRef.current) {
+        if (force || reason === "manual") {
+          try {
+            await autoSavePromiseRef.current
+          } catch {
+            // Ignore previous failure so we can attempt again immediately.
+          }
+        } else {
+          return false
+        }
+      }
+
+      const run = (async () => {
+        setAutoSaveInFlight(true)
+        try {
+          const ensuredId = noteIdOverride ?? noteId ?? (await ensureNoteCreated(content))
+          if (!ensuredId) {
+            throw new Error("Unable to determine note identifier")
+          }
+
+          const noteIdString = String(ensuredId)
+          const response = await fetchWithAuth("/api/notes/auto-save", {
+            method: "POST",
+            jsonBody: { noteId: noteIdString, content }
+          })
+
+          if (!response.ok) {
+            let message = `Auto-save failed (${response.status})`
+            try {
+              const errBody = await response.json()
+              const detail =
+                typeof errBody?.message === "string" && errBody.message.trim().length > 0
+                  ? errBody.message
+                  : typeof errBody?.detail === "string" && errBody.detail.trim().length > 0
+                    ? errBody.detail
+                    : ""
+              if (detail) {
+                message = detail
+              }
+            } catch {
+              // Ignore body parsing errors
+            }
+            throw new Error(message)
+          }
+
+          const data = await response.json().catch(() => ({}))
+          const version =
+            typeof data?.version === "number" && Number.isFinite(data.version)
+              ? data.version
+              : null
+
+          autoSaveLastContentRef.current = content
+          setLastAutoSaveTime(new Date().toISOString())
+          setLastAutoSaveVersion(version)
+          setAutoSaveError(null)
+          if (!noteId || noteId !== noteIdString) {
+            setNoteId(noteIdString)
+          }
+          return true
+        } catch (error) {
+          setAutoSaveError(
+            error instanceof Error ? error.message : "Unable to auto-save note",
+          )
+          return false
+        } finally {
+          setAutoSaveInFlight(false)
+          if (autoSaveTimeoutRef.current) {
+            clearTimeout(autoSaveTimeoutRef.current)
+            autoSaveTimeoutRef.current = null
+          }
+        }
+      })()
+
+      autoSavePromiseRef.current = run
+      try {
+        return await run
+      } finally {
+        if (autoSavePromiseRef.current === run) {
+          autoSavePromiseRef.current = null
+        }
+      }
+    },
+    [ensureNoteCreated, fetchWithAuth, isFinalized, noteId, patientId],
+  )
+
   const stopAudioStream = useCallback(() => {
     const recorder = mediaRecorderRef.current
     if (recorder && recorder.state !== "inactive") {
@@ -642,8 +867,11 @@ export function NoteEditor({
     setNoteContent(incomingContent)
     noteContentRef.current = incomingContent
     autoSaveLastContentRef.current = incomingContent
-    lastComplianceContentRef.current = incomingContent
-  }, [initialNoteData, initialRecordedSeconds, stopAudioStream])
+    lastComplianceInputRef.current = createComplianceSignature(incomingContent, complianceCodeValues)
+    if (onNoteContentChange) {
+      onNoteContentChange(incomingContent)
+    }
+  }, [initialNoteData, initialRecordedSeconds, stopAudioStream, complianceCodeValues, onNoteContentChange])
 
   const startAudioStream = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -1112,7 +1340,18 @@ export function NoteEditor({
         if (!Number.isFinite(numericId)) {
           throw new Error("Encounter ID must be numeric")
         }
-        const response = await fetchWithAuth(`/api/encounters/validate/${numericId}`, {
+        const payload: Record<string, unknown> = {
+          encounterId: numericId,
+          encounter_id: numericId
+        }
+        const trimmedPatientId = patientId.trim()
+        if (trimmedPatientId) {
+          payload.patientId = trimmedPatientId
+          payload.patient_id = trimmedPatientId
+        }
+        const response = await fetchWithAuth('/api/encounters/validate', {
+          method: 'POST',
+          jsonBody: payload,
           signal: controller.signal
         })
         if (!response.ok) {
@@ -1180,14 +1419,15 @@ export function NoteEditor({
     }
 
     if (!noteContent || noteContent.trim().length === 0) {
-      lastComplianceContentRef.current = ""
+      lastComplianceInputRef.current = createComplianceSignature("", [])
       setComplianceIssues([])
       setComplianceError(null)
       return
     }
 
     complianceTimeoutRef.current = window.setTimeout(async () => {
-      if (noteContentRef.current === lastComplianceContentRef.current) return
+      const signature = createComplianceSignature(noteContentRef.current ?? "", complianceCodeValues)
+      if (signature === lastComplianceInputRef.current) return
       const controller = new AbortController()
       complianceAbortRef.current?.abort()
       complianceAbortRef.current = controller
@@ -1195,14 +1435,12 @@ export function NoteEditor({
       setComplianceError(null)
       try {
         const payload: Record<string, unknown> = {
-          text: noteContentRef.current,
-          specialty: specialty ?? undefined,
-          payer: payer ?? undefined
+          content: typeof noteContentRef.current === "string" ? noteContentRef.current : ""
         }
-        if (noteId) {
-          payload.note_id = noteId
+        if (complianceCodeValues.length > 0) {
+          payload.codes = complianceCodeValues
         }
-        const response = await fetchWithAuth("/api/compliance/analyze", {
+        const response = await fetchWithAuth("/api/ai/compliance/check", {
           method: "POST",
           jsonBody: payload,
           signal: controller.signal
@@ -1212,16 +1450,24 @@ export function NoteEditor({
         }
         const data = await response.json()
         const normalized = convertComplianceResponse(
-          Array.isArray(data?.compliance) ? data.compliance : data?.issues ?? data?.results ?? data
+          Array.isArray(data?.alerts)
+            ? data.alerts
+            : Array.isArray(data?.compliance)
+              ? data.compliance
+              : Array.isArray(data?.issues)
+                ? data.issues
+                : Array.isArray(data?.results)
+                  ? data.results
+                  : data
         )
-        setComplianceIssues((prev) => {
-          const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
-          return normalized.map((issue) => ({
+        setComplianceIssues(prev => {
+          const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
+          return normalized.map(issue => ({
             ...issue,
             dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
           }))
         })
-        lastComplianceContentRef.current = noteContentRef.current
+        lastComplianceInputRef.current = signature
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
         setComplianceError(
@@ -1238,7 +1484,7 @@ export function NoteEditor({
       }
       complianceAbortRef.current?.abort()
     }
-  }, [noteContent, specialty, payer, noteId, fetchWithAuth, convertComplianceResponse])
+  }, [noteContent, complianceCodeValues, fetchWithAuth, convertComplianceResponse])
 
   useEffect(() => {
     if (autoSaveIntervalRef.current) {
@@ -1249,63 +1495,14 @@ export function NoteEditor({
       return
     }
 
-    const trimmedPatientId = patientId.trim()
-    if (!trimmedPatientId) {
+    if (!patientId.trim()) {
       return
     }
 
-    const performAutoSave = async () => {
-      const content = noteContentRef.current
-      if (content === autoSaveLastContentRef.current) return
-      try {
-        const ensuredId = noteId ?? (await ensureNoteCreated(content))
-        if (!ensuredId) {
-          return
-        }
-        const numericId = Number(ensuredId)
-        const payload: Record<string, unknown> = {
-          note_id: Number.isFinite(numericId) ? numericId : ensuredId,
-          content
-        }
-        const response = await fetchWithAuth("/api/notes/auto-save", {
-          method: "PUT",
-          jsonBody: payload
-        })
-        if (!response.ok) {
-          let message = `Auto-save failed (${response.status})`
-          try {
-            const errBody = await response.json()
-            const detail =
-              typeof errBody?.message === "string" && errBody.message.trim().length > 0
-                ? errBody.message
-                : typeof errBody?.detail === "string" && errBody.detail.trim().length > 0
-                  ? errBody.detail
-                  : ""
-            if (detail) {
-              message = detail
-            }
-          } catch {
-            // ignore body parsing errors
-          }
-          throw new Error(message)
-        } else {
-          await response.json().catch(() => ({}))
-        }
-        autoSaveLastContentRef.current = content
-        setLastAutoSaveTime(new Date().toISOString())
-        setAutoSaveError(null)
-        if (!noteId) {
-          setNoteId(String(ensuredId))
-        }
-      } catch (error) {
-        setAutoSaveError(
-          error instanceof Error ? error.message : "Unable to auto-save note",
-        )
-      }
-    }
-
-    void performAutoSave()
-    autoSaveIntervalRef.current = window.setInterval(performAutoSave, 30_000)
+    void performAutoSave({ reason: "interval" })
+    autoSaveIntervalRef.current = window.setInterval(() => {
+      void performAutoSave({ reason: "interval" })
+    }, 30_000)
 
     return () => {
       if (autoSaveIntervalRef.current) {
@@ -1313,7 +1510,38 @@ export function NoteEditor({
         autoSaveIntervalRef.current = null
       }
     }
-  }, [noteId, patientId, fetchWithAuth, ensureNoteCreated, isFinalized])
+  }, [patientId, performAutoSave, isFinalized])
+
+  useEffect(() => {
+    if (isFinalized) {
+      return () => undefined
+    }
+
+    if (!patientId.trim()) {
+      return () => undefined
+    }
+
+    const content = noteContentRef.current ?? ""
+    if (content === autoSaveLastContentRef.current) {
+      return () => undefined
+    }
+
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current)
+    }
+
+    autoSaveTimeoutRef.current = window.setTimeout(() => {
+      autoSaveTimeoutRef.current = null
+      void performAutoSave({ reason: "debounced" })
+    }, AUTO_SAVE_DEBOUNCE_MS)
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current)
+        autoSaveTimeoutRef.current = null
+      }
+    }
+  }, [noteContent, patientId, isFinalized, performAutoSave])
 
   useEffect(() => {
     return () => {
@@ -1326,6 +1554,10 @@ export function NoteEditor({
       if (autoSaveIntervalRef.current) {
         clearInterval(autoSaveIntervalRef.current)
       }
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current)
+      }
+      autoSavePromiseRef.current = null
       noteCreatePromiseRef.current = null
       stopAudioStream()
     }
@@ -1416,7 +1648,7 @@ export function NoteEditor({
           onNoteContentChange(finalizedContent)
         }
         autoSaveLastContentRef.current = finalizedContent
-        lastComplianceContentRef.current = finalizedContent
+        lastComplianceInputRef.current = createComplianceSignature(finalizedContent, complianceCodeValues)
       }
 
       applyWizardIssues(result.issues)
@@ -1430,6 +1662,7 @@ export function NoteEditor({
     [
       applyWizardIssues,
       currentSessionTime,
+      complianceCodeValues,
       onNoteContentChange,
       stopAudioStream
     ]
@@ -1604,11 +1837,9 @@ export function NoteEditor({
     }
 
     const previousAutoSaveTime = lastAutoSaveTime
-    const optimisticTimestamp = new Date().toISOString()
 
     setSaveDraftLoading(true)
     setSaveDraftError(null)
-    setLastAutoSaveTime(optimisticTimestamp)
 
     try {
       const content = noteContentRef.current ?? ""
@@ -1617,43 +1848,18 @@ export function NoteEditor({
         throw new Error("Unable to determine draft identifier")
       }
 
-      const numericId = Number(ensuredId)
-      const payload: Record<string, unknown> = {
-        note_id: Number.isFinite(numericId) ? numericId : ensuredId,
-        content
-      }
-
-      const response = await fetchWithAuth("/api/notes/auto-save", {
-        method: "PUT",
-        jsonBody: payload
+      const saved = await performAutoSave({
+        reason: "manual",
+        contentOverride: content,
+        noteIdOverride: String(ensuredId),
+        force: true
       })
 
-      if (!response.ok) {
-        let message = `Failed to save draft (${response.status})`
-        try {
-          const errorBody = await response.json()
-          const detail =
-            typeof errorBody?.message === "string" && errorBody.message.trim().length > 0
-              ? errorBody.message
-              : typeof errorBody?.detail === "string" && errorBody.detail.trim().length > 0
-                ? errorBody.detail
-                : ""
-          if (detail) {
-            message = detail
-          }
-        } catch {
-          // Ignore parsing errors
-        }
-        throw new Error(message)
+      if (!saved) {
+        throw new Error("Unable to auto-save note")
       }
 
-      await response.json().catch(() => ({}))
-
-      autoSaveLastContentRef.current = content
-      setAutoSaveError(null)
-      if (!noteId) {
-        setNoteId(String(ensuredId))
-      }
+      const ensuredNoteId = String(ensuredId)
 
       if (visitSession.sessionId) {
         try {
@@ -1680,17 +1886,17 @@ export function NoteEditor({
         const encounterValue = encounterId.trim()
         await fetchWithAuth("/api/activity/log", {
           method: "POST",
-          jsonBody: {
-            eventType: "draft_saved",
-            details: {
-              manual: true,
-              patientId: trimmedPatientId,
-              encounterId: encounterValue || undefined,
-              noteId: ensuredId,
-              source: "note-editor"
+            jsonBody: {
+              eventType: "draft_saved",
+              details: {
+                manual: true,
+                patientId: trimmedPatientId,
+                encounterId: encounterValue || undefined,
+                noteId: ensuredNoteId,
+                source: "note-editor"
+              }
             }
-          }
-        })
+          })
       } catch (error) {
         console.error("Failed to log draft save activity", error)
       }
@@ -1717,8 +1923,8 @@ export function NoteEditor({
     lastAutoSaveTime,
     noteContentRef,
     ensureNoteCreated,
+    performAutoSave,
     fetchWithAuth,
-    noteId,
     visitSession.sessionId,
     setVisitSession,
     stopAudioStream,
@@ -2019,13 +2225,22 @@ export function NoteEditor({
               {saveDraftError}
             </p>
           )}
-          <div className="text-xs text-muted-foreground">
-            {lastAutoSaveTime
-              ? `Auto-saved ${new Date(lastAutoSaveTime).toLocaleTimeString()}`
-              : "Auto-save pending"}
-            {autoSaveError && (
-              <span className="ml-2 text-destructive">{autoSaveError}</span>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {autoSaveInFlight ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                <span>Saving…</span>
+              </>
+            ) : lastAutoSaveTime ? (
+              <span>
+                Auto-saved
+                {lastAutoSaveVersion != null ? ` (v${lastAutoSaveVersion})` : ""}{" "}
+                {new Date(lastAutoSaveTime).toLocaleTimeString()}
+              </span>
+            ) : (
+              <span>Auto-save pending</span>
             )}
+            {autoSaveError && <span className="text-destructive">{autoSaveError}</span>}
           </div>
 
           {/* Start Visit with Recording Indicator */}
