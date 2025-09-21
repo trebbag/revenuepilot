@@ -7667,6 +7667,8 @@ class EventModel(BaseModel):
     publicHealth: Optional[bool] = None
     satisfaction: Optional[int] = None
     baseline: Optional[bool] = None
+    clinic: Optional[str] = None
+    payer: Optional[str] = None
 
 
 class SurveyModel(BaseModel):
@@ -7981,6 +7983,8 @@ async def log_event(
         "publicHealth",
         "satisfaction",
         "baseline",
+        "clinic",
+        "payer",
     ]:
         value = getattr(event, key)
         if value is not None:
@@ -9137,14 +9141,85 @@ async def _run_nightly_aggregation() -> None:
 worker.register_analytics_aggregator(_run_nightly_aggregation)
 
 
-def _analytics_where(user: Dict[str, Any]) -> tuple[str, List[Any]]:
-    """Return a WHERE clause limiting events based on user role."""
-    if user.get("role") in {"admin", "analyst"}:
-        return "", []
-    return (
-        "WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?",
-        [user["sub"]],
+def _normalize_filter_value(value: Any) -> Optional[str]:
+    """Coerce a query parameter into a trimmed string or ``None``."""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"all", "any", "*"}:
+        return None
+    return text
+
+
+def _analytics_where(
+    user: Dict[str, Any],
+    *,
+    start: Optional[Any] = None,
+    end: Optional[Any] = None,
+    clinician: Optional[str] = None,
+    clinic: Optional[str] = None,
+    payer: Optional[str] = None,
+) -> tuple[str, List[Any]]:
+    """Return a WHERE clause limiting events based on user role and filters."""
+
+    conditions: List[str] = []
+    params: List[Any] = []
+
+    details_expr = "CASE WHEN json_valid(details) THEN details ELSE '{}' END"
+    clinician_expr = f"json_extract({details_expr}, '$.clinician')"
+    clinic_expr = (
+        "COALESCE("
+        f"json_extract({details_expr}, '$.clinic'), "
+        f"json_extract({details_expr}, '$.clinic_id'), "
+        f"json_extract({details_expr}, '$.clinicId')"
+        ")"
     )
+    payer_expr = (
+        "COALESCE("
+        f"json_extract({details_expr}, '$.payer'), "
+        f"json_extract({details_expr}, '$.payer_id'), "
+        f"json_extract({details_expr}, '$.payerId')"
+        ")"
+    )
+
+    if user.get("role") not in {"admin", "analyst"}:
+        conditions.append(f"{clinician_expr} = ?")
+        params.append(user["sub"])
+
+    clinician_filter = _normalize_filter_value(clinician)
+    if clinician_filter:
+        conditions.append(f"{clinician_expr} = ?")
+        params.append(clinician_filter)
+
+    clinic_filter = _normalize_filter_value(clinic)
+    if clinic_filter:
+        conditions.append(f"{clinic_expr} = ?")
+        params.append(clinic_filter)
+
+    payer_filter = _normalize_filter_value(payer)
+    if payer_filter:
+        conditions.append(f"{payer_expr} = ?")
+        params.append(payer_filter)
+
+    start_ts = _parse_datetime_param(start)
+    if start_ts is not None:
+        conditions.append("timestamp >= ?")
+        params.append(start_ts)
+
+    end_ts = _parse_datetime_param(end, end_of_day=True)
+    if end_ts is not None:
+        conditions.append("timestamp <= ?")
+        params.append(end_ts)
+
+    if not conditions:
+        return "", []
+
+    where_clause = "WHERE " + " AND ".join(conditions)
+    return where_clause, params
 
 
 @app.get("/api/activity/log")
@@ -9204,9 +9279,23 @@ async def get_activity_log(
 
 
 @app.get("/api/analytics/usage")
-async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
+async def analytics_usage(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    clinician: Optional[str] = Query(None),
+    clinic: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user=Depends(require_roles("analyst", "user")),
+) -> Dict[str, Any]:
     """Basic usage analytics aggregated from events."""
-    where, params = _analytics_where(user)
+    where, params = _analytics_where(
+        user,
+        start=start,
+        end=end,
+        clinician=clinician,
+        clinic=clinic,
+        payer=payer,
+    )
     base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
@@ -9434,9 +9523,23 @@ async def analytics_usage(user=Depends(require_roles("analyst", "user"))) -> Dic
 
 
 @app.get("/api/analytics/coding-accuracy")
-async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
+async def analytics_coding_accuracy(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    clinician: Optional[str] = Query(None),
+    clinic: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user=Depends(require_roles("analyst", "user")),
+) -> Dict[str, Any]:
     """Coding accuracy metrics derived from events and billing codes."""
-    where, params = _analytics_where(user)
+    where, params = _analytics_where(
+        user,
+        start=start,
+        end=end,
+        clinician=clinician,
+        clinic=clinic,
+        payer=payer,
+    )
     cursor = db_conn.cursor()
     cursor.execute(
         f"""
@@ -9548,9 +9651,23 @@ async def analytics_coding_accuracy(user=Depends(require_roles("analyst", "user"
 
 
 @app.get("/api/analytics/revenue")
-async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
+async def analytics_revenue(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    clinician: Optional[str] = Query(None),
+    clinic: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user=Depends(require_roles("analyst", "user")),
+) -> Dict[str, Any]:
     """Revenue analytics aggregated from event billing data."""
-    where, params = _analytics_where(user)
+    where, params = _analytics_where(
+        user,
+        start=start,
+        end=end,
+        clinician=clinician,
+        clinic=clinic,
+        payer=payer,
+    )
     base_where = where if where else "WHERE 1=1"
     cursor = db_conn.cursor()
     cursor.execute(
@@ -9696,9 +9813,23 @@ async def analytics_revenue(user=Depends(require_roles("analyst", "user"))) -> D
 
 
 @app.get("/api/analytics/compliance")
-async def analytics_compliance(user=Depends(require_roles("analyst", "user"))) -> Dict[str, Any]:
+async def analytics_compliance(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    clinician: Optional[str] = Query(None),
+    clinic: Optional[str] = Query(None),
+    payer: Optional[str] = Query(None),
+    user=Depends(require_roles("analyst", "user")),
+) -> Dict[str, Any]:
     """Compliance analytics derived from logged events."""
-    where, params = _analytics_where(user)
+    where, params = _analytics_where(
+        user,
+        start=start,
+        end=end,
+        clinician=clinician,
+        clinic=clinic,
+        payer=payer,
+    )
     cursor = db_conn.cursor()
     cursor.execute(
         "SELECT json_each.value AS flag, COUNT(*) AS count FROM events "
