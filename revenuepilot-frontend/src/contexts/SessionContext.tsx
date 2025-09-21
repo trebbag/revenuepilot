@@ -82,7 +82,7 @@ const EMPTY_COUNTS: SelectedCodesCounts = {
   codes: 0,
   prevention: 0,
   diagnoses: 0,
-  differentials: 0
+  differentials: 0,
 }
 
 function resolveCategory(code: SuggestionCodeInput | SessionCode): CodeCategory {
@@ -115,20 +115,22 @@ function normalizeCode(raw: SuggestionCodeInput | SessionCode): SessionCode {
     rationale: raw.rationale,
     confidence: typeof raw.confidence === "number" ? raw.confidence : undefined,
     reimbursement: raw.reimbursement,
-    rvu: raw.rvu
+    rvu: raw.rvu,
   }
 }
 
 function countCodes(list: SessionCode[]): SelectedCodesCounts {
-  return list.reduce<SelectedCodesCounts>((acc, item) => {
-    const key = item.category
-    acc[key] = (acc[key] ?? 0) + 1
-    return acc
-  }, { ...EMPTY_COUNTS })
+  return list.reduce<SelectedCodesCounts>(
+    (acc, item) => {
+      const key = item.category
+      acc[key] = (acc[key] ?? 0) + 1
+      return acc
+    },
+    { ...EMPTY_COUNTS },
+  )
 }
 
 function createInitialSessionState(): SessionState {
-
   const initialCodes: SessionCode[] = []
 
   return {
@@ -139,9 +141,9 @@ function createInitialSessionState(): SessionState {
     isSuggestionPanelOpen: false,
     layout: {
       noteEditor: 70,
-      suggestionPanel: 30
+      suggestionPanel: 30,
     },
-    finalizationSessions: {}
+    finalizationSessions: {},
   }
 }
 
@@ -154,39 +156,28 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
       const session = action.payload.session ?? {}
       const layout = action.payload.layout ?? {}
 
-      const list = Array.isArray(session.selectedCodesList) && session.selectedCodesList.length > 0
-        ? session.selectedCodesList.map(normalizeCode)
-        : base.selectedCodesList
+      const list = Array.isArray(session.selectedCodesList) && session.selectedCodesList.length > 0 ? session.selectedCodesList.map(normalizeCode) : base.selectedCodesList
 
-      const selectedCodes = session.selectedCodes
-        ? { ...base.selectedCodes, ...session.selectedCodes }
-        : countCodes(list)
+      const selectedCodes = session.selectedCodes ? { ...base.selectedCodes, ...session.selectedCodes } : countCodes(list)
 
-      const addedCodes = Array.isArray(session.addedCodes)
-        ? session.addedCodes.map(value => String(value))
-        : base.addedCodes
+      const addedCodes = Array.isArray(session.addedCodes) ? session.addedCodes.map((value) => String(value)) : base.addedCodes
 
-      const isSuggestionPanelOpen = typeof session.isSuggestionPanelOpen === "boolean"
-        ? session.isSuggestionPanelOpen
-        : base.isSuggestionPanelOpen
+      const isSuggestionPanelOpen = typeof session.isSuggestionPanelOpen === "boolean" ? session.isSuggestionPanelOpen : base.isSuggestionPanelOpen
 
       const nextLayout: LayoutPreferences = {
         noteEditor: typeof layout.noteEditor === "number" ? layout.noteEditor : base.layout.noteEditor,
-        suggestionPanel: typeof layout.suggestionPanel === "number" ? layout.suggestionPanel : base.layout.suggestionPanel
+        suggestionPanel: typeof layout.suggestionPanel === "number" ? layout.suggestionPanel : base.layout.suggestionPanel,
       }
 
       const rawFinalization = session.finalizationSessions
       const normalizedFinalization =
         rawFinalization && typeof rawFinalization === "object"
-          ? Object.entries(rawFinalization).reduce<Record<string, StoredFinalizationSession>>(
-              (acc, [key, value]) => {
-                if (value && typeof value === "object") {
-                  acc[String(key)] = value as StoredFinalizationSession
-                }
-                return acc
-              },
-              {}
-            )
+          ? Object.entries(rawFinalization).reduce<Record<string, StoredFinalizationSession>>((acc, [key, value]) => {
+              if (value && typeof value === "object") {
+                acc[String(key)] = value as StoredFinalizationSession
+              }
+              return acc
+            }, {})
           : { ...(state.finalizationSessions ?? base.finalizationSessions) }
 
       return {
@@ -195,7 +186,7 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         addedCodes,
         isSuggestionPanelOpen,
         layout: nextLayout,
-        finalizationSessions: normalizedFinalization
+        finalizationSessions: normalizedFinalization,
       }
     }
     case "addCode": {
@@ -206,37 +197,29 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         selectedCodesList: list,
         selectedCodes: countCodes(list),
-        addedCodes
+        addedCodes,
       }
     }
     case "removeCode": {
-      const index = state.selectedCodesList.findIndex(
-        item => item.code === action.payload.code.code && item.category === action.payload.code.category
-      )
+      const index = state.selectedCodesList.findIndex((item) => item.code === action.payload.code.code && item.category === action.payload.code.category)
       if (index === -1) {
         return state
       }
       const list = state.selectedCodesList.filter((_, idx) => idx !== index)
-      const addedCodes = action.payload.returnToSuggestions
-        ? state.addedCodes.filter(code => code !== action.payload.code.code)
-        : state.addedCodes
+      const addedCodes = action.payload.returnToSuggestions ? state.addedCodes.filter((code) => code !== action.payload.code.code) : state.addedCodes
       return {
         ...state,
         selectedCodesList: list,
         selectedCodes: countCodes(list),
-        addedCodes
+        addedCodes,
       }
     }
     case "changeCategory": {
-      const list = state.selectedCodesList.map(item =>
-        item.code === action.payload.code.code
-          ? { ...item, category: action.payload.newCategory }
-          : item
-      )
+      const list = state.selectedCodesList.map((item) => (item.code === action.payload.code.code ? { ...item, category: action.payload.newCategory } : item))
       return {
         ...state,
         selectedCodesList: list,
-        selectedCodes: countCodes(list)
+        selectedCodes: countCodes(list),
       }
     }
     case "setSuggestionPanelOpen":
@@ -246,15 +229,13 @@ function sessionReducer(state: SessionState, action: SessionAction): SessionStat
         ...state,
         layout: {
           noteEditor: typeof action.payload.noteEditor === "number" ? action.payload.noteEditor : state.layout.noteEditor,
-          suggestionPanel: typeof action.payload.suggestionPanel === "number"
-            ? action.payload.suggestionPanel
-            : state.layout.suggestionPanel
-        }
+          suggestionPanel: typeof action.payload.suggestionPanel === "number" ? action.payload.suggestionPanel : state.layout.suggestionPanel,
+        },
       }
     case "setFinalizationSession": {
       const nextSessions = {
         ...state.finalizationSessions,
-        [action.payload.sessionId]: action.payload.session
+        [action.payload.sessionId]: action.payload.session,
       }
       return { ...state, finalizationSessions: nextSessions }
     }
@@ -308,19 +289,19 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     try {
       const [sessionData, layoutData] = await Promise.all([
         apiFetchJson<Partial<SessionState>>("/api/user/session", {
-          signal: controller.signal
+          signal: controller.signal,
         }),
         apiFetchJson<Partial<LayoutPreferences>>("/api/user/layout-preferences", {
-          signal: controller.signal
-        })
+          signal: controller.signal,
+        }),
       ])
 
       dispatch({
         type: "hydrate",
         payload: {
           session: sessionData ?? undefined,
-          layout: layoutData ?? undefined
-        }
+          layout: layoutData ?? undefined,
+        },
       })
     } catch (error) {
       if ((error as DOMException)?.name !== "AbortError") {
@@ -356,15 +337,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       selectedCodesList: state.selectedCodesList,
       addedCodes: state.addedCodes,
       isSuggestionPanelOpen: state.isSuggestionPanelOpen,
-      finalizationSessions: state.finalizationSessions
+      finalizationSessions: state.finalizationSessions,
     }),
-    [
-      state.selectedCodes,
-      state.selectedCodesList,
-      state.addedCodes,
-      state.isSuggestionPanelOpen,
-      state.finalizationSessions
-    ]
+    [state.selectedCodes, state.selectedCodesList, state.addedCodes, state.isSuggestionPanelOpen, state.finalizationSessions],
   )
 
   const layoutPayload = useMemo(() => state.layout, [state.layout])
@@ -380,14 +355,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       apiFetch("/api/user/session", {
         method: "PUT",
         jsonBody: sessionPayload,
-        signal: controller.signal
+        signal: controller.signal,
       })
-        .then(response => {
+        .then((response) => {
           if (!response.ok && response.status !== 204) {
             throw new Error(`Failed to persist session state: ${response.status}`)
           }
         })
-        .catch(error => {
+        .catch((error) => {
           if ((error as DOMException)?.name !== "AbortError") {
             console.error("Failed to persist session state", error)
           }
@@ -414,14 +389,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       apiFetch("/api/user/layout-preferences", {
         method: "PUT",
         jsonBody: layoutPayload,
-        signal: controller.signal
+        signal: controller.signal,
       })
-        .then(response => {
+        .then((response) => {
           if (!response.ok && response.status !== 204) {
             throw new Error(`Failed to persist layout preferences: ${response.status}`)
           }
         })
-        .catch(error => {
+        .catch((error) => {
           if ((error as DOMException)?.name !== "AbortError") {
             console.error("Failed to persist layout preferences", error)
           }
@@ -441,32 +416,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: "addCode", payload: { code } })
   }, [])
 
-  const removeCode = useCallback(
-    (code: SessionCode, options?: { returnToSuggestions?: boolean; reasoning?: string }) => {
-      if (options?.reasoning) {
-        console.debug("Code removed", { code, reasoning: options.reasoning })
-      }
-      dispatch({
-        type: "removeCode",
-        payload: {
-          code,
-          returnToSuggestions: Boolean(options?.returnToSuggestions)
-        }
-      })
-    },
-    []
-  )
+  const removeCode = useCallback((code: SessionCode, options?: { returnToSuggestions?: boolean; reasoning?: string }) => {
+    if (options?.reasoning) {
+      console.debug("Code removed", { code, reasoning: options.reasoning })
+    }
+    dispatch({
+      type: "removeCode",
+      payload: {
+        code,
+        returnToSuggestions: Boolean(options?.returnToSuggestions),
+      },
+    })
+  }, [])
 
   const changeCodeCategory = useCallback((code: SessionCode, newCategory: "diagnoses" | "differentials") => {
     dispatch({ type: "changeCategory", payload: { code, newCategory } })
   }, [])
 
-  const storeFinalizationSession = useCallback(
-    (sessionId: string, session: StoredFinalizationSession) => {
-      dispatch({ type: "setFinalizationSession", payload: { sessionId, session } })
-    },
-    []
-  )
+  const storeFinalizationSession = useCallback((sessionId: string, session: StoredFinalizationSession) => {
+    dispatch({ type: "setFinalizationSession", payload: { sessionId, session } })
+  }, [])
 
   const clearFinalizationSession = useCallback((sessionId: string) => {
     dispatch({ type: "clearFinalizationSession", payload: { sessionId } })
@@ -494,23 +463,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         storeFinalizationSession,
         clearFinalizationSession,
         refresh,
-        reset
-      }
+        reset,
+      },
     }),
-    [
-      state,
-      hydrated,
-      syncing,
-      addCode,
-      removeCode,
-      changeCodeCategory,
-      setSuggestionPanelOpen,
-      setLayout,
-      storeFinalizationSession,
-      clearFinalizationSession,
-      refresh,
-      reset
-    ]
+    [state, hydrated, syncing, addCode, removeCode, changeCodeCategory, setSuggestionPanelOpen, setLayout, storeFinalizationSession, clearFinalizationSession, refresh, reset],
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

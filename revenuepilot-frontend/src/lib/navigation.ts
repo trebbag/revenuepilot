@@ -1,16 +1,4 @@
-export const VIEW_KEYS = [
-  "home",
-  "app",
-  "finalization",
-  "analytics",
-  "settings",
-  "activity",
-  "drafts",
-  "schedule",
-  "builder",
-  "style-guide",
-  "figma-library"
-] as const
+export const VIEW_KEYS = ["home", "app", "finalization", "analytics", "settings", "activity", "drafts", "schedule", "builder", "style-guide", "figma-library"] as const
 
 export type ViewKey = (typeof VIEW_KEYS)[number]
 
@@ -46,7 +34,7 @@ const SERVER_ALIAS_MAP: Record<string, ViewKey> = {
   "figma-library": "figma-library",
   figma: "figma-library",
   library: "figma-library",
-  finalization: "finalization"
+  finalization: "finalization",
 }
 
 export function isViewKey(value: unknown): value is ViewKey {

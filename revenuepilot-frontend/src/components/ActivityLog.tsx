@@ -7,14 +7,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { DatePickerWithRange } from "./ui/date-picker-with-range"
 import { ScrollArea } from "./ui/scroll-area"
 import { Separator } from "./ui/separator"
-import { 
-  Activity, 
-  FileText, 
-  Calendar, 
-  Settings, 
-  User, 
-  Database, 
-  Shield, 
+import {
+  Activity,
+  FileText,
+  Calendar,
+  Settings,
+  User,
+  Database,
+  Shield,
   AlertTriangle,
   CheckCircle2,
   Clock,
@@ -26,7 +26,7 @@ import {
   Server,
   Key,
   Loader2,
-  RefreshCcw
+  RefreshCcw,
 } from "lucide-react"
 import { DateRange } from "react-day-picker"
 
@@ -38,10 +38,10 @@ interface ActivityLogProps {
     id: string
     name: string
     fullName: string
-    role: 'admin' | 'user'
+    role: "admin" | "user"
     specialty: string
   }
-  userRole: 'admin' | 'user'
+  userRole: "admin" | "user"
 }
 
 export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
@@ -62,39 +62,57 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
     category: selectedCategory,
     severity: selectedSeverity,
     search: searchQuery,
-    includeBackend: showAdvanced
+    includeBackend: showAdvanced,
   })
 
   const getCategoryIcon = (category: ActivityEntry["category"]) => {
     switch (category) {
-      case 'documentation': return <FileText className="w-4 h-4" />
-      case 'schedule': return <Calendar className="w-4 h-4" />
-      case 'settings': return <Settings className="w-4 h-4" />
-      case 'auth': return <Shield className="w-4 h-4" />
-      case 'system': return <Activity className="w-4 h-4" />
-      case 'backend': return <Server className="w-4 h-4" />
-      default: return <Activity className="w-4 h-4" />
+      case "documentation":
+        return <FileText className="w-4 h-4" />
+      case "schedule":
+        return <Calendar className="w-4 h-4" />
+      case "settings":
+        return <Settings className="w-4 h-4" />
+      case "auth":
+        return <Shield className="w-4 h-4" />
+      case "system":
+        return <Activity className="w-4 h-4" />
+      case "backend":
+        return <Server className="w-4 h-4" />
+      default:
+        return <Activity className="w-4 h-4" />
     }
   }
 
   const getCategoryColor = (category: ActivityEntry["category"]) => {
     switch (category) {
-      case 'documentation': return 'text-blue-600 bg-blue-50 border-blue-200'
-      case 'schedule': return 'text-purple-600 bg-purple-50 border-purple-200'
-      case 'settings': return 'text-gray-600 bg-gray-50 border-gray-200'
-      case 'auth': return 'text-green-600 bg-green-50 border-green-200'
-      case 'system': return 'text-orange-600 bg-orange-50 border-orange-200'
-      case 'backend': return 'text-red-600 bg-red-50 border-red-200'
-      default: return 'text-gray-600 bg-gray-50 border-gray-200'
+      case "documentation":
+        return "text-blue-600 bg-blue-50 border-blue-200"
+      case "schedule":
+        return "text-purple-600 bg-purple-50 border-purple-200"
+      case "settings":
+        return "text-gray-600 bg-gray-50 border-gray-200"
+      case "auth":
+        return "text-green-600 bg-green-50 border-green-200"
+      case "system":
+        return "text-orange-600 bg-orange-50 border-orange-200"
+      case "backend":
+        return "text-red-600 bg-red-50 border-red-200"
+      default:
+        return "text-gray-600 bg-gray-50 border-gray-200"
     }
   }
 
   const getSeverityIcon = (severity: ActivityEntry["severity"]) => {
     switch (severity) {
-      case 'success': return <CheckCircle2 className="w-4 h-4 text-green-600" />
-      case 'warning': return <AlertTriangle className="w-4 h-4 text-yellow-600" />
-      case 'error': return <AlertTriangle className="w-4 h-4 text-red-600" />
-      default: return <Activity className="w-4 h-4 text-blue-600" />
+      case "success":
+        return <CheckCircle2 className="w-4 h-4 text-green-600" />
+      case "warning":
+        return <AlertTriangle className="w-4 h-4 text-yellow-600" />
+      case "error":
+        return <AlertTriangle className="w-4 h-4 text-red-600" />
+      default:
+        return <Activity className="w-4 h-4 text-blue-600" />
     }
   }
 
@@ -106,7 +124,7 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
     if (diffInMinutes < 1) return "Just now"
     if (diffInMinutes < 60) return `${diffInMinutes}m ago`
     if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`
-    return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return date.toLocaleDateString() + " " + date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
   }
 
   return (
@@ -118,13 +136,8 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
           <p className="text-stone-600 mt-1">Track system activity and user actions</p>
         </div>
         <div className="flex items-center gap-3">
-          {userRole === 'admin' && (
-            <Button
-              variant={showAdvanced ? "default" : "outline"}
-              size="sm"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-2"
-            >
+          {userRole === "admin" && (
+            <Button variant={showAdvanced ? "default" : "outline"} size="sm" onClick={() => setShowAdvanced(!showAdvanced)} className="flex items-center gap-2">
               {showAdvanced ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               {showAdvanced ? "Hide Backend Activity" : "Show Backend Activity"}
             </Button>
@@ -163,15 +176,10 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
               <label className="text-sm font-medium text-stone-700">Search</label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-stone-400" />
-                <Input
-                  placeholder="Search activities..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
-                />
+                <Input placeholder="Search activities..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="pl-10" />
               </div>
             </div>
-            
+
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">Category</label>
               <Select value={selectedCategory} onValueChange={setSelectedCategory}>
@@ -208,10 +216,7 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
 
             <div className="space-y-2">
               <label className="text-sm font-medium text-stone-700">Date Range</label>
-              <DatePickerWithRange
-                date={dateRange}
-                onDateChange={setDateRange}
-              />
+              <DatePickerWithRange date={dateRange} onDateChange={setDateRange} />
             </div>
           </div>
         </CardContent>
@@ -317,18 +322,13 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
                   {entries.map((activity, index) => (
                     <div key={activity.id}>
                       <div className="flex items-start gap-4 p-4 rounded-lg hover:bg-stone-50 transition-colors">
-                        <div className="flex-shrink-0">
-                          {getSeverityIcon(activity.severity)}
-                        </div>
+                        <div className="flex-shrink-0">{getSeverityIcon(activity.severity)}</div>
 
                         <div className="flex-1 min-w-0 space-y-2">
                           <div className="flex items-start justify-between gap-4">
                             <div className="flex items-center gap-3">
                               <h4 className="font-medium text-stone-900">{activity.action}</h4>
-                              <Badge
-                                variant="outline"
-                                className={`text-xs px-2 py-1 border ${getCategoryColor(activity.category)}`}
-                              >
+                              <Badge variant="outline" className={`text-xs px-2 py-1 border ${getCategoryColor(activity.category)}`}>
                                 <span className="flex items-center gap-1">
                                   {getCategoryIcon(activity.category)}
                                   {activity.category}
@@ -353,10 +353,7 @@ export function ActivityLog({ currentUser, userRole }: ActivityLogProps) {
                               <User className="w-3 h-3" />
                               {activity.userName}
                               {activity.userId === currentUser.id && (
-                                <Badge
-                                  variant="outline"
-                                  className="ml-2 bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-600"
-                                >
+                                <Badge variant="outline" className="ml-2 bg-stone-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-600">
                                   You
                                 </Badge>
                               )}

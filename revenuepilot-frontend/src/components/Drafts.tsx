@@ -1,24 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react"
 import { motion } from "motion/react"
-import {
-  FilePlus,
-  Calendar,
-  Clock, 
-  User, 
-  Search, 
-  Filter, 
-  SortAsc, 
-  SortDesc, 
-  Eye,
-  Edit,
-  Trash2,
-  AlertTriangle,
-  CheckCircle,
-  FileText,
-  Stethoscope,
-  MoreHorizontal,
-  ChevronDown
-} from "lucide-react"
+import { FilePlus, Calendar, Clock, User, Search, Filter, SortAsc, SortDesc, Eye, Edit, Trash2, AlertTriangle, CheckCircle, FileText, Stethoscope, MoreHorizontal, ChevronDown } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
@@ -34,7 +16,7 @@ interface CurrentUser {
   id: string
   name: string
   fullName: string
-  role: 'admin' | 'user'
+  role: "admin" | "user"
   specialty: string
 }
 
@@ -47,9 +29,9 @@ interface DraftNote {
   lastEditDate: string
   daysOld: number
   provider: string
-  visitType: 'SOAP' | 'Wellness' | 'Follow-up' | 'Consultation'
+  visitType: "SOAP" | "Wellness" | "Follow-up" | "Consultation"
   completionStatus: number
-  urgency: 'low' | 'medium' | 'high'
+  urgency: "low" | "medium" | "high"
   noteLength: number
   lastEditor: string
 }
@@ -71,8 +53,8 @@ interface DraftsPreferences {
   visitType?: string
   urgency?: string
   ageFilter?: string
-  sortBy?: 'visitDate' | 'lastEdit' | 'daysOld' | 'urgency'
-  sortOrder?: 'asc' | 'desc'
+  sortBy?: "visitDate" | "lastEdit" | "daysOld" | "urgency"
+  sortOrder?: "asc" | "desc"
   searchTerm?: string
 }
 
@@ -93,47 +75,47 @@ interface DraftsProps {
 }
 
 export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: DraftsProps) {
-  const [searchTerm, setSearchTerm] = useState('')
-  const [selectedProvider, setSelectedProvider] = useState('all')
-  const [selectedVisitType, setSelectedVisitType] = useState('all')
-  const [selectedUrgency, setSelectedUrgency] = useState('all')
-  const [sortBy, setSortBy] = useState<'visitDate' | 'lastEdit' | 'daysOld' | 'urgency'>('daysOld')
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
-  const [ageFilter, setAgeFilter] = useState('all')
+  const [searchTerm, setSearchTerm] = useState("")
+  const [selectedProvider, setSelectedProvider] = useState("all")
+  const [selectedVisitType, setSelectedVisitType] = useState("all")
+  const [selectedUrgency, setSelectedUrgency] = useState("all")
+  const [sortBy, setSortBy] = useState<"visitDate" | "lastEdit" | "daysOld" | "urgency">("daysOld")
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
+  const [ageFilter, setAgeFilter] = useState("all")
   const [draftsState, setDraftsState] = useState<DataState<DraftNote[]>>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [searchState, setSearchState] = useState<DataState<DraftNote[]>>({
     data: null,
     loading: false,
-    error: null
+    error: null,
   })
   const [analyticsState, setAnalyticsState] = useState<DataState<DraftAnalyticsResponse>>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [refreshCounter, setRefreshCounter] = useState(0)
   const [preferencesHydrated, setPreferencesHydrated] = useState(false)
   const [appliedDefaultProvider, setAppliedDefaultProvider] = useState(false)
-  const lastSearchRef = useRef<string>('')
+  const lastSearchRef = useRef<string>("")
 
   const normalizeProvider = useCallback((value?: string | null) => {
-    if (!value) return 'Unassigned'
+    if (!value) return "Unassigned"
     const trimmed = value.trim()
-    return trimmed.length > 0 ? trimmed : 'Unassigned'
+    return trimmed.length > 0 ? trimmed : "Unassigned"
   }, [])
 
   const determineVisitType = useCallback((content: string) => {
     const lower = content.toLowerCase()
-    if (lower.includes('wellness')) return 'Wellness'
-    if (lower.includes('follow-up') || lower.includes('follow up')) return 'Follow-up'
-    if (lower.includes('consult')) return 'Consultation'
-    if (lower.includes('soap')) return 'SOAP'
-    if (lower.includes('initial') || lower.includes('new patient')) return 'Consultation'
-    return 'SOAP'
+    if (lower.includes("wellness")) return "Wellness"
+    if (lower.includes("follow-up") || lower.includes("follow up")) return "Follow-up"
+    if (lower.includes("consult")) return "Consultation"
+    if (lower.includes("soap")) return "SOAP"
+    if (lower.includes("initial") || lower.includes("new patient")) return "Consultation"
+    return "SOAP"
   }, [])
 
   const extractField = useCallback((content: string, label: RegExp) => {
@@ -145,13 +127,13 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
 
   const deriveUrgency = useCallback((daysOld: number, content: string) => {
     const lower = content.toLowerCase()
-    if (lower.includes('urgent') || lower.includes('critical') || daysOld >= 14) {
-      return 'high'
+    if (lower.includes("urgent") || lower.includes("critical") || daysOld >= 14) {
+      return "high"
     }
-    if (daysOld >= 7 || lower.includes('follow')) {
-      return 'medium'
+    if (daysOld >= 7 || lower.includes("follow")) {
+      return "medium"
     }
-    return 'low'
+    return "low"
   }, [])
 
   const calculateCompletion = useCallback((content: string) => {
@@ -160,128 +142,113 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
     return base
   }, [])
 
-  const transformDraft = useCallback((raw: DraftApiNote): DraftNote => {
-    const content = raw.content ?? ''
-    const createdAt = raw.created_at ? new Date(raw.created_at) : new Date()
-    const updatedAt = raw.updated_at ? new Date(raw.updated_at) : createdAt
-    const now = new Date()
-    const daysOld = Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
+  const transformDraft = useCallback(
+    (raw: DraftApiNote): DraftNote => {
+      const content = raw.content ?? ""
+      const createdAt = raw.created_at ? new Date(raw.created_at) : new Date()
+      const updatedAt = raw.updated_at ? new Date(raw.updated_at) : createdAt
+      const now = new Date()
+      const daysOld = Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
 
-    const patientName =
-      extractField(content, /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i) ||
-      extractField(content, /name\s*[:\-]\s*([^\n]+)/i) ||
-      `Note ${raw.id}`
+      const patientName = extractField(content, /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i) || extractField(content, /name\s*[:\-]\s*([^\n]+)/i) || `Note ${raw.id}`
 
-    const provider =
-      normalizeProvider(extractField(content, /provider\s*[:\-]\s*([^\n]+)/i)) ||
-      normalizeProvider(extractField(content, /author\s*[:\-]\s*([^\n]+)/i))
+      const provider = normalizeProvider(extractField(content, /provider\s*[:\-]\s*([^\n]+)/i)) || normalizeProvider(extractField(content, /author\s*[:\-]\s*([^\n]+)/i))
 
-    const patientId =
-      extractField(content, /patient\s*id\s*[:\-]\s*([^\n]+)/i) ||
-      `PT-${String(raw.id).padStart(4, '0')}`
+      const patientId = extractField(content, /patient\s*id\s*[:\-]\s*([^\n]+)/i) || `PT-${String(raw.id).padStart(4, "0")}`
 
-    const encounterId =
-      extractField(content, /encounter\s*id\s*[:\-]\s*([^\n]+)/i) ||
-      `ENC-${String(raw.id).padStart(4, '0')}`
+      const encounterId = extractField(content, /encounter\s*id\s*[:\-]\s*([^\n]+)/i) || `ENC-${String(raw.id).padStart(4, "0")}`
 
-    const visitType = determineVisitType(content)
-    const urgency = deriveUrgency(daysOld, content)
-    const noteLength = content.split(/\s+/).filter(Boolean).length
-    const completionStatus = calculateCompletion(content)
+      const visitType = determineVisitType(content)
+      const urgency = deriveUrgency(daysOld, content)
+      const noteLength = content.split(/\s+/).filter(Boolean).length
+      const completionStatus = calculateCompletion(content)
 
-    const lastEditor =
-      extractField(content, /last\s*edited\s*by\s*[:\-]\s*([^\n]+)/i) ||
-      provider ||
-      'Unassigned'
+      const lastEditor = extractField(content, /last\s*edited\s*by\s*[:\-]\s*([^\n]+)/i) || provider || "Unassigned"
 
-    return {
-      id: `draft-${raw.id}`,
-      patientId,
-      encounterId,
-      patientName,
-      visitDate: createdAt.toISOString(),
-      lastEditDate: updatedAt.toISOString(),
-      daysOld,
-      provider: provider || 'Unassigned',
-      visitType: visitType as DraftNote['visitType'],
-      completionStatus,
-      urgency,
-      noteLength,
-      lastEditor
-    }
-  }, [calculateCompletion, deriveUrgency, determineVisitType, extractField, normalizeProvider])
+      return {
+        id: `draft-${raw.id}`,
+        patientId,
+        encounterId,
+        patientName,
+        visitDate: createdAt.toISOString(),
+        lastEditDate: updatedAt.toISOString(),
+        daysOld,
+        provider: provider || "Unassigned",
+        visitType: visitType as DraftNote["visitType"],
+        completionStatus,
+        urgency,
+        noteLength,
+        lastEditor,
+      }
+    },
+    [calculateCompletion, deriveUrgency, determineVisitType, extractField, normalizeProvider],
+  )
 
   const loadDraftData = useCallback(
     async (signal?: AbortSignal) => {
-      setDraftsState(prev => ({ ...prev, loading: true, error: null }))
-      setAnalyticsState(prev => ({ ...prev, loading: true, error: null }))
+      setDraftsState((prev) => ({ ...prev, loading: true, error: null }))
+      setAnalyticsState((prev) => ({ ...prev, loading: true, error: null }))
 
       const toMessage = (reason: unknown): string => {
-        if (reason instanceof DOMException && reason.name === 'AbortError') {
-          return ''
+        if (reason instanceof DOMException && reason.name === "AbortError") {
+          return ""
         }
         if (reason instanceof Error) {
-          return reason.message || 'Unable to load drafts.'
+          return reason.message || "Unable to load drafts."
         }
-        return 'Unable to load drafts.'
+        return "Unable to load drafts."
       }
 
       const [draftsResult, analyticsResult] = await Promise.allSettled([
-        apiFetchJson<DraftApiNote[]>(
-          '/api/notes/drafts',
-          { signal, returnNullOnEmpty: true, fallbackValue: [] }
-        ),
-        apiFetchJson<DraftAnalyticsResponse>(
-          '/api/analytics/drafts',
-          { signal, returnNullOnEmpty: true }
-        )
+        apiFetchJson<DraftApiNote[]>("/api/notes/drafts", { signal, returnNullOnEmpty: true, fallbackValue: [] }),
+        apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal, returnNullOnEmpty: true }),
       ])
 
       if (signal?.aborted) {
         return
       }
 
-      if (draftsResult.status === 'fulfilled') {
+      if (draftsResult.status === "fulfilled") {
         const transformed = (draftsResult.value ?? []).map(transformDraft)
         setDraftsState({ data: transformed, loading: false, error: null })
       } else {
         const message = toMessage(draftsResult.reason)
         if (message) {
-          console.error('Failed to load drafts', draftsResult.reason)
+          console.error("Failed to load drafts", draftsResult.reason)
         }
-        setDraftsState(prev => ({
+        setDraftsState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || 'Unable to load draft notes.'
+          error: message || prev.error || "Unable to load draft notes.",
         }))
       }
 
-      if (analyticsResult.status === 'fulfilled') {
+      if (analyticsResult.status === "fulfilled") {
         setAnalyticsState({ data: analyticsResult.value ?? null, loading: false, error: null })
       } else {
         const message = toMessage(analyticsResult.reason)
         if (message) {
-          console.error('Failed to load draft analytics', analyticsResult.reason)
+          console.error("Failed to load draft analytics", analyticsResult.reason)
         }
-        setAnalyticsState(prev => ({
+        setAnalyticsState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || 'Unable to load draft analytics.'
+          error: message || prev.error || "Unable to load draft analytics.",
         }))
       }
     },
-    [transformDraft]
+    [transformDraft],
   )
 
   const handleRefresh = useCallback(() => {
-    setRefreshCounter(prev => prev + 1)
+    setRefreshCounter((prev) => prev + 1)
   }, [])
 
   useEffect(() => {
     const controller = new AbortController()
-    loadDraftData(controller.signal).catch(error => {
-      if ((error as DOMException)?.name !== 'AbortError') {
-        console.error('Unexpected drafts load error', error)
+    loadDraftData(controller.signal).catch((error) => {
+      if ((error as DOMException)?.name !== "AbortError") {
+        console.error("Unexpected drafts load error", error)
       }
     })
     return () => controller.abort()
@@ -289,8 +256,8 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
 
   useEffect(() => {
     const controller = new AbortController()
-    apiFetchJson<DraftsSessionPayload>('/api/user/session', { signal: controller.signal })
-      .then(payload => {
+    apiFetchJson<DraftsSessionPayload>("/api/user/session", { signal: controller.signal })
+      .then((payload) => {
         const prefs = payload?.draftsPreferences
         if (!prefs) {
           if (currentUser?.name) {
@@ -299,20 +266,20 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
           return
         }
         if (prefs.provider) setSelectedProvider(prefs.provider)
-        const validVisitTypes: DraftNote['visitType'][] = ['SOAP', 'Wellness', 'Follow-up', 'Consultation']
-        if (prefs.visitType && validVisitTypes.includes(prefs.visitType as DraftNote['visitType'])) {
-          setSelectedVisitType(prefs.visitType as DraftNote['visitType'] | 'all')
+        const validVisitTypes: DraftNote["visitType"][] = ["SOAP", "Wellness", "Follow-up", "Consultation"]
+        if (prefs.visitType && validVisitTypes.includes(prefs.visitType as DraftNote["visitType"])) {
+          setSelectedVisitType(prefs.visitType as DraftNote["visitType"] | "all")
         }
-        const validUrgencies: Array<DraftNote['urgency']> = ['low', 'medium', 'high']
-        if (prefs.urgency && validUrgencies.includes(prefs.urgency as DraftNote['urgency'])) {
-          setSelectedUrgency(prefs.urgency as DraftNote['urgency'] | 'all')
+        const validUrgencies: Array<DraftNote["urgency"]> = ["low", "medium", "high"]
+        if (prefs.urgency && validUrgencies.includes(prefs.urgency as DraftNote["urgency"])) {
+          setSelectedUrgency(prefs.urgency as DraftNote["urgency"] | "all")
         }
         if (prefs.ageFilter) setAgeFilter(prefs.ageFilter)
-        const validSortBy: Array<typeof sortBy> = ['visitDate', 'lastEdit', 'daysOld', 'urgency']
+        const validSortBy: Array<typeof sortBy> = ["visitDate", "lastEdit", "daysOld", "urgency"]
         if (prefs.sortBy && validSortBy.includes(prefs.sortBy as typeof sortBy)) {
           setSortBy(prefs.sortBy as typeof sortBy)
         }
-        const validSortOrder: Array<typeof sortOrder> = ['asc', 'desc']
+        const validSortOrder: Array<typeof sortOrder> = ["asc", "desc"]
         if (prefs.sortOrder && validSortOrder.includes(prefs.sortOrder as typeof sortOrder)) {
           setSortOrder(prefs.sortOrder as typeof sortOrder)
         }
@@ -321,9 +288,9 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
           lastSearchRef.current = prefs.searchTerm
         }
       })
-      .catch(error => {
-        if ((error as DOMException)?.name !== 'AbortError') {
-          console.error('Failed to load drafts preferences', error)
+      .catch((error) => {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to load drafts preferences", error)
         }
       })
       .finally(() => {
@@ -337,7 +304,7 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
     if (!preferencesHydrated || !currentUser?.name || appliedDefaultProvider) {
       return
     }
-    if (selectedProvider === 'all') {
+    if (selectedProvider === "all") {
       setSelectedProvider(currentUser.name)
     }
     setAppliedDefaultProvider(true)
@@ -350,8 +317,8 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
 
     const controller = new AbortController()
     const timeout = window.setTimeout(() => {
-      apiFetch('/api/user/session', {
-        method: 'PUT',
+      apiFetch("/api/user/session", {
+        method: "PUT",
         jsonBody: {
           draftsPreferences: {
             provider: selectedProvider,
@@ -360,13 +327,13 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
             ageFilter,
             sortBy,
             sortOrder,
-            searchTerm
-          }
+            searchTerm,
+          },
         },
-        signal: controller.signal
-      }).catch(error => {
-        if ((error as DOMException)?.name !== 'AbortError') {
-          console.error('Failed to persist drafts preferences', error)
+        signal: controller.signal,
+      }).catch((error) => {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to persist drafts preferences", error)
         }
       })
     }, 400)
@@ -391,25 +358,22 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
 
     const controller = new AbortController()
     const timeout = window.setTimeout(() => {
-      setSearchState(prev => ({ ...prev, loading: true, error: null }))
-      apiFetchJson<DraftApiNote[]>(
-        `/api/notes/search?q=${encodeURIComponent(term)}&status=draft`,
-        { signal: controller.signal, returnNullOnEmpty: true, fallbackValue: [] }
-      )
-        .then(results => {
+      setSearchState((prev) => ({ ...prev, loading: true, error: null }))
+      apiFetchJson<DraftApiNote[]>(`/api/notes/search?q=${encodeURIComponent(term)}&status=draft`, { signal: controller.signal, returnNullOnEmpty: true, fallbackValue: [] })
+        .then((results) => {
           const transformed = (results ?? []).map(transformDraft)
           setSearchState({ data: transformed, loading: false, error: null })
           lastSearchRef.current = term
         })
-        .catch(error => {
-          if ((error as DOMException)?.name === 'AbortError') {
+        .catch((error) => {
+          if ((error as DOMException)?.name === "AbortError") {
             return
           }
-          console.error('Failed to search drafts', error)
-          setSearchState(prev => ({
+          console.error("Failed to search drafts", error)
+          setSearchState((prev) => ({
             data: prev.data,
             loading: false,
-            error: error instanceof Error ? error.message : 'Unable to search drafts.'
+            error: error instanceof Error ? error.message : "Unable to search drafts.",
           }))
         })
     }, 300)
@@ -433,7 +397,7 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
     if (!onDraftsSummaryUpdate) {
       return
     }
-    if (analyticsState.data && typeof analyticsState.data.drafts === 'number') {
+    if (analyticsState.data && typeof analyticsState.data.drafts === "number") {
       onDraftsSummaryUpdate({ total: analyticsState.data.drafts })
       return
     }
@@ -441,22 +405,23 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
   }, [onDraftsSummaryUpdate, analyticsState.data, baseDrafts.length])
 
   const filteredDrafts = useMemo(() => {
-    let filtered = activeDrafts.filter(draft => {
-      const matchesSearch = searchTerm.trim().length === 0 ||
+    let filtered = activeDrafts.filter((draft) => {
+      const matchesSearch =
+        searchTerm.trim().length === 0 ||
         draft.patientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         draft.patientId.toLowerCase().includes(searchTerm.toLowerCase()) ||
         draft.encounterId.toLowerCase().includes(searchTerm.toLowerCase()) ||
         draft.provider.toLowerCase().includes(searchTerm.toLowerCase())
 
-      const matchesProvider = selectedProvider === 'all' || draft.provider === selectedProvider
-      const matchesVisitType = selectedVisitType === 'all' || draft.visitType === selectedVisitType
-      const matchesUrgency = selectedUrgency === 'all' || draft.urgency === selectedUrgency
+      const matchesProvider = selectedProvider === "all" || draft.provider === selectedProvider
+      const matchesVisitType = selectedVisitType === "all" || draft.visitType === selectedVisitType
+      const matchesUrgency = selectedUrgency === "all" || draft.urgency === selectedUrgency
 
       let matchesAge = true
-      if (ageFilter === '1-3') matchesAge = draft.daysOld >= 1 && draft.daysOld <= 3
-      else if (ageFilter === '4-7') matchesAge = draft.daysOld >= 4 && draft.daysOld <= 7
-      else if (ageFilter === '8-14') matchesAge = draft.daysOld >= 8 && draft.daysOld <= 14
-      else if (ageFilter === '15+') matchesAge = draft.daysOld >= 15
+      if (ageFilter === "1-3") matchesAge = draft.daysOld >= 1 && draft.daysOld <= 3
+      else if (ageFilter === "4-7") matchesAge = draft.daysOld >= 4 && draft.daysOld <= 7
+      else if (ageFilter === "8-14") matchesAge = draft.daysOld >= 8 && draft.daysOld <= 14
+      else if (ageFilter === "15+") matchesAge = draft.daysOld >= 15
 
       return matchesSearch && matchesProvider && matchesVisitType && matchesUrgency && matchesAge
     })
@@ -465,22 +430,22 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
       let comparison = 0
 
       switch (sortBy) {
-        case 'visitDate':
+        case "visitDate":
           comparison = new Date(a.visitDate).getTime() - new Date(b.visitDate).getTime()
           break
-        case 'lastEdit':
+        case "lastEdit":
           comparison = new Date(a.lastEditDate).getTime() - new Date(b.lastEditDate).getTime()
           break
-        case 'daysOld':
+        case "daysOld":
           comparison = a.daysOld - b.daysOld
           break
-        case 'urgency':
+        case "urgency":
           const urgencyOrder = { high: 3, medium: 2, low: 1 }
           comparison = urgencyOrder[a.urgency] - urgencyOrder[b.urgency]
           break
       }
 
-      return sortOrder === 'asc' ? comparison : -comparison
+      return sortOrder === "asc" ? comparison : -comparison
     })
 
     return filtered
@@ -488,54 +453,67 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
 
   const getUrgencyColor = (urgency: string) => {
     switch (urgency) {
-      case 'high': return 'destructive'
-      case 'medium': return 'secondary'
-      case 'low': return 'outline'
-      default: return 'outline'
+      case "high":
+        return "destructive"
+      case "medium":
+        return "secondary"
+      case "low":
+        return "outline"
+      default:
+        return "outline"
     }
   }
 
   const getVisitTypeColor = (visitType: string) => {
     switch (visitType) {
-      case 'SOAP': return 'bg-blue-50 text-blue-700 border-blue-200'
-      case 'Wellness': return 'bg-green-50 text-green-700 border-green-200'
-      case 'Follow-up': return 'bg-orange-50 text-orange-700 border-orange-200'
-      case 'Consultation': return 'bg-purple-50 text-purple-700 border-purple-200'
-      default: return 'bg-slate-50 text-slate-700 border-slate-200'
+      case "SOAP":
+        return "bg-blue-50 text-blue-700 border-blue-200"
+      case "Wellness":
+        return "bg-green-50 text-green-700 border-green-200"
+      case "Follow-up":
+        return "bg-orange-50 text-orange-700 border-orange-200"
+      case "Consultation":
+        return "bg-purple-50 text-purple-700 border-purple-200"
+      default:
+        return "bg-slate-50 text-slate-700 border-slate-200"
     }
   }
 
   const getDaysOldColor = (days: number) => {
-    if (days <= 3) return 'text-green-600'
-    if (days <= 7) return 'text-yellow-600'
-    if (days <= 14) return 'text-orange-600'
-    return 'text-red-600'
+    if (days <= 3) return "text-green-600"
+    if (days <= 7) return "text-yellow-600"
+    if (days <= 14) return "text-orange-600"
+    return "text-red-600"
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric'
+    return new Date(dateString).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
     })
   }
 
   const formatTime = (dateString: string) => {
-    return new Date(dateString).toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true
+    return new Date(dateString).toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
     })
   }
 
   const getProviderInitials = (provider: string) => {
-    return provider.split(' ').map(name => name[0]).join('').toUpperCase()
+    return provider
+      .split(" ")
+      .map((name) => name[0])
+      .join("")
+      .toUpperCase()
   }
 
   const uniqueProviders = useMemo(() => {
     const providers = new Set<string>()
-    baseDrafts.forEach(draft => providers.add(draft.provider))
-    searchState.data?.forEach(draft => providers.add(draft.provider))
+    baseDrafts.forEach((draft) => providers.add(draft.provider))
+    searchState.data?.forEach((draft) => providers.add(draft.provider))
     if (currentUser?.name) {
       providers.add(currentUser.name)
     }
@@ -570,11 +548,7 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
             Manage and continue working on unfinished clinical documentation
             {currentUser && ` • Preferences synced for ${currentUser.name}`}
           </p>
-          {analyticsState.error && (
-            <p className="text-xs text-destructive mt-2">
-              {analyticsState.error}
-            </p>
-          )}
+          {analyticsState.error && <p className="text-xs text-destructive mt-2">{analyticsState.error}</p>}
         </div>
         <div className="flex items-center gap-3">
           <Badge variant="outline" className="text-sm">
@@ -583,7 +557,7 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
           <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
             Refresh
           </Button>
-          <Button size="sm" onClick={() => onEditDraft?.('new')}>
+          <Button size="sm" onClick={() => onEditDraft?.("new")}>
             <FilePlus className="w-4 h-4 mr-2" />
             New Draft
           </Button>
@@ -603,19 +577,10 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
           <div className="flex items-center gap-4">
             <div className="flex-1 relative">
               <Search className="w-4 h-4 absolute left-3 top-3 text-muted-foreground" />
-              <Input
-                placeholder="Search by patient name, ID, encounter, or provider..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+              <Input placeholder="Search by patient name, ID, encounter, or provider..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
             </div>
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-            >
-              {sortOrder === 'asc' ? <SortAsc className="w-4 h-4" /> : <SortDesc className="w-4 h-4" />}
+            <Button variant="outline" size="sm" onClick={() => setSortOrder(sortOrder === "asc" ? "desc" : "asc")}>
+              {sortOrder === "asc" ? <SortAsc className="w-4 h-4" /> : <SortDesc className="w-4 h-4" />}
             </Button>
           </div>
 
@@ -629,11 +594,13 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Providers</SelectItem>
-                  {uniqueProviders.map(provider => (
+                  {uniqueProviders.map((provider) => (
                     <SelectItem key={provider} value={provider}>
                       {provider}
                       {currentUser?.name === provider && (
-                        <Badge variant="outline" className="ml-2 text-xs">You</Badge>
+                        <Badge variant="outline" className="ml-2 text-xs">
+                          You
+                        </Badge>
                       )}
                     </SelectItem>
                   ))}
@@ -738,22 +705,16 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
               <FileText className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-medium text-foreground mb-2">No drafts found</h3>
               <p className="text-muted-foreground">
-                {searchTerm || selectedProvider !== 'all' || selectedVisitType !== 'all' || selectedUrgency !== 'all' || ageFilter !== 'all'
-                  ? 'Try adjusting your filters or search criteria'
-                  : 'All caught up! No draft notes pending completion.'
-                }
+                {searchTerm || selectedProvider !== "all" || selectedVisitType !== "all" || selectedUrgency !== "all" || ageFilter !== "all"
+                  ? "Try adjusting your filters or search criteria"
+                  : "All caught up! No draft notes pending completion."}
               </p>
             </CardContent>
           </Card>
         ) : (
           filteredDrafts.map((draft, index) => (
-            <motion.div
-              key={draft.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-            >
-              <Card 
+            <motion.div key={draft.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
+              <Card
                 className="hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30"
                 onClick={() => handleCardClick(draft.id)}
               >
@@ -764,20 +725,19 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                       <div className="relative">
                         <Avatar className="w-12 h-12 ring-2 ring-white shadow-sm">
                           <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium">
-                            {draft.patientName.split(' ').map(n => n[0]).join('')}
+                            {draft.patientName
+                              .split(" ")
+                              .map((n) => n[0])
+                              .join("")}
                           </AvatarFallback>
                         </Avatar>
-                        {draft.urgency === 'high' && (
-                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white" />
-                        )}
+                        {draft.urgency === "high" && <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white" />}
                       </div>
-                      
+
                       <div className="space-y-2">
                         <div className="flex items-center gap-3">
                           <h3 className="font-semibold text-foreground text-lg">{draft.patientName}</h3>
-                          <Badge className={`text-xs font-medium ${getVisitTypeColor(draft.visitType)}`}>
-                            {draft.visitType}
-                          </Badge>
+                          <Badge className={`text-xs font-medium ${getVisitTypeColor(draft.visitType)}`}>{draft.visitType}</Badge>
                           <Badge variant={getUrgencyColor(draft.urgency)} className="text-xs font-medium">
                             {draft.urgency} priority
                           </Badge>
@@ -789,7 +749,9 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                           <span>•</span>
                           <span className="font-medium">Provider: {draft.provider}</span>
                           {currentUser?.name === draft.provider && (
-                            <Badge variant="outline" className="text-xs">You</Badge>
+                            <Badge variant="outline" className="text-xs">
+                              You
+                            </Badge>
                           )}
                         </div>
                       </div>
@@ -801,25 +763,18 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                         <div className="text-sm font-semibold text-foreground mb-1">Visit Date</div>
                         <div className="text-sm text-muted-foreground">{formatDate(draft.visitDate)}</div>
                       </div>
-                      
+
                       <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
                         <div className="text-sm font-semibold text-foreground mb-1">Last Edit</div>
-                        <div className="text-sm text-muted-foreground">
-                          {formatDate(draft.lastEditDate)}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {formatTime(draft.lastEditDate)}
-                        </div>
+                        <div className="text-sm text-muted-foreground">{formatDate(draft.lastEditDate)}</div>
+                        <div className="text-xs text-muted-foreground">{formatTime(draft.lastEditDate)}</div>
                       </div>
 
                       <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
                         <div className="text-sm font-semibold text-foreground mb-2">Completion</div>
                         <div className="flex items-center gap-2">
                           <div className="w-20 h-3 bg-stone-200 rounded-full overflow-hidden shadow-inner">
-                            <div 
-                              className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 shadow-sm"
-                              style={{ width: `${draft.completionStatus}%` }}
-                            />
+                            <div className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 shadow-sm" style={{ width: `${draft.completionStatus}%` }} />
                           </div>
                           <span className="text-sm font-semibold text-foreground">{draft.completionStatus}%</span>
                         </div>
@@ -829,33 +784,19 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                     {/* Right Section: Age & Actions */}
                     <div className="flex items-center gap-6">
                       <div className="text-center p-4 bg-gradient-to-br from-stone-50 to-stone-100 rounded-xl border border-stone-200/50 shadow-sm">
-                        <div className={`text-3xl font-bold ${getDaysOldColor(draft.daysOld)} mb-1`}>
-                          {draft.daysOld}
-                        </div>
-                        <div className="text-xs text-muted-foreground font-medium">
-                          day{draft.daysOld !== 1 ? 's' : ''} old
-                        </div>
+                        <div className={`text-3xl font-bold ${getDaysOldColor(draft.daysOld)} mb-1`}>{draft.daysOld}</div>
+                        <div className="text-xs text-muted-foreground font-medium">day{draft.daysOld !== 1 ? "s" : ""} old</div>
                       </div>
 
                       <div className="flex items-center gap-3">
-                        <Button 
-                          variant="default" 
-                          size="sm" 
-                          onClick={(e) => handleButtonClick(e, draft.id)}
-                          className="shadow-sm hover:shadow-md transition-shadow"
-                        >
+                        <Button variant="default" size="sm" onClick={(e) => handleButtonClick(e, draft.id)} className="shadow-sm hover:shadow-md transition-shadow">
                           <Edit className="w-4 h-4 mr-2" />
                           Continue
                         </Button>
-                        
+
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button 
-                              variant="outline" 
-                              size="sm" 
-                              className="shadow-sm"
-                              onClick={handleDropdownClick}
-                            >
+                            <Button variant="outline" size="sm" className="shadow-sm" onClick={handleDropdownClick}>
                               <MoreHorizontal className="w-4 h-4" />
                             </Button>
                           </DropdownMenuTrigger>
@@ -888,7 +829,7 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                       <span>•</span>
                       <span>Last edited by {draft.lastEditor}</span>
                     </div>
-                    
+
                     <div className="flex items-center gap-2">
                       {draft.completionStatus < 50 && (
                         <div className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded-md border border-orange-200/50">
@@ -921,29 +862,19 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
                 <div className="text-sm text-muted-foreground font-medium">Total Drafts</div>
               </div>
               <div className="p-4 bg-white rounded-lg shadow-sm border border-stone-200/50">
-                <div className="text-3xl font-bold text-red-600 mb-1">
-                  {filteredDrafts.filter(d => d.urgency === 'high').length}
-                </div>
+                <div className="text-3xl font-bold text-red-600 mb-1">{filteredDrafts.filter((d) => d.urgency === "high").length}</div>
                 <div className="text-sm text-muted-foreground font-medium">High Priority</div>
               </div>
               <div className="p-4 bg-white rounded-lg shadow-sm border border-stone-200/50">
-                <div className="text-3xl font-bold text-blue-600 mb-1">
-                  {Math.round(filteredDrafts.reduce((acc, d) => acc + d.completionStatus, 0) / filteredDrafts.length)}%
-                </div>
+                <div className="text-3xl font-bold text-blue-600 mb-1">{Math.round(filteredDrafts.reduce((acc, d) => acc + d.completionStatus, 0) / filteredDrafts.length)}%</div>
                 <div className="text-sm text-muted-foreground font-medium">Avg Completion</div>
               </div>
               <div className="p-4 bg-white rounded-lg shadow-sm border border-stone-200/50">
-                <div className="text-3xl font-bold text-orange-600 mb-1">
-                  {filteredDrafts.filter(d => d.daysOld > 7).length}
-                </div>
+                <div className="text-3xl font-bold text-orange-600 mb-1">{filteredDrafts.filter((d) => d.daysOld > 7).length}</div>
                 <div className="text-sm text-muted-foreground font-medium">Over 7 Days Old</div>
               </div>
             </div>
-            {analyticsState.data && (
-              <div className="mt-4 text-sm text-muted-foreground text-center">
-                System-wide draft count: {analyticsState.data.drafts}
-              </div>
-            )}
+            {analyticsState.data && <div className="mt-4 text-sm text-muted-foreground text-center">System-wide draft count: {analyticsState.data.drafts}</div>}
           </CardContent>
         </Card>
       )}

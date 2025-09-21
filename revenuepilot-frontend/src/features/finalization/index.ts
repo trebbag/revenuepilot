@@ -1,7 +1,4 @@
-export {
-  FinalizationWizard,
-  WorkflowWizard
-} from "./WorkflowWizard"
+export { FinalizationWizard, WorkflowWizard } from "./WorkflowWizard"
 
 export type {
   FinalizationWizardProps,
@@ -14,5 +11,5 @@ export type {
   WizardStepOverride,
   WizardProgressStep,
   WizardPatientQuestion,
-  CodeClassification
+  CodeClassification,
 } from "./WorkflowWizard"

@@ -6,7 +6,7 @@ import { ActivityLog } from "../ActivityLog"
 import { apiFetchJson } from "../../lib/api"
 
 vi.mock("../../lib/api", () => ({
-  apiFetchJson: vi.fn()
+  apiFetchJson: vi.fn(),
 }))
 
 const mockedApiFetchJson = vi.mocked(apiFetchJson)
@@ -17,9 +17,9 @@ const baseProps = {
     name: "Demo",
     fullName: "Demo User",
     role: "admin" as const,
-    specialty: "General"
+    specialty: "General",
   },
-  userRole: "admin" as const
+  userRole: "admin" as const,
 }
 
 describe("ActivityLog", () => {
@@ -39,8 +39,8 @@ describe("ActivityLog", () => {
             description: "Created new note",
             category: "documentation",
             severity: "success",
-            client: "10.0.0.1"
-          }
+            client: "10.0.0.1",
+          },
         },
         {
           id: 102,
@@ -50,12 +50,12 @@ describe("ActivityLog", () => {
           details: {
             description: "Updated preferences",
             category: "settings",
-            severity: "info"
-          }
-        }
+            severity: "info",
+          },
+        },
       ],
       next: null,
-      count: 2
+      count: 2,
     })
 
     render(<ActivityLog {...baseProps} />)
@@ -86,12 +86,12 @@ describe("ActivityLog", () => {
           details: {
             description: "Manual refresh",
             category: "system",
-            severity: "info"
-          }
-        }
+            severity: "info",
+          },
+        },
       ],
       next: null,
-      count: 1
+      count: 1,
     })
 
     render(<ActivityLog {...baseProps} />)
@@ -107,4 +107,3 @@ describe("ActivityLog", () => {
     })
   })
 })
-

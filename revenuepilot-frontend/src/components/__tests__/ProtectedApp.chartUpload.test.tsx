@@ -10,10 +10,10 @@ vi.mock("../../contexts/AuthContext", () => ({
     user: {
       id: "user-1",
       name: "Test Clinician",
-      role: "user"
+      role: "user",
     },
-    hasPermission: () => true
-  })
+    hasPermission: () => true,
+  }),
 }))
 
 const sessionActions = {
@@ -23,7 +23,7 @@ const sessionActions = {
   setSuggestionPanelOpen: vi.fn(),
   setLayout: vi.fn(),
   refresh: vi.fn(),
-  reset: vi.fn()
+  reset: vi.fn(),
 }
 
 vi.mock("../../contexts/SessionContext", () => ({
@@ -33,16 +33,16 @@ vi.mock("../../contexts/SessionContext", () => ({
       selectedCodesList: [],
       addedCodes: [],
       isSuggestionPanelOpen: false,
-      layout: { noteEditor: 70, suggestionPanel: 30 }
+      layout: { noteEditor: 70, suggestionPanel: 30 },
     },
     hydrated: true,
     syncing: false,
-    actions: sessionActions
-  })
+    actions: sessionActions,
+  }),
 }))
 
 vi.mock("../../components/FinalizationWizardAdapter", () => ({
-  FinalizationWizardAdapter: () => null
+  FinalizationWizardAdapter: () => null,
 }))
 
 vi.mock("../../components/Schedule", () => {
@@ -56,16 +56,12 @@ vi.mock("../../components/Schedule", () => {
           "button",
           {
             type: "button",
-            onClick: () => onUploadChart?.("PT-0001")
+            onClick: () => onUploadChart?.("PT-0001"),
           },
-          "Upload Chart"
+          "Upload Chart",
         ),
-        React.createElement(
-          "pre",
-          { "data-testid": "upload-status" },
-          JSON.stringify(uploadStatuses ?? {})
-        )
-      )
+        React.createElement("pre", { "data-testid": "upload-status" }, JSON.stringify(uploadStatuses ?? {})),
+      ),
   }
 })
 
@@ -74,7 +70,7 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     apiFetch: mockedApiFetch,
-    apiFetchJson: mockedApiFetchJson
+    apiFetchJson: mockedApiFetchJson,
   }
 })
 
@@ -111,8 +107,8 @@ describe("ProtectedApp chart upload flow", () => {
           removeEventListener: vi.fn(),
           addListener: vi.fn(),
           removeListener: vi.fn(),
-          dispatchEvent: vi.fn()
-        }))
+          dispatchEvent: vi.fn(),
+        })),
       })
     }
   })
@@ -120,7 +116,7 @@ describe("ProtectedApp chart upload flow", () => {
   beforeEach(() => {
     mockedApiFetch.mockReset()
     mockedApiFetchJson.mockReset()
-    Object.values(sessionActions).forEach(action => action.mockReset?.())
+    Object.values(sessionActions).forEach((action) => action.mockReset?.())
   })
 
   it("uploads a chart, logs the activity, and refreshes the schedule", async () => {
@@ -137,9 +133,9 @@ describe("ProtectedApp chart upload flow", () => {
             start: start.toISOString(),
             end: end.toISOString(),
             provider: "Test Clinician",
-            status: "Scheduled"
-          }
-        ]
+            status: "Scheduled",
+          },
+        ],
       },
       {
         appointments: [
@@ -150,10 +146,10 @@ describe("ProtectedApp chart upload flow", () => {
             start: start.toISOString(),
             end: end.toISOString(),
             provider: "Test Clinician",
-            status: "Completed"
-          }
-        ]
-      }
+            status: "Completed",
+          },
+        ],
+      },
     ]
 
     let scheduleFetchCount = 0
@@ -180,13 +176,13 @@ describe("ProtectedApp chart upload flow", () => {
     mockedApiFetch.mockResolvedValue(
       new Response(JSON.stringify({ filename: "chart.txt", size: 12 }), {
         status: 200,
-        headers: { "Content-Type": "application/json" }
-      })
+        headers: { "Content-Type": "application/json" },
+      }),
     )
 
     const createdInputs: HTMLInputElement[] = []
     const originalCreateElement = document.createElement.bind(document)
-    const createElementSpy = vi.spyOn(document, "createElement").mockImplementation(tagName => {
+    const createElementSpy = vi.spyOn(document, "createElement").mockImplementation((tagName) => {
       const element = originalCreateElement(tagName) as HTMLElement
       if (tagName === "input") {
         createdInputs.push(element as HTMLInputElement)
@@ -201,7 +197,7 @@ describe("ProtectedApp chart upload flow", () => {
     fireEvent.click(uploadButton)
 
     expect(createdInputs.length).toBeGreaterThan(0)
-    const input = createdInputs.find(element => element.accept?.includes(".pdf")) ?? createdInputs[createdInputs.length - 1]
+    const input = createdInputs.find((element) => element.accept?.includes(".pdf")) ?? createdInputs[createdInputs.length - 1]
     expect(input).toBeTruthy()
     const file = new File(["chart data"], "chart.txt", { type: "text/plain" })
     const inputElement = input as HTMLInputElement
@@ -212,12 +208,12 @@ describe("ProtectedApp chart upload flow", () => {
           start(controller) {
             controller.enqueue(new TextEncoder().encode("chart data"))
             controller.close()
-          }
-        })
+          },
+        }),
     })
     Object.defineProperty(inputElement, "files", {
       value: [file],
-      writable: false
+      writable: false,
     })
     inputElement.dispatchEvent(new Event("change", { bubbles: true }))
 
@@ -228,10 +224,7 @@ describe("ProtectedApp chart upload flow", () => {
     })
 
     await waitFor(() => {
-      expect(mockedApiFetch).toHaveBeenCalledWith(
-        expect.stringContaining("/api/charts/upload"),
-        expect.objectContaining({ method: "POST" })
-      )
+      expect(mockedApiFetch).toHaveBeenCalledWith(expect.stringContaining("/api/charts/upload"), expect.objectContaining({ method: "POST" }))
     })
 
     await waitFor(() => {
@@ -253,13 +246,12 @@ describe("ProtectedApp chart upload flow", () => {
           action: "chart.upload",
           details: expect.objectContaining({
             patientId: "PT-0001",
-            fileName: "chart.txt"
-          })
-        })
+            fileName: "chart.txt",
+          }),
+        }),
       })
     })
 
     createElementSpy.mockRestore()
   })
 })
-

@@ -1,20 +1,5 @@
 import { useState } from "react"
-import { 
-  FileText, 
-  Stethoscope, 
-  Bell, 
-  Settings, 
-  ChevronRight,
-  Calendar,
-  Clock,
-  Hash,
-  Pill,
-  Thermometer,
-  User,
-  Search,
-  Plus,
-  X
-} from "lucide-react"
+import { FileText, Stethoscope, Bell, Settings, ChevronRight, Calendar, Clock, Hash, Pill, Thermometer, User, Search, Plus, X } from "lucide-react"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
 import { Input } from "./ui/input"
@@ -54,9 +39,7 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>Typography System</CardTitle>
-                <CardDescription>
-                  Base font size: 14px | Font weights: 400 (normal), 500 (medium) | Line height: 1.5
-                </CardDescription>
+                <CardDescription>Base font size: 14px | Font weights: 400 (normal), 500 (medium) | Line height: 1.5</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Font Hierarchy */}
@@ -120,34 +103,24 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>Color Palette</CardTitle>
-                <CardDescription>
-                  Professional clinical color system with light/dark mode support
-                </CardDescription>
+                <CardDescription>Professional clinical color system with light/dark mode support</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Primary Colors */}
                 <div>
                   <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">Primary Colors</p>
                   <div className="grid grid-cols-2 gap-4">
-                    <div 
-                      className="p-4 bg-primary text-primary-foreground rounded-lg cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('primary')}
-                      onMouseLeave={() => setHoveredColor(null)}
-                    >
+                    <div className="p-4 bg-primary text-primary-foreground rounded-lg cursor-pointer" onMouseEnter={() => setHoveredColor("primary")} onMouseLeave={() => setHoveredColor(null)}>
                       <div className="font-medium">Primary</div>
-                      <div className="text-sm opacity-80">
-                        {hoveredColor === 'primary' ? '#030213 / oklch(0.145 0 0)' : 'Main brand color'}
-                      </div>
+                      <div className="text-sm opacity-80">{hoveredColor === "primary" ? "#030213 / oklch(0.145 0 0)" : "Main brand color"}</div>
                     </div>
-                    <div 
+                    <div
                       className="p-4 bg-secondary text-secondary-foreground rounded-lg cursor-pointer border"
-                      onMouseEnter={() => setHoveredColor('secondary')}
+                      onMouseEnter={() => setHoveredColor("secondary")}
                       onMouseLeave={() => setHoveredColor(null)}
                     >
                       <div className="font-medium">Secondary</div>
-                      <div className="text-sm opacity-80">
-                        {hoveredColor === 'secondary' ? 'oklch(0.95 0.0058 264.53)' : 'Supporting color'}
-                      </div>
+                      <div className="text-sm opacity-80">{hoveredColor === "secondary" ? "oklch(0.95 0.0058 264.53)" : "Supporting color"}</div>
                     </div>
                   </div>
                 </div>
@@ -156,35 +129,17 @@ export function StyleGuide() {
                 <div>
                   <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">Background Colors</p>
                   <div className="grid grid-cols-3 gap-4">
-                    <div 
-                      className="p-4 bg-background text-foreground rounded-lg border cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('background')}
-                      onMouseLeave={() => setHoveredColor(null)}
-                    >
+                    <div className="p-4 bg-background text-foreground rounded-lg border cursor-pointer" onMouseEnter={() => setHoveredColor("background")} onMouseLeave={() => setHoveredColor(null)}>
                       <div className="font-medium">Background</div>
-                      <div className="text-sm opacity-70">
-                        {hoveredColor === 'background' ? '#ffffff' : 'Main background'}
-                      </div>
+                      <div className="text-sm opacity-70">{hoveredColor === "background" ? "#ffffff" : "Main background"}</div>
                     </div>
-                    <div 
-                      className="p-4 bg-muted text-foreground rounded-lg cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('muted')}
-                      onMouseLeave={() => setHoveredColor(null)}
-                    >
+                    <div className="p-4 bg-muted text-foreground rounded-lg cursor-pointer" onMouseEnter={() => setHoveredColor("muted")} onMouseLeave={() => setHoveredColor(null)}>
                       <div className="font-medium">Muted</div>
-                      <div className="text-sm opacity-70">
-                        {hoveredColor === 'muted' ? '#ececf0' : 'Subtle background'}
-                      </div>
+                      <div className="text-sm opacity-70">{hoveredColor === "muted" ? "#ececf0" : "Subtle background"}</div>
                     </div>
-                    <div 
-                      className="p-4 bg-accent text-accent-foreground rounded-lg cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('accent')}
-                      onMouseLeave={() => setHoveredColor(null)}
-                    >
+                    <div className="p-4 bg-accent text-accent-foreground rounded-lg cursor-pointer" onMouseEnter={() => setHoveredColor("accent")} onMouseLeave={() => setHoveredColor(null)}>
                       <div className="font-medium">Accent</div>
-                      <div className="text-sm opacity-70">
-                        {hoveredColor === 'accent' ? '#e9ebef' : 'Hover states'}
-                      </div>
+                      <div className="text-sm opacity-70">{hoveredColor === "accent" ? "#e9ebef" : "Hover states"}</div>
                     </div>
                   </div>
                 </div>
@@ -208,25 +163,17 @@ export function StyleGuide() {
                 <div>
                   <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">Sidebar Colors</p>
                   <div className="grid grid-cols-2 gap-4">
-                    <div 
-                      className="p-4 bg-sidebar text-sidebar-foreground rounded-lg border cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('sidebar')}
-                      onMouseLeave={() => setHoveredColor(null)}
-                    >
+                    <div className="p-4 bg-sidebar text-sidebar-foreground rounded-lg border cursor-pointer" onMouseEnter={() => setHoveredColor("sidebar")} onMouseLeave={() => setHoveredColor(null)}>
                       <div className="font-medium">Sidebar Background</div>
-                      <div className="text-sm opacity-70">
-                        {hoveredColor === 'sidebar' ? 'oklch(0.985 0 0)' : 'Navigation background'}
-                      </div>
+                      <div className="text-sm opacity-70">{hoveredColor === "sidebar" ? "oklch(0.985 0 0)" : "Navigation background"}</div>
                     </div>
-                    <div 
+                    <div
                       className="p-4 bg-sidebar-primary text-sidebar-primary-foreground rounded-lg cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('sidebar-primary')}
+                      onMouseEnter={() => setHoveredColor("sidebar-primary")}
                       onMouseLeave={() => setHoveredColor(null)}
                     >
                       <div className="font-medium">Sidebar Primary</div>
-                      <div className="text-sm opacity-80">
-                        {hoveredColor === 'sidebar-primary' ? '#030213' : 'Active navigation'}
-                      </div>
+                      <div className="text-sm opacity-80">{hoveredColor === "sidebar-primary" ? "#030213" : "Active navigation"}</div>
                     </div>
                   </div>
                 </div>
@@ -235,15 +182,13 @@ export function StyleGuide() {
                 <div>
                   <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">State Colors</p>
                   <div className="grid grid-cols-1 gap-4">
-                    <div 
+                    <div
                       className="p-4 bg-destructive text-destructive-foreground rounded-lg cursor-pointer"
-                      onMouseEnter={() => setHoveredColor('destructive')}
+                      onMouseEnter={() => setHoveredColor("destructive")}
                       onMouseLeave={() => setHoveredColor(null)}
                     >
                       <div className="font-medium">Destructive</div>
-                      <div className="text-sm opacity-80">
-                        {hoveredColor === 'destructive' ? '#d4183d' : 'Error and danger states'}
-                      </div>
+                      <div className="text-sm opacity-80">{hoveredColor === "destructive" ? "#d4183d" : "Error and danger states"}</div>
                     </div>
                   </div>
                 </div>
@@ -256,9 +201,7 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>Spacing System</CardTitle>
-                <CardDescription>
-                  Consistent spacing scale using Tailwind's spacing tokens
-                </CardDescription>
+                <CardDescription>Consistent spacing scale using Tailwind's spacing tokens</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Standard Spacing Scale */}
@@ -266,18 +209,20 @@ export function StyleGuide() {
                   <p className="text-xs text-muted-foreground uppercase tracking-wide mb-4">Standard Spacing Scale</p>
                   <div className="space-y-3">
                     {[
-                      { size: '0.5', rem: '0.125rem', px: '2px' },
-                      { size: '1', rem: '0.25rem', px: '4px' },
-                      { size: '2', rem: '0.5rem', px: '8px' },
-                      { size: '3', rem: '0.75rem', px: '12px' },
-                      { size: '4', rem: '1rem', px: '16px' },
-                      { size: '6', rem: '1.5rem', px: '24px' },
-                      { size: '8', rem: '2rem', px: '32px' },
+                      { size: "0.5", rem: "0.125rem", px: "2px" },
+                      { size: "1", rem: "0.25rem", px: "4px" },
+                      { size: "2", rem: "0.5rem", px: "8px" },
+                      { size: "3", rem: "0.75rem", px: "12px" },
+                      { size: "4", rem: "1rem", px: "16px" },
+                      { size: "6", rem: "1.5rem", px: "24px" },
+                      { size: "8", rem: "2rem", px: "32px" },
                     ].map(({ size, rem, px }) => (
                       <div key={size} className="flex items-center gap-4">
                         <div className={`bg-primary h-4`} style={{ width: rem }}></div>
                         <code className="text-sm font-mono">space-{size}</code>
-                        <span className="text-sm text-muted-foreground">{rem} ({px})</span>
+                        <span className="text-sm text-muted-foreground">
+                          {rem} ({px})
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -356,9 +301,7 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>Buttons & Interactive Elements</CardTitle>
-                <CardDescription>
-                  Button variants, states, and form components
-                </CardDescription>
+                <CardDescription>Button variants, states, and form components</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Button Variants */}
@@ -370,11 +313,15 @@ export function StyleGuide() {
                       <p className="text-sm text-muted-foreground">Default action button</p>
                     </div>
                     <div className="space-y-3">
-                      <Button variant="secondary" className="w-full">Secondary Button</Button>
+                      <Button variant="secondary" className="w-full">
+                        Secondary Button
+                      </Button>
                       <p className="text-sm text-muted-foreground">Alternative actions</p>
                     </div>
                     <div className="space-y-3">
-                      <Button variant="outline" className="w-full">Outline Button</Button>
+                      <Button variant="outline" className="w-full">
+                        Outline Button
+                      </Button>
                       <p className="text-sm text-muted-foreground">Less emphasized</p>
                     </div>
                   </div>
@@ -387,7 +334,9 @@ export function StyleGuide() {
                     <Button size="sm">Small</Button>
                     <Button size="default">Default</Button>
                     <Button size="lg">Large</Button>
-                    <Button size="icon"><Plus className="w-4 h-4" /></Button>
+                    <Button size="icon">
+                      <Plus className="w-4 h-4" />
+                    </Button>
                   </div>
                   <div className="mt-4 text-sm text-muted-foreground space-y-1">
                     <p>Small: h-8 (32px) · Medium: h-9 (36px) · Large: h-10 (40px) · Icon: 36×36px</p>
@@ -446,7 +395,9 @@ export function StyleGuide() {
                     <p className="text-sm text-muted-foreground">Clinical badge examples:</p>
                     <div className="flex gap-2">
                       <Badge className="text-xs px-2 py-0.5">3</Badge>
-                      <Badge variant="outline" className="text-xs px-2 py-0.5">2</Badge>
+                      <Badge variant="outline" className="text-xs px-2 py-0.5">
+                        2
+                      </Badge>
                     </div>
                   </div>
                 </div>
@@ -459,9 +410,7 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>Icons & Visual Elements</CardTitle>
-                <CardDescription>
-                  Lucide React icons with consistent sizing and styling
-                </CardDescription>
+                <CardDescription>Lucide React icons with consistent sizing and styling</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Icon Sizes */}
@@ -577,9 +526,7 @@ export function StyleGuide() {
             <Card>
               <CardHeader>
                 <CardTitle>UI Tone & Visual Style</CardTitle>
-                <CardDescription>
-                  Professional, minimalist design principles for clinical environments
-                </CardDescription>
+                <CardDescription>Professional, minimalist design principles for clinical environments</CardDescription>
               </CardHeader>
               <CardContent className="space-y-8">
                 {/* Design Principles */}
@@ -679,9 +626,7 @@ export function StyleGuide() {
                     </div>
                     <div className="p-4 border rounded-lg">
                       <h4 className="font-medium mb-2">Focus States</h4>
-                      <Button className="focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                        Keyboard Accessible
-                      </Button>
+                      <Button className="focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">Keyboard Accessible</Button>
                       <p className="text-sm text-muted-foreground mt-2">Clear focus indicators for keyboard navigation</p>
                     </div>
                   </div>

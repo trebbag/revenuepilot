@@ -6,14 +6,10 @@ import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 import { SuggestionPanel } from "../SuggestionPanel"
 import type { StreamConnectionState } from "../NoteEditor"
 
-const apiFetchJsonMock = vi.fn<
-  [RequestInfo | URL, { method?: string; jsonBody?: unknown; signal?: AbortSignal }?],
-  Promise<any>
->()
+const apiFetchJsonMock = vi.fn<[RequestInfo | URL, { method?: string; jsonBody?: unknown; signal?: AbortSignal }?], Promise<any>>()
 
 vi.mock("../../lib/api", () => ({
-  apiFetchJson: (input: RequestInfo | URL, options?: { method?: string; jsonBody?: unknown; signal?: AbortSignal }) =>
-    apiFetchJsonMock(input, options)
+  apiFetchJson: (input: RequestInfo | URL, options?: { method?: string; jsonBody?: unknown; signal?: AbortSignal }) => apiFetchJsonMock(input, options),
 }))
 
 const resolveUrl = (input: RequestInfo | URL): string => {
@@ -26,14 +22,15 @@ const resolveUrl = (input: RequestInfo | URL): string => {
   return (input as Request).url
 }
 
-const defaultConnectionState = (status: StreamConnectionState["status"], overrides?: Partial<StreamConnectionState>) => ({
-  status,
-  attempts: 0,
-  lastError: null,
-  lastConnectedAt: null,
-  nextRetryDelayMs: null,
-  ...(overrides ?? {})
-}) satisfies StreamConnectionState
+const defaultConnectionState = (status: StreamConnectionState["status"], overrides?: Partial<StreamConnectionState>) =>
+  ({
+    status,
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null,
+    ...(overrides ?? {}),
+  }) satisfies StreamConnectionState
 
 const flushPromises = async () => {
   await Promise.resolve()
@@ -74,16 +71,14 @@ describe("SuggestionPanel streaming integration", () => {
     onAddCode: vi.fn(),
     addedCodes: [] as string[],
     noteContent: "Initial note content",
-    selectedCodesList: [] as any[]
+    selectedCodesList: [] as any[],
   }
 
   it("skips REST fallbacks when websocket streams are live", async () => {
     render(
       <SuggestionPanel
         {...baseProps}
-        streamingCodes={[
-          { id: "s1", code: "99213", description: "Office visit", receivedAt: Date.now() }
-        ]}
+        streamingCodes={[{ id: "s1", code: "99213", description: "Office visit", receivedAt: Date.now() }]}
         streamingCompliance={[
           {
             id: "c1",
@@ -92,12 +87,12 @@ describe("SuggestionPanel streaming integration", () => {
             description: "Add ROS",
             category: "documentation",
             details: "Missing ROS",
-            suggestion: "Capture ROS"
-          }
+            suggestion: "Capture ROS",
+          },
         ]}
         codesConnection={defaultConnectionState("open")}
         complianceConnection={defaultConnectionState("open")}
-      />
+      />,
     )
 
     await act(async () => {
@@ -109,13 +104,10 @@ describe("SuggestionPanel streaming integration", () => {
 
     const requestedEndpoints = apiFetchJsonMock.mock.calls.map(([input]) => resolveUrl(input))
 
-    expect(requestedEndpoints.some(url => url.includes("/api/ai/codes/suggest"))).toBe(false)
-    expect(requestedEndpoints.some(url => url.includes("/api/ai/compliance/check"))).toBe(false)
+    expect(requestedEndpoints.some((url) => url.includes("/api/ai/codes/suggest"))).toBe(false)
+    expect(requestedEndpoints.some((url) => url.includes("/api/ai/compliance/check"))).toBe(false)
 
-    const liveBadges = screen.getAllByText(
-      (_, element) =>
-        element?.textContent === "Live" && element.parentElement?.getAttribute("data-slot") === "badge"
-    )
+    const liveBadges = screen.getAllByText((_, element) => element?.textContent === "Live" && element.parentElement?.getAttribute("data-slot") === "badge")
     expect(liveBadges).toHaveLength(2)
     expect(screen.getAllByText(/Live updates are streaming in real time\./)).not.toHaveLength(0)
   })
@@ -148,7 +140,7 @@ describe("SuggestionPanel streaming integration", () => {
         streamingCompliance={[]}
         codesConnection={defaultConnectionState("error", { lastError: "Socket failed" })}
         complianceConnection={defaultConnectionState("closed")}
-      />
+      />,
     )
 
     await act(async () => {
@@ -158,14 +150,8 @@ describe("SuggestionPanel streaming integration", () => {
 
     await flushPromises()
 
-    const offlineBadges = screen.getAllByText(
-      (_, element) =>
-        element?.textContent === "Offline" && element.parentElement?.getAttribute("data-slot") === "badge"
-    )
-    const retryingBadges = screen.getAllByText(
-      (_, element) =>
-        element?.textContent === "Retrying" && element.parentElement?.getAttribute("data-slot") === "badge"
-    )
+    const offlineBadges = screen.getAllByText((_, element) => element?.textContent === "Offline" && element.parentElement?.getAttribute("data-slot") === "badge")
+    const retryingBadges = screen.getAllByText((_, element) => element?.textContent === "Retrying" && element.parentElement?.getAttribute("data-slot") === "badge")
 
     expect(offlineBadges).toHaveLength(1)
     expect(retryingBadges).toHaveLength(1)

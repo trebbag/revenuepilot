@@ -30,7 +30,7 @@ interface TextFieldProps {
 const iconMap = {
   user: User,
   lock: Lock,
-  mail: Mail
+  mail: Mail,
 } as const
 
 export function TextField({
@@ -54,7 +54,7 @@ export function TextField({
   maxLength,
   pattern,
   autoComplete,
-  className
+  className,
 }: TextFieldProps) {
   const [showPassword, setShowPassword] = useState(false)
   const [isFocused, setIsFocused] = useState(false)
@@ -66,11 +66,7 @@ export function TextField({
   const hasError = state === "error" || Boolean(errorMessage)
   const isDisabled = disabled || state === "disabled"
 
-  const containerClasses = cn(
-    "relative w-full",
-    size === "lg" ? "mb-6" : "mb-4",
-    className
-  )
+  const containerClasses = cn("relative w-full", size === "lg" ? "mb-6" : "mb-4", className)
 
   const inputClasses = cn(
     "w-full border rounded-xl transition-all duration-200 focus:outline-none focus:ring-2",
@@ -83,14 +79,14 @@ export function TextField({
     !hasError && isFocused && "border-primary/60 bg-background focus:ring-primary/20 ring-1 ring-primary/10",
     !hasError && !isFocused && "border-border/60 hover:border-border",
     isDisabled && "opacity-50 cursor-not-allowed bg-muted",
-    type === "code" && "text-center tracking-wider font-mono"
+    type === "code" && "text-center tracking-wider font-mono",
   )
 
   const iconClasses = cn(
     "absolute top-1/2 -translate-y-1/2 text-muted-foreground transition-colors",
     size === "lg" ? "w-5 h-5" : "w-4 h-4",
     hasError && "text-destructive",
-    isFocused && !hasError && "text-primary"
+    isFocused && !hasError && "text-primary",
   )
 
   const handleFocus = () => {
@@ -106,33 +102,20 @@ export function TextField({
   return (
     <div className={containerClasses}>
       {label && (
-        <label
-          htmlFor={id}
-          className={cn(
-            "block mb-2 text-foreground",
-            required && "after:content-['*'] after:text-destructive after:ml-1"
-          )}
-        >
+        <label htmlFor={id} className={cn("block mb-2 text-foreground", required && "after:content-['*'] after:text-destructive after:ml-1")}>
           {label}
         </label>
       )}
 
       <div className="relative">
-        {LeftIcon && (
-          <LeftIcon
-            className={cn(
-              iconClasses,
-              size === "lg" ? "left-3.5" : "left-3"
-            )}
-          />
-        )}
+        {LeftIcon && <LeftIcon className={cn(iconClasses, size === "lg" ? "left-3.5" : "left-3")} />}
 
         <input
           id={id}
           name={name}
           type={inputType}
           value={value}
-          onChange={event => onChange?.(event.target.value)}
+          onChange={(event) => onChange?.(event.target.value)}
           onFocus={handleFocus}
           onBlur={handleBlur}
           placeholder={placeholder}
@@ -143,20 +126,14 @@ export function TextField({
           autoComplete={autoComplete}
           className={inputClasses}
           aria-invalid={hasError}
-          aria-describedby={
-            hasError ? `${id}-error` : helperText ? `${id}-helper` : undefined
-          }
+          aria-describedby={hasError ? `${id}-error` : helperText ? `${id}-helper` : undefined}
         />
-        
+
         {isPassword && (
           <button
             type="button"
             onClick={() => setShowPassword(!showPassword)}
-            className={cn(
-              iconClasses,
-              size === "lg" ? "right-3.5" : "right-3",
-              "hover:text-foreground focus:text-foreground"
-            )}
+            className={cn(iconClasses, size === "lg" ? "right-3.5" : "right-3", "hover:text-foreground focus:text-foreground")}
             aria-label={showPassword ? "Hide password" : "Show password"}
             tabIndex={-1}
           >
@@ -164,22 +141,15 @@ export function TextField({
           </button>
         )}
       </div>
-      
+
       {hasError && errorMessage && (
-        <p
-          id={`${id}-error`}
-          className="mt-1.5 text-sm text-destructive"
-          role="alert"
-        >
+        <p id={`${id}-error`} className="mt-1.5 text-sm text-destructive" role="alert">
           {errorMessage}
         </p>
       )}
-      
+
       {!hasError && helperText && (
-        <p
-          id={`${id}-helper`}
-          className="mt-1.5 text-sm text-muted-foreground"
-        >
+        <p id={`${id}-helper`} className="mt-1.5 text-sm text-muted-foreground">
           {helperText}
         </p>
       )}

@@ -56,83 +56,78 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     status: "unauthenticated",
     user: null,
     checking: true,
-    lastCheckedAt: null
+    lastCheckedAt: null,
   })
   const refreshController = useRef<AbortController | null>(null)
 
-  const refresh = useCallback(
-    async (options: RefreshOptions = {}) => {
-      const { silent = false } = options
-      refreshController.current?.abort()
-      const controller = new AbortController()
-      refreshController.current = controller
+  const refresh = useCallback(async (options: RefreshOptions = {}) => {
+    const { silent = false } = options
+    refreshController.current?.abort()
+    const controller = new AbortController()
+    refreshController.current = controller
 
-      if (!silent) {
-        setState(prev => ({ ...prev, checking: true }))
-      }
+    if (!silent) {
+      setState((prev) => ({ ...prev, checking: true }))
+    }
 
-      try {
-        const response = await apiFetch("/api/auth/status", {
-          method: "GET",
-          signal: controller.signal,
-          // Skip automatic JSON content-type since this is a simple GET
-          json: false
-        })
+    try {
+      const response = await apiFetch("/api/auth/status", {
+        method: "GET",
+        signal: controller.signal,
+        // Skip automatic JSON content-type since this is a simple GET
+        json: false,
+      })
 
-        if (response.status === 401 || response.status === 419) {
-          clearStoredTokens()
-          setState({
-            status: "unauthenticated",
-            user: null,
-            checking: false,
-            lastCheckedAt: Date.now()
-          })
-          return
-        }
-
-        if (!response.ok) {
-          throw new Error(`Failed to fetch auth status: ${response.status}`)
-        }
-
-        const data = await parseJsonResponse<{ authenticated?: boolean; user?: AuthUser }>(response)
-
-        if (data?.authenticated) {
-          setState({
-            status: "authenticated",
-            user: data.user ?? null,
-            checking: false,
-            lastCheckedAt: Date.now()
-          })
-        } else {
-          setState({
-            status: "unauthenticated",
-            user: null,
-            checking: false,
-            lastCheckedAt: Date.now()
-          })
-        }
-      } catch (error) {
-        if ((error as DOMException)?.name === "AbortError") {
-          return
-        }
-        console.error("Unable to refresh auth status", error)
+      if (response.status === 401 || response.status === 419) {
+        clearStoredTokens()
         setState({
           status: "unauthenticated",
           user: null,
           checking: false,
-          lastCheckedAt: Date.now()
+          lastCheckedAt: Date.now(),
+        })
+        return
+      }
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch auth status: ${response.status}`)
+      }
+
+      const data = await parseJsonResponse<{ authenticated?: boolean; user?: AuthUser }>(response)
+
+      if (data?.authenticated) {
+        setState({
+          status: "authenticated",
+          user: data.user ?? null,
+          checking: false,
+          lastCheckedAt: Date.now(),
+        })
+      } else {
+        setState({
+          status: "unauthenticated",
+          user: null,
+          checking: false,
+          lastCheckedAt: Date.now(),
         })
       }
-    },
-    []
-  )
+    } catch (error) {
+      if ((error as DOMException)?.name === "AbortError") {
+        return
+      }
+      console.error("Unable to refresh auth status", error)
+      setState({
+        status: "unauthenticated",
+        user: null,
+        checking: false,
+        lastCheckedAt: Date.now(),
+      })
+    }
+  }, [])
 
   const logout = useCallback(async () => {
     try {
       const refreshToken = getStoredRefreshToken()
-      const options = refreshToken
-        ? { method: "POST", jsonBody: { token: refreshToken }, skipAuth: true }
-        : { method: "POST", json: false, skipAuth: true as const }
+      const options = refreshToken ? { method: "POST", jsonBody: { token: refreshToken }, skipAuth: true } : { method: "POST", json: false, skipAuth: true as const }
 
       await apiFetch("/api/auth/logout", options)
     } catch (error) {
@@ -146,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         status: "unauthenticated",
         user: null,
         checking: false,
-        lastCheckedAt: Date.now()
+        lastCheckedAt: Date.now(),
       })
     }
   }, [])
@@ -158,7 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const permissions = Array.isArray(state.user?.permissions) ? state.user?.permissions : []
       return permissions.includes(permission)
     },
-    [state.user]
+    [state.user],
   )
 
   useEffect(() => {
@@ -183,9 +178,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       lastCheckedAt: state.lastCheckedAt,
       refresh,
       logout,
-      hasPermission
+      hasPermission,
     }),
-    [state, refresh, logout, hasPermission]
+    [state, refresh, logout, hasPermission],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -16,7 +16,7 @@ export function Card({ size = "md", children, className }: CardProps) {
         "ring-1 ring-border/20",
         size === "lg" ? "p-8" : "p-6",
         "w-full max-w-md mx-auto",
-        className
+        className,
       )}
     >
       {children}
@@ -34,21 +34,11 @@ interface CardHeaderProps {
 export function CardHeader({ logo, title, subtitle, className }: CardHeaderProps) {
   return (
     <div className={cn("text-center mb-6", className)}>
-      {logo && (
-        <div className="flex justify-center mb-4">
-          {logo}
-        </div>
-      )}
+      {logo && <div className="flex justify-center mb-4">{logo}</div>}
 
-      <h1 className="text-card-foreground mb-2">
-        {title}
-      </h1>
+      <h1 className="text-card-foreground mb-2">{title}</h1>
 
-      {subtitle && (
-        <p className="text-muted-foreground">
-          {subtitle}
-        </p>
-      )}
+      {subtitle && <p className="text-muted-foreground">{subtitle}</p>}
     </div>
   )
 }
@@ -59,11 +49,7 @@ interface CardContentProps {
 }
 
 export function CardContent({ children, className }: CardContentProps) {
-  return (
-    <div className={cn("space-y-4", className)}>
-      {children}
-    </div>
-  )
+  return <div className={cn("space-y-4", className)}>{children}</div>
 }
 
 interface CardFooterProps {
@@ -72,9 +58,5 @@ interface CardFooterProps {
 }
 
 export function CardFooter({ children, className }: CardFooterProps) {
-  return (
-    <div className={cn("mt-6 pt-6 border-t border-border", className)}>
-      {children}
-    </div>
-  )
+  return <div className={cn("mt-6 pt-6 border-t border-border", className)}>{children}</div>
 }

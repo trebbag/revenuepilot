@@ -3,33 +3,26 @@ import "@testing-library/jest-dom/vitest"
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const {
-  toastSuccess,
-  toastError,
-  fetchJsonMock
-} = vi.hoisted(() => {
+const { toastSuccess, toastError, fetchJsonMock } = vi.hoisted(() => {
   return {
     toastSuccess: vi.fn(),
     toastError: vi.fn(),
-    fetchJsonMock: vi.fn<
-      [RequestInfo | URL, Record<string, any> | undefined],
-      Promise<any>
-    >()
+    fetchJsonMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<any>>(),
   }
 })
 
 vi.mock("sonner", () => ({
   toast: {
     success: toastSuccess,
-    error: toastError
-  }
+    error: toastError,
+  },
 }))
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api")
   return {
     ...actual,
-    apiFetchJson: (input: RequestInfo | URL, init?: Record<string, any>) => fetchJsonMock(input, init)
+    apiFetchJson: (input: RequestInfo | URL, init?: Record<string, any>) => fetchJsonMock(input, init),
   }
 })
 
@@ -53,7 +46,7 @@ describe("Settings", () => {
         codes: true,
         compliance: true,
         publicHealth: true,
-        differentials: true
+        differentials: true,
       },
       rules: [],
       lang: "en",
@@ -68,15 +61,15 @@ describe("Settings", () => {
       beautifyModel: null,
       suggestModel: null,
       summarizeModel: null,
-      deidEngine: "regex"
+      deidEngine: "regex",
     }
 
     const updatedPreferences = {
       ...preferencesResponse,
       categories: {
         ...preferencesResponse.categories,
-        compliance: false
-      }
+        compliance: false,
+      },
     }
 
     fetchJsonMock.mockImplementation((input, init) => {
@@ -97,9 +90,7 @@ describe("Settings", () => {
     fireEvent.click(toggle)
 
     await waitFor(() => {
-      const putCall = fetchJsonMock.mock.calls.find(([path, options]) =>
-        path === "/api/user/preferences" && options?.method === "PUT"
-      )
+      const putCall = fetchJsonMock.mock.calls.find(([path, options]) => path === "/api/user/preferences" && options?.method === "PUT")
       expect(putCall).toBeTruthy()
       expect(putCall?.[1]?.jsonBody?.categories?.compliance).toBe(false)
     })
@@ -118,7 +109,7 @@ describe("Settings", () => {
         codes: true,
         compliance: true,
         publicHealth: true,
-        differentials: true
+        differentials: true,
       },
       rules: [],
       lang: "en",
@@ -133,17 +124,17 @@ describe("Settings", () => {
       beautifyModel: null,
       suggestModel: null,
       summarizeModel: null,
-      deidEngine: "regex"
+      deidEngine: "regex",
     }
 
     const securityResponse = {
       encryptionEnabled: true,
-      auditLogEnabled: true
+      auditLogEnabled: true,
     }
 
     const updatedSecurity = {
       ...securityResponse,
-      sessionTimeout: 30
+      sessionTimeout: 30,
     }
 
     fetchJsonMock.mockImplementation((input, init) => {
@@ -186,16 +177,14 @@ describe("Settings", () => {
     await waitFor(() => expect(editor).toHaveValue(JSON.stringify(securityResponse, null, 2)))
 
     fireEvent.change(editor, {
-      target: { value: JSON.stringify(updatedSecurity, null, 2) }
+      target: { value: JSON.stringify(updatedSecurity, null, 2) },
     })
 
     const saveButton = screen.getByTestId("security-config-save")
     fireEvent.click(saveButton)
 
     await waitFor(() => {
-      const putCall = fetchJsonMock.mock.calls.find(([path, options]) =>
-        path === "/api/security/config" && options?.method === "PUT"
-      )
+      const putCall = fetchJsonMock.mock.calls.find(([path, options]) => path === "/api/security/config" && options?.method === "PUT")
       expect(putCall?.[1]?.jsonBody).toEqual(updatedSecurity)
     })
 

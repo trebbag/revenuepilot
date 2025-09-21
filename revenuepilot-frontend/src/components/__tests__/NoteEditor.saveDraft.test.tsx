@@ -3,25 +3,13 @@ import "@testing-library/jest-dom/vitest"
 import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react"
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 
-const {
-  toastSuccess,
-  toastError,
-  toastInfo,
-  fetchMock,
-  fetchJsonMock
-} = vi.hoisted(() => {
+const { toastSuccess, toastError, toastInfo, fetchMock, fetchJsonMock } = vi.hoisted(() => {
   return {
     toastSuccess: vi.fn(),
     toastError: vi.fn(),
     toastInfo: vi.fn(),
-    fetchMock: vi.fn<
-      [RequestInfo | URL, Record<string, any> | undefined],
-      Promise<Response>
-    >(),
-    fetchJsonMock: vi.fn<
-      [RequestInfo | URL, Record<string, any> | undefined],
-      Promise<any>
-    >()
+    fetchMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<Response>>(),
+    fetchJsonMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<any>>(),
   }
 })
 
@@ -29,20 +17,20 @@ vi.mock("sonner", () => ({
   toast: {
     success: toastSuccess,
     error: toastError,
-    info: toastInfo
-  }
+    info: toastInfo,
+  },
 }))
 
 vi.mock("../RichTextEditor", () => ({
-  RichTextEditor: () => <div data-testid="rich-text-editor" />
+  RichTextEditor: () => <div data-testid="rich-text-editor" />,
 }))
 
 vi.mock("../BeautifiedView", () => ({
-  BeautifiedView: () => <div data-testid="beautified-view" />
+  BeautifiedView: () => <div data-testid="beautified-view" />,
 }))
 
 vi.mock("../FinalizationWizardAdapter", () => ({
-  FinalizationWizardAdapter: () => null
+  FinalizationWizardAdapter: () => null,
 }))
 
 vi.mock("lucide-react", () => ({
@@ -55,7 +43,7 @@ vi.mock("lucide-react", () => ({
   MicOff: () => null,
   AlertTriangle: () => null,
   Loader2: () => null,
-  XIcon: () => null
+  XIcon: () => null,
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({
@@ -63,19 +51,19 @@ vi.mock("../../contexts/AuthContext", () => ({
     user: { id: "user-1", specialty: "Cardiology" },
     status: "authenticated",
     checking: false,
-    hasPermission: () => true
-  })
+    hasPermission: () => true,
+  }),
 }))
 
 vi.mock("../../contexts/SessionContext", () => ({
   useSession: () => ({
     state: {
-      finalizationSessions: {}
+      finalizationSessions: {},
     },
     hydrated: true,
     syncing: false,
-    actions: {}
-  })
+    actions: {},
+  }),
 }))
 
 import { NoteEditor } from "../NoteEditor"
@@ -87,7 +75,7 @@ vi.mock("../../lib/api", async () => {
     apiFetch: (input: RequestInfo | URL, init?: Record<string, any>) => fetchMock(input, init),
     apiFetchJson: (input: RequestInfo | URL, init?: Record<string, any>) => fetchJsonMock(input, init),
     resolveWebsocketUrl: () => "ws://localhost/api/transcribe/stream",
-    getStoredToken: () => "test-token"
+    getStoredToken: () => "test-token",
   }
 })
 
@@ -130,23 +118,23 @@ class MockWebSocket {
 
 const mediaDevices = {
   getUserMedia: vi.fn(async () => ({
-    getTracks: () => []
-  }))
+    getTracks: () => [],
+  })),
 }
 
 Object.defineProperty(globalThis.navigator, "mediaDevices", {
   value: mediaDevices,
-  configurable: true
+  configurable: true,
 })
 
 Object.defineProperty(globalThis, "MediaRecorder", {
   value: MockMediaRecorder,
-  configurable: true
+  configurable: true,
 })
 
 Object.defineProperty(globalThis, "WebSocket", {
   value: MockWebSocket,
-  configurable: true
+  configurable: true,
 })
 
 let autoSaveShouldFail = false
@@ -179,10 +167,10 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
           patient: { patientId: init.jsonBody?.patientId ?? "PT-42" },
           date: "2024-03-14",
           type: "Consult",
-          provider: "Dr. Example"
-        }
+          provider: "Dr. Example",
+        },
       }),
-      { status: 200 }
+      { status: 200 },
     )
   }
 
@@ -204,30 +192,24 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
                   {
                     title: "CMS Risk Adjustment Guidelines",
                     url: "https://example.org/cms/hcc",
-                    citation: "Section 3.1"
-                  }
-                ]
-              }
-            ]
-          }
-        ]
+                    citation: "Section 3.1",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
       }),
-      { status: 200 }
+      { status: 200 },
     )
   }
 
   if (url === "/api/visits/session" && method === "POST") {
-    return new Response(
-      JSON.stringify({ sessionId: 42, status: "started", startTime: "2024-03-14T10:00:00Z" }),
-      { status: 200 }
-    )
+    return new Response(JSON.stringify({ sessionId: 42, status: "started", startTime: "2024-03-14T10:00:00Z" }), { status: 200 })
   }
 
   if (url === "/api/visits/session" && method === "PUT") {
-    return new Response(
-      JSON.stringify({ sessionId: 42, status: init.jsonBody?.action ?? "complete", endTime: "2024-03-14T10:10:00Z" }),
-      { status: 200 }
-    )
+    return new Response(JSON.stringify({ sessionId: 42, status: init.jsonBody?.action ?? "complete", endTime: "2024-03-14T10:10:00Z" }), { status: 200 })
   }
 
   if (url === "/api/notes/create") {
@@ -236,15 +218,8 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
 
   if (url.startsWith("/api/notes/versions/")) {
     const id = url.split("/").pop() ?? ""
-    const content = id === "42"
-      ? "Patient ID: PT-42\nEncounter ID: 42\nExisting content"
-      : "Seed content"
-    return new Response(
-      JSON.stringify([
-        { content, timestamp: "2024-01-01T00:00:00Z" }
-      ]),
-      { status: 200 }
-    )
+    const content = id === "42" ? "Patient ID: PT-42\nEncounter ID: 42\nExisting content" : "Seed content"
+    return new Response(JSON.stringify([{ content, timestamp: "2024-01-01T00:00:00Z" }]), { status: 200 })
   }
 
   if (url === "/api/notes/auto-save") {
@@ -297,7 +272,7 @@ describe("NoteEditor manual draft save", () => {
         selectedCodesList={[]}
         onNavigateToDrafts={navigateSpy}
         testOverrides={{ initialRecordedSeconds: 120 }}
-      />
+      />,
     )
 
   it("saves the draft, logs activity and navigates on success", async () => {
@@ -317,18 +292,13 @@ describe("NoteEditor manual draft save", () => {
       expect(onNavigate).toHaveBeenCalledTimes(1)
     })
 
-    const autoSaveCall = fetchMock.mock.calls.find(
-      ([input, init]) =>
-        resolveUrl(input).includes("/api/notes/auto-save") && (init?.method ?? "GET").toUpperCase() === "POST"
-    )
+    const autoSaveCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input).includes("/api/notes/auto-save") && (init?.method ?? "GET").toUpperCase() === "POST")
     expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ content: expect.any(String), noteId: expect.anything() })
 
-    const activityCall = fetchMock.mock.calls.find(
-      ([input, init]) => resolveUrl(input) === "/api/activity/log" && (init?.method ?? "GET").toUpperCase() === "POST"
-    )
+    const activityCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input) === "/api/activity/log" && (init?.method ?? "GET").toUpperCase() === "POST")
     expect(activityCall?.[1]?.jsonBody).toMatchObject({
       eventType: "draft_saved",
-      details: expect.objectContaining({ manual: true, patientId: "PT-1001", source: "note-editor" })
+      details: expect.objectContaining({ manual: true, patientId: "PT-1001", source: "note-editor" }),
     })
 
     expect(toastSuccess).toHaveBeenCalled()
@@ -360,13 +330,13 @@ describe("NoteEditor manual draft save", () => {
           content: "Patient ID: PT-42\nEncounter ID: 42\nExisting content",
           patientId: "PT-42",
           encounterId: "42",
-          patientName: "John Doe"
+          patientName: "John Doe",
         }}
         selectedCodes={{ codes: 0, prevention: 0, diagnoses: 0, differentials: 0 }}
         selectedCodesList={[]}
         onNavigateToDrafts={onNavigate}
         testOverrides={{ initialRecordedSeconds: 120 }}
-      />
+      />,
     )
 
     await waitFor(() => {
@@ -380,16 +350,10 @@ describe("NoteEditor manual draft save", () => {
       expect(onNavigate).toHaveBeenCalledTimes(1)
     })
 
-    const createCall = fetchMock.mock.calls.find(
-      ([input]) => resolveUrl(input) === "/api/notes/create"
-    )
+    const createCall = fetchMock.mock.calls.find(([input]) => resolveUrl(input) === "/api/notes/create")
     expect(createCall).toBeUndefined()
 
-    const autoSaveCall = fetchMock.mock.calls.find(
-      ([input, init]) =>
-        resolveUrl(input) === "/api/notes/auto-save" &&
-        (init?.method ?? "GET").toUpperCase() === "POST"
-    )
+    const autoSaveCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input) === "/api/notes/auto-save" && (init?.method ?? "GET").toUpperCase() === "POST")
     expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ noteId: "42" })
   })
 })

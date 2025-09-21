@@ -20,7 +20,7 @@ import {
   Shield,
   Stethoscope,
   Save,
-  RotateCcw
+  RotateCcw,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
@@ -31,15 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
 import { Textarea } from "./ui/textarea"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger
-} from "./ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog"
 import { Alert, AlertDescription, AlertTitle } from "./ui/alert"
 import { Separator } from "./ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
@@ -96,7 +88,7 @@ const SUGGESTION_LABELS: Record<KnownSuggestionCategory, string> = {
   codes: "Coding Suggestions",
   compliance: "Compliance Alerts",
   publicHealth: "Public Health",
-  differentials: "Differential Diagnoses"
+  differentials: "Differential Diagnoses",
 }
 
 const SUGGESTION_OPTIONS: Array<{
@@ -113,7 +105,7 @@ const SUGGESTION_OPTIONS: Array<{
     description: "CPT, ICD-10, and billing codes",
     containerClass: "bg-blue-50/50 border-blue-200",
     labelClass: "text-blue-900",
-    descriptionClass: "text-blue-700"
+    descriptionClass: "text-blue-700",
   },
   {
     key: "compliance",
@@ -121,7 +113,7 @@ const SUGGESTION_OPTIONS: Array<{
     description: "Regulatory and billing compliance",
     containerClass: "bg-red-50/50 border-red-200",
     labelClass: "text-red-900",
-    descriptionClass: "text-red-700"
+    descriptionClass: "text-red-700",
   },
   {
     key: "publicHealth",
@@ -129,7 +121,7 @@ const SUGGESTION_OPTIONS: Array<{
     description: "Preventive care and screenings",
     containerClass: "bg-green-50/50 border-green-200",
     labelClass: "text-green-900",
-    descriptionClass: "text-green-700"
+    descriptionClass: "text-green-700",
   },
   {
     key: "differentials",
@@ -137,8 +129,8 @@ const SUGGESTION_OPTIONS: Array<{
     description: "Alternative diagnosis considerations",
     containerClass: "bg-purple-50/50 border-purple-200",
     labelClass: "text-purple-900",
-    descriptionClass: "text-purple-700"
-  }
+    descriptionClass: "text-purple-700",
+  },
 ]
 
 const CLINICAL_RULES: ClinicalRule[] = [
@@ -147,22 +139,22 @@ const CLINICAL_RULES: ClinicalRule[] = [
     name: "Diabetes Annual Eye Exam",
     description: "Remind for annual eye exam for diabetic patients",
     condition: "diagnosis:diabetes AND last_eye_exam > 365_days",
-    action: "suggest_eye_exam_referral"
+    action: "suggest_eye_exam_referral",
   },
   {
     id: "hypertension-follow-up",
     name: "High Blood Pressure Follow-up",
     description: "Schedule follow-up for uncontrolled hypertension",
     condition: "bp_systolic > 140 OR bp_diastolic > 90",
-    action: "suggest_followup_2weeks"
+    action: "suggest_followup_2weeks",
   },
   {
     id: "mammography-screening",
     name: "Mammography Screening",
     description: "Annual mammography for women 40+",
     condition: "age >= 40 AND gender:female AND last_mammogram > 365_days",
-    action: "suggest_mammography"
-  }
+    action: "suggest_mammography",
+  },
 ]
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -180,7 +172,7 @@ function normalizeUserPreferences(raw?: Partial<UserPreferences> | null): UserPr
     codes: Boolean((categories as SuggestionCategories).codes ?? true),
     compliance: Boolean((categories as SuggestionCategories).compliance ?? true),
     publicHealth: Boolean((categories as SuggestionCategories).publicHealth ?? true),
-    differentials: Boolean((categories as SuggestionCategories).differentials ?? true)
+    differentials: Boolean((categories as SuggestionCategories).differentials ?? true),
   }
 
   if (categories && typeof categories === "object") {
@@ -192,27 +184,19 @@ function normalizeUserPreferences(raw?: Partial<UserPreferences> | null): UserPr
     }
   }
 
-  const rules = Array.isArray(raw?.rules)
-    ? raw!.rules.filter((rule): rule is string => typeof rule === "string" && rule.trim().length > 0)
-    : []
+  const rules = Array.isArray(raw?.rules) ? raw!.rules.filter((rule): rule is string => typeof rule === "string" && rule.trim().length > 0) : []
 
-  const agencies = Array.isArray(raw?.agencies) && raw!.agencies.length > 0
-    ? raw!.agencies.filter((agency): agency is string => typeof agency === "string" && agency.trim().length > 0)
-    : ["CDC", "WHO"]
+  const agencies =
+    Array.isArray(raw?.agencies) && raw!.agencies.length > 0 ? raw!.agencies.filter((agency): agency is string => typeof agency === "string" && agency.trim().length > 0) : ["CDC", "WHO"]
 
   return {
     theme: typeof raw?.theme === "string" && raw.theme.trim().length > 0 ? raw.theme : "modern",
     categories: normalizedCategories,
     rules,
     lang: typeof raw?.lang === "string" && raw.lang.trim().length > 0 ? raw.lang : "en",
-    summaryLang:
-      typeof raw?.summaryLang === "string" && raw.summaryLang.trim().length > 0
-        ? raw.summaryLang
-        : typeof raw?.lang === "string" && raw.lang.trim().length > 0
-          ? raw.lang
-          : "en",
-    specialty: typeof raw?.specialty === "string" ? raw.specialty : raw?.specialty ?? "",
-    payer: typeof raw?.payer === "string" ? raw.payer : raw?.payer ?? "",
+    summaryLang: typeof raw?.summaryLang === "string" && raw.summaryLang.trim().length > 0 ? raw.summaryLang : typeof raw?.lang === "string" && raw.lang.trim().length > 0 ? raw.lang : "en",
+    specialty: typeof raw?.specialty === "string" ? raw.specialty : (raw?.specialty ?? ""),
+    payer: typeof raw?.payer === "string" ? raw.payer : (raw?.payer ?? ""),
     region: typeof raw?.region === "string" ? raw.region : "",
     template: typeof raw?.template === "number" ? raw.template : null,
     useLocalModels: Boolean(raw?.useLocalModels),
@@ -221,7 +205,7 @@ function normalizeUserPreferences(raw?: Partial<UserPreferences> | null): UserPr
     beautifyModel: typeof raw?.beautifyModel === "string" ? raw.beautifyModel : null,
     suggestModel: typeof raw?.suggestModel === "string" ? raw.suggestModel : null,
     summarizeModel: typeof raw?.summarizeModel === "string" ? raw.summarizeModel : null,
-    deidEngine: typeof raw?.deidEngine === "string" && raw.deidEngine.trim().length > 0 ? raw.deidEngine : "regex"
+    deidEngine: typeof raw?.deidEngine === "string" && raw.deidEngine.trim().length > 0 ? raw.deidEngine : "regex",
   }
 }
 
@@ -269,9 +253,7 @@ function SuggestionSettings({ categories, loading, saving, error, onToggle }: Su
           <Sliders className="w-5 h-5 text-blue-600" />
           AI Suggestion Categories
         </CardTitle>
-        <CardDescription>
-          Control which types of suggestions the AI assistant provides during documentation
-        </CardDescription>
+        <CardDescription>Control which types of suggestions the AI assistant provides during documentation</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {error && (
@@ -282,23 +264,15 @@ function SuggestionSettings({ categories, loading, saving, error, onToggle }: Su
           </Alert>
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {SUGGESTION_OPTIONS.map(option => {
+          {SUGGESTION_OPTIONS.map((option) => {
             const checked = categories ? Boolean(categories[option.key]) : false
             return (
-              <div
-                key={option.key}
-                className={`flex items-center justify-between p-3 rounded-lg border ${option.containerClass}`}
-              >
+              <div key={option.key} className={`flex items-center justify-between p-3 rounded-lg border ${option.containerClass}`}>
                 <div>
                   <Label className={`font-medium ${option.labelClass}`}>{option.label}</Label>
                   <p className={`text-xs mt-1 ${option.descriptionClass}`}>{option.description}</p>
                 </div>
-                <Switch
-                  data-testid={`suggestion-toggle-${option.key}`}
-                  checked={checked}
-                  onCheckedChange={() => categories && onToggle(option.key)}
-                  disabled={disabled}
-                />
+                <Switch data-testid={`suggestion-toggle-${option.key}`} checked={checked} onCheckedChange={() => categories && onToggle(option.key)} disabled={disabled} />
               </div>
             )
           })}
@@ -322,9 +296,7 @@ function AppearanceSettings({ theme, disabled, onThemeChange }: AppearanceSettin
           <Palette className="w-5 h-5 text-purple-600" />
           Appearance & Theme
         </CardTitle>
-        <CardDescription>
-          Customize the visual appearance of the application
-        </CardDescription>
+        <CardDescription>Customize the visual appearance of the application</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -341,9 +313,7 @@ function AppearanceSettings({ theme, disabled, onThemeChange }: AppearanceSettin
                 <SelectItem value="accessible">High Contrast</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Choose the overall visual style for the interface
-            </p>
+            <p className="text-xs text-muted-foreground">Choose the overall visual style for the interface</p>
           </div>
 
           <div className="space-y-2">
@@ -358,9 +328,7 @@ function AppearanceSettings({ theme, disabled, onThemeChange }: AppearanceSettin
                 <SelectItem value="system">System Preference</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Automatically adapts to your system setting
-            </p>
+            <p className="text-xs text-muted-foreground">Automatically adapts to your system setting</p>
           </div>
         </div>
       </CardContent>
@@ -380,26 +348,16 @@ interface ClinicalSettingsProps {
   onToggleGuideline: (value: string) => void
 }
 
-function ClinicalSettings({
-  specialty,
-  payer,
-  region,
-  agencies,
-  disabled,
-  onSpecialtyChange,
-  onPayerChange,
-  onRegionChange,
-  onToggleGuideline
-}: ClinicalSettingsProps) {
+function ClinicalSettings({ specialty, payer, region, agencies, disabled, onSpecialtyChange, onPayerChange, onRegionChange, onToggleGuideline }: ClinicalSettingsProps) {
   const availableGuidelines = [
     { id: "cms", name: "CMS", color: "blue" },
     { id: "aafp", name: "AAFP", color: "green" },
     { id: "ama", name: "AMA", color: "purple" },
     { id: "uspstf", name: "USPSTF", color: "orange" },
-    { id: "cdc", name: "CDC", color: "red" }
+    { id: "cdc", name: "CDC", color: "red" },
   ]
 
-  const selected = new Set(agencies.map(value => value.toLowerCase()))
+  const selected = new Set(agencies.map((value) => value.toLowerCase()))
 
   return (
     <Card>
@@ -408,9 +366,7 @@ function ClinicalSettings({
           <Stethoscope className="w-5 h-5 text-green-600" />
           Clinical Configuration
         </CardTitle>
-        <CardDescription>
-          Configure specialty-specific settings for more accurate suggestions
-        </CardDescription>
+        <CardDescription>Configure specialty-specific settings for more accurate suggestions</CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -468,11 +424,9 @@ function ClinicalSettings({
 
         <div className="space-y-3">
           <Label>Guideline Agencies</Label>
-          <p className="text-xs text-muted-foreground">
-            Select which clinical guidelines to reference for suggestions
-          </p>
+          <p className="text-xs text-muted-foreground">Select which clinical guidelines to reference for suggestions</p>
           <div className="flex flex-wrap gap-2">
-            {availableGuidelines.map(guideline => {
+            {availableGuidelines.map((guideline) => {
               const isSelected = selected.has(guideline.id.toLowerCase())
               return (
                 <button
@@ -481,9 +435,7 @@ function ClinicalSettings({
                   onClick={() => onToggleGuideline(guideline.id)}
                   disabled={disabled}
                   className={`px-3 py-1.5 rounded-lg border text-sm font-medium transition-all ${
-                    isSelected
-                      ? `bg-${guideline.color}-100 border-${guideline.color}-300 text-${guideline.color}-700`
-                      : "bg-muted border-border text-muted-foreground hover:bg-accent"
+                    isSelected ? `bg-${guideline.color}-100 border-${guideline.color}-300 text-${guideline.color}-700` : "bg-muted border-border text-muted-foreground hover:bg-accent"
                   } ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                 >
                   {guideline.name}
@@ -514,9 +466,7 @@ function LanguageSettings({ lang, summaryLang, disabled, onLangChange, onSummary
           <Globe className="w-5 h-5 text-orange-600" />
           Language & Localization
         </CardTitle>
-        <CardDescription>
-          Configure language preferences for interface and clinical output
-        </CardDescription>
+        <CardDescription>Configure language preferences for interface and clinical output</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -534,9 +484,7 @@ function LanguageSettings({ lang, summaryLang, disabled, onLangChange, onSummary
                 <SelectItem value="pt">Portuguese</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Language for menus, buttons, and interface elements
-            </p>
+            <p className="text-xs text-muted-foreground">Language for menus, buttons, and interface elements</p>
           </div>
 
           <div className="space-y-2">
@@ -553,9 +501,7 @@ function LanguageSettings({ lang, summaryLang, disabled, onLangChange, onSummary
                 <SelectItem value="pt">Portuguese</SelectItem>
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Language for generated summaries and clinical text
-            </p>
+            <p className="text-xs text-muted-foreground">Language for generated summaries and clinical text</p>
           </div>
         </div>
       </CardContent>
@@ -581,9 +527,7 @@ function ClinicalRulesManagement({ enabledRules, disabled, saving, onToggleRule 
           <Brain className="w-5 h-5 text-green-600" />
           Custom Clinical Rules
         </CardTitle>
-        <CardDescription>
-          Create custom rules for clinical decision support and reminders
-        </CardDescription>
+        <CardDescription>Create custom rules for clinical decision support and reminders</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex justify-between items-center">
@@ -593,7 +537,7 @@ function ClinicalRulesManagement({ enabledRules, disabled, saving, onToggleRule 
         </div>
 
         <div className="space-y-2">
-          {CLINICAL_RULES.map(rule => {
+          {CLINICAL_RULES.map((rule) => {
             const isEnabled = selected.has(rule.id)
             return (
               <div key={rule.id} className="flex items-center justify-between p-3 border rounded-lg">
@@ -609,12 +553,7 @@ function ClinicalRulesManagement({ enabledRules, disabled, saving, onToggleRule 
                     IF {rule.condition} THEN {rule.action}
                   </div>
                 </div>
-                <Switch
-                  data-testid={`clinical-rule-toggle-${rule.id}`}
-                  checked={isEnabled}
-                  disabled={toggleDisabled}
-                  onCheckedChange={checked => onToggleRule(rule.id, checked)}
-                />
+                <Switch data-testid={`clinical-rule-toggle-${rule.id}`} checked={isEnabled} disabled={toggleDisabled} onCheckedChange={(checked) => onToggleRule(rule.id, checked)} />
               </div>
             )
           })}
@@ -630,22 +569,22 @@ function TemplateManagement() {
       name: "Standard SOAP Note",
       type: "SOAP",
       content: "S: \nO: \nA: \nP: ",
-      lastModified: "2 days ago"
+      lastModified: "2 days ago",
     },
     {
       id: "2",
       name: "Annual Wellness Visit",
       type: "Wellness",
       content: "Chief Complaint:\nHistory of Present Illness:\nReview of Systems:\nPhysical Examination:\nAssessment and Plan:",
-      lastModified: "1 week ago"
+      lastModified: "1 week ago",
     },
     {
       id: "3",
       name: "Follow-up Visit",
       type: "Follow-up",
       content: "Interval History:\nCompliance with Treatment:\nCurrent Symptoms:\nPhysical Exam:\nPlan:",
-      lastModified: "3 days ago"
-    }
+      lastModified: "3 days ago",
+    },
   ])
 
   const [isNewTemplateOpen, setIsNewTemplateOpen] = useState(false)
@@ -654,13 +593,7 @@ function TemplateManagement() {
 
   const handleSaveTemplate = () => {
     if (editingTemplate) {
-      setTemplates(prev =>
-        prev.map(t =>
-          t.id === editingTemplate.id
-            ? { ...editingTemplate, lastModified: "Just now" }
-            : t
-        )
-      )
+      setTemplates((prev) => prev.map((t) => (t.id === editingTemplate.id ? { ...editingTemplate, lastModified: "Just now" } : t)))
       setEditingTemplate(null)
     } else {
       const template: Template = {
@@ -668,16 +601,16 @@ function TemplateManagement() {
         name: newTemplate.name,
         type: newTemplate.type,
         content: newTemplate.content,
-        lastModified: "Just now"
+        lastModified: "Just now",
       }
-      setTemplates(prev => [...prev, template])
+      setTemplates((prev) => [...prev, template])
       setNewTemplate({ name: "", type: "SOAP", content: "" })
       setIsNewTemplateOpen(false)
     }
   }
 
   const handleDeleteTemplate = (id: string) => {
-    setTemplates(prev => prev.filter(t => t.id !== id))
+    setTemplates((prev) => prev.filter((t) => t.id !== id))
   }
 
   return (
@@ -687,15 +620,11 @@ function TemplateManagement() {
           <FileText className="w-5 h-5 text-blue-600" />
           Note Templates
         </CardTitle>
-        <CardDescription>
-          Manage templates for different types of clinical documentation
-        </CardDescription>
+        <CardDescription>Manage templates for different types of clinical documentation</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex justify-between items-center">
-          <p className="text-sm text-muted-foreground">
-            {templates.length} templates configured
-          </p>
+          <p className="text-sm text-muted-foreground">{templates.length} templates configured</p>
           <Dialog open={isNewTemplateOpen} onOpenChange={setIsNewTemplateOpen}>
             <DialogTrigger asChild>
               <Button size="sm">
@@ -706,26 +635,17 @@ function TemplateManagement() {
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Create New Template</DialogTitle>
-                <DialogDescription>
-                  Design a template for consistent note structure
-                </DialogDescription>
+                <DialogDescription>Design a template for consistent note structure</DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label>Template Name</Label>
-                    <Input
-                      value={newTemplate.name}
-                      onChange={(e) => setNewTemplate(prev => ({ ...prev, name: e.target.value }))}
-                      placeholder="e.g., Cardiology Consultation"
-                    />
+                    <Input value={newTemplate.name} onChange={(e) => setNewTemplate((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g., Cardiology Consultation" />
                   </div>
                   <div className="space-y-2">
                     <Label>Template Type</Label>
-                    <Select
-                      value={newTemplate.type}
-                      onValueChange={(value: Template["type"]) => setNewTemplate(prev => ({ ...prev, type: value }))}
-                    >
+                    <Select value={newTemplate.type} onValueChange={(value: Template["type"]) => setNewTemplate((prev) => ({ ...prev, type: value }))}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
@@ -742,7 +662,7 @@ function TemplateManagement() {
                   <Label>Template Content</Label>
                   <Textarea
                     value={newTemplate.content}
-                    onChange={(e) => setNewTemplate(prev => ({ ...prev, content: e.target.value }))}
+                    onChange={(e) => setNewTemplate((prev) => ({ ...prev, content: e.target.value }))}
                     placeholder="Enter the template structure..."
                     className="min-h-40"
                   />
@@ -770,23 +690,13 @@ function TemplateManagement() {
                     {template.type}
                   </Badge>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Last modified {template.lastModified}
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">Last modified {template.lastModified}</p>
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setEditingTemplate(template)}
-                >
+                <Button variant="ghost" size="sm" onClick={() => setEditingTemplate(template)}>
                   <Edit className="w-4 h-4" />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDeleteTemplate(template.id)}
-                >
+                <Button variant="ghost" size="sm" onClick={() => handleDeleteTemplate(template.id)}>
                   <Trash2 className="w-4 h-4" />
                 </Button>
               </div>
@@ -798,27 +708,17 @@ function TemplateManagement() {
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>Edit Template</DialogTitle>
-              <DialogDescription>
-                Update the template content and settings
-              </DialogDescription>
+              <DialogDescription>Update the template content and settings</DialogDescription>
             </DialogHeader>
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Template Name</Label>
-                  <Input
-                    value={editingTemplate?.name ?? ""}
-                    onChange={(e) => setEditingTemplate(prev => prev ? { ...prev, name: e.target.value } : prev)}
-                  />
+                  <Input value={editingTemplate?.name ?? ""} onChange={(e) => setEditingTemplate((prev) => (prev ? { ...prev, name: e.target.value } : prev))} />
                 </div>
                 <div className="space-y-2">
                   <Label>Template Type</Label>
-                  <Select
-                    value={editingTemplate?.type ?? "SOAP"}
-                    onValueChange={(value: Template["type"]) =>
-                      setEditingTemplate(prev => prev ? { ...prev, type: value } : prev)
-                    }
-                  >
+                  <Select value={editingTemplate?.type ?? "SOAP"} onValueChange={(value: Template["type"]) => setEditingTemplate((prev) => (prev ? { ...prev, type: value } : prev))}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -833,20 +733,14 @@ function TemplateManagement() {
               </div>
               <div className="space-y-2">
                 <Label>Template Content</Label>
-                <Textarea
-                  value={editingTemplate?.content ?? ""}
-                  onChange={(e) => setEditingTemplate(prev => prev ? { ...prev, content: e.target.value } : prev)}
-                  className="min-h-40"
-                />
+                <Textarea value={editingTemplate?.content ?? ""} onChange={(e) => setEditingTemplate((prev) => (prev ? { ...prev, content: e.target.value } : prev))} className="min-h-40" />
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setEditingTemplate(null)}>
                 Cancel
               </Button>
-              <Button onClick={handleSaveTemplate}>
-                Save Changes
-              </Button>
+              <Button onClick={handleSaveTemplate}>Save Changes</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
@@ -866,17 +760,7 @@ interface AdminConfigEditorProps {
   testId: string
 }
 
-function AdminConfigEditor({
-  icon: Icon,
-  title,
-  description,
-  config,
-  loading,
-  saving,
-  error,
-  onSave,
-  testId
-}: AdminConfigEditorProps) {
+function AdminConfigEditor({ icon: Icon, title, description, config, loading, saving, error, onSave, testId }: AdminConfigEditorProps) {
   const [draft, setDraft] = useState("{}")
 
   useEffect(() => {
@@ -913,19 +797,9 @@ function AdminConfigEditor({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <Textarea
-          data-testid={`${testId}-editor`}
-          value={draft}
-          onChange={event => setDraft(event.target.value)}
-          className="font-mono text-sm min-h-40"
-          disabled={loading || saving}
-        />
+        <Textarea data-testid={`${testId}-editor`} value={draft} onChange={(event) => setDraft(event.target.value)} className="font-mono text-sm min-h-40" disabled={loading || saving} />
         <div className="flex justify-end">
-          <Button
-            data-testid={`${testId}-save`}
-            onClick={handleSave}
-            disabled={disabled}
-          >
+          <Button data-testid={`${testId}-save`} onClick={handleSave} disabled={disabled}>
             {saving ? <Upload className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
             Save Configuration
           </Button>
@@ -978,7 +852,7 @@ function AdvancedSettings({
   securityLoading,
   securitySaving,
   securityError,
-  onSaveSecurityConfig
+  onSaveSecurityConfig,
 }: AdvancedSettingsProps) {
   const [promptOverrides, setPromptOverrides] = useState(`{
   "suggestion_context": {
@@ -1019,25 +893,25 @@ function AdvancedSettings({
 
   const handleDownloadLocalModels = useCallback(() => {
     onPreferencesUpdate(
-      prev => ({
+      (prev) => ({
         ...prev,
-        useLocalModels: true
+        useLocalModels: true,
       }),
-      "Local AI models marked as available"
+      "Local AI models marked as available",
     )
   }, [onPreferencesUpdate])
 
   const handleOfflineToggle = useCallback(
     (checked: boolean) => {
       onPreferencesUpdate(
-        prev => ({
+        (prev) => ({
           ...prev,
-          useOfflineMode: checked
+          useOfflineMode: checked,
         }),
-        checked ? "Offline mode enabled" : "Offline mode disabled"
+        checked ? "Offline mode enabled" : "Offline mode disabled",
       )
     },
-    [onPreferencesUpdate]
+    [onPreferencesUpdate],
   )
 
   return (
@@ -1048,9 +922,7 @@ function AdvancedSettings({
             <Code className="w-5 h-5 text-purple-600" />
             Advanced Configuration
           </CardTitle>
-          <CardDescription>
-            Advanced settings for customization and offline capabilities
-          </CardDescription>
+          <CardDescription>Advanced settings for customization and offline capabilities</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-3">
@@ -1067,15 +939,8 @@ function AdvancedSettings({
                 </Button>
               </div>
             </div>
-            <Textarea
-              value={promptOverrides}
-              onChange={(e) => setPromptOverrides(e.target.value)}
-              className="font-mono text-sm min-h-32"
-              placeholder="Enter JSON configuration..."
-            />
-            <p className="text-xs text-muted-foreground">
-              Advanced prompt configuration in JSON format. Changes require validation.
-            </p>
+            <Textarea value={promptOverrides} onChange={(e) => setPromptOverrides(e.target.value)} className="font-mono text-sm min-h-32" placeholder="Enter JSON configuration..." />
+            <p className="text-xs text-muted-foreground">Advanced prompt configuration in JSON format. Changes require validation.</p>
           </div>
 
           <Separator />
@@ -1093,15 +958,8 @@ function AdvancedSettings({
                 placeholder="sk-..."
                 className="flex-1"
               />
-              <Button
-                onClick={handleSaveApiKey}
-                disabled={!apiKey || apiKeyStatus === "validating"}
-              >
-                {apiKeyStatus === "validating" ? (
-                  <div className="w-4 h-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                ) : (
-                  <Key className="w-4 h-4 mr-2" />
-                )}
+              <Button onClick={handleSaveApiKey} disabled={!apiKey || apiKeyStatus === "validating"}>
+                {apiKeyStatus === "validating" ? <div className="w-4 h-4 animate-spin rounded-full border-2 border-current border-t-transparent" /> : <Key className="w-4 h-4 mr-2" />}
                 Save Key
               </Button>
             </div>
@@ -1109,24 +967,18 @@ function AdvancedSettings({
             {apiKeyStatus === "invalid" && (
               <Alert variant="destructive">
                 <AlertCircle className="w-4 h-4" />
-                <AlertDescription>
-                  Invalid API key format. Please check and try again.
-                </AlertDescription>
+                <AlertDescription>Invalid API key format. Please check and try again.</AlertDescription>
               </Alert>
             )}
 
             {apiKeyStatus === "valid" && (
               <Alert>
                 <CheckCircle className="w-4 h-4" />
-                <AlertDescription>
-                  API key validated and saved successfully.
-                </AlertDescription>
+                <AlertDescription>API key validated and saved successfully.</AlertDescription>
               </Alert>
             )}
 
-            <p className="text-xs text-muted-foreground">
-              Your API key is encrypted and stored securely. Required for AI suggestions.
-            </p>
+            <p className="text-xs text-muted-foreground">Your API key is encrypted and stored securely. Required for AI suggestions.</p>
           </div>
 
           <Separator />
@@ -1135,38 +987,20 @@ function AdvancedSettings({
             <div className="flex items-center justify-between">
               <div>
                 <Label>Offline Mode</Label>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Use local models when internet is unavailable
-                </p>
+                <p className="text-xs text-muted-foreground mt-1">Use local models when internet is unavailable</p>
               </div>
-              <Switch
-                data-testid="offline-mode-toggle"
-                checked={preferences.useOfflineMode}
-                onCheckedChange={handleOfflineToggle}
-                disabled={offlineDisabled}
-              />
+              <Switch data-testid="offline-mode-toggle" checked={preferences.useOfflineMode} onCheckedChange={handleOfflineToggle} disabled={offlineDisabled} />
             </div>
 
             <div className="flex items-center justify-between p-3 border rounded-lg">
               <div className="flex items-center gap-3">
-                {preferences.useLocalModels ? (
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                ) : (
-                  <Download className="w-5 h-5 text-muted-foreground" />
-                )}
+                {preferences.useLocalModels ? <CheckCircle className="w-5 h-5 text-green-600" /> : <Download className="w-5 h-5 text-muted-foreground" />}
                 <div>
                   <span className="font-medium">Local AI Models</span>
-                  <p className="text-xs text-muted-foreground">
-                    {preferences.useLocalModels ? "Downloaded" : "Not downloaded"}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{preferences.useLocalModels ? "Downloaded" : "Not downloaded"}</p>
                 </div>
               </div>
-              <Button
-                variant={preferences.useLocalModels ? "outline" : "default"}
-                size="sm"
-                onClick={handleDownloadLocalModels}
-                disabled={preferences.useLocalModels || preferencesSaving}
-              >
+              <Button variant={preferences.useLocalModels ? "outline" : "default"} size="sm" onClick={handleDownloadLocalModels} disabled={preferences.useLocalModels || preferencesSaving}>
                 {preferences.useLocalModels ? (
                   <>
                     <CheckCircle className="w-4 h-4 mr-2" />
@@ -1257,13 +1091,13 @@ export function Settings({ userRole = "user" }: SettingsProps) {
     setUserPreferencesError(null)
 
     apiFetchJson<UserPreferences>("/api/user/preferences")
-      .then(data => {
+      .then((data) => {
         if (cancelled) return
         const normalized = normalizeUserPreferences(data ?? undefined)
         setUserPreferences(normalized)
         userPreferencesRef.current = normalized
       })
-      .catch(error => {
+      .catch((error) => {
         if (cancelled) return
         const message = getErrorMessage(error)
         setUserPreferencesError(message)
@@ -1315,7 +1149,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
       setState: (value: JsonConfig | null) => void,
       setError: (value: string | null) => void,
       setLoading: (value: boolean) => void,
-      ref: { current: JsonConfig }
+      ref: { current: JsonConfig },
     ) {
       setLoading(true)
       setError(null)
@@ -1350,32 +1184,29 @@ export function Settings({ userRole = "user" }: SettingsProps) {
     }
   }, [isAdmin])
 
-  const handlePreferencesUpdate = useCallback(
-    (updater: (prev: UserPreferences) => UserPreferences, successMessage = "Preferences updated") => {
-      const current = normalizeUserPreferences(userPreferencesRef.current)
-      const optimistic = normalizeUserPreferences(updater(current))
-      setUserPreferences(optimistic)
-      userPreferencesRef.current = optimistic
-      setUserPreferencesSaving(true)
-      apiFetchJson<UserPreferences>("/api/user/preferences", {
-        method: "PUT",
-        jsonBody: optimistic
+  const handlePreferencesUpdate = useCallback((updater: (prev: UserPreferences) => UserPreferences, successMessage = "Preferences updated") => {
+    const current = normalizeUserPreferences(userPreferencesRef.current)
+    const optimistic = normalizeUserPreferences(updater(current))
+    setUserPreferences(optimistic)
+    userPreferencesRef.current = optimistic
+    setUserPreferencesSaving(true)
+    apiFetchJson<UserPreferences>("/api/user/preferences", {
+      method: "PUT",
+      jsonBody: optimistic,
+    })
+      .then((saved) => {
+        const normalized = normalizeUserPreferences(saved ?? optimistic)
+        setUserPreferences(normalized)
+        userPreferencesRef.current = normalized
+        toast.success(successMessage)
       })
-        .then(saved => {
-          const normalized = normalizeUserPreferences(saved ?? optimistic)
-          setUserPreferences(normalized)
-          userPreferencesRef.current = normalized
-          toast.success(successMessage)
-        })
-        .catch(error => {
-          setUserPreferences(current)
-          userPreferencesRef.current = current
-          toast.error(`Unable to update preferences: ${getErrorMessage(error)}`)
-        })
-        .finally(() => setUserPreferencesSaving(false))
-    },
-    []
-  )
+      .catch((error) => {
+        setUserPreferences(current)
+        userPreferencesRef.current = current
+        toast.error(`Unable to update preferences: ${getErrorMessage(error)}`)
+      })
+      .finally(() => setUserPreferencesSaving(false))
+  }, [])
 
   const handleSaveEhrConfig = useCallback(
     (config: JsonConfig) => {
@@ -1391,16 +1222,16 @@ export function Settings({ userRole = "user" }: SettingsProps) {
       ehrConfigRef.current = optimistic
       apiFetchJson<JsonConfig>("/api/integrations/ehr/config", {
         method: "PUT",
-        jsonBody: optimistic
+        jsonBody: optimistic,
       })
-        .then(saved => {
+        .then((saved) => {
           const normalized = normalizeConfig(saved)
           setEhrConfig(normalized)
           ehrConfigRef.current = normalized
           setEhrError(null)
           toast.success("EHR configuration saved")
         })
-        .catch(error => {
+        .catch((error) => {
           const revertValue = previous
           setEhrConfig(revertValue)
           ehrConfigRef.current = revertValue
@@ -1410,7 +1241,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
         })
         .finally(() => setEhrSaving(false))
     },
-    [isAdmin]
+    [isAdmin],
   )
 
   const handleSaveOrganizationConfig = useCallback(
@@ -1427,16 +1258,16 @@ export function Settings({ userRole = "user" }: SettingsProps) {
       organizationConfigRef.current = optimistic
       apiFetchJson<JsonConfig>("/api/organization/settings", {
         method: "PUT",
-        jsonBody: optimistic
+        jsonBody: optimistic,
       })
-        .then(saved => {
+        .then((saved) => {
           const normalized = normalizeConfig(saved)
           setOrganizationConfig(normalized)
           organizationConfigRef.current = normalized
           setOrganizationError(null)
           toast.success("Organization settings saved")
         })
-        .catch(error => {
+        .catch((error) => {
           const revertValue = previous
           setOrganizationConfig(revertValue)
           organizationConfigRef.current = revertValue
@@ -1446,7 +1277,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
         })
         .finally(() => setOrganizationSaving(false))
     },
-    [isAdmin]
+    [isAdmin],
   )
 
   const handleSaveSecurityConfig = useCallback(
@@ -1463,16 +1294,16 @@ export function Settings({ userRole = "user" }: SettingsProps) {
       securityConfigRef.current = optimistic
       apiFetchJson<JsonConfig>("/api/security/config", {
         method: "PUT",
-        jsonBody: optimistic
+        jsonBody: optimistic,
       })
-        .then(saved => {
+        .then((saved) => {
           const normalized = normalizeConfig(saved)
           setSecurityConfig(normalized)
           securityConfigRef.current = normalized
           setSecurityError(null)
           toast.success("Security configuration saved")
         })
-        .catch(error => {
+        .catch((error) => {
           const revertValue = previous
           setSecurityConfig(revertValue)
           securityConfigRef.current = revertValue
@@ -1482,7 +1313,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
         })
         .finally(() => setSecuritySaving(false))
     },
-    [isAdmin]
+    [isAdmin],
   )
 
   const preferences = userPreferences ?? userPreferencesRef.current
@@ -1491,100 +1322,92 @@ export function Settings({ userRole = "user" }: SettingsProps) {
     (key: KnownSuggestionCategory) => {
       const nextValue = !userPreferencesRef.current.categories[key]
       handlePreferencesUpdate(
-        prev => ({
+        (prev) => ({
           ...prev,
           categories: {
             ...prev.categories,
-            [key]: nextValue
-          }
+            [key]: nextValue,
+          },
         }),
-        `${SUGGESTION_LABELS[key]} ${nextValue ? "enabled" : "disabled"}`
+        `${SUGGESTION_LABELS[key]} ${nextValue ? "enabled" : "disabled"}`,
       )
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleThemeChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, theme: value }), "Theme updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, theme: value }), "Theme updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleSpecialtyChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, specialty: value }), "Specialty updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, specialty: value }), "Specialty updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handlePayerChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, payer: value }), "Primary payer updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, payer: value }), "Primary payer updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleRegionChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, region: value }), "Region updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, region: value }), "Region updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleGuidelineToggle = useCallback(
     (value: string) => {
       const normalized = value.toLowerCase()
-      handlePreferencesUpdate(
-        prev => {
-          const exists = prev.agencies.some(item => item.toLowerCase() === normalized)
-          const updated = exists
-            ? prev.agencies.filter(item => item.toLowerCase() !== normalized)
-            : [...prev.agencies, value]
-          return {
-            ...prev,
-            agencies: updated
-          }
-        },
-        "Guideline agencies updated"
-      )
+      handlePreferencesUpdate((prev) => {
+        const exists = prev.agencies.some((item) => item.toLowerCase() === normalized)
+        const updated = exists ? prev.agencies.filter((item) => item.toLowerCase() !== normalized) : [...prev.agencies, value]
+        return {
+          ...prev,
+          agencies: updated,
+        }
+      }, "Guideline agencies updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleLangChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, lang: value }), "Interface language updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, lang: value }), "Interface language updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleSummaryLangChange = useCallback(
     (value: string) => {
-      handlePreferencesUpdate(prev => ({ ...prev, summaryLang: value }), "Summary language updated")
+      handlePreferencesUpdate((prev) => ({ ...prev, summaryLang: value }), "Summary language updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const handleRuleToggle = useCallback(
     (ruleId: string, enabled: boolean) => {
-      handlePreferencesUpdate(
-        prev => {
-          const current = new Set(prev.rules)
-          if (enabled) {
-            current.add(ruleId)
-          } else {
-            current.delete(ruleId)
-          }
-          return {
-            ...prev,
-            rules: Array.from(current)
-          }
-        },
-        "Clinical rules updated"
-      )
+      handlePreferencesUpdate((prev) => {
+        const current = new Set(prev.rules)
+        if (enabled) {
+          current.add(ruleId)
+        } else {
+          current.delete(ruleId)
+        }
+        return {
+          ...prev,
+          rules: Array.from(current),
+        }
+      }, "Clinical rules updated")
     },
-    [handlePreferencesUpdate]
+    [handlePreferencesUpdate],
   )
 
   const roleLabel = isAdmin ? "Administrator" : "User"
@@ -1594,9 +1417,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Settings</h1>
-          <p className="text-muted-foreground mt-1">
-            Configure RevenuePilot to match your clinical workflow and preferences
-          </p>
+          <p className="text-muted-foreground mt-1">Configure RevenuePilot to match your clinical workflow and preferences</p>
         </div>
         <Badge variant="outline" className="text-xs">
           {roleLabel} Settings
@@ -1628,13 +1449,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
         </TabsList>
 
         <TabsContent value="suggestions" className="space-y-6">
-          <SuggestionSettings
-            categories={preferences.categories}
-            loading={userPreferencesLoading}
-            saving={userPreferencesSaving}
-            error={userPreferencesError}
-            onToggle={handleSuggestionToggle}
-          />
+          <SuggestionSettings categories={preferences.categories} loading={userPreferencesLoading} saving={userPreferencesSaving} error={userPreferencesError} onToggle={handleSuggestionToggle} />
         </TabsContent>
 
         <TabsContent value="clinical" className="space-y-6">
@@ -1656,12 +1471,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
             onLangChange={handleLangChange}
             onSummaryLangChange={handleSummaryLangChange}
           />
-          <ClinicalRulesManagement
-            enabledRules={preferences.rules}
-            disabled={userPreferencesLoading}
-            saving={userPreferencesSaving}
-            onToggleRule={handleRuleToggle}
-          />
+          <ClinicalRulesManagement enabledRules={preferences.rules} disabled={userPreferencesLoading} saving={userPreferencesSaving} onToggleRule={handleRuleToggle} />
         </TabsContent>
 
         <TabsContent value="templates" className="space-y-6">
@@ -1669,11 +1479,7 @@ export function Settings({ userRole = "user" }: SettingsProps) {
         </TabsContent>
 
         <TabsContent value="interface" className="space-y-6">
-          <AppearanceSettings
-            theme={preferences.theme}
-            disabled={userPreferencesLoading || userPreferencesSaving}
-            onThemeChange={handleThemeChange}
-          />
+          <AppearanceSettings theme={preferences.theme} disabled={userPreferencesLoading || userPreferencesSaving} onThemeChange={handleThemeChange} />
         </TabsContent>
 
         <TabsContent value="advanced" className="space-y-6" forceMount>

@@ -14,10 +14,7 @@ function getStorageCandidates(): MaybeStorage[] {
     return []
   }
 
-  return [
-    typeof window.localStorage !== "undefined" ? window.localStorage : undefined,
-    typeof window.sessionStorage !== "undefined" ? window.sessionStorage : undefined
-  ]
+  return [typeof window.localStorage !== "undefined" ? window.localStorage : undefined, typeof window.sessionStorage !== "undefined" ? window.sessionStorage : undefined]
 }
 
 export function getStoredToken(): string | null {
@@ -122,27 +119,17 @@ export function extractAuthTokens(payload: unknown): TokenBundle {
     return { accessToken: null, refreshToken: null }
   }
 
-  const directAccess =
-    sanitizeToken(payload.accessToken) ||
-    sanitizeToken(payload.access_token) ||
-    sanitizeToken(payload.token)
+  const directAccess = sanitizeToken(payload.accessToken) || sanitizeToken(payload.access_token) || sanitizeToken(payload.token)
 
-  const directRefresh =
-    sanitizeToken(payload.refreshToken) ||
-    sanitizeToken(payload.refresh_token)
+  const directRefresh = sanitizeToken(payload.refreshToken) || sanitizeToken(payload.refresh_token)
 
   const nestedTokens = isRecord(payload.tokens) ? payload.tokens : undefined
-  const nestedAccess =
-    sanitizeToken(nestedTokens?.accessToken) ||
-    sanitizeToken(nestedTokens?.access_token) ||
-    sanitizeToken(nestedTokens?.token)
-  const nestedRefresh =
-    sanitizeToken(nestedTokens?.refreshToken) ||
-    sanitizeToken(nestedTokens?.refresh_token)
+  const nestedAccess = sanitizeToken(nestedTokens?.accessToken) || sanitizeToken(nestedTokens?.access_token) || sanitizeToken(nestedTokens?.token)
+  const nestedRefresh = sanitizeToken(nestedTokens?.refreshToken) || sanitizeToken(nestedTokens?.refresh_token)
 
   return {
     accessToken: directAccess || nestedAccess || null,
-    refreshToken: directRefresh || nestedRefresh || null
+    refreshToken: directRefresh || nestedRefresh || null,
   }
 }
 
@@ -237,7 +224,7 @@ async function performTokenRefresh(refreshToken: string): Promise<RefreshOutcome
       method: "POST",
       headers,
       body: JSON.stringify({ refresh_token: refreshToken }),
-      credentials: "include"
+      credentials: "include",
     })
 
     const text = await response.text()
@@ -293,7 +280,7 @@ async function requestAccessTokenRefresh(): Promise<RefreshAttemptResult> {
       persistAuthTokens({
         accessToken: tokenBundle.accessToken,
         refreshToken: nextRefresh,
-        remember
+        remember,
       })
       return { token: tokenBundle.accessToken, invalid: false }
     })()
@@ -385,9 +372,7 @@ function withApiBase(path: string): string | null {
 
   const base = resolveApiBaseUrl()
   if (!base) {
-    return typeof window !== "undefined"
-      ? new URL(path, window.location.origin).toString()
-      : path
+    return typeof window !== "undefined" ? new URL(path, window.location.origin).toString() : path
   }
 
   try {
@@ -532,16 +517,7 @@ export interface ApiFetchOptions extends Omit<RequestInit, "body" | "headers"> {
 }
 
 export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOptions = {}): Promise<Response> {
-  const {
-    headers,
-    body,
-    credentials,
-    jsonBody,
-    json = jsonBody !== undefined,
-    acceptJson = true,
-    skipAuth = false,
-    ...rest
-  } = options
+  const { headers, body, credentials, jsonBody, json = jsonBody !== undefined, acceptJson = true, skipAuth = false, ...rest } = options
 
   const finalBody = jsonBody !== undefined ? JSON.stringify(jsonBody) : body
   const mergedHeaders = buildAuthHeaders(headers, { json, acceptJson, skipAuth })
@@ -551,13 +527,10 @@ export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOption
     ...rest,
     body: finalBody ?? undefined,
     headers: mergedHeaders,
-    credentials: credentials ?? "include"
+    credentials: credentials ?? "include",
   })
 
-  const shouldAttemptRefresh =
-    !skipAuth &&
-    !rest.signal?.aborted &&
-    (response.status === 401 || response.status === 419)
+  const shouldAttemptRefresh = !skipAuth && !rest.signal?.aborted && (response.status === 401 || response.status === 419)
 
   let refreshAttempt: RefreshAttemptResult | null = null
 
@@ -569,7 +542,7 @@ export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOption
         ...rest,
         body: finalBody ?? undefined,
         headers: mergedHeaders,
-        credentials: credentials ?? "include"
+        credentials: credentials ?? "include",
       })
     } else if (refreshAttempt.invalid) {
       clearStoredTokens()
@@ -578,9 +551,7 @@ export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOption
 
   if ((response.status === 401 || response.status === 419) && !skipAuth) {
     const retriedWithToken = Boolean(refreshAttempt?.token)
-    const shouldClear =
-      !shouldAttemptRefresh ||
-      (refreshAttempt ? refreshAttempt.invalid || retriedWithToken : true)
+    const shouldClear = !shouldAttemptRefresh || (refreshAttempt ? refreshAttempt.invalid || retriedWithToken : true)
     if (shouldClear) {
       clearStoredTokens()
     }
@@ -611,10 +582,7 @@ function describeRequest(input: RequestInfo | URL): string {
   return "request"
 }
 
-export async function apiFetchJson<T = unknown>(
-  input: RequestInfo | URL,
-  options: ApiFetchJsonOptions<T> = {}
-): Promise<T | null> {
+export async function apiFetchJson<T = unknown>(input: RequestInfo | URL, options: ApiFetchJsonOptions<T> = {}): Promise<T | null> {
   const { unwrapData = false, returnNullOnEmpty = true, fallbackValue, ...fetchOptions } = options
   const requestInfo = resolveRequestInfo(input)
   const response = await apiFetch(requestInfo, fetchOptions)
@@ -666,5 +634,5 @@ export async function apiFetchJson<T = unknown>(
     result = (result as Record<string, unknown>).data
   }
 
-  return (result as T) ?? (fallbackValue ?? (returnNullOnEmpty ? null : ({} as T)))
+  return (result as T) ?? fallbackValue ?? (returnNullOnEmpty ? null : ({} as T))
 }

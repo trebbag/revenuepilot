@@ -6,17 +6,7 @@ import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
-import {
-  CheckCircle,
-  Save,
-  Play,
-  Square,
-  Clock,
-  Mic,
-  MicOff,
-  AlertTriangle,
-  Loader2
-} from "lucide-react"
+import { CheckCircle, Save, Play, Square, Clock, Mic, MicOff, AlertTriangle, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
@@ -30,10 +20,10 @@ import type { StoredFinalizationSession } from "../features/finalization/workflo
 
 export interface ComplianceIssue {
   id: string
-  severity: 'critical' | 'warning' | 'info'
+  severity: "critical" | "warning" | "info"
   title: string
   description: string
-  category: 'documentation' | 'coding' | 'billing' | 'quality'
+  category: "documentation" | "coding" | "billing" | "quality"
   details: string
   suggestion: string
   learnMoreUrl?: string
@@ -58,7 +48,7 @@ interface PatientSuggestion {
   lastVisit?: string
   allergies?: string[]
   medications?: string[]
-  source: 'local' | 'external'
+  source: "local" | "external"
 }
 
 interface PatientDetailsResponse {
@@ -80,7 +70,7 @@ interface PatientDetailsResponse {
 }
 
 interface EncounterValidationState {
-  status: 'idle' | 'loading' | 'valid' | 'invalid'
+  status: "idle" | "loading" | "valid" | "invalid"
   message?: string
   encounter?: {
     encounterId?: number
@@ -102,7 +92,7 @@ interface TranscriptEntry {
   speaker?: string
 }
 
-export type StreamConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
+export type StreamConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error"
 
 export interface StreamConnectionState {
   status: StreamConnectionStatus
@@ -164,8 +154,8 @@ const normalizeCodeValueForCompliance = (value: unknown): string | null => {
 const createComplianceSignature = (content: string, codes: string[]): string => {
   const normalizedContent = typeof content === "string" ? content : ""
   const sortedCodes = [...codes]
-    .filter(code => typeof code === "string" && code.trim().length > 0)
-    .map(code => code.trim())
+    .filter((code) => typeof code === "string" && code.trim().length > 0)
+    .map((code) => code.trim())
     .sort()
   return JSON.stringify({ content: normalizedContent, codes: sortedCodes })
 }
@@ -260,16 +250,12 @@ export function NoteEditor({
   onOpenFinalization,
   onComplianceStreamUpdate,
   onCodeStreamUpdate,
-  onCollaborationStreamUpdate
+  onCollaborationStreamUpdate,
 }: NoteEditorProps) {
   const auth = useAuth()
   const { state: sessionState } = useSession()
-  const [patientInputValue, setPatientInputValue] = useState(
-    initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || ""
-  )
-  const [patientId, setPatientId] = useState(
-    initialNoteData?.patientId || prePopulatedPatient?.patientId || ""
-  )
+  const [patientInputValue, setPatientInputValue] = useState(initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || "")
+  const [patientId, setPatientId] = useState(initialNoteData?.patientId || prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
   const [patientSuggestions, setPatientSuggestions] = useState<PatientSuggestion[]>([])
   const [patientSearchLoading, setPatientSearchLoading] = useState(false)
@@ -277,11 +263,9 @@ export function NoteEditor({
   const [isPatientDropdownOpen, setIsPatientDropdownOpen] = useState(false)
   const [patientDetails, setPatientDetails] = useState<PatientDetailsResponse | null>(null)
 
-  const [encounterId, setEncounterId] = useState(
-    initialNoteData?.encounterId || prePopulatedPatient?.encounterId || ""
-  )
+  const [encounterId, setEncounterId] = useState(initialNoteData?.encounterId || prePopulatedPatient?.encounterId || "")
   const [encounterValidation, setEncounterValidation] = useState<EncounterValidationState>({
-    status: (initialNoteData?.encounterId || prePopulatedPatient?.encounterId) ? 'loading' : 'idle'
+    status: initialNoteData?.encounterId || prePopulatedPatient?.encounterId ? "loading" : "idle",
   })
 
   const specialty = useMemo(() => {
@@ -297,9 +281,7 @@ export function NoteEditor({
   }, [auth.user?.specialty, encounterValidation.encounter?.type])
 
   const payer = useMemo(() => {
-    const encounterPatient = encounterValidation.encounter?.patient as
-      | { insurance?: string | null; payer?: string | null }
-      | undefined
+    const encounterPatient = encounterValidation.encounter?.patient as { insurance?: string | null; payer?: string | null } | undefined
     const encounterInsurance = encounterPatient?.insurance
     if (typeof encounterInsurance === "string" && encounterInsurance.trim().length > 0) {
       return encounterInsurance.trim()
@@ -327,31 +309,31 @@ export function NoteEditor({
   const [complianceLoading, setComplianceLoading] = useState(false)
   const [complianceError, setComplianceError] = useState<string | null>(null)
   const [complianceStreamState, setComplianceStreamState] = useState<StreamConnectionState>({
-    status: 'idle',
+    status: "idle",
     attempts: 0,
     lastError: null,
     lastConnectedAt: null,
-    nextRetryDelayMs: null
+    nextRetryDelayMs: null,
   })
 
   const [liveCodeSuggestions, setLiveCodeSuggestions] = useState<LiveCodeSuggestion[]>([])
   const [codeStreamState, setCodeStreamState] = useState<StreamConnectionState>({
-    status: 'idle',
+    status: "idle",
     attempts: 0,
     lastError: null,
     lastConnectedAt: null,
-    nextRetryDelayMs: null
+    nextRetryDelayMs: null,
   })
 
   const [collaborationParticipants, setCollaborationParticipants] = useState<CollaborationPresence[]>([])
   const [collaborationConflicts, setCollaborationConflicts] = useState<string[]>([])
   const [collaborationStatus, setCollaborationStatus] = useState<string | null>(null)
   const [collaborationStreamState, setCollaborationStreamState] = useState<StreamConnectionState>({
-    status: 'idle',
+    status: "idle",
     attempts: 0,
     lastError: null,
     lastConnectedAt: null,
-    nextRetryDelayMs: null
+    nextRetryDelayMs: null,
   })
 
   const [isRecording, setIsRecording] = useState(false)
@@ -379,8 +361,7 @@ export function NoteEditor({
       return null
     }
 
-    const normalize = (value?: string | null) =>
-      typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : ""
+    const normalize = (value?: string | null) => (typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : "")
 
     const noteCandidates = new Set<string>()
     const encounterCandidates = new Set<string>()
@@ -426,23 +407,14 @@ export function NoteEditor({
     }
 
     return fallback
-  }, [
-    encounterId,
-    initialNoteData?.encounterId,
-    initialNoteData?.noteId,
-    initialNoteData?.patientId,
-    noteId,
-    patientId,
-    sessionState.finalizationSessions
-  ])
+  }, [encounterId, initialNoteData?.encounterId, initialNoteData?.noteId, initialNoteData?.patientId, noteId, patientId, sessionState.finalizationSessions])
 
   const directFinalization = useMemo(() => {
     if (!recentFinalization?.result) {
       return null
     }
 
-    const normalize = (value?: string | null) =>
-      typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : ""
+    const normalize = (value?: string | null) => (typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : "")
 
     const noteCandidates = new Set<string>()
     const encounterCandidates = new Set<string>()
@@ -463,25 +435,15 @@ export function NoteEditor({
     register(patientCandidates, patientId)
 
     const matchesNote = normalize(recentFinalization.noteId) && noteCandidates.has(normalize(recentFinalization.noteId))
-    const matchesEncounter =
-      normalize(recentFinalization.encounterId) && encounterCandidates.has(normalize(recentFinalization.encounterId))
-    const matchesPatient =
-      normalize(recentFinalization.patientId) && patientCandidates.has(normalize(recentFinalization.patientId))
+    const matchesEncounter = normalize(recentFinalization.encounterId) && encounterCandidates.has(normalize(recentFinalization.encounterId))
+    const matchesPatient = normalize(recentFinalization.patientId) && patientCandidates.has(normalize(recentFinalization.patientId))
 
     if (matchesNote || matchesEncounter || matchesPatient) {
       return recentFinalization
     }
 
     return null
-  }, [
-    encounterId,
-    initialNoteData?.encounterId,
-    initialNoteData?.noteId,
-    initialNoteData?.patientId,
-    noteId,
-    patientId,
-    recentFinalization
-  ])
+  }, [encounterId, initialNoteData?.encounterId, initialNoteData?.noteId, initialNoteData?.patientId, noteId, patientId, recentFinalization])
 
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
@@ -505,12 +467,10 @@ export function NoteEditor({
         setInternalViewMode(mode)
       }
     },
-    [onViewModeChange, viewMode]
+    [onViewModeChange, viewMode],
   )
 
-  const [internalBeautifiedState, setInternalBeautifiedState] = useState<BeautifyResultState | null>(
-    beautifiedNote ?? null
-  )
+  const [internalBeautifiedState, setInternalBeautifiedState] = useState<BeautifyResultState | null>(beautifiedNote ?? null)
   useEffect(() => {
     if (beautifiedNote !== undefined) {
       setInternalBeautifiedState(beautifiedNote ?? null)
@@ -518,9 +478,7 @@ export function NoteEditor({
   }, [beautifiedNote])
   const currentBeautifiedState = beautifiedNote ?? internalBeautifiedState
 
-  const [internalEhrExportState, setInternalEhrExportState] = useState<EhrExportState | null>(
-    ehrExportState ?? null
-  )
+  const [internalEhrExportState, setInternalEhrExportState] = useState<EhrExportState | null>(ehrExportState ?? null)
   useEffect(() => {
     if (ehrExportState !== undefined) {
       setInternalEhrExportState(ehrExportState ?? null)
@@ -546,7 +504,7 @@ export function NoteEditor({
       }
       onBeautifiedNoteChange?.(next ?? null)
     },
-    [beautifiedNote, onBeautifiedNoteChange]
+    [beautifiedNote, onBeautifiedNoteChange],
   )
 
   const setEhrExportState = useCallback(
@@ -557,12 +515,12 @@ export function NoteEditor({
       }
       onEhrExportStateChange?.(next ?? null)
     },
-    [ehrExportState, onEhrExportStateChange]
+    [ehrExportState, onEhrExportStateChange],
   )
 
   const complianceCodeValues = useMemo(() => {
     const unique = new Set<string>()
-    ;(selectedCodesList ?? []).forEach(item => {
+    ;(selectedCodesList ?? []).forEach((item) => {
       const normalized = normalizeCodeValueForCompliance(item)
       if (normalized) {
         unique.add(normalized)
@@ -578,9 +536,7 @@ export function NoteEditor({
   const patientDetailsAbortRef = useRef<AbortController | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
-  const lastComplianceInputRef = useRef<string>(
-    createComplianceSignature(initialNoteData?.content ?? "", complianceCodeValues)
-  )
+  const lastComplianceInputRef = useRef<string>(createComplianceSignature(initialNoteData?.content ?? "", complianceCodeValues))
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -606,17 +562,12 @@ export function NoteEditor({
   const prevInitialPatientIdRef = useRef<string | undefined>(initialNoteData?.patientId)
   const prevInitialEncounterIdRef = useRef<string | undefined>(initialNoteData?.encounterId)
   const prevInitialPatientNameRef = useRef<string | undefined>(initialNoteData?.patientName)
-  const prevPrePopulatedRef = useRef<{ patientId: string; encounterId: string } | null>(
-    prePopulatedPatient ?? null
-  )
+  const prevPrePopulatedRef = useRef<{ patientId: string; encounterId: string } | null>(prePopulatedPatient ?? null)
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   type FetchOptions = ApiFetchOptions
 
-  const fetchWithAuth = useCallback(
-    (input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init),
-    []
-  )
+  const fetchWithAuth = useCallback((input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init), [])
 
   const convertComplianceResponse = useCallback((raw: any): ComplianceIssue[] => {
     if (!Array.isArray(raw)) return []
@@ -630,27 +581,13 @@ export function NoteEditor({
               : typeof item.text === "string" && item.text.trim().length > 0
                 ? item.text.trim()
                 : undefined
-          const titleCandidate =
-            typeof item.title === "string" && item.title.trim().length > 0
-              ? item.title.trim()
-              : descriptionSource
+          const titleCandidate = typeof item.title === "string" && item.title.trim().length > 0 ? item.title.trim() : descriptionSource
           const title = titleCandidate ?? `Compliance issue ${index + 1}`
           const description = descriptionSource ?? title
-          const category =
-            item.category === "documentation" ||
-            item.category === "coding" ||
-            item.category === "billing" ||
-            item.category === "quality"
-              ? item.category
-              : "documentation"
-          const priority =
-            typeof item.priority === "string" && item.priority.trim().length > 0
-              ? item.priority.trim().toLowerCase()
-              : ""
+          const category = item.category === "documentation" || item.category === "coding" || item.category === "billing" || item.category === "quality" ? item.category : "documentation"
+          const priority = typeof item.priority === "string" && item.priority.trim().length > 0 ? item.priority.trim().toLowerCase() : ""
           const severity =
-            item.severity === "critical" ||
-            item.severity === "warning" ||
-            item.severity === "info"
+            item.severity === "critical" || item.severity === "warning" || item.severity === "info"
               ? item.severity
               : priority.includes("high") || priority.includes("critical")
                 ? "critical"
@@ -662,25 +599,13 @@ export function NoteEditor({
           const normalizedReferences = Array.isArray(item.ruleReferences)
             ? item.ruleReferences
                 .map((reference: any) => {
-                  const ruleId =
-                    typeof reference?.ruleId === "string" && reference.ruleId.trim().length > 0
-                      ? reference.ruleId.trim()
-                      : undefined
+                  const ruleId = typeof reference?.ruleId === "string" && reference.ruleId.trim().length > 0 ? reference.ruleId.trim() : undefined
                   const citations = Array.isArray(reference?.citations)
                     ? reference.citations
                         .map((citation: any) => {
-                          const citationTitle =
-                            typeof citation?.title === "string" && citation.title.trim().length > 0
-                              ? citation.title.trim()
-                              : undefined
-                          const citationUrl =
-                            typeof citation?.url === "string" && citation.url.trim().length > 0
-                              ? citation.url.trim()
-                              : undefined
-                          const citationText =
-                            typeof citation?.citation === "string" && citation.citation.trim().length > 0
-                              ? citation.citation.trim()
-                              : undefined
+                          const citationTitle = typeof citation?.title === "string" && citation.title.trim().length > 0 ? citation.title.trim() : undefined
+                          const citationUrl = typeof citation?.url === "string" && citation.url.trim().length > 0 ? citation.url.trim() : undefined
+                          const citationText = typeof citation?.citation === "string" && citation.citation.trim().length > 0 ? citation.citation.trim() : undefined
                           if (!citationTitle && !citationUrl && !citationText) {
                             return null
                           }
@@ -693,29 +618,14 @@ export function NoteEditor({
                   }
                   return { ruleId, citations }
                 })
-                .filter((entry): entry is { ruleId?: string; citations?: { title?: string; url?: string; citation?: string }[] } =>
-                  Boolean(entry)
-                )
+                .filter((entry): entry is { ruleId?: string; citations?: { title?: string; url?: string; citation?: string }[] } => Boolean(entry))
             : []
-          const primaryCitation = normalizedReferences
-            .flatMap(ref => ref.citations ?? [])
-            .find(citation => typeof citation?.url === "string" && citation.url.length > 0)
-          const reasoning =
-            typeof item.reasoning === "string" && item.reasoning.trim().length > 0
-              ? item.reasoning.trim()
-              : undefined
-          const detailsText =
-            typeof item.details === "string" && item.details.trim().length > 0
-              ? item.details.trim()
-              : reasoning ?? description
+          const primaryCitation = normalizedReferences.flatMap((ref) => ref.citations ?? []).find((citation) => typeof citation?.url === "string" && citation.url.length > 0)
+          const reasoning = typeof item.reasoning === "string" && item.reasoning.trim().length > 0 ? item.reasoning.trim() : undefined
+          const detailsText = typeof item.details === "string" && item.details.trim().length > 0 ? item.details.trim() : (reasoning ?? description)
           const suggestionText =
-            typeof item.suggestion === "string" && item.suggestion.trim().length > 0
-              ? item.suggestion.trim()
-              : reasoning ?? "Review the note content and update documentation to resolve this issue."
-          const confidenceValue =
-            typeof item.confidence === "number"
-              ? Math.round(Math.min(Math.max(item.confidence, 0), 1) * 100)
-              : undefined
+            typeof item.suggestion === "string" && item.suggestion.trim().length > 0 ? item.suggestion.trim() : (reasoning ?? "Review the note content and update documentation to resolve this issue.")
+          const confidenceValue = typeof item.confidence === "number" ? Math.round(Math.min(Math.max(item.confidence, 0), 1) * 100) : undefined
           return {
             id: rawId ?? `issue-${slugify(title)}-${index}`,
             severity,
@@ -724,13 +634,10 @@ export function NoteEditor({
             category,
             details: detailsText,
             suggestion: suggestionText,
-            learnMoreUrl:
-              typeof item.learnMoreUrl === "string" && item.learnMoreUrl.trim().length > 0
-                ? item.learnMoreUrl.trim()
-                : primaryCitation?.url,
+            learnMoreUrl: typeof item.learnMoreUrl === "string" && item.learnMoreUrl.trim().length > 0 ? item.learnMoreUrl.trim() : primaryCitation?.url,
             confidence: confidenceValue,
             ruleReferences: normalizedReferences.length > 0 ? normalizedReferences : undefined,
-            dismissed: Boolean(item.dismissed)
+            dismissed: Boolean(item.dismissed),
           } satisfies ComplianceIssue
         }
         if (typeof item === "string" && item.trim().length > 0) {
@@ -744,7 +651,7 @@ export function NoteEditor({
             category: "documentation",
             details: text,
             suggestion: "Review the highlighted area for compliance gaps.",
-            dismissed: false
+            dismissed: false,
           } satisfies ComplianceIssue
         }
         return null
@@ -758,19 +665,9 @@ export function NoteEditor({
         return []
       }
 
-      const timestampRaw =
-        typeof payload?.timestamp === "number"
-          ? payload.timestamp
-          : typeof payload?.timestamp === "string"
-            ? Date.parse(payload.timestamp)
-            : Date.now()
+      const timestampRaw = typeof payload?.timestamp === "number" ? payload.timestamp : typeof payload?.timestamp === "string" ? Date.parse(payload.timestamp) : Date.now()
       const timestamp = Number.isFinite(timestampRaw) ? timestampRaw : Date.now()
-      const baseIdentifier =
-        payload?.eventId ??
-        payload?.event_id ??
-        payload?.analysisId ??
-        payload?.analysis_id ??
-        timestamp
+      const baseIdentifier = payload?.eventId ?? payload?.event_id ?? payload?.analysisId ?? payload?.analysis_id ?? timestamp
 
       const issues: Array<Record<string, unknown>> = []
 
@@ -778,14 +675,7 @@ export function NoteEditor({
         let message = ""
         let explicitSeverity: string | undefined
         if (issue && typeof issue === "object") {
-          const sources = [
-            issue.message,
-            issue.description,
-            issue.summary,
-            issue.text,
-            issue.title,
-            issue.detail
-          ]
+          const sources = [issue.message, issue.description, issue.summary, issue.text, issue.title, issue.detail]
           for (const source of sources) {
             if (typeof source === "string" && source.trim().length > 0) {
               message = source.trim()
@@ -804,24 +694,18 @@ export function NoteEditor({
         }
 
         const severity: ComplianceIssue["severity"] =
-          explicitSeverity === "critical" || explicitSeverity === "warning" || explicitSeverity === "info"
-            ? (explicitSeverity as ComplianceIssue["severity"])
-            : severityFromText(message)
+          explicitSeverity === "critical" || explicitSeverity === "warning" || explicitSeverity === "info" ? (explicitSeverity as ComplianceIssue["severity"]) : severityFromText(message)
 
         issues.push({
           id: `${baseIdentifier}-${index + 1}`,
           title: message,
           description: message,
           severity,
-          timestamp
+          timestamp,
         })
       }
 
-      const rawIssues = Array.isArray(payload?.issues)
-        ? payload.issues
-        : Array.isArray(payload?.alerts)
-          ? payload.alerts
-          : null
+      const rawIssues = Array.isArray(payload?.issues) ? payload.issues : Array.isArray(payload?.alerts) ? payload.alerts : null
 
       if (rawIssues && rawIssues.length > 0) {
         rawIssues.forEach((entry: any, index: number) => pushIssue(entry, index))
@@ -835,7 +719,7 @@ export function NoteEditor({
 
       return convertComplianceResponse(issues)
     },
-    [convertComplianceResponse]
+    [convertComplianceResponse],
   )
 
   const normalizeLiveCodeSuggestions = useCallback((payload: any): LiveCodeSuggestion[] => {
@@ -844,9 +728,7 @@ export function NoteEditor({
     }
 
     const now = Date.now()
-    const entries = Array.isArray(payload?.suggestions) && payload.suggestions.length > 0
-      ? payload.suggestions
-      : [payload]
+    const entries = Array.isArray(payload?.suggestions) && payload.suggestions.length > 0 ? payload.suggestions : [payload]
 
     const suggestions: LiveCodeSuggestion[] = []
 
@@ -892,15 +774,7 @@ export function NoteEditor({
         return
       }
 
-      const idSource =
-        entry.id ??
-        entry.suggestionId ??
-        entry.eventId ??
-        entry.event_id ??
-        entry.code ??
-        entry.codeValue ??
-        payload.eventId ??
-        `${now}-${index}`
+      const idSource = entry.id ?? entry.suggestionId ?? entry.eventId ?? entry.event_id ?? entry.code ?? entry.codeValue ?? payload.eventId ?? `${now}-${index}`
 
       const confidenceSource =
         typeof entry.confidence === "number"
@@ -914,11 +788,7 @@ export function NoteEditor({
                 : undefined
 
       const typeSource =
-        typeof entry.type === "string" && entry.type.trim().length > 0
-          ? entry.type.trim()
-          : typeof payload.type === "string" && payload.type.trim().length > 0
-            ? payload.type.trim()
-            : undefined
+        typeof entry.type === "string" && entry.type.trim().length > 0 ? entry.type.trim() : typeof payload.type === "string" && payload.type.trim().length > 0 ? payload.type.trim() : undefined
 
       const categorySource =
         typeof entry.category === "string" && entry.category.trim().length > 0
@@ -940,13 +810,10 @@ export function NoteEditor({
         description: descriptionSource || undefined,
         rationale: rationaleSource || undefined,
         type: typeSource,
-        confidence:
-          typeof confidenceSource === "number" && Number.isFinite(confidenceSource)
-            ? confidenceSource
-            : undefined,
+        confidence: typeof confidenceSource === "number" && Number.isFinite(confidenceSource) ? confidenceSource : undefined,
         category: categorySource || undefined,
         source: sourceLabel || undefined,
-        receivedAt: now
+        receivedAt: now,
       })
     })
 
@@ -970,14 +837,7 @@ export function NoteEditor({
       return null
     }
 
-    const identifier =
-      entry.userId ??
-      entry.id ??
-      entry.user ??
-      entry.email ??
-      entry.handle ??
-      entry.participantId ??
-      entry.name
+    const identifier = entry.userId ?? entry.id ?? entry.user ?? entry.email ?? entry.handle ?? entry.participantId ?? entry.name
 
     if (!identifier) {
       return null
@@ -992,7 +852,7 @@ export function NoteEditor({
       name: typeof nameSource === "string" ? nameSource : String(identifier),
       role: typeof roleSource === "string" ? roleSource : undefined,
       status: typeof statusSource === "string" ? statusSource : undefined,
-      lastSeen: Date.now()
+      lastSeen: Date.now(),
     }
   }, [])
 
@@ -1030,7 +890,7 @@ export function NoteEditor({
       sessionId: sessionIdValue,
       encounterId: encounterValue,
       patientId: patientValue,
-      noteId: noteValue
+      noteId: noteValue,
     }
   }, [visitSession?.sessionId, visitSession?.encounterId, visitSession?.patientId, encounterId, patientId, noteId])
 
@@ -1056,57 +916,51 @@ export function NoteEditor({
       }
       return { url: target, token }
     },
-    [streamBaseParams]
+    [streamBaseParams],
   )
 
-  const convertWizardIssuesToCompliance = useCallback(
-    (issues?: Record<string, unknown>): ComplianceIssue[] => {
-      if (!issues || typeof issues !== "object") {
-        return []
+  const convertWizardIssuesToCompliance = useCallback((issues?: Record<string, unknown>): ComplianceIssue[] => {
+    if (!issues || typeof issues !== "object") {
+      return []
+    }
+
+    const normalized: ComplianceIssue[] = []
+    Object.entries(issues).forEach(([categoryKey, value]) => {
+      if (!Array.isArray(value)) {
+        return
       }
 
-      const normalized: ComplianceIssue[] = []
-      Object.entries(issues).forEach(([categoryKey, value]) => {
-        if (!Array.isArray(value)) {
+      value.forEach((entry, index) => {
+        if (typeof entry !== "string") {
+          return
+        }
+        const text = entry.trim()
+        if (!text) {
           return
         }
 
-        value.forEach((entry, index) => {
-          if (typeof entry !== "string") {
-            return
-          }
-          const text = entry.trim()
-          if (!text) {
-            return
-          }
+        const category: ComplianceIssue["category"] =
+          categoryKey === "compliance"
+            ? "quality"
+            : categoryKey === "codes" || categoryKey === "diagnoses" || categoryKey === "differentials" || categoryKey === "prevention"
+              ? "coding"
+              : "documentation"
 
-          const category: ComplianceIssue["category"] =
-            categoryKey === "compliance"
-              ? "quality"
-              : categoryKey === "codes" ||
-                  categoryKey === "diagnoses" ||
-                  categoryKey === "differentials" ||
-                  categoryKey === "prevention"
-                ? "coding"
-                : "documentation"
-
-          normalized.push({
-            id: `wizard-${categoryKey}-${slugify(text)}-${index}`,
-            severity: severityFromText(text),
-            title: text,
-            description: text,
-            details: text,
-            suggestion: "Review and address this item before export.",
-            category,
-            dismissed: false
-          })
+        normalized.push({
+          id: `wizard-${categoryKey}-${slugify(text)}-${index}`,
+          severity: severityFromText(text),
+          title: text,
+          description: text,
+          details: text,
+          suggestion: "Review and address this item before export.",
+          category,
+          dismissed: false,
         })
       })
+    })
 
-      return normalized
-    },
-    []
-  )
+    return normalized
+  }, [])
 
   const ensureNoteCreated = useCallback(
     async (contentOverride?: string) => {
@@ -1122,25 +976,19 @@ export function NoteEditor({
       const payload = {
         patientId: trimmedPatientId,
         encounterId: encounterId.trim().length > 0 ? encounterId.trim() : undefined,
-        content:
-          typeof contentOverride === "string" ? contentOverride : noteContentRef.current
+        content: typeof contentOverride === "string" ? contentOverride : noteContentRef.current,
       }
       const createPromise = (async () => {
         try {
           const response = await fetchWithAuth("/api/notes/create", {
             method: "POST",
-            jsonBody: payload
+            jsonBody: payload,
           })
           if (!response.ok) {
             throw new Error(`Failed to create note (${response.status})`)
           }
           const data = await response.json()
-          const createdId =
-            data?.noteId != null
-              ? String(data.noteId)
-              : data?.note_id != null
-                ? String(data.note_id)
-                : null
+          const createdId = data?.noteId != null ? String(data.noteId) : data?.note_id != null ? String(data.note_id) : null
           if (!createdId) {
             throw new Error("Note identifier missing from response")
           }
@@ -1148,8 +996,7 @@ export function NoteEditor({
           setAutoSaveError(null)
           return createdId
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Unable to create a draft note"
+          const message = error instanceof Error ? error.message : "Unable to create a draft note"
           setAutoSaveError(message)
           throw error
         } finally {
@@ -1176,8 +1023,7 @@ export function NoteEditor({
         return false
       }
 
-      const content =
-        typeof contentOverride === "string" ? contentOverride : noteContentRef.current ?? ""
+      const content = typeof contentOverride === "string" ? contentOverride : (noteContentRef.current ?? "")
 
       if (!force && content === autoSaveLastContentRef.current) {
         return false
@@ -1206,7 +1052,7 @@ export function NoteEditor({
           const noteIdString = String(ensuredId)
           const response = await fetchWithAuth("/api/notes/auto-save", {
             method: "POST",
-            jsonBody: { noteId: noteIdString, content }
+            jsonBody: { noteId: noteIdString, content },
           })
 
           if (!response.ok) {
@@ -1229,10 +1075,7 @@ export function NoteEditor({
           }
 
           const data = await response.json().catch(() => ({}))
-          const version =
-            typeof data?.version === "number" && Number.isFinite(data.version)
-              ? data.version
-              : null
+          const version = typeof data?.version === "number" && Number.isFinite(data.version) ? data.version : null
 
           autoSaveLastContentRef.current = content
           setLastAutoSaveTime(new Date().toISOString())
@@ -1243,9 +1086,7 @@ export function NoteEditor({
           }
           return true
         } catch (error) {
-          setAutoSaveError(
-            error instanceof Error ? error.message : "Unable to auto-save note",
-          )
+          setAutoSaveError(error instanceof Error ? error.message : "Unable to auto-save note")
           return false
         } finally {
           setAutoSaveInFlight(false)
@@ -1281,7 +1122,7 @@ export function NoteEditor({
     mediaRecorderRef.current = null
 
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => {
+      mediaStreamRef.current.getTracks().forEach((track) => {
         try {
           track.stop()
         } catch (error) {
@@ -1325,12 +1166,12 @@ export function NoteEditor({
         complianceSocketRef.current = null
       }
       complianceAttemptsRef.current = 0
-      setComplianceStreamState(prev => ({
-        status: 'idle',
+      setComplianceStreamState((prev) => ({
+        status: "idle",
         attempts: 0,
         lastError: null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: null
+        nextRetryDelayMs: null,
       }))
       return () => undefined
     }
@@ -1370,23 +1211,23 @@ export function NoteEditor({
       const attempt = complianceAttemptsRef.current + 1
       complianceAttemptsRef.current = attempt
       const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
-      setComplianceStreamState(prev => ({
-        status: 'closed',
+      setComplianceStreamState((prev) => ({
+        status: "closed",
         attempts: attempt,
         lastError: prev.lastError ?? null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: delay
+        nextRetryDelayMs: delay,
       }))
       complianceReconnectTimerRef.current = window.setTimeout(() => {
         if (cancelled) {
           return
         }
-        setComplianceStreamState(prev => ({
-          status: 'connecting',
+        setComplianceStreamState((prev) => ({
+          status: "connecting",
           attempts: complianceAttemptsRef.current,
           lastError: prev.lastError ?? null,
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: null
+          nextRetryDelayMs: null,
         }))
         connect()
       }, delay)
@@ -1399,12 +1240,9 @@ export function NoteEditor({
       cleanupTimer()
       closeSocket()
 
-      const { url, token } = buildStreamUrl('/ws/compliance')
+      const { url, token } = buildStreamUrl("/ws/compliance")
       try {
-        const socket =
-          token != null
-            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
-            : new WebSocket(url.toString())
+        const socket = token != null ? new WebSocket(url.toString(), ["authorization", `Bearer ${token}`]) : new WebSocket(url.toString())
 
         complianceSocketRef.current = socket
 
@@ -1414,77 +1252,63 @@ export function NoteEditor({
           }
           complianceAttemptsRef.current = 0
           setComplianceStreamState({
-            status: 'open',
+            status: "open",
             attempts: 0,
             lastError: null,
             lastConnectedAt: Date.now(),
-            nextRetryDelayMs: null
+            nextRetryDelayMs: null,
           })
           setComplianceLoading(false)
           setComplianceError(null)
         }
 
-        socket.onmessage = async event => {
+        socket.onmessage = async (event) => {
           if (cancelled) {
             return
           }
           try {
-            const rawData =
-              typeof event.data === 'string'
-                ? event.data
-                : event.data instanceof Blob
-                  ? await event.data.text()
-                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const rawData = typeof event.data === "string" ? event.data : event.data instanceof Blob ? await event.data.text() : new TextDecoder().decode(event.data as ArrayBuffer)
             const payload = JSON.parse(rawData)
-            if (payload?.event === 'connected') {
+            if (payload?.event === "connected") {
               return
             }
             const normalized = normalizeComplianceStreamPayload(payload)
             if (normalized.length === 0) {
               return
             }
-            setComplianceIssues(prev => {
-              const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
-              const map = new Map(prev.map(issue => [issue.id, issue]))
-              normalized.forEach(issue => {
+            setComplianceIssues((prev) => {
+              const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
+              const map = new Map(prev.map((issue) => [issue.id, issue]))
+              normalized.forEach((issue) => {
                 map.set(issue.id, {
                   ...issue,
-                  dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
+                  dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false,
                 })
               })
               return Array.from(map.values()).slice(-STREAM_HISTORY_LIMIT)
             })
-            lastComplianceInputRef.current = createComplianceSignature(
-              noteContentRef.current ?? '',
-              complianceCodeValues
-            )
+            lastComplianceInputRef.current = createComplianceSignature(noteContentRef.current ?? "", complianceCodeValues)
             setComplianceError(null)
             setComplianceLoading(false)
           } catch (error) {
-            console.error('Failed to process compliance stream payload', error)
-            setComplianceStreamState(prev => ({
+            console.error("Failed to process compliance stream payload", error)
+            setComplianceStreamState((prev) => ({
               ...prev,
-              status: prev.status === 'open' ? prev.status : 'error',
-              lastError:
-                error instanceof Error
-                  ? error.message
-                  : 'Failed to parse compliance stream payload'
+              status: prev.status === "open" ? prev.status : "error",
+              lastError: error instanceof Error ? error.message : "Failed to parse compliance stream payload",
             }))
           }
         }
 
-        socket.onerror = event => {
+        socket.onerror = (event) => {
           if (cancelled) {
             return
           }
-          const message =
-            event instanceof Event
-              ? 'Compliance stream error'
-              : (event as ErrorEvent)?.message ?? 'Compliance stream error'
-          setComplianceStreamState(prev => ({
+          const message = event instanceof Event ? "Compliance stream error" : ((event as ErrorEvent)?.message ?? "Compliance stream error")
+          setComplianceStreamState((prev) => ({
             ...prev,
-            status: 'error',
-            lastError: message
+            status: "error",
+            lastError: message,
           }))
           try {
             socket.close()
@@ -1501,24 +1325,24 @@ export function NoteEditor({
           scheduleReconnect()
         }
       } catch (error) {
-        setComplianceStreamState(prev => ({
-          status: 'error',
+        setComplianceStreamState((prev) => ({
+          status: "error",
           attempts: complianceAttemptsRef.current,
-          lastError: error instanceof Error ? error.message : 'Unable to open compliance stream',
+          lastError: error instanceof Error ? error.message : "Unable to open compliance stream",
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null,
         }))
         scheduleReconnect()
       }
     }
 
     complianceAttemptsRef.current = 0
-    setComplianceStreamState(prev => ({
-      status: 'connecting',
+    setComplianceStreamState((prev) => ({
+      status: "connecting",
       attempts: 0,
       lastError: prev.lastError ?? null,
       lastConnectedAt: prev.lastConnectedAt ?? null,
-      nextRetryDelayMs: null
+      nextRetryDelayMs: null,
     }))
     connect()
 
@@ -1527,12 +1351,7 @@ export function NoteEditor({
       cleanupTimer()
       closeSocket()
     }
-  }, [
-    buildStreamUrl,
-    normalizeComplianceStreamPayload,
-    streamBaseParams.sessionId,
-    complianceCodeValues
-  ])
+  }, [buildStreamUrl, normalizeComplianceStreamPayload, streamBaseParams.sessionId, complianceCodeValues])
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1554,12 +1373,12 @@ export function NoteEditor({
       }
       codesAttemptsRef.current = 0
       setLiveCodeSuggestions([])
-      setCodeStreamState(prev => ({
-        status: 'idle',
+      setCodeStreamState((prev) => ({
+        status: "idle",
         attempts: 0,
         lastError: null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: null
+        nextRetryDelayMs: null,
       }))
       return () => undefined
     }
@@ -1599,23 +1418,23 @@ export function NoteEditor({
       const attempt = codesAttemptsRef.current + 1
       codesAttemptsRef.current = attempt
       const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
-      setCodeStreamState(prev => ({
-        status: 'closed',
+      setCodeStreamState((prev) => ({
+        status: "closed",
         attempts: attempt,
         lastError: prev.lastError ?? null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: delay
+        nextRetryDelayMs: delay,
       }))
       codesReconnectTimerRef.current = window.setTimeout(() => {
         if (cancelled) {
           return
         }
-        setCodeStreamState(prev => ({
-          status: 'connecting',
+        setCodeStreamState((prev) => ({
+          status: "connecting",
           attempts: codesAttemptsRef.current,
           lastError: prev.lastError ?? null,
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: null
+          nextRetryDelayMs: null,
         }))
         connect()
       }, delay)
@@ -1628,12 +1447,9 @@ export function NoteEditor({
       cleanupTimer()
       closeSocket()
 
-      const { url, token } = buildStreamUrl('/ws/codes')
+      const { url, token } = buildStreamUrl("/ws/codes")
       try {
-        const socket =
-          token != null
-            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
-            : new WebSocket(url.toString())
+        const socket = token != null ? new WebSocket(url.toString(), ["authorization", `Bearer ${token}`]) : new WebSocket(url.toString())
 
         codesSocketRef.current = socket
 
@@ -1643,69 +1459,60 @@ export function NoteEditor({
           }
           codesAttemptsRef.current = 0
           setCodeStreamState({
-            status: 'open',
+            status: "open",
             attempts: 0,
             lastError: null,
             lastConnectedAt: Date.now(),
-            nextRetryDelayMs: null
+            nextRetryDelayMs: null,
           })
         }
 
-        socket.onmessage = async event => {
+        socket.onmessage = async (event) => {
           if (cancelled) {
             return
           }
           try {
-            const rawData =
-              typeof event.data === 'string'
-                ? event.data
-                : event.data instanceof Blob
-                  ? await event.data.text()
-                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const rawData = typeof event.data === "string" ? event.data : event.data instanceof Blob ? await event.data.text() : new TextDecoder().decode(event.data as ArrayBuffer)
             const payload = JSON.parse(rawData)
-            if (payload?.event === 'connected') {
+            if (payload?.event === "connected") {
               return
             }
             const normalized = normalizeLiveCodeSuggestions(payload)
             if (!normalized.length) {
               return
             }
-            setLiveCodeSuggestions(prev => {
-              const map = new Map(prev.map(item => [item.id, item]))
-              normalized.forEach(item => {
+            setLiveCodeSuggestions((prev) => {
+              const map = new Map(prev.map((item) => [item.id, item]))
+              normalized.forEach((item) => {
                 map.set(item.id, item)
               })
               return Array.from(map.values())
                 .sort((a, b) => a.receivedAt - b.receivedAt)
                 .slice(-STREAM_HISTORY_LIMIT)
             })
-            setCodeStreamState(prev => ({
+            setCodeStreamState((prev) => ({
               ...prev,
-              lastError: null
+              lastError: null,
             }))
           } catch (error) {
-            console.error('Failed to process codes stream payload', error)
-            setCodeStreamState(prev => ({
+            console.error("Failed to process codes stream payload", error)
+            setCodeStreamState((prev) => ({
               ...prev,
-              status: prev.status === 'open' ? prev.status : 'error',
-              lastError:
-                error instanceof Error ? error.message : 'Failed to parse codes stream payload'
+              status: prev.status === "open" ? prev.status : "error",
+              lastError: error instanceof Error ? error.message : "Failed to parse codes stream payload",
             }))
           }
         }
 
-        socket.onerror = event => {
+        socket.onerror = (event) => {
           if (cancelled) {
             return
           }
-          const message =
-            event instanceof Event
-              ? 'Code suggestion stream error'
-              : (event as ErrorEvent)?.message ?? 'Code suggestion stream error'
-          setCodeStreamState(prev => ({
+          const message = event instanceof Event ? "Code suggestion stream error" : ((event as ErrorEvent)?.message ?? "Code suggestion stream error")
+          setCodeStreamState((prev) => ({
             ...prev,
-            status: 'error',
-            lastError: message
+            status: "error",
+            lastError: message,
           }))
           try {
             socket.close()
@@ -1722,24 +1529,24 @@ export function NoteEditor({
           scheduleReconnect()
         }
       } catch (error) {
-        setCodeStreamState(prev => ({
-          status: 'error',
+        setCodeStreamState((prev) => ({
+          status: "error",
           attempts: codesAttemptsRef.current,
-          lastError: error instanceof Error ? error.message : 'Unable to open codes stream',
+          lastError: error instanceof Error ? error.message : "Unable to open codes stream",
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null,
         }))
         scheduleReconnect()
       }
     }
 
     codesAttemptsRef.current = 0
-    setCodeStreamState(prev => ({
-      status: 'connecting',
+    setCodeStreamState((prev) => ({
+      status: "connecting",
       attempts: 0,
       lastError: prev.lastError ?? null,
       lastConnectedAt: prev.lastConnectedAt ?? null,
-      nextRetryDelayMs: null
+      nextRetryDelayMs: null,
     }))
     connect()
 
@@ -1772,12 +1579,12 @@ export function NoteEditor({
       setCollaborationParticipants([])
       setCollaborationConflicts([])
       setCollaborationStatus(null)
-      setCollaborationStreamState(prev => ({
-        status: 'idle',
+      setCollaborationStreamState((prev) => ({
+        status: "idle",
         attempts: 0,
         lastError: null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: null
+        nextRetryDelayMs: null,
       }))
       return () => undefined
     }
@@ -1817,23 +1624,23 @@ export function NoteEditor({
       const attempt = collaborationAttemptsRef.current + 1
       collaborationAttemptsRef.current = attempt
       const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
-      setCollaborationStreamState(prev => ({
-        status: 'closed',
+      setCollaborationStreamState((prev) => ({
+        status: "closed",
         attempts: attempt,
         lastError: prev.lastError ?? null,
         lastConnectedAt: prev.lastConnectedAt ?? null,
-        nextRetryDelayMs: delay
+        nextRetryDelayMs: delay,
       }))
       collaborationReconnectTimerRef.current = window.setTimeout(() => {
         if (cancelled) {
           return
         }
-        setCollaborationStreamState(prev => ({
-          status: 'connecting',
+        setCollaborationStreamState((prev) => ({
+          status: "connecting",
           attempts: collaborationAttemptsRef.current,
           lastError: prev.lastError ?? null,
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: null
+          nextRetryDelayMs: null,
         }))
         connect()
       }, delay)
@@ -1846,12 +1653,9 @@ export function NoteEditor({
       cleanupTimer()
       closeSocket()
 
-      const { url, token } = buildStreamUrl('/ws/collaboration')
+      const { url, token } = buildStreamUrl("/ws/collaboration")
       try {
-        const socket =
-          token != null
-            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
-            : new WebSocket(url.toString())
+        const socket = token != null ? new WebSocket(url.toString(), ["authorization", `Bearer ${token}`]) : new WebSocket(url.toString())
 
         collaborationSocketRef.current = socket
 
@@ -1861,120 +1665,99 @@ export function NoteEditor({
           }
           collaborationAttemptsRef.current = 0
           setCollaborationStreamState({
-            status: 'open',
+            status: "open",
             attempts: 0,
             lastError: null,
             lastConnectedAt: Date.now(),
-            nextRetryDelayMs: null
+            nextRetryDelayMs: null,
           })
         }
 
-        socket.onmessage = async event => {
+        socket.onmessage = async (event) => {
           if (cancelled) {
             return
           }
           try {
-            const rawData =
-              typeof event.data === 'string'
-                ? event.data
-                : event.data instanceof Blob
-                  ? await event.data.text()
-                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const rawData = typeof event.data === "string" ? event.data : event.data instanceof Blob ? await event.data.text() : new TextDecoder().decode(event.data as ArrayBuffer)
             const payload = JSON.parse(rawData)
-            if (payload?.event === 'connected') {
+            if (payload?.event === "connected") {
               return
             }
 
-            if (payload?.event === 'collaboration_clear' || payload?.presence === 'clear') {
+            if (payload?.event === "collaboration_clear" || payload?.presence === "clear") {
               setCollaborationParticipants([])
             }
 
-            const participantList =
-              Array.isArray(payload?.participants)
-                ? payload.participants
-                : Array.isArray(payload?.users)
-                  ? payload.users
-                  : Array.isArray(payload?.presence)
-                    ? payload.presence
-                    : null
+            const participantList = Array.isArray(payload?.participants)
+              ? payload.participants
+              : Array.isArray(payload?.users)
+                ? payload.users
+                : Array.isArray(payload?.presence)
+                  ? payload.presence
+                  : null
 
             if (participantList) {
-              const normalizedList = participantList
-                .map((entry: any) => normalizeCollaborator(entry))
-                .filter((entry): entry is CollaborationPresence => Boolean(entry))
+              const normalizedList = participantList.map((entry: any) => normalizeCollaborator(entry)).filter((entry): entry is CollaborationPresence => Boolean(entry))
               if (normalizedList.length > 0) {
                 setCollaborationParticipants(normalizedList)
-              } else if (payload?.presence === 'clear') {
+              } else if (payload?.presence === "clear") {
                 setCollaborationParticipants([])
               }
             } else {
               const collaborator = normalizeCollaborator(payload)
               if (collaborator) {
-                setCollaborationParticipants(prev => {
-                  const map = new Map(prev.map(person => [person.id, person]))
+                setCollaborationParticipants((prev) => {
+                  const map = new Map(prev.map((person) => [person.id, person]))
                   map.set(collaborator.id, collaborator)
                   return Array.from(map.values())
                 })
               }
             }
 
-            if (payload?.event === 'collaboration_left' && (payload.userId || payload.user)) {
+            if (payload?.event === "collaboration_left" && (payload.userId || payload.user)) {
               const departing = String(payload.userId ?? payload.user)
-              setCollaborationParticipants(prev => prev.filter(person => person.id !== departing))
+              setCollaborationParticipants((prev) => prev.filter((person) => person.id !== departing))
             }
 
             if (payload?.conflicts !== undefined) {
-              const conflicts = Array.isArray(payload.conflicts)
-                ? payload.conflicts
-                : payload.conflicts
-                  ? [payload.conflicts]
-                  : []
+              const conflicts = Array.isArray(payload.conflicts) ? payload.conflicts : payload.conflicts ? [payload.conflicts] : []
               setCollaborationConflicts(
                 conflicts
-                  .map(value => (typeof value === 'string' ? value.trim() : ''))
+                  .map((value) => (typeof value === "string" ? value.trim() : ""))
                   .filter((value): value is string => value.length > 0)
-                  .slice(-STREAM_HISTORY_LIMIT)
+                  .slice(-STREAM_HISTORY_LIMIT),
               )
-            } else if (
-              payload?.event === 'collaboration_resolved' ||
-              payload?.event === 'collaboration_sync'
-            ) {
+            } else if (payload?.event === "collaboration_resolved" || payload?.event === "collaboration_sync") {
               setCollaborationConflicts([])
             }
 
-            if (typeof payload?.status === 'string' && payload.status.trim().length > 0) {
+            if (typeof payload?.status === "string" && payload.status.trim().length > 0) {
               setCollaborationStatus(payload.status.trim())
             }
 
-            setCollaborationStreamState(prev => ({
+            setCollaborationStreamState((prev) => ({
               ...prev,
-              lastError: null
+              lastError: null,
             }))
           } catch (error) {
-            console.error('Failed to process collaboration stream payload', error)
-            setCollaborationStreamState(prev => ({
+            console.error("Failed to process collaboration stream payload", error)
+            setCollaborationStreamState((prev) => ({
               ...prev,
-              status: prev.status === 'open' ? prev.status : 'error',
-              lastError:
-                error instanceof Error
-                  ? error.message
-                  : 'Failed to parse collaboration stream payload'
+              status: prev.status === "open" ? prev.status : "error",
+              lastError: error instanceof Error ? error.message : "Failed to parse collaboration stream payload",
             }))
           }
         }
 
-        socket.onerror = event => {
+        socket.onerror = (event) => {
           if (cancelled) {
             return
           }
-          const message =
-            event instanceof Event
-              ? 'Collaboration stream error'
-              : (event as ErrorEvent)?.message ?? 'Collaboration stream error'
-          setCollaborationStreamState(prev => ({
+          const message = event instanceof Event ? "Collaboration stream error" : ((event as ErrorEvent)?.message ?? "Collaboration stream error")
+          setCollaborationStreamState((prev) => ({
             ...prev,
-            status: 'error',
-            lastError: message
+            status: "error",
+            lastError: message,
           }))
           try {
             socket.close()
@@ -1991,25 +1774,24 @@ export function NoteEditor({
           scheduleReconnect()
         }
       } catch (error) {
-        setCollaborationStreamState(prev => ({
-          status: 'error',
+        setCollaborationStreamState((prev) => ({
+          status: "error",
           attempts: collaborationAttemptsRef.current,
-          lastError:
-            error instanceof Error ? error.message : 'Unable to open collaboration stream',
+          lastError: error instanceof Error ? error.message : "Unable to open collaboration stream",
           lastConnectedAt: prev.lastConnectedAt ?? null,
-          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null,
         }))
         scheduleReconnect()
       }
     }
 
     collaborationAttemptsRef.current = 0
-    setCollaborationStreamState(prev => ({
-      status: 'connecting',
+    setCollaborationStreamState((prev) => ({
+      status: "connecting",
       attempts: 0,
       lastError: prev.lastError ?? null,
       lastConnectedAt: prev.lastConnectedAt ?? null,
-      nextRetryDelayMs: null
+      nextRetryDelayMs: null,
     }))
     connect()
 
@@ -2019,8 +1801,6 @@ export function NoteEditor({
       closeSocket()
     }
   }, [buildStreamUrl, normalizeCollaborator, streamBaseParams.sessionId])
-
-
 
   useEffect(() => {
     const incomingId = initialNoteData?.noteId ?? null
@@ -2085,7 +1865,7 @@ export function NoteEditor({
       setSelectedPatient({
         patientId: patientIdValue || initialNoteData?.patientName || "",
         name: initialNoteData?.patientName,
-        source: "local"
+        source: "local",
       })
     } else {
       setSelectedPatient(null)
@@ -2119,9 +1899,7 @@ export function NoteEditor({
         wsTarget.searchParams.set("token", token)
       }
       const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
-      const ws = protocols
-        ? new WebSocket(wsTarget.toString(), protocols)
-        : new WebSocket(wsTarget.toString())
+      const ws = protocols ? new WebSocket(wsTarget.toString(), protocols) : new WebSocket(wsTarget.toString())
       websocketRef.current = ws
 
       ws.onopen = () => {
@@ -2135,29 +1913,18 @@ export function NoteEditor({
 
       ws.onmessage = (event) => {
         try {
-          const payload =
-            typeof event.data === "string"
-              ? JSON.parse(event.data)
-              : JSON.parse(new TextDecoder().decode(event.data))
+          const payload = typeof event.data === "string" ? JSON.parse(event.data) : JSON.parse(new TextDecoder().decode(event.data))
           if (!payload || typeof payload !== "object" || !payload.transcript) return
           const text = String(payload.transcript)
           const entry: TranscriptEntry = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             text,
-            confidence:
-              typeof payload.confidence === "number"
-                ? payload.confidence
-                : typeof payload.confidence === "string"
-                  ? Number.parseFloat(payload.confidence) || 0
-                  : 0,
+            confidence: typeof payload.confidence === "number" ? payload.confidence : typeof payload.confidence === "string" ? Number.parseFloat(payload.confidence) || 0 : 0,
             isInterim: Boolean(payload.isInterim),
             timestamp: Date.now(),
-            speaker:
-              typeof payload.speakerLabel === "string" && payload.speakerLabel.trim().length > 0
-                ? payload.speakerLabel.trim()
-                : undefined
+            speaker: typeof payload.speakerLabel === "string" && payload.speakerLabel.trim().length > 0 ? payload.speakerLabel.trim() : undefined,
           }
-          setTranscriptEntries(prev => [...prev, entry])
+          setTranscriptEntries((prev) => [...prev, entry])
         } catch (error) {
           console.error("Failed to parse transcript payload", error)
         }
@@ -2187,7 +1954,7 @@ export function NoteEditor({
       }
 
       recorder.onstop = () => {
-        stream.getTracks().forEach(track => {
+        stream.getTracks().forEach((track) => {
           try {
             track.stop()
           } catch (error) {
@@ -2201,9 +1968,7 @@ export function NoteEditor({
       return true
     } catch (error) {
       console.error("Unable to start audio stream", error)
-      setTranscriptionError(
-        error instanceof Error ? error.message : "Unable to access microphone"
-      )
+      setTranscriptionError(error instanceof Error ? error.message : "Unable to access microphone")
       stopAudioStream()
       return false
     }
@@ -2248,11 +2013,7 @@ export function NoteEditor({
   }, [noteContent])
 
   useEffect(() => {
-    if (
-      !noteId &&
-      patientId.trim().length > 0 &&
-      (noteContentRef.current?.trim()?.length ?? 0) > 0
-    ) {
+    if (!noteId && patientId.trim().length > 0 && (noteContentRef.current?.trim()?.length ?? 0) > 0) {
       void ensureNoteCreated(noteContentRef.current).catch(() => {})
     }
   }, [patientId, noteId, ensureNoteCreated])
@@ -2265,10 +2026,7 @@ export function NoteEditor({
 
     const previous = prevPrePopulatedRef.current
     const next = prePopulatedPatient ?? null
-    if (
-      previous?.patientId === next?.patientId &&
-      previous?.encounterId === next?.encounterId
-    ) {
+    if (previous?.patientId === next?.patientId && previous?.encounterId === next?.encounterId) {
       return
     }
 
@@ -2304,7 +2062,7 @@ export function NoteEditor({
       try {
         const query = encodeURIComponent(patientInputValue.trim())
         const response = await fetchWithAuth(`/api/patients/search?q=${query}&limit=10`, {
-          signal: controller.signal
+          signal: controller.signal,
         })
         if (!response.ok) {
           throw new Error(`Search failed (${response.status})`)
@@ -2320,37 +2078,15 @@ export function NoteEditor({
               mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
               age: typeof patient?.age === "number" ? patient.age : undefined,
               gender: typeof patient?.gender === "string" ? patient.gender : undefined,
-              insurance:
-                typeof patient?.insurance === "string" && patient.insurance.trim().length > 0
-                  ? patient.insurance.trim()
-                  : undefined,
-              lastVisit:
-                typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0
-                  ? patient.lastVisit.trim()
-                  : undefined,
+              insurance: typeof patient?.insurance === "string" && patient.insurance.trim().length > 0 ? patient.insurance.trim() : undefined,
+              lastVisit: typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0 ? patient.lastVisit.trim() : undefined,
               allergies: Array.isArray(patient?.allergies)
-                ? patient.allergies
-                    .map((item: unknown) =>
-                      typeof item === "string"
-                        ? item.trim()
-                        : typeof item === "number"
-                          ? String(item)
-                          : ""
-                    )
-                    .filter((item: string) => item.length > 0)
+                ? patient.allergies.map((item: unknown) => (typeof item === "string" ? item.trim() : typeof item === "number" ? String(item) : "")).filter((item: string) => item.length > 0)
                 : undefined,
               medications: Array.isArray(patient?.medications)
-                ? patient.medications
-                    .map((item: unknown) =>
-                      typeof item === "string"
-                        ? item.trim()
-                        : typeof item === "number"
-                          ? String(item)
-                          : ""
-                    )
-                    .filter((item: string) => item.length > 0)
+                ? patient.medications.map((item: unknown) => (typeof item === "string" ? item.trim() : typeof item === "number" ? String(item) : "")).filter((item: string) => item.length > 0)
                 : undefined,
-              source: "local"
+              source: "local",
             }))
           : []
         const external: PatientSuggestion[] = Array.isArray(data?.externalPatients)
@@ -2363,37 +2099,15 @@ export function NoteEditor({
               mrn: typeof patient?.mrn === "string" ? patient.mrn : undefined,
               age: typeof patient?.age === "number" ? patient.age : undefined,
               gender: typeof patient?.gender === "string" ? patient.gender : undefined,
-              insurance:
-                typeof patient?.insurance === "string" && patient.insurance.trim().length > 0
-                  ? patient.insurance.trim()
-                  : undefined,
-              lastVisit:
-                typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0
-                  ? patient.lastVisit.trim()
-                  : undefined,
+              insurance: typeof patient?.insurance === "string" && patient.insurance.trim().length > 0 ? patient.insurance.trim() : undefined,
+              lastVisit: typeof patient?.lastVisit === "string" && patient.lastVisit.trim().length > 0 ? patient.lastVisit.trim() : undefined,
               allergies: Array.isArray(patient?.allergies)
-                ? patient.allergies
-                    .map((item: unknown) =>
-                      typeof item === "string"
-                        ? item.trim()
-                        : typeof item === "number"
-                          ? String(item)
-                          : ""
-                    )
-                    .filter((item: string) => item.length > 0)
+                ? patient.allergies.map((item: unknown) => (typeof item === "string" ? item.trim() : typeof item === "number" ? String(item) : "")).filter((item: string) => item.length > 0)
                 : undefined,
               medications: Array.isArray(patient?.medications)
-                ? patient.medications
-                    .map((item: unknown) =>
-                      typeof item === "string"
-                        ? item.trim()
-                        : typeof item === "number"
-                          ? String(item)
-                          : ""
-                    )
-                    .filter((item: string) => item.length > 0)
+                ? patient.medications.map((item: unknown) => (typeof item === "string" ? item.trim() : typeof item === "number" ? String(item) : "")).filter((item: string) => item.length > 0)
                 : undefined,
-              source: "external"
+              source: "external",
             }))
           : []
         const combined = [...local, ...external].filter((suggestion) => suggestion.patientId)
@@ -2402,9 +2116,7 @@ export function NoteEditor({
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
         setPatientSuggestions([])
-        setPatientSearchError(
-          error instanceof Error ? error.message : "Unable to search patients"
-        )
+        setPatientSearchError(error instanceof Error ? error.message : "Unable to search patients")
       } finally {
         setPatientSearchLoading(false)
       }
@@ -2442,7 +2154,7 @@ export function NoteEditor({
       }
       if (Array.isArray(value)) {
         return value
-          .map(item => {
+          .map((item) => {
             if (typeof item === "string") {
               return item.trim()
             }
@@ -2460,7 +2172,7 @@ export function NoteEditor({
       try {
         const data = await apiFetchJson<PatientDetailsResponse>(`/api/patients/${numericId}`, {
           signal: controller.signal,
-          returnNullOnEmpty: true
+          returnNullOnEmpty: true,
         })
         if (controller.signal.aborted) {
           return
@@ -2472,55 +2184,25 @@ export function NoteEditor({
 
         setPatientDetails(data)
 
-        setSelectedPatient(prev => {
+        setSelectedPatient((prev) => {
           const demographics = data.demographics ?? {}
           const allergies = parseStringList(data.allergies)
           const medications = parseStringList(data.medications)
-          const resolvedId =
-            demographics.patientId != null && `${demographics.patientId}`.trim().length > 0
-              ? `${demographics.patientId}`.trim()
-              : prev?.patientId ?? trimmed
+          const resolvedId = demographics.patientId != null && `${demographics.patientId}`.trim().length > 0 ? `${demographics.patientId}`.trim() : (prev?.patientId ?? trimmed)
           return {
             patientId: resolvedId,
-            name:
-              typeof demographics.name === "string" && demographics.name.trim().length > 0
-                ? demographics.name.trim()
-                : prev?.name,
-            firstName:
-              typeof demographics.firstName === "string" && demographics.firstName.trim().length > 0
-                ? demographics.firstName.trim()
-                : prev?.firstName,
-            lastName:
-              typeof demographics.lastName === "string" && demographics.lastName.trim().length > 0
-                ? demographics.lastName.trim()
-                : prev?.lastName,
-            dob:
-              typeof demographics.dob === "string" && demographics.dob.trim().length > 0
-                ? demographics.dob.trim()
-                : prev?.dob,
-            mrn:
-              typeof demographics.mrn === "string" && demographics.mrn.trim().length > 0
-                ? demographics.mrn.trim()
-                : prev?.mrn,
-            age:
-              typeof demographics.age === "number" && Number.isFinite(demographics.age)
-                ? demographics.age
-                : prev?.age,
-            gender:
-              typeof demographics.gender === "string" && demographics.gender.trim().length > 0
-                ? demographics.gender.trim()
-                : prev?.gender,
-            insurance:
-              typeof demographics.insurance === "string" && demographics.insurance.trim().length > 0
-                ? demographics.insurance.trim()
-                : prev?.insurance,
-            lastVisit:
-              typeof demographics.lastVisit === "string" && demographics.lastVisit.trim().length > 0
-                ? demographics.lastVisit.trim()
-                : prev?.lastVisit,
+            name: typeof demographics.name === "string" && demographics.name.trim().length > 0 ? demographics.name.trim() : prev?.name,
+            firstName: typeof demographics.firstName === "string" && demographics.firstName.trim().length > 0 ? demographics.firstName.trim() : prev?.firstName,
+            lastName: typeof demographics.lastName === "string" && demographics.lastName.trim().length > 0 ? demographics.lastName.trim() : prev?.lastName,
+            dob: typeof demographics.dob === "string" && demographics.dob.trim().length > 0 ? demographics.dob.trim() : prev?.dob,
+            mrn: typeof demographics.mrn === "string" && demographics.mrn.trim().length > 0 ? demographics.mrn.trim() : prev?.mrn,
+            age: typeof demographics.age === "number" && Number.isFinite(demographics.age) ? demographics.age : prev?.age,
+            gender: typeof demographics.gender === "string" && demographics.gender.trim().length > 0 ? demographics.gender.trim() : prev?.gender,
+            insurance: typeof demographics.insurance === "string" && demographics.insurance.trim().length > 0 ? demographics.insurance.trim() : prev?.insurance,
+            lastVisit: typeof demographics.lastVisit === "string" && demographics.lastVisit.trim().length > 0 ? demographics.lastVisit.trim() : prev?.lastVisit,
             allergies: allergies.length > 0 ? allergies : prev?.allergies,
             medications: medications.length > 0 ? medications : prev?.medications,
-            source: prev?.source ?? "local"
+            source: prev?.source ?? "local",
           }
         })
       } catch (error) {
@@ -2569,17 +2251,17 @@ export function NoteEditor({
         }
         const payload: Record<string, unknown> = {
           encounterId: numericId,
-          encounter_id: numericId
+          encounter_id: numericId,
         }
         const trimmedPatientId = patientId.trim()
         if (trimmedPatientId) {
           payload.patientId = trimmedPatientId
           payload.patient_id = trimmedPatientId
         }
-        const response = await fetchWithAuth('/api/encounters/validate', {
-          method: 'POST',
+        const response = await fetchWithAuth("/api/encounters/validate", {
+          method: "POST",
           jsonBody: payload,
-          signal: controller.signal
+          signal: controller.signal,
         })
         if (!response.ok) {
           throw new Error(`Validation failed (${response.status})`)
@@ -2590,44 +2272,37 @@ export function NoteEditor({
           if (encounterPatientId && !patientId) {
             setPatientId(String(encounterPatientId))
             setPatientInputValue(String(encounterPatientId))
-          } else if (
-            encounterPatientId &&
-            patientId &&
-            String(encounterPatientId) !== String(patientId)
-          ) {
+          } else if (encounterPatientId && patientId && String(encounterPatientId) !== String(patientId)) {
             setEncounterValidation({
               status: "invalid",
               encounter: data?.encounter,
-              message: "Encounter is associated with a different patient"
+              message: "Encounter is associated with a different patient",
             })
             return
           }
           const summaryParts = [
             typeof data?.encounter?.date === "string" ? data.encounter.date : null,
             typeof data?.encounter?.type === "string" ? data.encounter.type : null,
-            typeof data?.encounter?.provider === "string" ? data.encounter.provider : null
+            typeof data?.encounter?.provider === "string" ? data.encounter.provider : null,
           ].filter(Boolean)
           setEncounterValidation({
             status: "valid",
             encounter: data?.encounter,
-            message: summaryParts.length ? summaryParts.join(" • ") : "Encounter validated"
+            message: summaryParts.length ? summaryParts.join(" • ") : "Encounter validated",
           })
         } else {
-          const errors: string[] = Array.isArray(data?.errors)
-            ? data.errors.filter((item: any) => typeof item === "string")
-            : []
+          const errors: string[] = Array.isArray(data?.errors) ? data.errors.filter((item: any) => typeof item === "string") : []
           setEncounterValidation({
             status: "invalid",
             encounter: data?.encounter,
-            message: errors.length ? errors.join(", ") : "Encounter not found"
+            message: errors.length ? errors.join(", ") : "Encounter not found",
           })
         }
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
         setEncounterValidation({
           status: "invalid",
-          message:
-            error instanceof Error ? error.message : "Unable to validate encounter"
+          message: error instanceof Error ? error.message : "Unable to validate encounter",
         })
       }
     }, 400)
@@ -2645,7 +2320,7 @@ export function NoteEditor({
       clearTimeout(complianceTimeoutRef.current)
     }
 
-    if (complianceStreamState.status === 'open') {
+    if (complianceStreamState.status === "open") {
       complianceAbortRef.current?.abort()
       setComplianceLoading(false)
       setComplianceError(null)
@@ -2673,7 +2348,7 @@ export function NoteEditor({
       setComplianceError(null)
       try {
         const payload: Record<string, unknown> = {
-          content: typeof noteContentRef.current === "string" ? noteContentRef.current : ""
+          content: typeof noteContentRef.current === "string" ? noteContentRef.current : "",
         }
         if (complianceCodeValues.length > 0) {
           payload.codes = complianceCodeValues
@@ -2681,7 +2356,7 @@ export function NoteEditor({
         const response = await fetchWithAuth("/api/ai/compliance/check", {
           method: "POST",
           jsonBody: payload,
-          signal: controller.signal
+          signal: controller.signal,
         })
         if (!response.ok) {
           throw new Error(`Compliance analysis failed (${response.status})`)
@@ -2696,21 +2371,19 @@ export function NoteEditor({
                 ? data.issues
                 : Array.isArray(data?.results)
                   ? data.results
-                  : data
+                  : data,
         )
-        setComplianceIssues(prev => {
-          const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
-          return normalized.map(issue => ({
+        setComplianceIssues((prev) => {
+          const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
+          return normalized.map((issue) => ({
             ...issue,
-            dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
+            dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false,
           }))
         })
         lastComplianceInputRef.current = signature
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
-        setComplianceError(
-          error instanceof Error ? error.message : "Compliance analysis unavailable"
-        )
+        setComplianceError(error instanceof Error ? error.message : "Compliance analysis unavailable")
       } finally {
         setComplianceLoading(false)
       }
@@ -2722,13 +2395,7 @@ export function NoteEditor({
       }
       complianceAbortRef.current?.abort()
     }
-  }, [
-    noteContent,
-    complianceCodeValues,
-    fetchWithAuth,
-    convertComplianceResponse,
-    complianceStreamState.status
-  ])
+  }, [noteContent, complianceCodeValues, fetchWithAuth, convertComplianceResponse, complianceStreamState.status])
 
   useEffect(() => {
     if (autoSaveIntervalRef.current) {
@@ -2810,7 +2477,7 @@ export function NoteEditor({
   useEffect(() => {
     if (!visitStarted || !isRecording) return
     const interval = window.setInterval(() => {
-      setCurrentSessionTime(time => time + 1)
+      setCurrentSessionTime((time) => time + 1)
     }, 1000)
     return () => {
       clearInterval(interval)
@@ -2833,15 +2500,9 @@ export function NoteEditor({
       participants: collaborationParticipants,
       conflicts: collaborationConflicts,
       status: collaborationStatus,
-      connection: collaborationStreamState
+      connection: collaborationStreamState,
     })
-  }, [
-    collaborationParticipants,
-    collaborationConflicts,
-    collaborationStatus,
-    collaborationStreamState,
-    onCollaborationStreamUpdate
-  ])
+  }, [collaborationParticipants, collaborationConflicts, collaborationStatus, collaborationStreamState, onCollaborationStreamUpdate])
 
   useEffect(() => {
     if (!transcriptEntries.length) {
@@ -2852,19 +2513,11 @@ export function NoteEditor({
   }, [transcriptEntries])
 
   const handleDismissIssue = (issueId: string) => {
-    setComplianceIssues(prev =>
-      prev.map(issue =>
-        issue.id === issueId ? { ...issue, dismissed: true } : issue
-      )
-    )
+    setComplianceIssues((prev) => prev.map((issue) => (issue.id === issueId ? { ...issue, dismissed: true } : issue)))
   }
 
   const handleRestoreIssue = (issueId: string) => {
-    setComplianceIssues(prev =>
-      prev.map(issue =>
-        issue.id === issueId ? { ...issue, dismissed: false } : issue
-      )
-    )
+    setComplianceIssues((prev) => prev.map((issue) => (issue.id === issueId ? { ...issue, dismissed: false } : issue)))
   }
 
   const applyWizardIssues = useCallback(
@@ -2872,20 +2525,20 @@ export function NoteEditor({
       const normalized = convertWizardIssuesToCompliance(issues)
       setComplianceIssues(normalized)
     },
-    [convertWizardIssuesToCompliance]
+    [convertWizardIssuesToCompliance],
   )
 
   const handlePreFinalizeResult = useCallback(
     (result: PreFinalizeCheckResponse) => {
       applyWizardIssues(result?.issues)
     },
-    [applyWizardIssues]
+    [applyWizardIssues],
   )
 
   const handleFinalizationError = useCallback((message: string) => {
     if (!message) return
     toast.error("Finalization failed", {
-      description: message
+      description: message,
     })
   }, [])
 
@@ -2898,18 +2551,15 @@ export function NoteEditor({
       setIsFinalized(true)
       stopAudioStream()
       setVisitStarted(false)
-      setVisitSession(prev => ({
+      setVisitSession((prev) => ({
         ...prev,
         status: "finalized",
-        endTime: new Date().toISOString()
+        endTime: new Date().toISOString(),
       }))
       setVisitError(null)
       setPausedTime(currentSessionTime)
 
-      const finalizedContent =
-        typeof result.finalizedContent === "string" && result.finalizedContent.trim().length > 0
-          ? result.finalizedContent
-          : noteContentRef.current
+      const finalizedContent = typeof result.finalizedContent === "string" && result.finalizedContent.trim().length > 0 ? result.finalizedContent : noteContentRef.current
 
       if (finalizedContent && finalizedContent !== noteContentRef.current) {
         noteContentRef.current = finalizedContent
@@ -2924,18 +2574,10 @@ export function NoteEditor({
       applyWizardIssues(result.issues)
 
       toast.success("Note finalized", {
-        description: result.exportReady
-          ? "The note has been finalized and is ready for export."
-          : "The note was finalized, but some items still require review."
+        description: result.exportReady ? "The note has been finalized and is ready for export." : "The note was finalized, but some items still require review.",
       })
     },
-    [
-      applyWizardIssues,
-      currentSessionTime,
-      complianceCodeValues,
-      onNoteContentChange,
-      stopAudioStream
-    ]
+    [applyWizardIssues, currentSessionTime, complianceCodeValues, onNoteContentChange, stopAudioStream],
   )
 
   useEffect(() => {
@@ -2945,7 +2587,7 @@ export function NoteEditor({
           sessionId: finalizationSessionSnapshot.sessionId ?? null,
           noteId: finalizationSessionSnapshot.noteId ?? null,
           encounterId: finalizationSessionSnapshot.encounterId ?? null,
-          patientId: finalizationSessionSnapshot.patientId ?? null
+          patientId: finalizationSessionSnapshot.patientId ?? null,
         }
       : null
 
@@ -2955,7 +2597,7 @@ export function NoteEditor({
           sessionId: null,
           noteId: directFinalization.noteId ?? null,
           encounterId: directFinalization.encounterId ?? null,
-          patientId: directFinalization.patientId ?? null
+          patientId: directFinalization.patientId ?? null,
         }
       : null
 
@@ -2965,9 +2607,7 @@ export function NoteEditor({
     }
 
     const result = source.result
-    const resolveIdentifier = (
-      ...values: Array<string | null | undefined>
-    ) => {
+    const resolveIdentifier = (...values: Array<string | null | undefined>) => {
       for (const value of values) {
         if (typeof value === "string" && value.trim().length > 0) {
           return value.trim()
@@ -2976,15 +2616,9 @@ export function NoteEditor({
       return "finalization-session"
     }
 
-    const sessionIdentifier = resolveIdentifier(
-      source.sessionId,
-      source.noteId,
-      source.encounterId,
-      source.patientId
-    )
+    const sessionIdentifier = resolveIdentifier(source.sessionId, source.noteId, source.encounterId, source.patientId)
 
-    const finalizedContent =
-      typeof result.finalizedContent === "string" ? result.finalizedContent : ""
+    const finalizedContent = typeof result.finalizedContent === "string" ? result.finalizedContent : ""
     const completionMarker =
       (result as { completedAt?: string | null }).completedAt ??
       (result as { finalizedAt?: string | null }).finalizedAt ??
@@ -2995,7 +2629,7 @@ export function NoteEditor({
     const signature = JSON.stringify({
       sessionIdentifier,
       finalizedContent,
-      completionMarker
+      completionMarker,
     })
 
     if (finalizationSyncRef.current === signature) {
@@ -3023,15 +2657,7 @@ export function NoteEditor({
     if (directSource) {
       onRecentFinalizationHandled?.()
     }
-  }, [
-    applyWizardIssues,
-    complianceCodeValues,
-    directFinalization,
-    finalizationSessionSnapshot,
-    isFinalized,
-    onNoteContentChange,
-    onRecentFinalizationHandled
-  ])
+  }, [applyWizardIssues, complianceCodeValues, directFinalization, finalizationSessionSnapshot, isFinalized, onNoteContentChange, onRecentFinalizationHandled])
 
   const patientDisplayName = useMemo(() => {
     if (selectedPatient) {
@@ -3072,8 +2698,8 @@ export function NoteEditor({
   const isEditorDisabled = isFinalized || !visitStarted
 
   // Calculate active issues for button state
-  const activeIssues = complianceIssues.filter(issue => !issue.dismissed)
-  const criticalIssues = activeIssues.filter(issue => issue.severity === 'critical')
+  const activeIssues = complianceIssues.filter((issue) => !issue.dismissed)
+  const criticalIssues = activeIssues.filter((issue) => issue.severity === "critical")
   const hasActiveIssues = activeIssues.length > 0
   const finalizeButtonDisabled = isFinalized || !hasRecordedTime || hasActiveIssues
   const hasCriticalIssues = criticalIssues.length > 0
@@ -3099,28 +2725,25 @@ export function NoteEditor({
 
   const totalTranscribedLines = transcriptEntries.length
   const currentTranscriptCount = transcriptionIndex >= 0 ? transcriptionIndex + 1 : 0
-  const averageConfidencePercent =
-    averageTranscriptConfidence === null
-      ? null
-      : Math.round(Math.min(1, Math.max(0, averageTranscriptConfidence)) * 100)
+  const averageConfidencePercent = averageTranscriptConfidence === null ? null : Math.round(Math.min(1, Math.max(0, averageTranscriptConfidence)) * 100)
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
 
   const handleFinalize = useCallback(async () => {
     if (isFinalized) {
       toast.info("Note already finalized", {
-        description: "Editing is locked after finalization."
+        description: "Editing is locked after finalization.",
       })
       return
     }
 
     if (!onOpenFinalization) {
       toast.error("Unable to open finalization wizard", {
-        description: "Finalization flow is not available in this view."
+        description: "Finalization flow is not available in this view.",
       })
       return
     }
@@ -3138,7 +2761,7 @@ export function NoteEditor({
           name: patientDisplayName ?? null,
           age: patientAgeValue ?? null,
           sex: patientSexValue ?? null,
-          encounterDate: encounterDateValue ?? null
+          encounterDate: encounterDateValue ?? null,
         },
         transcriptEntries,
         fetchWithAuth,
@@ -3149,17 +2772,14 @@ export function NoteEditor({
         displayMode: "embedded",
         streamingCodeSuggestions: liveCodeSuggestions,
         codesConnection: codeStreamState,
-        complianceConnection: complianceStreamState
+        complianceConnection: complianceStreamState,
       }
 
       onOpenFinalization(launchOptions)
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to open the finalization wizard."
+      const message = error instanceof Error ? error.message : "Unable to open the finalization wizard."
       toast.error("Unable to open finalization wizard", {
-        description: message
+        description: message,
       })
     }
   }, [
@@ -3183,9 +2803,8 @@ export function NoteEditor({
     noteId,
     liveCodeSuggestions,
     codeStreamState,
-    complianceStreamState
+    complianceStreamState,
   ])
-
 
   const handleSaveDraft = useCallback(async () => {
     if (saveDraftLoading) {
@@ -3194,7 +2813,7 @@ export function NoteEditor({
 
     if (isFinalized) {
       toast.info("Note already finalized", {
-        description: "Finalized notes cannot be saved as drafts."
+        description: "Finalized notes cannot be saved as drafts.",
       })
       return
     }
@@ -3223,7 +2842,7 @@ export function NoteEditor({
         reason: "manual",
         contentOverride: content,
         noteIdOverride: String(ensuredId),
-        force: true
+        force: true,
       })
 
       if (!saved) {
@@ -3236,12 +2855,12 @@ export function NoteEditor({
         try {
           const sessionResponse = await fetchWithAuth("/api/visits/session", {
             method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "complete" }
+            jsonBody: { session_id: visitSession.sessionId, action: "complete" },
           })
           if (sessionResponse.ok) {
             const sessionData = await sessionResponse.json().catch(() => null)
             if (sessionData) {
-              setVisitSession(prev => ({ ...prev, ...sessionData }))
+              setVisitSession((prev) => ({ ...prev, ...sessionData }))
             }
           }
         } catch (error) {
@@ -3257,23 +2876,23 @@ export function NoteEditor({
         const encounterValue = encounterId.trim()
         await fetchWithAuth("/api/activity/log", {
           method: "POST",
-            jsonBody: {
-              eventType: "draft_saved",
-              details: {
-                manual: true,
-                patientId: trimmedPatientId,
-                encounterId: encounterValue || undefined,
-                noteId: ensuredNoteId,
-                source: "note-editor"
-              }
-            }
-          })
+          jsonBody: {
+            eventType: "draft_saved",
+            details: {
+              manual: true,
+              patientId: trimmedPatientId,
+              encounterId: encounterValue || undefined,
+              noteId: ensuredNoteId,
+              source: "note-editor",
+            },
+          },
+        })
       } catch (error) {
         console.error("Failed to log draft save activity", error)
       }
 
       toast.success("Draft saved", {
-        description: "Draft saved and available in drafts overview."
+        description: "Draft saved and available in drafts overview.",
       })
       onNavigateToDrafts?.()
     } catch (error) {
@@ -3282,7 +2901,7 @@ export function NoteEditor({
       setAutoSaveError(message)
       setLastAutoSaveTime(previousAutoSaveTime ?? null)
       toast.error("Unable to save draft", {
-        description: message
+        description: message,
       })
     } finally {
       setSaveDraftLoading(false)
@@ -3304,18 +2923,14 @@ export function NoteEditor({
     setPausedTime,
     encounterId,
     onNavigateToDrafts,
-    setAutoSaveError
+    setAutoSaveError,
   ])
-
 
   const canStartVisit = useMemo(() => {
     if (isFinalized) {
       return false
     }
-    return (
-      patientId.trim().length > 0 &&
-      encounterValidation.status === "valid"
-    )
+    return patientId.trim().length > 0 && encounterValidation.status === "valid"
   }, [patientId, encounterValidation.status, isFinalized])
 
   const handleVisitToggle = useCallback(async () => {
@@ -3332,9 +2947,7 @@ export function NoteEditor({
       setVisitLoading(true)
       setVisitError(null)
       try {
-        const encounterNumeric = Number(
-          encounterValidation.encounter?.encounterId ?? encounterId
-        )
+        const encounterNumeric = Number(encounterValidation.encounter?.encounterId ?? encounterId)
         if (!Number.isFinite(encounterNumeric)) {
           throw new Error("Encounter ID must be numeric")
         }
@@ -3342,7 +2955,7 @@ export function NoteEditor({
         if (!visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "POST",
-            jsonBody: { encounter_id: encounterNumeric }
+            jsonBody: { encounter_id: encounterNumeric },
           })
           if (!response.ok) {
             throw new Error(`Failed to start visit (${response.status})`)
@@ -3351,7 +2964,7 @@ export function NoteEditor({
         } else {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "active" }
+            jsonBody: { session_id: visitSession.sessionId, action: "active" },
           })
           if (!response.ok) {
             throw new Error(`Failed to resume visit (${response.status})`)
@@ -3359,7 +2972,7 @@ export function NoteEditor({
           sessionData = await response.json()
         }
         if (sessionData) {
-          setVisitSession(prev => ({ ...prev, ...sessionData }))
+          setVisitSession((prev) => ({ ...prev, ...sessionData }))
         }
         if (!hasEverStarted) {
           setHasEverStarted(true)
@@ -3376,9 +2989,7 @@ export function NoteEditor({
           setVisitError("Microphone access is required for live transcription.")
         }
       } catch (error) {
-        setVisitError(
-          error instanceof Error ? error.message : "Unable to start visit"
-        )
+        setVisitError(error instanceof Error ? error.message : "Unable to start visit")
         stopAudioStream()
         setVisitStarted(false)
       } finally {
@@ -3390,12 +3001,12 @@ export function NoteEditor({
         if (visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "paused" }
+            jsonBody: { session_id: visitSession.sessionId, action: "paused" },
           })
           if (response.ok) {
             const data = await response.json().catch(() => null)
             if (data) {
-              setVisitSession(prev => ({ ...prev, ...data }))
+              setVisitSession((prev) => ({ ...prev, ...data }))
             }
           }
         }
@@ -3422,7 +3033,7 @@ export function NoteEditor({
     startAudioStream,
     stopAudioStream,
     currentSessionTime,
-    isFinalized
+    isFinalized,
   ])
 
   return (
@@ -3448,52 +3059,34 @@ export function NoteEditor({
                   onMouseEnter={openPatientDropdown}
                   onMouseLeave={scheduleClosePatientDropdown}
                 >
-                  {patientSuggestions.map(suggestion => {
+                  {patientSuggestions.map((suggestion) => {
                     const descriptionParts = [
                       suggestion.name ?? [suggestion.firstName, suggestion.lastName].filter(Boolean).join(" "),
                       suggestion.dob ? `DOB: ${suggestion.dob}` : null,
-                      suggestion.mrn ? `MRN: ${suggestion.mrn}` : null
+                      suggestion.mrn ? `MRN: ${suggestion.mrn}` : null,
                     ].filter(Boolean)
                     return (
                       <button
                         key={`${suggestion.source}-${suggestion.patientId}`}
                         type="button"
                         className="flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left hover:bg-muted"
-                        onMouseDown={event => {
+                        onMouseDown={(event) => {
                           event.preventDefault()
                           handleSelectPatient(suggestion)
                         }}
                       >
-                        <span className="text-sm font-medium text-foreground">
-                          {suggestion.patientId}
-                        </span>
-                        {descriptionParts.length > 0 && (
-                          <span className="text-xs text-muted-foreground">
-                            {descriptionParts.join(" • ")}
-                          </span>
-                        )}
-                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
-                          {suggestion.source === "local" ? "Internal" : "External"}
-                        </span>
+                        <span className="text-sm font-medium text-foreground">{suggestion.patientId}</span>
+                        {descriptionParts.length > 0 && <span className="text-xs text-muted-foreground">{descriptionParts.join(" • ")}</span>}
+                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">{suggestion.source === "local" ? "Internal" : "External"}</span>
                       </button>
                     )
                   })}
-                  {patientSearchLoading && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground">
-                      Searching...
-                    </div>
-                  )}
-                  {!patientSearchLoading && patientSuggestions.length === 0 && (
-                    <div className="px-3 py-2 text-xs text-muted-foreground">
-                      No patients found
-                    </div>
-                  )}
+                  {patientSearchLoading && <div className="px-3 py-2 text-xs text-muted-foreground">Searching...</div>}
+                  {!patientSearchLoading && patientSuggestions.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">No patients found</div>}
                 </div>
               )}
             </div>
-            {patientSearchError && (
-              <p className="text-xs text-destructive">{patientSearchError}</p>
-            )}
+            {patientSearchError && <p className="text-xs text-destructive">{patientSearchError}</p>}
             {selectedPatient && (
               <p className="text-xs text-muted-foreground">
                 Selected: {selectedPatient.name || `${selectedPatient.firstName ?? ""} ${selectedPatient.lastName ?? ""}`.trim() || selectedPatient.patientId}
@@ -3503,24 +3096,13 @@ export function NoteEditor({
 
           <div className="grid w-full max-w-sm items-center gap-1.5">
             <Label htmlFor="encounter-id">Encounter ID</Label>
-            <Input
-              id="encounter-id"
-              value={encounterId}
-              onChange={(e) => setEncounterId(e.target.value)}
-              placeholder="Enter Encounter ID"
-            />
-            {encounterValidation.status === 'loading' && (
-              <p className="text-xs text-muted-foreground">Validating encounter…</p>
-            )}
-            {encounterValidation.status === 'valid' && encounterValidation.message && (
-              <p className="text-xs text-emerald-600">{encounterValidation.message}</p>
-            )}
-            {encounterValidation.status === 'invalid' && encounterValidation.message && (
-              <p className="text-xs text-destructive">{encounterValidation.message}</p>
-            )}
+            <Input id="encounter-id" value={encounterId} onChange={(e) => setEncounterId(e.target.value)} placeholder="Enter Encounter ID" />
+            {encounterValidation.status === "loading" && <p className="text-xs text-muted-foreground">Validating encounter…</p>}
+            {encounterValidation.status === "valid" && encounterValidation.message && <p className="text-xs text-emerald-600">{encounterValidation.message}</p>}
+            {encounterValidation.status === "invalid" && encounterValidation.message && <p className="text-xs text-destructive">{encounterValidation.message}</p>}
           </div>
         </div>
-        
+
         <div className="flex flex-wrap gap-3 items-center">
           {/* Primary Actions */}
           <TooltipProvider>
@@ -3533,24 +3115,14 @@ export function NoteEditor({
                   disabled={finalizeButtonDisabled}
                   className={`shadow-sm ${
                     isFinalized
-                      ? 'bg-emerald-600/10 text-emerald-700 cursor-default'
+                      ? "bg-emerald-600/10 text-emerald-700 cursor-default"
                       : finalizeButtonDisabled
-                        ? 'bg-muted text-muted-foreground cursor-not-allowed'
-                        : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                        ? "bg-muted text-muted-foreground cursor-not-allowed"
+                        : "bg-primary hover:bg-primary/90 text-primary-foreground"
                   }`}
                 >
-                  {isFinalized ? (
-                    <CheckCircle className="w-4 h-4 mr-2" />
-                  ) : hasActiveIssues ? (
-                    <AlertTriangle className="w-4 h-4 mr-2" />
-                  ) : (
-                    <CheckCircle className="w-4 h-4 mr-2" />
-                  )}
-                  {isFinalized
-                    ? 'Note Finalized'
-                    : hasActiveIssues
-                      ? 'Issues Must Be Resolved'
-                      : 'Save & Finalize Note'}
+                  {isFinalized ? <CheckCircle className="w-4 h-4 mr-2" /> : hasActiveIssues ? <AlertTriangle className="w-4 h-4 mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
+                  {isFinalized ? "Note Finalized" : hasActiveIssues ? "Issues Must Be Resolved" : "Save & Finalize Note"}
                 </Button>
               </TooltipTrigger>
               {(hasActiveIssues || isFinalized) && (
@@ -3561,11 +3133,11 @@ export function NoteEditor({
                     ) : (
                       <>
                         <div className="font-medium text-sm text-foreground">
-                          {activeIssues.length} compliance issue{activeIssues.length !== 1 ? 's' : ''} must be resolved
+                          {activeIssues.length} compliance issue{activeIssues.length !== 1 ? "s" : ""} must be resolved
                         </div>
                         {hasCriticalIssues && (
                           <div>
-                            {criticalIssues.length} critical issue{criticalIssues.length !== 1 ? 's' : ''} requiring attention
+                            {criticalIssues.length} critical issue{criticalIssues.length !== 1 ? "s" : ""} requiring attention
                           </div>
                         )}
                       </>
@@ -3575,7 +3147,7 @@ export function NoteEditor({
               )}
             </Tooltip>
           </TooltipProvider>
-          
+
           <Button
             variant="outline"
             onClick={() => {
@@ -3584,11 +3156,7 @@ export function NoteEditor({
             disabled={!hasRecordedTime || saveDraftLoading || isFinalized}
             className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
           >
-            {saveDraftLoading ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4 mr-2" />
-            )}
+            {saveDraftLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
             {saveDraftLoading ? "Saving Draft…" : "Save Draft & Exit"}
           </Button>
           {saveDraftError && (
@@ -3605,8 +3173,7 @@ export function NoteEditor({
             ) : lastAutoSaveTime ? (
               <span>
                 Auto-saved
-                {lastAutoSaveVersion != null ? ` (v${lastAutoSaveVersion})` : ""}{" "}
-                {new Date(lastAutoSaveTime).toLocaleTimeString()}
+                {lastAutoSaveVersion != null ? ` (v${lastAutoSaveVersion})` : ""} {new Date(lastAutoSaveTime).toLocaleTimeString()}
               </span>
             ) : (
               <span>Auto-save pending</span>
@@ -3640,67 +3207,49 @@ export function NoteEditor({
               )}
             </Button>
 
-            {visitError && (
-              <p className="text-xs text-destructive">{visitError}</p>
-            )}
+            {visitError && <p className="text-xs text-destructive">{visitError}</p>}
 
             {/* Show indicators when visit has ever been started */}
             {hasEverStarted && (
               <div className="flex items-center gap-3 text-destructive">
                 <div className="flex items-center gap-1">
                   <Clock className="w-4 h-4" />
-                  <span className="text-sm font-mono font-medium min-w-[3rem] tabular-nums">
-                    {formatTime(totalDisplayTime)}
-                  </span>
+                  <span className="text-sm font-mono font-medium min-w-[3rem] tabular-nums">{formatTime(totalDisplayTime)}</span>
                 </div>
-                
+
                 {/* Audio Wave Animation - show when visit has ever been started */}
                 {hasEverStarted && (
                   <>
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <div
-                            className="flex items-center gap-0.5 h-6 cursor-pointer"
-                            onClick={() => setShowFullTranscript(true)}
-                          >
+                          <div className="flex items-center gap-0.5 h-6 cursor-pointer" onClick={() => setShowFullTranscript(true)}>
                             {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
                               <div
                                 key={i}
-                                className={`w-0.5 rounded-full ${isRecording ? 'bg-destructive' : 'bg-muted-foreground'}`}
+                                className={`w-0.5 rounded-full ${isRecording ? "bg-destructive" : "bg-muted-foreground"}`}
                                 style={{
                                   height: isRecording ? `${8 + (i % 4) * 3}px` : `${6 + (i % 3) * 2}px`,
-                                  animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : 'none',
-                                  animationDelay: isRecording ? `${i * 0.1}s` : '0s'
+                                  animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : "none",
+                                  animationDelay: isRecording ? `${i * 0.1}s` : "0s",
                                 }}
                               />
                             ))}
                           </div>
                         </TooltipTrigger>
-                        <TooltipContent
-                          side="bottom"
-                          align="center"
-                          className="max-w-sm p-3 bg-popover border-border"
-                        >
+                        <TooltipContent side="bottom" align="center" className="max-w-sm p-3 bg-popover border-border">
                           <div className="space-y-1">
                             <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
-                              <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? 'bg-destructive animate-pulse' : 'bg-muted-foreground'}`}></div>
-                              {isRecording ? 'Live Transcription Preview' : 'Transcription Preview (Paused)'}
+                              <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? "bg-destructive animate-pulse" : "bg-muted-foreground"}`}></div>
+                              {isRecording ? "Live Transcription Preview" : "Transcription Preview (Paused)"}
                             </div>
                             <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-1">
                               {recentTranscription.map((entry, index) => (
                                 <div
                                   key={entry.id}
-                                  className={`text-xs leading-relaxed ${
-                                    index === recentTranscription.length - 1
-                                      ? 'text-foreground font-medium'
-                                      : 'text-muted-foreground'
-                                  }`}
+                                  className={`text-xs leading-relaxed ${index === recentTranscription.length - 1 ? "text-foreground font-medium" : "text-muted-foreground"}`}
                                   style={{
-                                    opacity:
-                                      index === recentTranscription.length - 1
-                                        ? 1
-                                        : 0.7 - index * 0.2
+                                    opacity: index === recentTranscription.length - 1 ? 1 : 0.7 - index * 0.2,
                                   }}
                                 >
                                   {entry.text}
@@ -3709,19 +3258,13 @@ export function NoteEditor({
                             </div>
                             <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border">
                               Click audio wave to view full transcript
-                              {!isRecording && (
-                                <div className="mt-1 text-muted-foreground/80">
-                                  Recording paused - transcript available
-                                </div>
-                              )}
+                              {!isRecording && <div className="mt-1 text-muted-foreground/80">Recording paused - transcript available</div>}
                             </div>
                           </div>
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
-                    {transcriptionError && (
-                      <p className="text-xs text-destructive">{transcriptionError}</p>
-                    )}
+                    {transcriptionError && <p className="text-xs text-destructive">{transcriptionError}</p>}
                   </>
                 )}
               </div>
@@ -3729,25 +3272,16 @@ export function NoteEditor({
           </div>
         </div>
       </div>
-      
 
       {/* Draft Editor & Beautified Preview */}
       <div className="flex min-h-0 flex-1 flex-col">
-        <Tabs
-          value={activeViewMode}
-          onValueChange={(value) => setActiveViewMode(value as NoteViewMode)}
-          className="flex min-h-0 flex-1 flex-col"
-        >
+        <Tabs value={activeViewMode} onValueChange={(value) => setActiveViewMode(value as NoteViewMode)} className="flex min-h-0 flex-1 flex-col">
           <div className="px-4 pb-3">
             <TabsList>
               <TabsTrigger value="draft">Draft</TabsTrigger>
               <TabsTrigger value="beautified" disabled={!noteContent.trim()}>
                 Beautified
-                {currentBeautifiedState?.isStale && (
-                  <span className="ml-2 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                    Stale
-                  </span>
-                )}
+                {currentBeautifiedState?.isStale && <span className="ml-2 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-700">Stale</span>}
               </TabsTrigger>
             </TabsList>
           </div>
@@ -3764,14 +3298,10 @@ export function NoteEditor({
                   if (onNoteContentChange) {
                     onNoteContentChange(content)
                   }
-                  if (
-                    beautifiedStateRef.current &&
-                    !beautifiedStateRef.current.isStale &&
-                    beautifiedStateRef.current.noteContent !== content
-                  ) {
+                  if (beautifiedStateRef.current && !beautifiedStateRef.current.isStale && beautifiedStateRef.current.noteContent !== content) {
                     const nextBeautified: BeautifyResultState = {
                       ...beautifiedStateRef.current,
-                      isStale: true
+                      isStale: true,
                     }
                     setBeautifiedState(nextBeautified)
                   }
@@ -3800,7 +3330,6 @@ export function NoteEditor({
             />
           </TabsContent>
         </Tabs>
-
       </div>
 
       {/* Full Transcript Modal */}
@@ -3810,9 +3339,7 @@ export function NoteEditor({
             <div className="space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <DialogTitle className="text-lg font-medium">Full Transcript</DialogTitle>
-                <DialogDescription className="sr-only">
-                  Real-time transcription of your patient encounter showing the complete conversation history.
-                </DialogDescription>
+                <DialogDescription className="sr-only">Real-time transcription of your patient encounter showing the complete conversation history.</DialogDescription>
                 <div className="flex items-center gap-2">
                   {isRecording ? (
                     <>
@@ -3831,29 +3358,25 @@ export function NoteEditor({
                     </>
                   )}
                 </div>
-                <div className={`flex items-center gap-1 text-sm ${isRecording ? 'text-destructive' : 'text-muted-foreground'}`}>
+                <div className={`flex items-center gap-1 text-sm ${isRecording ? "text-destructive" : "text-muted-foreground"}`}>
                   <Clock className="w-4 h-4" />
-                  <span className="font-mono tabular-nums">
-                    {formatTime(totalDisplayTime)}
-                  </span>
+                  <span className="font-mono tabular-nums">{formatTime(totalDisplayTime)}</span>
                 </div>
               </div>
             </div>
           </DialogHeader>
-          
+
           <ScrollArea className="flex-1 min-h-0">
             <div className="p-6 space-y-4">
               <div className="text-sm text-muted-foreground mb-4">
-                {isRecording 
+                {isRecording
                   ? "Real-time transcription of your patient encounter. The transcript updates automatically as the conversation continues."
-                  : "Transcription of your patient encounter. Recording is currently paused - click 'Start Visit' to resume recording and live transcription."
-                }
+                  : "Transcription of your patient encounter. Recording is currently paused - click 'Start Visit' to resume recording and live transcription."}
               </div>
-              
+
               <div className="space-y-3">
                 {transcriptEntries.map((entry, index) => {
-                  const isRecent =
-                    index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
+                  const isRecent = index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
                   const isCurrent = index === transcriptionIndex && isRecording
                   const rawText = entry.text ?? ""
                   let speakerLabel = entry.speaker?.trim()
@@ -3876,28 +3399,16 @@ export function NoteEditor({
                     <div
                       key={entry.id}
                       className={`flex gap-3 p-3 rounded-lg transition-all duration-300 ${
-                        isCurrent
-                          ? 'bg-destructive/10 border border-destructive/20 shadow-sm'
-                          : isRecent
-                            ? 'bg-accent/50'
-                            : 'bg-muted/30'
+                        isCurrent ? "bg-destructive/10 border border-destructive/20 shadow-sm" : isRecent ? "bg-accent/50" : "bg-muted/30"
                       }`}
                       style={{
-                        opacity: index <= transcriptionIndex ? 1 : 0.4
+                        opacity: index <= transcriptionIndex ? 1 : 0.4,
                       }}
                     >
-                      <div className={`font-medium text-sm min-w-16 ${
-                        speakerLabel.toLowerCase() === 'doctor' ? 'text-primary' : 'text-blue-600'
-                      }`}>
-                        {speakerLabel}:
-                      </div>
-                      <div className={`text-sm leading-relaxed flex-1 ${
-                        isCurrent ? 'font-medium' : ''
-                      }`}>
+                      <div className={`font-medium text-sm min-w-16 ${speakerLabel.toLowerCase() === "doctor" ? "text-primary" : "text-blue-600"}`}>{speakerLabel}:</div>
+                      <div className={`text-sm leading-relaxed flex-1 ${isCurrent ? "font-medium" : ""}`}>
                         {content}
-                        {isCurrent && isRecording && (
-                          <span className="inline-block w-2 h-4 bg-destructive ml-1 animate-pulse"></span>
-                        )}
+                        {isCurrent && isRecording && <span className="inline-block w-2 h-4 bg-destructive ml-1 animate-pulse"></span>}
                       </div>
                     </div>
                   )
@@ -3908,7 +3419,7 @@ export function NoteEditor({
                   </div>
                 )}
               </div>
-              
+
               {isRecording && (
                 <div className="text-center py-4">
                   <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -3919,7 +3430,7 @@ export function NoteEditor({
               )}
             </div>
           </ScrollArea>
-          
+
           <div className="border-t border-border p-4 bg-muted/30 shrink-0">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <div>
@@ -3927,9 +3438,7 @@ export function NoteEditor({
               </div>
               <div className="flex items-center gap-4">
                 <div>Words: {totalTranscriptWords.toLocaleString()}</div>
-                <div>
-                  Confidence: {averageConfidencePercent !== null ? `${averageConfidencePercent}%` : 'N/A'}
-                </div>
+                <div>Confidence: {averageConfidencePercent !== null ? `${averageConfidencePercent}%` : "N/A"}</div>
               </div>
             </div>
           </div>

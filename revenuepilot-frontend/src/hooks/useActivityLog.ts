@@ -3,13 +3,7 @@ import type { DateRange } from "react-day-picker"
 
 import { apiFetchJson } from "../lib/api"
 
-export type ActivityCategory =
-  | "documentation"
-  | "schedule"
-  | "settings"
-  | "auth"
-  | "system"
-  | "backend"
+export type ActivityCategory = "documentation" | "schedule" | "settings" | "auth" | "system" | "backend"
 
 export type ActivitySeverity = "info" | "warning" | "error" | "success"
 
@@ -41,14 +35,7 @@ interface ApiActivityLogResponse {
   count?: number
 }
 
-const KNOWN_CATEGORIES: ActivityCategory[] = [
-  "documentation",
-  "schedule",
-  "settings",
-  "auth",
-  "system",
-  "backend"
-]
+const KNOWN_CATEGORIES: ActivityCategory[] = ["documentation", "schedule", "settings", "auth", "system", "backend"]
 
 const KNOWN_SEVERITIES: ActivitySeverity[] = ["info", "warning", "error", "success"]
 
@@ -87,11 +74,7 @@ const normalizeUserName = (username?: string | null): { id: string; name: string
   return { id: "system", name: "System" }
 }
 
-const pickCategory = (
-  action: string,
-  username: string | null | undefined,
-  details: Record<string, unknown> | undefined
-): ActivityCategory => {
+const pickCategory = (action: string, username: string | null | undefined, details: Record<string, unknown> | undefined): ActivityCategory => {
   const detailCategory = details?.category
   if (typeof detailCategory === "string" && (KNOWN_CATEGORIES as string[]).includes(detailCategory)) {
     return detailCategory as ActivityCategory
@@ -113,13 +96,7 @@ const pickCategory = (
   if (actionText.includes("setting") || actionText.includes("config") || path.includes("settings")) {
     return "settings"
   }
-  if (
-    actionText.includes("login") ||
-    actionText.includes("logout") ||
-    actionText.includes("auth") ||
-    actionText.includes("token") ||
-    actionText.includes("register")
-  ) {
+  if (actionText.includes("login") || actionText.includes("logout") || actionText.includes("auth") || actionText.includes("token") || actionText.includes("register")) {
     return "auth"
   }
   if (path.includes("schedule")) {
@@ -141,14 +118,7 @@ const pickSeverity = (action: string, details: Record<string, unknown> | undefin
   const actionLower = action.toLowerCase()
   const status = typeof details?.status === "string" ? details.status.toLowerCase() : ""
 
-  if (
-    actionLower.includes("fail") ||
-    actionLower.includes("error") ||
-    actionLower.includes("denied") ||
-    actionLower.includes("invalid") ||
-    status.includes("fail") ||
-    status.includes("error")
-  ) {
+  if (actionLower.includes("fail") || actionLower.includes("error") || actionLower.includes("denied") || actionLower.includes("invalid") || status.includes("fail") || status.includes("error")) {
     return "error"
   }
 
@@ -234,7 +204,7 @@ const mapActivityEntry = (entry: ApiActivityLogEntry): ActivityEntry => {
     severity,
     details,
     ipAddress: typeof details?.client === "string" ? details.client : undefined,
-    userAgent: typeof details?.userAgent === "string" ? details.userAgent : undefined
+    userAgent: typeof details?.userAgent === "string" ? details.userAgent : undefined,
   }
 }
 
@@ -249,7 +219,7 @@ const fetchActivityPages = async (signal?: AbortSignal): Promise<ActivityEntry[]
     }
 
     const response = await apiFetchJson<ApiActivityLogResponse>(`/api/activity/log?${params.toString()}`, {
-      signal
+      signal,
     })
 
     if (!response) {
@@ -322,23 +292,13 @@ const matchesSearch = (entry: ActivityEntry, term: string) => {
     return true
   }
 
-  const haystack = [
-    entry.action,
-    entry.description,
-    entry.userName,
-    entry.category,
-    entry.severity,
-    entry.details ? JSON.stringify(entry.details) : ""
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
+  const haystack = [entry.action, entry.description, entry.userName, entry.category, entry.severity, entry.details ? JSON.stringify(entry.details) : ""].filter(Boolean).join(" ").toLowerCase()
 
   return haystack.includes(search)
 }
 
 const applyFilters = (entries: ActivityEntry[], filters: ActivityLogFilters) => {
-  return entries.filter(entry => {
+  return entries.filter((entry) => {
     if (!filters.includeBackend && entry.category === "backend") {
       return false
     }
@@ -373,10 +333,7 @@ const normalizeError = (error: unknown): string => {
   return "Unable to load activity log"
 }
 
-export function useActivityLog(
-  filters: ActivityLogFilters,
-  { pollIntervalMs = 60_000 }: { pollIntervalMs?: number } = {}
-): UseActivityLogResult {
+export function useActivityLog(filters: ActivityLogFilters, { pollIntervalMs = 60_000 }: { pollIntervalMs?: number } = {}): UseActivityLogResult {
   const [rawEntries, setRawEntries] = useState<ActivityEntry[]>([])
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
@@ -446,7 +403,6 @@ export function useActivityLog(
     loading,
     error,
     refresh,
-    lastUpdated: lastUpdatedRef.current
+    lastUpdated: lastUpdatedRef.current,
   }
 }
-

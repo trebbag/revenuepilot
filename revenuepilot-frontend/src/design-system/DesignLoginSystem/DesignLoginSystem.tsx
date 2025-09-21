@@ -24,13 +24,7 @@ function detectOffline(): boolean {
   return !navigator.onLine
 }
 
-export function DesignLoginSystem({
-  api,
-  initialView = "login",
-  multiTenant = false,
-  enableOfflineMode = true,
-  hasOfflineSession = false
-}: DesignLoginSystemProps) {
+export function DesignLoginSystem({ api, initialView = "login", multiTenant = false, enableOfflineMode = true, hasOfflineSession = false }: DesignLoginSystemProps) {
   const { refresh } = useAuth()
   const [view, setView] = useState<View>(initialView)
   const [isOffline, setIsOffline] = useState(() => (enableOfflineMode ? detectOffline() : false))
