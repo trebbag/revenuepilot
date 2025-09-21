@@ -1,4 +1,4 @@
-import { apiFetch } from "../../lib/api"
+import { apiFetch, extractAuthTokens } from "../../lib/api"
 import {
   DesignLoginSystemApi,
   DesignLoginSystemError,
@@ -16,27 +16,6 @@ function normalizeString(value: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
-}
-
-interface TokenBundle {
-  accessToken: string | null
-  refreshToken: string | null
-}
-
-function extractTokens(payload: unknown): TokenBundle {
-  if (!isRecord(payload)) {
-    return { accessToken: null, refreshToken: null }
-  }
-
-  const accessToken =
-    normalizeString(payload.accessToken) ||
-    normalizeString(payload.access_token) ||
-    normalizeString(payload.token)
-  const refreshToken =
-    normalizeString(payload.refreshToken) ||
-    normalizeString(payload.refresh_token)
-
-  return { accessToken: accessToken || null, refreshToken: refreshToken || null }
 }
 
 function mapLoginError(status: number, payload: unknown): DesignLoginSystemError {
@@ -146,7 +125,7 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         }
       }
 
-      const tokens = extractTokens(data)
+      const tokens = extractAuthTokens(data)
       const result: LoginSuccessResult = {
         type: "success",
         accessToken: tokens.accessToken ?? "",
@@ -174,7 +153,7 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         throw mapLoginError(response.status, data)
       }
 
-      const tokens = extractTokens(data)
+      const tokens = extractAuthTokens(data)
       const result: LoginSuccessResult = {
         type: "success",
         accessToken: tokens.accessToken ?? "",
