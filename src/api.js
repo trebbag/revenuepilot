@@ -54,6 +54,17 @@ const TEMPLATE_CACHE_KEY = 'cache.templates';
 const NOTE_CACHE_KEY = 'cache.recentNotes';
 const CODE_CACHE_KEY = 'cache.codes';
 const OFFLINE_QUEUE_KEY = 'cache.pendingOps';
+const PATIENT_SEARCH_CACHE_LIMIT = 50;
+const PATIENT_SEARCH_CACHE_TTL = 60 * 1000; // 1 minute
+const ENCOUNTER_CACHE_LIMIT = 50;
+const ENCOUNTER_CACHE_TTL = 60 * 1000; // 1 minute
+const PATIENT_SEARCH_DEBOUNCE = 200;
+const ENCOUNTER_VALIDATE_DEBOUNCE = 180;
+
+const patientSearchCache = new Map();
+const patientSearchInflight = new Map();
+const encounterValidationCache = new Map();
+const encounterValidationInflight = new Map();
 
 function loadCache(key, fallback) {
   try {
@@ -70,6 +81,34 @@ function saveCache(key, data) {
   } catch {
     /* ignore */
   }
+}
+
+function getAuthHeader(extra = {}) {
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  if (!token) return { ...extra };
+  return { ...extra, Authorization: `Bearer ${token}` };
+}
+
+function rememberCacheEntry(map, limit, key, value) {
+  map.set(key, { ts: Date.now(), value });
+  if (map.size <= limit) return;
+  const keys = map.keys();
+  while (map.size > limit) {
+    const oldestKey = keys.next().value;
+    if (typeof oldestKey === 'undefined') break;
+    map.delete(oldestKey);
+  }
+}
+
+function readCacheEntry(map, ttl, key) {
+  const entry = map.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > ttl) {
+    map.delete(key);
+    return null;
+  }
+  return entry.value;
 }
 
 function enqueueOffline(op) {
@@ -1309,6 +1348,200 @@ export async function getCodeDetails(codes = []) {
     const cache = getCachedCodes();
     return codes.map((c) => cache[c]).filter(Boolean);
   }
+}
+
+function normalizePagination(data, fallback) {
+  if (!data || typeof data !== 'object') return fallback;
+  const obj = { ...fallback };
+  for (const key of ['limit', 'offset', 'returned', 'total', 'hasMore']) {
+    if (Object.prototype.hasOwnProperty.call(data, key)) obj[key] = data[key];
+  }
+  if (typeof data.query === 'string') obj.query = data.query;
+  return obj;
+}
+
+function buildEmptyPatientResult(term, limit, offset) {
+  return {
+    patients: [],
+    externalPatients: [],
+    pagination: {
+      query: term,
+      limit,
+      offset,
+      returned: 0,
+      total: 0,
+      hasMore: false,
+    },
+  };
+}
+
+export async function searchPatients(query, opts = {}) {
+  const limit =
+    typeof opts.limit === 'number' && opts.limit > 0 ? opts.limit : 25;
+  const offset =
+    typeof opts.offset === 'number' && opts.offset >= 0 ? opts.offset : 0;
+  const term = (query || '').trim();
+  if (!term) {
+    return buildEmptyPatientResult('', limit, offset);
+  }
+  if (term.length < 2) {
+    return buildEmptyPatientResult(term, limit, offset);
+  }
+  const key = `${term.toLowerCase()}|${limit}|${offset}`;
+  const cached = readCacheEntry(
+    patientSearchCache,
+    PATIENT_SEARCH_CACHE_TTL,
+    key,
+  );
+  if (cached) return cached;
+  if (patientSearchInflight.has(key)) {
+    return patientSearchInflight.get(key);
+  }
+
+  const baseUrl = resolveBaseUrl();
+  const params = new URLSearchParams();
+  params.set('q', term);
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  const headers = getAuthHeader();
+
+  const fetchPromise = new Promise((resolve) => {
+    const delay =
+      typeof opts.debounceMs === 'number' && opts.debounceMs >= 0
+        ? opts.debounceMs
+        : PATIENT_SEARCH_DEBOUNCE;
+    setTimeout(async () => {
+      try {
+        const resp = await fetch(
+          `${baseUrl}/api/patients/search?${params.toString()}`,
+          {
+            method: 'GET',
+            headers,
+          },
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const result = {
+          patients: Array.isArray(data?.patients) ? data.patients : [],
+          externalPatients: Array.isArray(data?.externalPatients)
+            ? data.externalPatients
+            : [],
+          pagination: normalizePagination(data?.pagination, {
+            query: term,
+            limit,
+            offset,
+            returned: Array.isArray(data?.patients)
+              ? data.patients.length
+              : 0,
+            total:
+              typeof data?.pagination?.total === 'number'
+                ? data.pagination.total
+                : 0,
+            hasMore: Boolean(data?.pagination?.hasMore),
+          }),
+        };
+        rememberCacheEntry(
+          patientSearchCache,
+          PATIENT_SEARCH_CACHE_LIMIT,
+          key,
+          result,
+        );
+        resolve(result);
+      } catch (err) {
+        console.error('Patient search failed', err);
+        resolve(buildEmptyPatientResult(term, limit, offset));
+      }
+    }, delay);
+  });
+
+  patientSearchInflight.set(key, fetchPromise);
+  fetchPromise.finally(() => {
+    patientSearchInflight.delete(key);
+  });
+  return fetchPromise;
+}
+
+export async function validateEncounter(encounterId, patientId = '', opts = {}) {
+  const normalizedEncounter = (() => {
+    if (typeof encounterId === 'number') return encounterId.toString();
+    if (!encounterId) return '';
+    return String(encounterId).trim();
+  })();
+  if (!normalizedEncounter) {
+    return {
+      valid: false,
+      errors: [],
+      encounterId: '',
+    };
+  }
+  const normalizedPatient = patientId ? String(patientId).trim() : '';
+  const cacheKey = `${normalizedEncounter}|${normalizedPatient}`;
+  const cached = readCacheEntry(
+    encounterValidationCache,
+    ENCOUNTER_CACHE_TTL,
+    cacheKey,
+  );
+  if (cached) return cached;
+  if (encounterValidationInflight.has(cacheKey)) {
+    return encounterValidationInflight.get(cacheKey);
+  }
+
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const payload = { encounterId: normalizedEncounter };
+  if (normalizedPatient) payload.patientId = normalizedPatient;
+
+  const fetchPromise = new Promise((resolve) => {
+    const delay =
+      typeof opts.debounceMs === 'number' && opts.debounceMs >= 0
+        ? opts.debounceMs
+        : ENCOUNTER_VALIDATE_DEBOUNCE;
+    setTimeout(async () => {
+      try {
+        const resp = await fetch(`${baseUrl}/api/encounters/validate`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+        if (!resp.ok) {
+          let detail = `HTTP ${resp.status}`;
+          try {
+            const err = await resp.json();
+            detail = err?.detail || err?.message || detail;
+          } catch {
+            /* ignore */
+          }
+          throw new Error(detail);
+        }
+        const data = await resp.json();
+        const result = {
+          ...data,
+          encounterId:
+            data?.encounterId ?? data?.encounter_id ?? normalizedEncounter,
+        };
+        rememberCacheEntry(
+          encounterValidationCache,
+          ENCOUNTER_CACHE_LIMIT,
+          cacheKey,
+          result,
+        );
+        resolve(result);
+      } catch (err) {
+        console.error('Encounter validation failed', err);
+        resolve({
+          valid: false,
+          errors: [err?.message || 'Unable to validate encounter'],
+          encounterId: normalizedEncounter,
+        });
+      }
+    }, delay);
+  });
+
+  encounterValidationInflight.set(cacheKey, fetchPromise);
+  fetchPromise.finally(() => {
+    encounterValidationInflight.delete(cacheKey);
+  });
+  return fetchPromise;
 }
 
 /**

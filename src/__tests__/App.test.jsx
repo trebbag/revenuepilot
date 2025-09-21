@@ -24,6 +24,14 @@ vi.mock('../api.js', () => ({
     .mockResolvedValue({ codes: [], compliance: [], publicHealth: [], differentials: [], followUp: null }),
 
   getTemplates: vi.fn().mockResolvedValue([]),
+  searchPatients: vi
+    .fn()
+    .mockResolvedValue({
+      patients: [],
+      externalPatients: [],
+      pagination: { query: '', limit: 25, offset: 0, returned: 0, total: 0, hasMore: false },
+    }),
+  validateEncounter: vi.fn().mockResolvedValue({ valid: true, encounterId: '1' }),
 
 }));
 
@@ -35,8 +43,8 @@ beforeEach(() => {
 });
 
 test('renders login form when no token', () => {
-  const { getByLabelText } = render(<App />);
-  expect(getByLabelText(/username/i)).toBeTruthy();
+  const { getByRole } = render(<App />);
+  expect(getByRole('textbox', { name: /^username$/i })).toBeTruthy();
 });
 
 test('renders main app when token present', async () => {

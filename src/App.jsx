@@ -104,9 +104,28 @@ function App() {
   // Ref for the hidden chart file input
   const fileInputRef = useRef(null);
 
-  // Track the current patient ID for draft saving
-  const [patientID, setPatientID] = useState('');
-  const [encounterID, setEncounterID] = useState('');
+  // Track the current patient and encounter identifiers for draft saving
+  const [patientID, setPatientID] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const stored = localStorage.getItem('currentPatientId');
+      if (!stored || stored === 'null' || stored === 'undefined') return '';
+      return stored;
+    } catch {
+      return '';
+    }
+  });
+  const [encounterID, setEncounterID] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const stored = localStorage.getItem('currentEncounterId');
+      if (!stored || stored === 'null' || stored === 'undefined') return '';
+      return stored;
+    } catch {
+      return '';
+    }
+  });
+  const prevPatientSelectionRef = useRef(patientID);
   const [noteId, setNoteId] = useState(null);
   const noteCreateInFlightRef = useRef(false);
 
@@ -123,6 +142,39 @@ function App() {
     }
     prevDraftRef.current = draftText;
   }, [draftText, patientID]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (patientID) localStorage.setItem('currentPatientId', patientID);
+      else localStorage.removeItem('currentPatientId');
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [patientID]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (encounterID) localStorage.setItem('currentEncounterId', encounterID);
+      else localStorage.removeItem('currentEncounterId');
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [encounterID]);
+
+  useEffect(() => {
+    if (!patientID) {
+      if (encounterID) setEncounterID('');
+      prevPatientSelectionRef.current = '';
+      return;
+    }
+    const previous = prevPatientSelectionRef.current;
+    if (previous && previous !== patientID && encounterID) {
+      setEncounterID('');
+    }
+    prevPatientSelectionRef.current = patientID;
+  }, [patientID, encounterID]);
 
   // Track whether the sidebar is collapsed
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -775,7 +827,9 @@ function App() {
                       payer={settingsState.payer}
                       settingsState={settingsState}
                       patientId={patientID}
+                      encounterId={encounterID}
                       onPatientIdChange={(v) => setPatientID(v)}
+                      onEncounterChange={(id) => setEncounterID(id)}
                       onSpecialtyChange={(v) => {
                         const merged = { ...settingsState, specialty: v };
                         setSettingsState(merged);
