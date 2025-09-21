@@ -83,6 +83,19 @@
     "none": "No hay borradores guardados.",
     "delete": "Eliminar borrador"
   },
+  "notifications": {
+    "title": "Notificaciones",
+    "loading": "Cargando notificaciones…",
+    "refresh": "Actualizar",
+    "refreshing": "Actualizando…",
+    "markAll": "Marcar todas como leídas",
+    "markRead": "Marcar como leída",
+    "read": "Leída",
+    "empty": "No hay notificaciones",
+    "error": "No se pueden cargar las notificaciones.",
+    "unreadCount": "{{count}} sin leer",
+    "untitled": "Notificación"
+  },
   "followUp": {
     "recommend": "Recomendar",
     "placeholder": "p. ej., 2 semanas"
@@ -185,6 +198,13 @@
     "specialtyPlaceholder": "p. ej. Medicina familiar",
     "payerPlaceholder": "p. ej. Blue Shield PPO",
     "payerHint": "Ajusta especialidad y pagador para adaptar plantillas y sugerencias."
+    "patientIdLabel": "ID de paciente",
+    "encounterIdLabel": "ID de encuentro",
+    "visitDuration": "Duración de la visita",
+    "visitSessionError": "No se pudo iniciar la sesión de visita",
+    "visitSessionActive": "Visita en curso",
+    "visitSessionPaused": "Visita en pausa",
+    "visitSessionComplete": "Visita finalizada"
   },
   "settings": {
     "title": "Configuración",
@@ -275,6 +295,7 @@
   "sidebar": {
     "notes": "Notas",
     "drafts": "Borradores",
+    "notifications": "Notificaciones",
     "analytics": "Analíticas",
     "logs": "Registros",
     "settings": "Configuración",

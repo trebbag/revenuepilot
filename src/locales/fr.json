@@ -83,6 +83,19 @@
     "none": "No drafts saved.",
     "delete": "Delete draft"
   },
+  "notifications": {
+    "title": "Notifications",
+    "loading": "Chargement des notifications…",
+    "refresh": "Actualiser",
+    "refreshing": "Actualisation…",
+    "markAll": "Tout marquer comme lu",
+    "markRead": "Marquer comme lu",
+    "read": "Lu",
+    "empty": "Aucune notification",
+    "error": "Impossible de charger les notifications.",
+    "unreadCount": "{{count}} non lues",
+    "untitled": "Notification"
+  },
   "followUp": {
     "recommend": "Recommend",
     "placeholder": "e.g., 2 weeks"
@@ -185,6 +198,13 @@
     "specialtyPlaceholder": "ex. Médecine générale",
     "payerPlaceholder": "ex. Blue Shield PPO",
     "payerHint": "Ajustez spécialité et payeur pour adapter modèles et suggestions."
+    "patientIdLabel": "ID patient",
+    "encounterIdLabel": "ID de consultation",
+    "visitDuration": "Durée de la visite",
+    "visitSessionError": "Impossible de démarrer la session de visite",
+    "visitSessionActive": "Visite en cours",
+    "visitSessionPaused": "Visite en pause",
+    "visitSessionComplete": "Visite terminée"
   },
   "settings": {
     "title": "Settings",
@@ -275,6 +295,7 @@
   "sidebar": {
     "notes": "Notes",
     "drafts": "Drafts",
+    "notifications": "Notifications",
     "analytics": "Analytics",
     "logs": "Logs",
     "settings": "Settings",
