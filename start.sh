@@ -29,6 +29,26 @@ if env in {"development", "dev", "local"}:
     key_manager.ensure_local_secret(
         "openai", "OPENAI_API_KEY", lambda: "sk-local-" + secrets.token_hex(16)
     )
+else:
+    failures = []
+    for name, env_var in key_manager.SECRET_ENV_MAPPING.items():
+        try:
+            key_manager.require_secret(
+                name,
+                env_var,
+                allow_fallback=False,
+                allow_missing_rotation=False,
+            )
+        except key_manager.SecretRotationError as exc:
+            failures.append(f"{env_var}: {exc}")
+        except key_manager.SecretError as exc:
+            failures.append(f"{env_var}: {exc}")
+    if failures:
+        details = "\n - ".join(failures)
+        raise SystemExit(
+            "Required secrets are missing or invalid. Provision them in the configured secrets backend before starting the stack:\n - "
+            + details
+        )
 PY
 
 echo "Starting backend (FastAPI) on port 8000..."
