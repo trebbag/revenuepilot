@@ -72,9 +72,11 @@ Use the helper script to launch FastAPI and the Vite frontend together.
 ./start.ps1           # Windows PowerShell
 ```
 
-The script runs `backend/venv/bin/uvicorn backend.main:app --reload` on
-port 8000, exports `VITE_API_URL` and starts the frontend dev server.
-Stopping the frontend terminates the backend process automatically.【F:start.sh†L1-L32】
+The script provisions local JWT and mock OpenAI secrets via the backend
+secrets manager, runs `backend/venv/bin/uvicorn backend.main:app
+--reload` on port 8000, exports `VITE_API_URL` and starts the frontend
+dev server. Stopping the frontend terminates the backend process
+automatically.【F:start.sh†L1-L48】
 
 For manual startup, activate the virtualenv and run the servers
 separately:
@@ -181,14 +183,20 @@ Key environment variables can be supplied via `.env` or exported before
 runtime:
 
 - `VITE_API_URL` – Frontend API base URL (set automatically by `start.sh`).
-- `OPENAI_API_KEY` – Backend OpenAI key, alternatively stored via
-  `/apikey` and `backend/openai_key.txt`.
+- `OPENAI_API_KEY` and `OPENAI_API_KEY_ROTATED_AT` – Backend OpenAI key
+  plus ISO-8601 rotation timestamp supplied by the external secrets
+  manager. `/apikey` persists development overrides through the secrets
+  repository.
 - `USE_OFFLINE_MODEL`, `USE_LOCAL_MODELS`, `LOCAL_*_MODEL` – Offline/local
   AI behaviour toggles.【F:backend/openai_client.py†L1-L117】
 - `FHIR_SERVER_URL` and related auth variables – Configure FHIR export
   destinations.【F:backend/ehr_integration.py†L30-L180】
-- `REVENUEPILOT_DB_PATH`, `JWT_SECRET`, `METRICS_LOOKBACK_DAYS` – Database
-  location, token signing secret and analytics retention window.【F:backend/main.py†L600-L760】
+- `REVENUEPILOT_DB_PATH`, `JWT_SECRET`, `JWT_SECRET_ROTATED_AT`,
+  `METRICS_LOOKBACK_DAYS` – Database location, token signing secret with
+  rotation metadata, and analytics retention window.【F:backend/main.py†L600-L760】
+- `SECRETS_BACKEND`, `SECRETS_FALLBACK`, `SECRET_MAX_AGE_DAYS` – Control
+  whether secrets are loaded from environment managers only or allow the
+  encrypted local fallback, and configure stale-secret enforcement.【F:backend/key_manager.py†L85-L230】
 
 See `docs/LOCAL_MODELS.md` for detailed offline model guidance and
 `docs/DESKTOP_BUILD.md` for packaging environment variables.
@@ -206,6 +214,13 @@ npm run update-server   # optional local auto-update feed
 The generated artifacts live in `dist/` and can be distributed per
 platform. Refer to [Desktop Build and Auto-Update Guide](DESKTOP_BUILD.md)
 for certificate management and smoke tests.【F:docs/DESKTOP_BUILD.md†L1-L80】
+
+Production deployments should source `OPENAI_API_KEY`, `JWT_SECRET` and
+other credentials from an external secrets manager (Vault, SSM, etc.)
+and provide the corresponding `*_ROTATED_AT` metadata so the backend can
+enforce rotation policies. Set `SECRETS_BACKEND=env` and leave
+`SECRETS_FALLBACK=never` in hosted environments; the development scripts
+only provision local fallbacks when `ENVIRONMENT` is a development value.【F:backend/key_manager.py†L85-L230】【F:start.sh†L1-L48】
 
 ## Additional references
 

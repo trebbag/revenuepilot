@@ -54,8 +54,21 @@ pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 deactivate
 
+cd "$SCRIPT_DIR"
+
+echo "Provisioning development secrets..."
+backend/venv/bin/python - <<'PY'
+import os
+import secrets
+
+from backend import key_manager
+
+os.environ.setdefault("ENVIRONMENT", "development")
+key_manager.ensure_local_secret("jwt", "JWT_SECRET", lambda: secrets.token_urlsafe(48))
+key_manager.ensure_local_secret(
+    "openai", "OPENAI_API_KEY", lambda: "sk-local-" + secrets.token_hex(16)
+)
+PY
+
 echo "Installation complete."
-echo "To start the backend server, run:"
-echo "  cd $(pwd) && source venv/bin/activate && uvicorn main:app --reload --port 8000"
-echo "To run the front-end, open a new terminal, navigate to the project root and run:"
-echo "  npm run dev"
+echo "Run ./start.sh (or ./start.ps1 on Windows) to launch the full stack with development secrets provisioned."

@@ -27,8 +27,26 @@ python -m venv venv
 pip install -r requirements.txt
 deactivate
 
+Set-Location $scriptDir
+
+Write-Host "Provisioning development secrets..."
+$pythonExe = Join-Path $scriptDir 'backend\venv\Scripts\python.exe'
+if (-not (Test-Path $pythonExe)) {
+    $pythonExe = 'python'
+}
+$provisionScript = @'
+import os
+import secrets
+
+from backend import key_manager
+
+os.environ.setdefault("ENVIRONMENT", "development")
+key_manager.ensure_local_secret("jwt", "JWT_SECRET", lambda: secrets.token_urlsafe(48))
+key_manager.ensure_local_secret(
+    "openai", "OPENAI_API_KEY", lambda: "sk-local-" + secrets.token_hex(16)
+)
+'@
+& $pythonExe -c $provisionScript
+
 Write-Host "Installation complete."
-Write-Host "To start the backend server, run:"
-Write-Host "  cd backend; .\\venv\\Scripts\\Activate.ps1; uvicorn main:app --reload --port 8000"
-Write-Host "To run the front-end, open a new terminal and run:"
-Write-Host "  npm run dev"
+Write-Host "Run ./start.ps1 (or ./start.sh on macOS/Linux) to launch the full stack with development secrets provisioned."

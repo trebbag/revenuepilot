@@ -21,8 +21,10 @@ codebase. Follow them for every change, regardless of size.
   `source backend/venv/bin/activate` (macOS/Linux) or
   `backend\venv\Scripts\activate` (Windows) when running Python
   commands manually.
-- Store secrets locally. OpenAI keys can be injected via `/apikey` in the
-  settings view; never commit `.env` files.
+- Secrets are sourced from the secrets manager. `install`/`start` scripts
+  provision mock JWT and OpenAI values for development, but production
+  deployments must inject real secrets (and `*_ROTATED_AT` metadata)
+  through the external store; never commit `.env` files.【F:install.sh†L1-L70】【F:start.sh†L1-L48】
 
 ## 3. Local CI checklist
 
