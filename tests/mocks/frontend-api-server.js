@@ -34,6 +34,58 @@ const demoUser = {
   payer: 'Aetna Premier',
 };
 
+const credentialProfiles = {
+  'admin@exampleclinic.com': {
+    password: 'Admin123!',
+    user: {
+      id: 'user-admin',
+      name: 'System Administrator',
+      fullName: 'System Administrator',
+      email: 'admin@exampleclinic.com',
+      role: 'admin',
+      permissions: ['view:analytics', 'view:activity-log', 'manage:settings', 'manage:builder'],
+      specialty: 'Administration',
+      payer: 'Enterprise Plan',
+    },
+  },
+  'analyst@exampleclinic.com': {
+    password: 'Analyst123!',
+    user: {
+      id: 'user-analyst',
+      name: 'Operations Analyst',
+      fullName: 'Operations Analyst',
+      email: 'analyst@exampleclinic.com',
+      role: 'analyst',
+      permissions: ['view:analytics', 'view:activity-log'],
+      specialty: 'Operations',
+      payer: 'Enterprise Plan',
+    },
+  },
+  'clinician@exampleclinic.com': {
+    password: 'Clinician123!',
+    user: {
+      id: 'user-clinician',
+      name: 'Attending Clinician',
+      fullName: 'Attending Clinician',
+      email: 'clinician@exampleclinic.com',
+      role: 'user',
+      permissions: ['view:analytics', 'view:activity-log'],
+      specialty: 'Family Medicine',
+      payer: 'Aetna Premier',
+    },
+  },
+};
+
+let authState = {
+  authenticated: false,
+  user: { ...demoUser },
+};
+
+let activeTokens = {
+  access: null,
+  refresh: null,
+};
+
 let sessionState = {
   selectedCodes: {
     codes: 2,
@@ -50,6 +102,10 @@ let sessionState = {
       description: 'Established patient visit, 20 minutes',
       rationale: 'Follow-up evaluation for chronic condition',
       confidence: 0.92,
+      gaps: [
+        'Preventive care context established',
+        'Document shared decision-making conversation',
+      ],
     },
     {
       id: 2,
@@ -59,6 +115,7 @@ let sessionState = {
       description: 'Injection, dexamethasone sodium phosphate, 1 mg',
       rationale: 'Therapeutic injection administered in office',
       confidence: 0.88,
+      gaps: ['Document injection site and lot number'],
     },
   ],
   addedCodes: ['99213', 'J1100'],
@@ -86,12 +143,12 @@ let workflowSession = {
   encounterId: '67890',
   patientId: '1000001',
   noteId: '5001',
-  currentStep: 4,
+  currentStep: 1,
   stepStates: [
-    { step: 1, status: 'completed', progress: 100 },
-    { step: 2, status: 'completed', progress: 100 },
-    { step: 3, status: 'completed', progress: 100 },
-    { step: 4, status: 'in_progress', progress: 60 },
+    { step: 1, status: 'in_progress', progress: 50 },
+    { step: 2, status: 'not_started', progress: 0 },
+    { step: 3, status: 'not_started', progress: 0 },
+    { step: 4, status: 'not_started', progress: 0 },
     { step: 5, status: 'not_started', progress: 0 },
     { step: 6, status: 'not_started', progress: 0 },
   ],
@@ -104,6 +161,10 @@ let workflowSession = {
       description: 'Established patient visit, 20 minutes',
       rationale: 'Follow-up evaluation for chronic condition',
       confidence: 0.92,
+      gaps: [
+        'Preventive care context established',
+        'Document shared decision-making conversation',
+      ],
     },
     {
       id: 2,
@@ -113,6 +174,7 @@ let workflowSession = {
       description: 'Injection, dexamethasone sodium phosphate, 1 mg',
       rationale: 'Therapeutic injection administered in office',
       confidence: 0.88,
+      gaps: ['Document injection site and lot number'],
     },
   ],
   complianceIssues: [],
@@ -145,6 +207,108 @@ let workflowSession = {
   blockingIssues: [],
 };
 
+const workflowValidationTemplate = {
+  codeVerification: {
+    passed: true,
+    confidence: 0.96,
+    details: ['Coding context validated against documentation insights'],
+    issues: [],
+  },
+  preventionItems: {
+    passed: true,
+    details: ['Preventive care context established for risk management'],
+  },
+  diagnosesConfirmation: {
+    passed: true,
+    details: ['Diagnoses confirmed against latest chart review'],
+  },
+  differentialsReview: {
+    passed: true,
+    details: ['Differential diagnoses reviewed for completeness'],
+  },
+  contentReview: {
+    passed: true,
+    confidence: 0.9,
+    details: ['Clinical documentation meets export standards'],
+  },
+  complianceChecks: {
+    passed: true,
+    details: ['Compliance checks passed for billing & attestation'],
+  },
+};
+
+const buildPreFinalizePayload = (contentOverride) => {
+  const reimbursementSummary =
+    workflowSession.reimbursementSummary ?? {
+      total: 185.5,
+      codes: workflowSession.selectedCodes?.map((entry) => ({
+        code: entry.code,
+        amount: entry.reimbursement ?? 0,
+      })) ?? [],
+    };
+
+  const noteContent =
+    typeof contentOverride === 'string' && contentOverride.trim().length > 0
+      ? contentOverride
+      : workflowSession.noteContent;
+
+  workflowSession = {
+    ...workflowSession,
+    noteContent,
+    currentStep: Number(workflowSession.currentStep) || 1,
+    stepStates: Array.isArray(workflowSession.stepStates)
+      ? workflowSession.stepStates.map((state) => {
+          if (!state || typeof state !== 'object') {
+            return state;
+          }
+          const stepId = Number(state.step);
+          if (!Number.isFinite(stepId)) {
+            return state;
+          }
+          if (stepId === 1) {
+            return {
+              ...state,
+              status: 'in_progress',
+              progress: Math.max(Number(state.progress) || 0, 60),
+            };
+          }
+          if (stepId === 4) {
+            return {
+              ...state,
+              status: 'in_progress',
+              progress: Math.max(Number(state.progress) || 0, 40),
+            };
+          }
+          return state;
+        })
+      : workflowSession.stepStates,
+    blockingIssues: [],
+    reimbursementSummary,
+  };
+
+  const stepValidation = Object.fromEntries(
+    Object.entries(workflowValidationTemplate).map(([key, value]) => [
+      key,
+      {
+        ...value,
+        ...(Array.isArray(value.details) ? { details: [...value.details] } : {}),
+        ...(Array.isArray(value.issues) ? { issues: [...value.issues] } : {}),
+      },
+    ]),
+  );
+
+  return {
+    canFinalize: true,
+    issues: {},
+    requiredFields: [],
+    missingDocumentation: [],
+    stepValidation,
+    complianceIssues: [],
+    estimatedReimbursement: reimbursementSummary.total,
+    reimbursementSummary,
+  };
+};
+
 const patients = [
   {
     patientId: '1000001',
@@ -173,6 +337,107 @@ const patients = [
     lastVisit: '2024-02-15',
     allergies: ['None'],
     medications: ['Lisinopril 10mg daily'],
+  },
+];
+
+const codeDetailCatalog = {
+  '99213': {
+    code: '99213',
+    type: 'CPT',
+    category: 'codes',
+    description: 'Established patient visit, 20 minutes',
+    rationale: 'Follow-up evaluation for chronic condition',
+    confidence: 0.92,
+    reimbursement: 125.0,
+    rvu: 2.1,
+  },
+  J1100: {
+    code: 'J1100',
+    type: 'HCPCS',
+    category: 'prevention',
+    description: 'Injection, dexamethasone sodium phosphate, 1 mg',
+    rationale: 'Therapeutic injection administered in office',
+    confidence: 0.88,
+    reimbursement: 60.5,
+    rvu: 1.4,
+  },
+};
+
+const documentationCatalog = {
+  '99213': {
+    code: '99213',
+    required: [
+      'Chief complaint documented',
+      'History of present illness updated',
+      'Review of systems or exam performed',
+    ],
+    recommended: ['Medication reconciliation complete', 'Plan includes follow-up instructions'],
+    examples: ['Documented 20 minute follow-up for hypertension management.'],
+  },
+  J1100: {
+    code: 'J1100',
+    required: ['Drug name and dosage recorded', 'Route of administration documented'],
+    recommended: ['Indication for injection noted in assessment'],
+    examples: ['Administered 4mg dexamethasone IM for acute asthma flare.'],
+  },
+};
+
+const categorizationRulesPayload = {
+  autoCategories: {
+    codes: {
+      '99213': 'codes',
+      J1100: 'prevention',
+    },
+  },
+  userOverrides: {},
+  rules: [
+    {
+      id: 'rule-99213-followup',
+      type: 'cpt',
+      category: 'codes',
+      priority: 1,
+      match: {
+        codes: ['99213'],
+        descriptionKeywords: ['follow-up'],
+      },
+    },
+    {
+      id: 'rule-j1100-injection',
+      type: 'hcpcs',
+      category: 'prevention',
+      priority: 2,
+      match: {
+        codes: ['J1100'],
+        descriptionKeywords: ['injection'],
+      },
+    },
+  ],
+};
+
+const scheduleAppointments = [
+  {
+    id: 'apt-1001',
+    patient: 'Jane Doe',
+    patientId: '1000001',
+    encounterId: '67890',
+    reason: 'Chronic condition follow-up',
+    start: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    end: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    provider: demoUser.fullName,
+    status: 'Scheduled',
+    location: 'Exam Room 4',
+  },
+  {
+    id: 'apt-1002',
+    patient: 'Samuel Lee',
+    patientId: '1000002',
+    encounterId: '67891',
+    reason: 'New patient intake',
+    start: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+    end: new Date(Date.now() + 2.5 * 60 * 60 * 1000).toISOString(),
+    provider: demoUser.fullName,
+    status: 'Scheduled',
+    location: 'Exam Room 2',
   },
 ];
 
@@ -291,11 +556,90 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-app.get('/api/auth/status', (_req, res) => {
-  res.json({ authenticated: true, user: demoUser });
+app.post('/__mock__/auth/state', (req, res) => {
+  const { authenticated, user } = req.body || {};
+  if (typeof authenticated === 'boolean') {
+    authState.authenticated = authenticated;
+    if (!authenticated) {
+      activeTokens.access = null;
+      activeTokens.refresh = null;
+    }
+  }
+  if (user && typeof user === 'object') {
+    authState.user = { ...authState.user, ...user };
+  }
+  res.json({ status: 'ok', state: { authenticated: authState.authenticated } });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password, rememberMe } = req.body || {};
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Missing credentials' });
+  }
+
+  const normalized = username.trim().toLowerCase();
+  const record = credentialProfiles[normalized];
+  if (!record || record.password !== password) {
+    return res.status(401).json({ error: 'Invalid username or password' });
+  }
+
+  const timestamp = Date.now();
+  activeTokens.access = `mock-access-${timestamp}`;
+  activeTokens.refresh = `mock-refresh-${timestamp}`;
+  authState.authenticated = true;
+  authState.user = { ...demoUser, ...record.user };
+
+  const settings = {
+    theme: 'modern',
+    lang: 'en',
+    specialty: record.user.specialty || 'General Medicine',
+    payer: record.user.payer || 'Aetna Premier',
+    rememberMe: Boolean(rememberMe),
+  };
+
+  const sessionPayload = {
+    ...sessionState,
+    finalizationSessions: {
+      [workflowSession.sessionId]: workflowSession,
+    },
+  };
+
+  return res.json({
+    access_token: activeTokens.access,
+    refresh_token: activeTokens.refresh,
+    expires_in: 3600,
+    user: authState.user,
+    settings,
+    session: sessionPayload,
+  });
+});
+
+app.post('/api/auth/verify-mfa', (_req, res) => {
+  if (!authState.authenticated || !activeTokens.access) {
+    const timestamp = Date.now();
+    activeTokens.access = `mock-access-${timestamp}`;
+    activeTokens.refresh = `mock-refresh-${timestamp}`;
+  }
+  res.json({ access_token: activeTokens.access, refresh_token: activeTokens.refresh, expires_in: 3600 });
+});
+
+app.post('/api/auth/resend-mfa', (_req, res) => {
+  res.json({ status: 'resent' });
+});
+
+app.get('/api/auth/status', (req, res) => {
+  const header = req.get('authorization') || '';
+  const expected = activeTokens.access ? `Bearer ${activeTokens.access}` : null;
+  if (authState.authenticated && expected && header === expected) {
+    return res.json({ authenticated: true, user: authState.user });
+  }
+  return res.json({ authenticated: false });
 });
 
 app.post('/api/auth/logout', (_req, res) => {
+  authState.authenticated = false;
+  activeTokens.access = null;
+  activeTokens.refresh = null;
   res.status(204).end();
 });
 
@@ -335,8 +679,28 @@ app.get('/api/user/profile', (_req, res) => {
   });
 });
 
+app.put('/api/user/profile', (req, res) => {
+  const updates = req.body ?? {};
+  authState = {
+    ...authState,
+    user: {
+      ...authState.user,
+      ...updates,
+    },
+  };
+  res.json({ status: 'ok', user: authState.user });
+});
+
 app.get('/api/user/ui-preferences', (_req, res) => {
   res.json({ uiPreferences: layoutPreferences });
+});
+
+app.put('/api/user/ui-preferences', (req, res) => {
+  layoutPreferences = {
+    ...layoutPreferences,
+    ...(req.body?.uiPreferences || req.body || {}),
+  };
+  res.json({ status: 'ok', uiPreferences: layoutPreferences });
 });
 
 app.get('/api/user/current-view', (_req, res) => {
@@ -345,6 +709,43 @@ app.get('/api/user/current-view', (_req, res) => {
 
 app.get('/api/notifications/count', (_req, res) => {
   res.json({ notifications: 3, drafts: 2, count: 3 });
+});
+
+app.get('/api/notifications', (_req, res) => {
+  res.json({
+    items: [
+      {
+        id: 'notif-1',
+        title: 'Compliance alert resolved',
+        message: 'AI compliance assistant cleared all blocking items.',
+        severity: 'info',
+        timestamp: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+        isRead: false,
+      },
+      {
+        id: 'notif-2',
+        title: 'Patient chart uploaded',
+        message: 'Lab results for Jane Doe are ready for review.',
+        severity: 'success',
+        timestamp: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+        isRead: true,
+        readAt: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+      },
+    ],
+    total: 2,
+    unreadCount: 1,
+    limit: 20,
+    offset: 0,
+    nextOffset: null,
+  });
+});
+
+app.post('/api/notifications/read-all', (_req, res) => {
+  res.json({ unreadCount: 0 });
+});
+
+app.post('/api/notifications/:id/read', (_req, res) => {
+  res.json({ unreadCount: 0 });
 });
 
 app.get('/api/dashboard/daily-overview', (_req, res) => {
@@ -368,23 +769,193 @@ app.get('/api/dashboard/quick-actions', (_req, res) => {
   });
 });
 
-app.get('/api/dashboard/activity', (_req, res) => {
-  res.json([
-    {
-      id: 1,
-      type: 'note.finalized',
-      timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+const activityLogItems = [
+  {
+    id: 'evt-1',
+    timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    username: 'Dr. Demo Clinician',
+    action: 'note.finalized',
+    details: {
       description: 'Finalized SOAP note for patient Jane Doe',
-      userId: demoUser.id,
+      status: 'success',
+      patientName: 'Jane Doe',
+      noteId: 'note-123',
     },
-    {
-      id: 2,
-      type: 'codes.added',
-      timestamp: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+  },
+  {
+    id: 'evt-2',
+    timestamp: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+    username: 'Dr. Demo Clinician',
+    action: 'codes.added',
+    details: {
       description: 'Added CPT 99213 based on AI suggestion',
-      userId: demoUser.id,
+      status: 'success',
+      patientName: 'Jane Doe',
+      code: '99213',
     },
-  ]);
+  },
+];
+
+app.get('/api/dashboard/activity', (_req, res) => {
+  res.json(
+    activityLogItems.map((entry) => ({
+      id: entry.id,
+      type: entry.action,
+      timestamp: entry.timestamp,
+      description: entry.details.description,
+      userId: demoUser.id,
+    })),
+  );
+});
+
+app.get('/api/activity/log', (_req, res) => {
+  res.json({
+    entries: activityLogItems,
+    next: null,
+    count: activityLogItems.length,
+  });
+});
+
+app.get('/api/codes/categorization/rules', (_req, res) => {
+  res.json(categorizationRulesPayload);
+});
+
+app.post('/api/codes/details/batch', (req, res) => {
+  const codes = Array.isArray(req.body?.codes) ? req.body.codes : [];
+  const details = codes.map((rawCode) => {
+    const normalized = typeof rawCode === 'string' ? rawCode.trim().toUpperCase() : '';
+    if (normalized && codeDetailCatalog[normalized]) {
+      return { ...codeDetailCatalog[normalized], code: normalized };
+    }
+    if (!normalized) {
+      return {
+        code: String(rawCode ?? ''),
+        type: 'unknown',
+        category: 'codes',
+        description: 'Unknown code',
+        rationale: 'Mock server fallback',
+        confidence: 50,
+        reimbursement: 0,
+        rvu: 0,
+      };
+    }
+    return {
+      code: normalized,
+      type: 'unknown',
+      category: 'codes',
+      description: 'Unknown code',
+      rationale: 'Mock server fallback',
+      confidence: 50,
+      reimbursement: 0,
+      rvu: 0,
+    };
+  });
+  res.json({ data: details });
+});
+
+app.post('/api/billing/calculate', (req, res) => {
+  const codes = Array.isArray(req.body?.codes)
+    ? req.body.codes.map((code) => (typeof code === 'string' ? code.trim().toUpperCase() : '')).filter(Boolean)
+    : [];
+
+  let total = 0;
+  let totalRvu = 0;
+  const breakdown = {};
+
+  codes.forEach((code) => {
+    const detail = codeDetailCatalog[code];
+    if (!detail) {
+      return;
+    }
+    const amount = Number(detail.reimbursement ?? 0);
+    const rvu = Number(detail.rvu ?? 0);
+    total += amount;
+    totalRvu += rvu;
+    breakdown[code] = {
+      amount,
+      amountFormatted: `$${amount.toFixed(2)}`,
+      rvu,
+    };
+  });
+
+  res.json({
+    data: {
+      totalEstimated: total,
+      totalEstimatedFormatted: `$${total.toFixed(2)}`,
+      totalRvu,
+      currency: 'USD',
+      breakdown,
+      payerSpecific: { payer: authState.user?.payer ?? 'Commercial' },
+      issues: [],
+    },
+  });
+});
+
+app.post('/api/codes/validate/combination', (req, res) => {
+  const codes = Array.isArray(req.body?.codes) ? req.body.codes : [];
+  res.json({
+    data: {
+      validCombinations: true,
+      conflicts: [],
+      contextIssues: [],
+      warnings: codes.length > 4 ? ['Large number of codes selected'] : [],
+    },
+  });
+});
+
+app.get('/api/codes/documentation/:code', (req, res) => {
+  const code = (req.params.code || '').trim().toUpperCase();
+  const doc = documentationCatalog[code] || {
+    code,
+    required: [],
+    recommended: [],
+    examples: [],
+  };
+  res.json({ data: doc });
+});
+
+app.post('/api/encounters/validate', (req, res) => {
+  const encounterId = req.body?.encounterId ?? req.body?.encounter_id ?? '67890';
+  const patientId = req.body?.patientId ?? req.body?.patient_id ?? '1000001';
+  const encounter = {
+    id: String(encounterId),
+    encounterId: String(encounterId),
+    patientId: String(patientId),
+    patient: {
+      patientId: String(patientId),
+      name: 'Jane Doe',
+    },
+    date: new Date().toISOString().split('T')[0],
+    type: 'Follow-up Visit',
+    provider: demoUser.fullName,
+    location: 'Riverbend Medical Group',
+  };
+  res.json({ valid: true, encounter, errors: [] });
+});
+
+app.post('/api/notes/auto-save', (req, res) => {
+  const now = new Date().toISOString();
+  workflowSession = {
+    ...workflowSession,
+    noteContent: typeof req.body?.content === 'string' ? req.body.content : workflowSession.noteContent,
+  };
+  res.json({ status: 'saved', noteId: req.body?.noteId ?? workflowSession.noteId, version: Date.now(), savedAt: now });
+});
+
+app.get('/api/schedule/appointments', (_req, res) => {
+  res.json({
+    appointments: scheduleAppointments,
+    visitSummaries: {
+      'apt-1001': {
+        lastVisit: '2024-02-12',
+        notes: 'Patient responded well to therapy.',
+      },
+      'apt-1002': {
+        lastVisit: null,
+        notes: 'Initial consult scheduled by referral.',
+      },
+    },
+  });
 });
 
 app.get('/api/system/status', (_req, res) => {
@@ -538,6 +1109,90 @@ app.put('/api/notes/auto-save', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.post('/api/notes/pre-finalize-check', (req, res) => {
+  const response = buildPreFinalizePayload(req.body?.content);
+  const timestamp = new Date().toISOString();
+  workflowSession = {
+    ...workflowSession,
+    lastValidation: response,
+    auditTrail: [
+      ...workflowSession.auditTrail,
+      {
+        actor: authState.user?.fullName ?? demoUser.fullName,
+        action: 'workflow.pre_finalize',
+        timestamp,
+        description: 'Pre-finalization validation completed',
+      },
+    ],
+  };
+  res.json(response);
+});
+
+app.post('/api/notes/finalize', (req, res) => {
+  const content =
+    typeof req.body?.content === 'string' && req.body.content.trim().length > 0
+      ? req.body.content.trim()
+      : workflowSession.noteContent;
+  const payload = buildPreFinalizePayload(content);
+  const finalizedContent = `${content}\n\nFinalized via RevenuePilot on ${new Date().toLocaleString()}.`;
+  const complianceCertification = {
+    status: 'pass',
+    attestedBy: authState.user?.fullName ?? demoUser.fullName,
+    attestedAt: new Date().toISOString(),
+    summary: 'All compliance checks passed.',
+    pendingActions: payload.missingDocumentation,
+    issuesReviewed: payload.complianceIssues,
+    stepValidation: payload.stepValidation,
+  };
+
+  workflowSession = {
+    ...workflowSession,
+    noteContent: content,
+    currentStep: 6,
+    stepStates: Array.isArray(workflowSession.stepStates)
+      ? workflowSession.stepStates.map((state) => {
+          if (!state || typeof state !== 'object') {
+            return state;
+          }
+          const stepId = Number(state.step);
+          if (!Number.isFinite(stepId)) {
+            return state;
+          }
+          if (stepId >= 4) {
+            return { ...state, status: 'completed', progress: 100 };
+          }
+          return { ...state, status: 'completed', progress: 100 };
+        })
+      : workflowSession.stepStates,
+    auditTrail: [
+      ...workflowSession.auditTrail,
+      {
+        actor: authState.user?.fullName ?? demoUser.fullName,
+        action: 'workflow.finalized',
+        timestamp: new Date().toISOString(),
+        description: 'Note finalized and ready for dispatch.',
+      },
+    ],
+    lastValidation: payload,
+    blockingIssues: [],
+  };
+
+  res.json({
+    ...payload,
+    finalizedContent,
+    codesSummary: Array.isArray(payload.reimbursementSummary?.codes)
+      ? payload.reimbursementSummary.codes.map((entry) => ({
+          code: entry.code,
+          amount: entry.amount ?? entry.total ?? 0,
+        }))
+      : [],
+    exportReady: true,
+    exportStatus: 'complete',
+    complianceCertification,
+    finalizedNoteId: 'finalized-5001',
+  });
+});
+
 app.post('/api/compliance/analyze', (req, res) => {
   res.json({ compliance: [] });
 });
@@ -566,16 +1221,7 @@ app.post('/api/ai/codes/suggest', (req, res) => {
 });
 
 app.post('/api/ai/compliance/check', (_req, res) => {
-  res.json({
-    alerts: [
-      {
-        text: 'Document patient counseling on lifestyle modifications for hypertension.',
-        category: 'documentation',
-        priority: 'medium',
-        confidence: 0.78,
-      },
-    ],
-  });
+  res.json({ alerts: [] });
 });
 
 app.post('/api/ai/differentials/generate', (_req, res) => {

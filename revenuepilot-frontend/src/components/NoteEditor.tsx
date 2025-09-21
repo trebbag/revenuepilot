@@ -25,6 +25,8 @@ import { type FinalizationWizardLaunchOptions, type PreFinalizeCheckResponse } f
 import type { FinalizeResult } from "../features/finalization"
 import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFetchOptions } from "../lib/api"
 import { useAuth } from "../contexts/AuthContext"
+import { useSession } from "../contexts/SessionContext"
+import type { StoredFinalizationSession } from "../features/finalization/workflowTypes"
 
 interface ComplianceIssue {
   id: string
@@ -187,6 +189,13 @@ interface NoteEditorProps {
   onBeautifiedNoteChange?: (state: BeautifyResultState | null) => void
   ehrExportState?: EhrExportState | null
   onEhrExportStateChange?: (state: EhrExportState | null) => void
+  recentFinalization?: {
+    result: FinalizeResult
+    noteId?: string | null
+    encounterId?: string | null
+    patientId?: string | null
+  } | null
+  onRecentFinalizationHandled?: () => void
   onOpenFinalization?: (options: FinalizationWizardLaunchOptions) => void
 }
 
@@ -205,9 +214,12 @@ export function NoteEditor({
   onBeautifiedNoteChange,
   ehrExportState,
   onEhrExportStateChange,
+  recentFinalization,
+  onRecentFinalizationHandled,
   onOpenFinalization
 }: NoteEditorProps) {
   const auth = useAuth()
+  const { state: sessionState } = useSession()
   const [patientInputValue, setPatientInputValue] = useState(
     initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || ""
   )
@@ -289,6 +301,117 @@ export function NoteEditor({
   const [isFinalized, setIsFinalized] = useState(false)
 
   const [noteId, setNoteId] = useState<string | null>(initialNoteData?.noteId ?? null)
+
+  const finalizationSessionSnapshot = useMemo<StoredFinalizationSession | null>(() => {
+    const sessions = sessionState.finalizationSessions
+    if (!sessions || typeof sessions !== "object") {
+      return null
+    }
+
+    const normalize = (value?: string | null) =>
+      typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : ""
+
+    const noteCandidates = new Set<string>()
+    const encounterCandidates = new Set<string>()
+    const patientCandidates = new Set<string>()
+
+    const register = (set: Set<string>, value?: string | null) => {
+      const normalized = normalize(value ?? null)
+      if (normalized) {
+        set.add(normalized)
+      }
+    }
+
+    register(noteCandidates, initialNoteData?.noteId ?? null)
+    register(noteCandidates, noteId)
+    register(encounterCandidates, initialNoteData?.encounterId ?? null)
+    register(encounterCandidates, encounterId)
+    register(patientCandidates, initialNoteData?.patientId ?? null)
+    register(patientCandidates, patientId)
+
+    let fallback: StoredFinalizationSession | null = null
+
+    for (const entry of Object.values(sessions)) {
+      if (!entry || typeof entry !== "object") {
+        continue
+      }
+      const session = entry as StoredFinalizationSession
+      const sessionNote = normalize(session.noteId)
+      const sessionEncounter = normalize(session.encounterId)
+      const sessionPatient = normalize(session.patientId)
+
+      const matchesNote = sessionNote && noteCandidates.has(sessionNote)
+      const matchesEncounter = sessionEncounter && encounterCandidates.has(sessionEncounter)
+      const matchesPatient = sessionPatient && patientCandidates.has(sessionPatient)
+
+      if (matchesNote || matchesEncounter || matchesPatient) {
+        if (session.lastFinalizeResult) {
+          return session
+        }
+        if (!fallback) {
+          fallback = session
+        }
+      }
+    }
+
+    return fallback
+  }, [
+    encounterId,
+    initialNoteData?.encounterId,
+    initialNoteData?.noteId,
+    initialNoteData?.patientId,
+    noteId,
+    patientId,
+    sessionState.finalizationSessions
+  ])
+
+  const directFinalization = useMemo(() => {
+    if (!recentFinalization?.result) {
+      return null
+    }
+
+    const normalize = (value?: string | null) =>
+      typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : ""
+
+    const noteCandidates = new Set<string>()
+    const encounterCandidates = new Set<string>()
+    const patientCandidates = new Set<string>()
+
+    const register = (set: Set<string>, value?: string | null) => {
+      const normalized = normalize(value ?? null)
+      if (normalized) {
+        set.add(normalized)
+      }
+    }
+
+    register(noteCandidates, initialNoteData?.noteId ?? null)
+    register(noteCandidates, noteId)
+    register(encounterCandidates, initialNoteData?.encounterId ?? null)
+    register(encounterCandidates, encounterId)
+    register(patientCandidates, initialNoteData?.patientId ?? null)
+    register(patientCandidates, patientId)
+
+    const matchesNote = normalize(recentFinalization.noteId) && noteCandidates.has(normalize(recentFinalization.noteId))
+    const matchesEncounter =
+      normalize(recentFinalization.encounterId) && encounterCandidates.has(normalize(recentFinalization.encounterId))
+    const matchesPatient =
+      normalize(recentFinalization.patientId) && patientCandidates.has(normalize(recentFinalization.patientId))
+
+    if (matchesNote || matchesEncounter || matchesPatient) {
+      return recentFinalization
+    }
+
+    return null
+  }, [
+    encounterId,
+    initialNoteData?.encounterId,
+    initialNoteData?.noteId,
+    initialNoteData?.patientId,
+    noteId,
+    patientId,
+    recentFinalization
+  ])
+
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
   const [autoSaveInFlight, setAutoSaveInFlight] = useState(false)
@@ -392,6 +515,7 @@ export function NoteEditor({
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveLastContentRef = useRef<string>(initialNoteData?.content ?? "")
   const autoSavePromiseRef = useRef<Promise<boolean> | null>(null)
+  const finalizationSyncRef = useRef<string | null>(null)
   const noteCreatePromiseRef = useRef<Promise<string> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -1667,6 +1791,101 @@ export function NoteEditor({
       stopAudioStream
     ]
   )
+
+  useEffect(() => {
+    const sessionSource = finalizationSessionSnapshot?.lastFinalizeResult
+      ? {
+          result: finalizationSessionSnapshot.lastFinalizeResult,
+          sessionId: finalizationSessionSnapshot.sessionId ?? null,
+          noteId: finalizationSessionSnapshot.noteId ?? null,
+          encounterId: finalizationSessionSnapshot.encounterId ?? null,
+          patientId: finalizationSessionSnapshot.patientId ?? null
+        }
+      : null
+
+    const directSource = directFinalization
+      ? {
+          result: directFinalization.result,
+          sessionId: null,
+          noteId: directFinalization.noteId ?? null,
+          encounterId: directFinalization.encounterId ?? null,
+          patientId: directFinalization.patientId ?? null
+        }
+      : null
+
+    const source = directSource ?? sessionSource
+    if (!source) {
+      return
+    }
+
+    const result = source.result
+    const resolveIdentifier = (
+      ...values: Array<string | null | undefined>
+    ) => {
+      for (const value of values) {
+        if (typeof value === "string" && value.trim().length > 0) {
+          return value.trim()
+        }
+      }
+      return "finalization-session"
+    }
+
+    const sessionIdentifier = resolveIdentifier(
+      source.sessionId,
+      source.noteId,
+      source.encounterId,
+      source.patientId
+    )
+
+    const finalizedContent =
+      typeof result.finalizedContent === "string" ? result.finalizedContent : ""
+    const completionMarker =
+      (result as { completedAt?: string | null }).completedAt ??
+      (result as { finalizedAt?: string | null }).finalizedAt ??
+      (source.sessionId ? (finalizationSessionSnapshot as { completedAt?: string | null }).completedAt : null) ??
+      (source.sessionId ? (finalizationSessionSnapshot as { updatedAt?: string | null }).updatedAt : null) ??
+      null
+
+    const signature = JSON.stringify({
+      sessionIdentifier,
+      finalizedContent,
+      completionMarker
+    })
+
+    if (finalizationSyncRef.current === signature) {
+      return
+    }
+
+    finalizationSyncRef.current = signature
+
+    if (!isFinalized) {
+      setIsFinalized(true)
+    }
+
+    if (finalizedContent.trim().length > 0 && finalizedContent !== noteContentRef.current) {
+      noteContentRef.current = finalizedContent
+      setNoteContent(finalizedContent)
+      autoSaveLastContentRef.current = finalizedContent
+      lastComplianceInputRef.current = createComplianceSignature(finalizedContent, complianceCodeValues)
+      onNoteContentChange?.(finalizedContent)
+    }
+
+    if (result.issues) {
+      applyWizardIssues(result.issues)
+    }
+
+    if (directSource) {
+      onRecentFinalizationHandled?.()
+    }
+  }, [
+    applyWizardIssues,
+    complianceCodeValues,
+    directFinalization,
+    finalizationSessionSnapshot,
+    isFinalized,
+    onNoteContentChange,
+    onRecentFinalizationHandled
+  ])
 
   const patientDisplayName = useMemo(() => {
     if (selectedPatient) {

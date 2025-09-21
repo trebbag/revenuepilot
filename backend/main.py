@@ -4395,7 +4395,10 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
             logging.getLogger(__name__).warning(
                 "Failed to deserialize layout preferences for user %s", user.get("sub")
             )
-    return {"success": True, "data": data}
+    response_payload: Dict[str, Any] = {"success": True, "data": data}
+    if isinstance(data, dict):
+        response_payload.update(data)
+    return response_payload
 
 
 
@@ -4443,8 +4446,11 @@ async def put_layout_preferences(
                 "Failed to deserialize layout preferences for user %s", uid
             )
     if not data_payload and isinstance(prefs, dict):
-        data_payload = prefs
-    return JSONResponse(content={"success": True, "data": data_payload})
+        data_payload = {key: value for key, value in prefs.items() if key not in {"success", "data"}}
+    response_payload: Dict[str, Any] = {"success": True, "data": data_payload}
+    if isinstance(data_payload, dict):
+        response_payload.update(data_payload)
+    return JSONResponse(content=response_payload)
 
 
 
