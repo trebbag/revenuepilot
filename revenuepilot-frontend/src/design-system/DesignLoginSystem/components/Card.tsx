@@ -1,6 +1,6 @@
 import { type ReactNode } from "react"
 
-import { cn } from "../ui/utils"
+import { cn } from "../../../components/ui/utils"
 
 interface CardProps {
   size?: "md" | "lg"

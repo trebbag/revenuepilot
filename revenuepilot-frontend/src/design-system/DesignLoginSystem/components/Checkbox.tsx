@@ -1,7 +1,7 @@
 import { Check } from "lucide-react"
 import { type MouseEvent } from "react"
 
-import { cn } from "../ui/utils"
+import { cn } from "../../../components/ui/utils"
 
 interface CheckboxProps {
   checked: boolean

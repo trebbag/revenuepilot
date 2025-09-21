@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from "react"
 import { Shield, WifiOff } from "lucide-react"
 
-import { apiFetch, persistAuthTokens } from "../../lib/api"
+import { persistAuthTokens } from "../../../lib/api"
+import { DesignLoginSystemApi, DesignLoginSystemError, LoginSuccessResult } from "../types"
 import { Alert } from "./Alert"
 import { Badge } from "./Badge"
 import { Button } from "./Button"
@@ -20,6 +21,7 @@ type MFADialogState = "codeEntry" | "verifying" | "error"
 type ToastType = "success" | "error" | "info"
 
 interface LoginFormProps {
+  authApi: Pick<DesignLoginSystemApi, "login" | "verifyMfa" | "resendMfa">
   mode?: "default" | "offline" | "maintenance"
   multiTenant?: boolean
   hasOfflineSession?: boolean
@@ -27,61 +29,12 @@ interface LoginFormProps {
   onForgotPassword?: () => void
 }
 
-interface LoginResponsePayload {
-  token?: string
-  access_token?: string
-  refreshToken?: string
-  refresh_token?: string
-  requiresMFA?: boolean
-  mfaSessionToken?: string
-  mfa_session_token?: string
-  [key: string]: unknown
-}
-
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function extractTokens(payload: LoginResponsePayload | null | undefined) {
-  const accessToken = normalizeString(payload?.token ?? payload?.access_token)
-  const refreshToken = normalizeString(payload?.refreshToken ?? payload?.refresh_token)
-  return {
-    accessToken: accessToken || null,
-    refreshToken: refreshToken || null
-  }
-}
-
-function resolveErrorType(response: Response, data: unknown, fallback: ErrorType = "server_error"): ErrorType {
-  if (response.status === 401) {
-    return "invalid_credentials"
-  }
-  if (response.status === 423) {
-    return "account_locked"
-  }
-  if (response.status === 429) {
-    return "server_error"
-  }
-  if (typeof data === "object" && data !== null) {
-    const detail = normalizeString((data as Record<string, unknown>).detail)
-    const error = normalizeString((data as Record<string, unknown>).error)
-    const message = detail || error || normalizeString((data as Record<string, unknown>).message)
-    if (message) {
-      const lower = message.toLowerCase()
-      if (lower.includes("invalid")) {
-        return "invalid_credentials"
-      }
-      if (lower.includes("lock")) {
-        return "account_locked"
-      }
-      if (lower.includes("mfa")) {
-        return "mfa_error"
-      }
-    }
-  }
-  return fallback
-}
-
 export function LoginForm({
+  authApi,
   mode = "default",
   multiTenant = false,
   hasOfflineSession = false,
@@ -129,19 +82,33 @@ export function LoginForm({
   }, [])
 
   const handleAuthenticationSuccess = useCallback(
-    (payload: LoginResponsePayload | null | undefined) => {
-      const { accessToken, refreshToken } = extractTokens(payload ?? undefined)
-      if (!accessToken) {
-        throw new Error("Authentication response missing access token")
-      }
+    (result: LoginSuccessResult) => {
       setMfaSessionToken(null)
-      persistAuthTokens({ accessToken, refreshToken: refreshToken || undefined, remember: rememberMe })
+      persistAuthTokens({
+        accessToken: result.accessToken,
+        refreshToken: result.refreshToken ?? undefined,
+        remember: rememberMe
+      })
       showToast("success", "Welcome back!")
       setLoginState("success")
       setTimeout(() => onSuccess?.(), 50)
     },
     [onSuccess, rememberMe, showToast]
   )
+
+  const mapErrorToState = useCallback((error: unknown, fallback: ErrorType = "server_error"): ErrorType => {
+    if (error instanceof DesignLoginSystemError) {
+      if (
+        error.code === "invalid_credentials" ||
+        error.code === "account_locked" ||
+        error.code === "mfa_error"
+      ) {
+        return error.code
+      }
+      return fallback
+    }
+    return fallback
+  }, [])
 
   const handleSubmit = useCallback(
     async (event: React.FormEvent) => {
@@ -156,44 +123,29 @@ export function LoginForm({
       setMfaSessionToken(null)
 
       try {
-        const payload: Record<string, unknown> = {
+        const result = await authApi.login({
           username: normalizeString(emailOrUsername),
           password,
-          rememberMe
-        }
-        if (multiTenant) {
-          payload.clinicCode = normalizeString(clinicCode)
-        }
-
-        const response = await apiFetch("/api/auth/login", {
-          method: "POST",
-          jsonBody: payload,
-          skipAuth: true
+          rememberMe,
+          clinicCode: multiTenant ? normalizeString(clinicCode) : undefined
         })
-        const data = (await response.json().catch(() => null)) as LoginResponsePayload | null
 
-        if (!response.ok) {
-          setErrorType(resolveErrorType(response, data))
-          setLoginState("error")
-          return
-        }
-
-        if (data?.requiresMFA) {
-          const sessionToken = normalizeString(data.mfaSessionToken ?? data.mfa_session_token)
-          setMfaSessionToken(sessionToken || null)
+        if (result.type === "mfa") {
+          setMfaSessionToken(result.mfaSessionToken)
           setLoginState("mfa")
           setMfaState("codeEntry")
           return
         }
 
-        handleAuthenticationSuccess(data)
+        handleAuthenticationSuccess(result)
       } catch (error) {
         console.error("Login request failed", error)
-        setErrorType("server_error")
+        setErrorType(mapErrorToState(error))
         setLoginState("error")
       }
     },
     [
+      authApi,
       emailOrUsername,
       password,
       rememberMe,
@@ -201,7 +153,8 @@ export function LoginForm({
       clinicCode,
       validateForm,
       canSignIn,
-      handleAuthenticationSuccess
+      handleAuthenticationSuccess,
+      mapErrorToState
     ]
   )
 
@@ -216,30 +169,19 @@ export function LoginForm({
       setMfaState("verifying")
 
       try {
-        const response = await apiFetch("/api/auth/verify-mfa", {
-          method: "POST",
-          jsonBody: {
-            code,
-            mfaSessionToken
-          },
-          skipAuth: true
+        const result = await authApi.verifyMfa({
+          code,
+          mfaSessionToken,
+          rememberMe
         })
-        const data = (await response.json().catch(() => null)) as LoginResponsePayload | null
-
-        if (!response.ok) {
-          setErrorType(resolveErrorType(response, data, "mfa_error"))
-          setMfaState("error")
-          return
-        }
-
-        handleAuthenticationSuccess(data)
+        handleAuthenticationSuccess(result)
       } catch (error) {
         console.error("MFA verification failed", error)
-        setErrorType("mfa_error")
+        setErrorType(mapErrorToState(error, "mfa_error"))
         setMfaState("error")
       }
     },
-    [handleAuthenticationSuccess, mfaSessionToken]
+    [authApi, handleAuthenticationSuccess, mapErrorToState, mfaSessionToken, rememberMe]
   )
 
   const handleMFACancel = useCallback(() => {
@@ -254,12 +196,13 @@ export function LoginForm({
       return
     }
 
+    if (!authApi.resendMfa) {
+      showToast("error", "Resend not available")
+      return
+    }
+
     try {
-      await apiFetch("/api/auth/resend-mfa", {
-        method: "POST",
-        jsonBody: { mfaSessionToken },
-        skipAuth: true
-      })
+      await authApi.resendMfa({ mfaSessionToken })
       showToast("info", "Verification code sent")
       setMfaState("codeEntry")
       setErrorType(null)
@@ -267,7 +210,7 @@ export function LoginForm({
       console.error("Failed to resend MFA code", error)
       showToast("error", "Failed to send code")
     }
-  }, [mfaSessionToken, showToast])
+  }, [authApi, mfaSessionToken, showToast])
 
   const handleOfflineWork = useCallback(() => {
     showToast("info", "Working offline with limited features")
@@ -446,12 +389,7 @@ export function LoginForm({
         errorMessage={errorType === "mfa_error" ? "That code wasn't recognized. Try again." : undefined}
       />
 
-      <Toast
-        type={toast.type}
-        message={toast.message}
-        isVisible={toast.visible}
-        onClose={hideToast}
-      />
+      <Toast type={toast.type} message={toast.message} isVisible={toast.visible} onClose={hideToast} />
     </>
   )
 }

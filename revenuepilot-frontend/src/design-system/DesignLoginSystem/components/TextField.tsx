@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Eye, EyeOff, User, Lock, Mail } from "lucide-react"
 
-import { cn } from "../ui/utils"
+import { cn } from "../../../components/ui/utils"
 
 interface TextFieldProps {
   type?: "text" | "email" | "password" | "code"
