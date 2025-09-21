@@ -121,7 +121,9 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
   into the editor.【F:revenuepilot-frontend/src/components/RichTextEditor.tsx†L400-L441】【F:backend/templates.py†L1-L160】
 - **Suggestion panel** – Categorised AI suggestions (codes, compliance,
   public health, differentials, follow-up) respond to note edits,
-  specialty and payer selections, and can export calendar events.【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L162-L352】【F:backend/main.py†L11348-L12124】
+  specialty and payer selections, and now consume live websocket streams
+  with connection-aware badges before falling back to REST when
+  offline.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1360-L1648】【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L36-L132】【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L620-L972】【F:backend/main.py†L11348-L12124】
 - **Transcription tools** – Optional visit recording captures diarised
   transcripts and merges segments into the note. The backend supports
   Whisper, local models and offline fallbacks.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1000-L1099】【F:backend/audio_processing.py†L1-L200】
@@ -133,7 +135,11 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
   their previous view after finishing finalisation.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L785-L820】【F:revenuepilot-frontend/src/ProtectedApp.tsx†L1661-L1670】
 - **Validation & attestation panels** – Trigger note validation, review
   reimbursement details, record attestation metadata and monitor dispatch
-  results without leaving the workspace.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1433-L1479】
+  results without leaving the workspace.【F:src/components/WorkflowView.jsx†L130-L370】
+- **Live coding stream awareness** – The finalization wizard surfaces
+  websocket status badges, reuses streaming suggestions when available
+  and only hits REST fallbacks when streams are offline.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L69-L118】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L832-L1140】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1600-L1652】
+
 
 ### Administrative & operational views
 

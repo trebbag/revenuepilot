@@ -10,6 +10,12 @@ import { Drafts } from "./components/Drafts"
 import { Schedule, type ScheduleChartUploadStatus } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
+import type {
+  CollaborationStreamState,
+  ComplianceIssue,
+  LiveCodeSuggestion,
+  StreamConnectionState
+} from "./components/NoteEditor"
 import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
 import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
@@ -142,6 +148,46 @@ export function ProtectedApp() {
   } | null>(null)
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
   const [noteEditorContent, setNoteEditorContent] = useState<string>(activeDraft?.content ?? "")
+  const [liveComplianceIssues, setLiveComplianceIssues] = useState<ComplianceIssue[]>([])
+  const [complianceStreamState, setComplianceStreamState] = useState<StreamConnectionState>({
+    status: 'idle',
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null
+  })
+  const [liveCodeSuggestions, setLiveCodeSuggestions] = useState<LiveCodeSuggestion[]>([])
+  const [codeStreamState, setCodeStreamState] = useState<StreamConnectionState>({
+    status: 'idle',
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null
+  })
+  const [collaborationState, setCollaborationState] = useState<CollaborationStreamState | null>(null)
+
+  const handleComplianceStreamUpdate = useCallback(
+    (issues: ComplianceIssue[], state: StreamConnectionState) => {
+      setLiveComplianceIssues(issues)
+      setComplianceStreamState(state)
+    },
+    []
+  )
+
+  const handleCodeStreamUpdate = useCallback(
+    (suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => {
+      setLiveCodeSuggestions(suggestions)
+      setCodeStreamState(state)
+    },
+    []
+  )
+
+  const handleCollaborationStreamUpdate = useCallback(
+    (state: CollaborationStreamState) => {
+      setCollaborationState(state)
+    },
+    []
+  )
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
   const [finalizationRequest, setFinalizationRequest] = useState<FinalizationWizardLaunchOptions | null>(null)
   const finalizationReturnViewRef = useRef<ViewKey>("app")
@@ -274,9 +320,18 @@ export function ProtectedApp() {
       ...rest,
       displayMode: displayMode ?? 'embedded',
       initialPreFinalizeResult: initialPreFinalizeResult ?? snapshot?.lastPreFinalize ?? null,
-      initialSessionSnapshot: snapshot ?? null
+      initialSessionSnapshot: snapshot ?? null,
+      streamingCodeSuggestions: liveCodeSuggestions,
+      codesConnection: codeStreamState,
+      complianceConnection: complianceStreamState
     }
-  }, [finalizationRequest, finalizationSessionSnapshot])
+  }, [
+    finalizationRequest,
+    finalizationSessionSnapshot,
+    liveCodeSuggestions,
+    codeStreamState,
+    complianceStreamState
+  ])
 
   const [appointmentsState, setAppointmentsState] = useState<ScheduleDataState>({
     data: null,
@@ -1620,6 +1675,9 @@ export function ProtectedApp() {
                       recentFinalization={recentFinalization}
                       onRecentFinalizationHandled={() => setRecentFinalization(null)}
                       onOpenFinalization={handleOpenFinalization}
+                      onComplianceStreamUpdate={handleComplianceStreamUpdate}
+                      onCodeStreamUpdate={handleCodeStreamUpdate}
+                      onCollaborationStreamUpdate={handleCollaborationStreamUpdate}
                     />
                     <SelectedCodesBar
                       selectedCodes={selectedCodes}
@@ -1643,6 +1701,10 @@ export function ProtectedApp() {
                         addedCodes={addedCodes}
                         noteContent={noteEditorContent}
                         selectedCodesList={selectedCodesList}
+                        streamingCompliance={liveComplianceIssues}
+                        streamingCodes={liveCodeSuggestions}
+                        complianceConnection={complianceStreamState}
+                        codesConnection={codeStreamState}
                       />
                     </ResizablePanel>
                   </>

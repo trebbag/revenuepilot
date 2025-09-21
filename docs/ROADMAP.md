@@ -23,9 +23,10 @@ focuses on turning the pilot into a production-ready product.
 
 ## P1 – Experience & scaling
 
-- **Real-time collaboration** – Wire the existing websocket endpoints for
-  transcription, compliance and code suggestions into the React app to
-  support live updates when multiple users share an encounter.
+- **Real-time collaboration** – Build on the newly integrated
+  transcription, compliance, coding and collaboration websockets by
+  adding shared cursors, conflict resolution tooling and offline replay
+  for concurrent edits.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1180-L1680】【F:revenuepilot-frontend/src/components/SuggestionPanel.tsx†L620-L972】
 - **Analytics deep dives** – Extend the dashboard with clinic, provider
   and payer filters using the aggregates exposed under
   `/api/analytics/*`. Allow scheduled PDF/email exports for leadership.

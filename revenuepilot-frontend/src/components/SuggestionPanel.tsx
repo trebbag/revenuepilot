@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
@@ -25,6 +25,7 @@ import {
   AlertTriangle
 } from "lucide-react"
 import { apiFetchJson } from "../lib/api"
+import type { ComplianceIssue, LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
 
 interface SuggestionPanelProps {
   onClose: () => void
@@ -39,6 +40,10 @@ interface SuggestionPanelProps {
   addedCodes?: string[]
   noteContent?: string
   selectedCodesList?: SelectedCodeItem[]
+  streamingCompliance?: ComplianceIssue[]
+  streamingCodes?: LiveCodeSuggestion[]
+  complianceConnection?: StreamConnectionState
+  codesConnection?: StreamConnectionState
 }
 
 interface SelectedCodeItem {
@@ -104,7 +109,19 @@ interface PreventionSuggestionItem {
   rationale?: string
 }
 
-export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCode, addedCodes = [], noteContent = "", selectedCodesList = [] }: SuggestionPanelProps) {
+export function SuggestionPanel({
+  onClose,
+  selectedCodes,
+  onUpdateCodes,
+  onAddCode,
+  addedCodes = [],
+  noteContent = "",
+  selectedCodesList = [],
+  streamingCompliance,
+  streamingCodes,
+  complianceConnection,
+  codesConnection
+}: SuggestionPanelProps) {
   const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
   const [codesLoading, setCodesLoading] = useState(false)
   const [codesError, setCodesError] = useState<string | null>(null)
@@ -159,6 +176,150 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     [differentialSuggestions, addedCodes]
   )
 
+  const codesStreamStatus = codesConnection?.status ?? 'idle'
+  const complianceStreamStatus = complianceConnection?.status ?? 'idle'
+
+  const codesStreamOpen = codesStreamStatus === 'open'
+  const complianceStreamOpen = complianceStreamStatus === 'open'
+
+  const codesStreamAvailable = codesStreamOpen || codesStreamStatus === 'connecting'
+  const complianceStreamAvailable =
+    complianceStreamOpen || complianceStreamStatus === 'connecting'
+
+  const shouldFetchCodes = !codesStreamAvailable
+  const shouldFetchCompliance = !complianceStreamAvailable
+
+  const mapStreamingCodes = useCallback((input?: LiveCodeSuggestion[]): CodeSuggestionItem[] => {
+    if (!Array.isArray(input)) {
+      return []
+    }
+    return input
+      .map((entry, index) => {
+        const codeValue = typeof entry.code === 'string' ? entry.code.trim() : ''
+        const descriptionValue = typeof entry.description === 'string' ? entry.description.trim() : ''
+        const rationaleValue = typeof entry.rationale === 'string' ? entry.rationale.trim() : ''
+        const identifier = codeValue || descriptionValue || entry.id || `live-${index + 1}`
+        const rawConfidence = typeof entry.confidence === 'number' ? entry.confidence : undefined
+        const normalizedConfidence =
+          rawConfidence === undefined
+            ? undefined
+            : rawConfidence <= 1
+              ? Math.round(Math.max(0, Math.min(1, rawConfidence)) * 100)
+              : Math.round(Math.min(rawConfidence, 100))
+        return {
+          code: codeValue || identifier,
+          type: entry.type || 'AI',
+          description: descriptionValue || rationaleValue || identifier,
+          rationale: rationaleValue || descriptionValue || codeValue || identifier,
+          reasoning: rationaleValue || undefined,
+          confidence: normalizedConfidence,
+          whatItIs: descriptionValue || undefined
+        } satisfies CodeSuggestionItem
+      })
+      .filter((entry): entry is CodeSuggestionItem => Boolean(entry))
+  }, [])
+
+  const mapStreamingCompliance = useCallback(
+    (input?: ComplianceIssue[]): ComplianceAlertItem[] => {
+      if (!Array.isArray(input)) {
+        return []
+      }
+      return input.map(issue => ({
+        text: issue.title || issue.description,
+        category: issue.category,
+        priority: issue.severity,
+        confidence:
+          typeof issue.confidence === 'number'
+            ? Math.round(issue.confidence)
+            : undefined,
+        reasoning: issue.details || issue.description
+      }))
+    },
+    []
+  )
+
+  useEffect(() => {
+    if (!codesStreamOpen) {
+      return
+    }
+    setCodesLoading(false)
+    setCodesError(null)
+    setCodeSuggestions(mapStreamingCodes(streamingCodes))
+  }, [mapStreamingCodes, streamingCodes, codesStreamOpen])
+
+  useEffect(() => {
+    if (!complianceStreamOpen) {
+      return
+    }
+    setComplianceLoading(false)
+    setComplianceError(null)
+    setComplianceAlerts(mapStreamingCompliance(streamingCompliance))
+  }, [mapStreamingCompliance, streamingCompliance, complianceStreamOpen])
+
+  const renderConnectionBadge = useCallback(
+    (label: string, state?: StreamConnectionState) => {
+      const status = state?.status ?? 'idle'
+      let text = 'Idle'
+      let className = 'border-border bg-muted/50 text-muted-foreground'
+      if (status === 'open') {
+        text = 'Live'
+        className = 'border-emerald-200 bg-emerald-100 text-emerald-700'
+      } else if (status === 'connecting') {
+        text = 'Connecting'
+        className = 'border-amber-200 bg-amber-100 text-amber-700'
+      } else if (status === 'error') {
+        text = 'Offline'
+        className = 'border-red-200 bg-red-100 text-red-700'
+      } else if (status === 'closed') {
+        text = 'Retrying'
+        className = 'border-slate-200 bg-slate-200 text-slate-700'
+      }
+      return (
+        <Badge key={label} variant="outline" className={`gap-2 px-3 py-1 text-xs font-medium ${className}`}>
+          <span>{label}</span>
+          <span>{text}</span>
+        </Badge>
+      )
+    },
+    []
+  )
+
+  const describeConnectionStatus = useCallback((state?: StreamConnectionState) => {
+    const status = state?.status ?? 'idle'
+    if (status === 'open') {
+      return 'Live'
+    }
+    if (status === 'connecting') {
+      return 'Connecting'
+    }
+    if (status === 'error') {
+      return 'Offline'
+    }
+    if (status === 'closed') {
+      return 'Retrying'
+    }
+    return 'Idle'
+  }, [])
+
+  const describeConnectionDetail = useCallback((state?: StreamConnectionState) => {
+    const status = state?.status ?? 'idle'
+    if (status === 'open') {
+      return 'Live updates are streaming in real time.'
+    }
+    if (status === 'connecting') {
+      return 'Connecting to the live stream…'
+    }
+    if (status === 'error') {
+      return state?.lastError
+        ? `Live stream error: ${state.lastError}`
+        : 'Live stream unavailable.'
+    }
+    if (status === 'closed') {
+      return 'Live stream disconnected. Retrying shortly.'
+    }
+    return 'Waiting for the live stream.'
+  }, [])
+
   useEffect(() => {
     const trimmed = noteContent?.trim()
 
@@ -171,6 +332,13 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
 
     const controller = new AbortController()
     const signal = controller.signal
+
+    if (!shouldFetchCodes) {
+      setCodesLoading(false)
+    }
+    if (!shouldFetchCompliance) {
+      setComplianceLoading(false)
+    }
 
     const fetchCodes = async () => {
       setCodesLoading(true)
@@ -288,8 +456,12 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     }
 
     const debounceId = window.setTimeout(() => {
-      fetchCodes()
-      fetchCompliance()
+      if (shouldFetchCodes) {
+        void fetchCodes()
+      }
+      if (shouldFetchCompliance) {
+        void fetchCompliance()
+      }
       fetchDifferentials()
     }, 500)
 
@@ -297,7 +469,7 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
       controller.abort()
       window.clearTimeout(debounceId)
     }
-  }, [noteContent, codesInUse])
+  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -503,8 +675,19 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
     <TooltipProvider>
       <div className="flex flex-col h-full border-l bg-sidebar">
         {/* Header */}
-        <div className="border-b p-4 flex justify-between items-center flex-shrink-0">
-          <h2 className="font-medium">Suggestions</h2>
+        <div className="border-b p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between flex-shrink-0">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="font-medium text-base">Suggestions</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                {renderConnectionBadge('Codes', codesConnection)}
+                {renderConnectionBadge('Compliance', complianceConnection)}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Live AI recommendations stream in real time when connected.
+            </p>
+          </div>
           <Button variant="ghost" size="sm" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
@@ -543,6 +726,30 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Codes Section */}
                         {config.key === 'codes' && (
                           <div className="space-y-3">
+                            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              <span>
+                                Stream status:{' '}
+                                <span className="font-medium text-foreground">
+                                  {describeConnectionStatus(codesConnection)}
+                                </span>
+                                {shouldFetchCodes && (
+                                  <span className="ml-1 font-medium text-amber-600">
+                                    • REST fallback active
+                                  </span>
+                                )}
+                              </span>
+                              <span
+                                className={
+                                  codesStreamStatus === 'error'
+                                    ? 'text-destructive'
+                                    : codesStreamStatus === 'open'
+                                      ? 'text-emerald-600'
+                                      : undefined
+                                }
+                              >
+                                {describeConnectionDetail(codesConnection)}
+                              </span>
+                            </div>
                             {codesLoading && (
                               <p className="text-sm text-muted-foreground">Analyzing note for coding opportunities...</p>
                             )}
@@ -550,7 +757,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                               <p className="text-sm text-destructive">{codesError}</p>
                             )}
                             {!codesLoading && !codesError && filteredCodeSuggestions.length === 0 && (
-                              <p className="text-sm text-muted-foreground">No code suggestions yet. Start documenting to receive recommendations.</p>
+                              <p className="text-sm text-muted-foreground">
+                                {codesStreamOpen
+                                  ? 'Connected — waiting for live coding suggestions…'
+                                  : 'No code suggestions yet. Start documenting to receive recommendations.'}
+                              </p>
                             )}
                             {filteredCodeSuggestions.map((code, index) => {
                               const codeTypeColors: Record<string, string> = {
@@ -704,6 +915,30 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                         {/* Compliance Section */}
                         {config.key === 'compliance' && (
                           <div className="space-y-3">
+                            <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                              <span>
+                                Stream status:{' '}
+                                <span className="font-medium text-foreground">
+                                  {describeConnectionStatus(complianceConnection)}
+                                </span>
+                                {shouldFetchCompliance && (
+                                  <span className="ml-1 font-medium text-amber-600">
+                                    • REST fallback active
+                                  </span>
+                                )}
+                              </span>
+                              <span
+                                className={
+                                  complianceStreamStatus === 'error'
+                                    ? 'text-destructive'
+                                    : complianceStreamStatus === 'open'
+                                      ? 'text-emerald-600'
+                                      : undefined
+                                }
+                              >
+                                {describeConnectionDetail(complianceConnection)}
+                              </span>
+                            </div>
                             {complianceLoading && (
                               <p className="text-sm text-muted-foreground">Reviewing documentation for compliance issues...</p>
                             )}
@@ -711,7 +946,11 @@ export function SuggestionPanel({ onClose, selectedCodes, onUpdateCodes, onAddCo
                               <p className="text-sm text-destructive">{complianceError}</p>
                             )}
                             {!complianceLoading && !complianceError && complianceAlerts.length === 0 && (
-                              <p className="text-sm text-muted-foreground">No compliance issues detected. Keep documenting thoroughly.</p>
+                              <p className="text-sm text-muted-foreground">
+                                {complianceStreamOpen
+                                  ? 'Connected — monitoring for live compliance feedback…'
+                                  : 'No compliance issues detected. Keep documenting thoroughly.'}
+                              </p>
                             )}
                             {complianceAlerts.map((alert, index) => (
                               <div key={`${alert.text}-${index}`} className="p-3 rounded-lg border bg-muted/20 space-y-2">

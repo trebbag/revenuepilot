@@ -798,7 +798,8 @@ function Settings({ settings, updateSettings }) {
         Offline (deterministic) mode
       </label>
       <p style={{ fontSize: '0.9rem', color: '#6B7280', marginTop: '-0.5rem' }}>
-        When enabled, the app returns deterministic offline responses instead of calling remote models.
+        When enabled, the app returns deterministic offline responses instead of
+        calling remote models.
       </p>
 
       <label style={{ display: 'block', marginBottom: '0.5rem' }}>

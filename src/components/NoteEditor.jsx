@@ -251,10 +251,13 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (!target) return;
     if (payload?.event === 'connected') {
       if (payload.sessionId) target.sessionId = String(payload.sessionId);
-      else if (payload.session_id) target.sessionId = String(payload.session_id);
+      else if (payload.session_id)
+        target.sessionId = String(payload.session_id);
     }
-    if (typeof payload?.eventId === 'number') target.lastEventId = payload.eventId;
-    else if (typeof payload?.event_id === 'number') target.lastEventId = payload.event_id;
+    if (typeof payload?.eventId === 'number')
+      target.lastEventId = payload.eventId;
+    else if (typeof payload?.event_id === 'number')
+      target.lastEventId = payload.event_id;
   };
   const formatSpeakerLabel = (value) => {
     const normalized = (value || '').toString().trim().toLowerCase();
@@ -279,10 +282,19 @@ const NoteEditor = forwardRef(function NoteEditor(
     }
     if (typeof entry !== 'object') return null;
     const idValue =
-      entry.userId || entry.id || entry.user || entry.email || entry.handle || entry.name;
+      entry.userId ||
+      entry.id ||
+      entry.user ||
+      entry.email ||
+      entry.handle ||
+      entry.name;
     if (!idValue) return null;
     const nameValue =
-      entry.displayName || entry.name || entry.fullName || entry.userId || String(idValue);
+      entry.displayName ||
+      entry.name ||
+      entry.fullName ||
+      entry.userId ||
+      String(idValue);
     const colour = entry.color || entry.colour || entry.presenceColor || '';
     return {
       id: String(idValue),
@@ -388,7 +400,11 @@ const NoteEditor = forwardRef(function NoteEditor(
       }
       return String(item);
     };
-    const mergedCodes = uniqueBy(streamingCodes, arrayOrEmpty(base.codes), codeKey);
+    const mergedCodes = uniqueBy(
+      streamingCodes,
+      arrayOrEmpty(base.codes),
+      codeKey,
+    );
     const mergedCompliance = uniqueBy(
       streamingCompliance,
       arrayOrEmpty(base.compliance),
@@ -425,11 +441,14 @@ const NoteEditor = forwardRef(function NoteEditor(
     onPayerChangeRef.current = onPayerChange;
   }, [onPayerChange]);
 
-  useEffect(() => () => {
-    if (patientSuggestionHideRef.current) {
-      clearTimeout(patientSuggestionHideRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (patientSuggestionHideRef.current) {
+        clearTimeout(patientSuggestionHideRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (mode === 'draft') setLocalValue(value || '');
@@ -507,7 +526,11 @@ const NoteEditor = forwardRef(function NoteEditor(
       const hydratedSegments = Array.isArray(data.segments)
         ? data.segments.map((seg) => {
             const speakerRaw =
-              seg?.speaker || seg?.speakerLabel || seg?.role || seg?.participant || '';
+              seg?.speaker ||
+              seg?.speakerLabel ||
+              seg?.role ||
+              seg?.participant ||
+              '';
             const text = seg?.text || seg?.transcript || '';
             return {
               ...seg,
@@ -603,9 +626,9 @@ const NoteEditor = forwardRef(function NoteEditor(
         const valid = Boolean(result?.valid);
         const message = valid
           ? t('noteEditor.encounterValid')
-          : (result?.errors && result.errors.length
-              ? result.errors[0]
-              : t('noteEditor.encounterInvalid'));
+          : result?.errors && result.errors.length
+            ? result.errors[0]
+            : t('noteEditor.encounterInvalid');
         setEncounterStatus({
           state: valid ? 'valid' : 'invalid',
           message,
@@ -613,9 +636,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         });
         setValidatedEncounter(result);
         if (encounterCb) {
-          const emittedId = valid
-            ? String(result?.encounterId ?? term)
-            : '';
+          const emittedId = valid ? String(result?.encounterId ?? term) : '';
           if (emittedEncounterRef.current !== emittedId) {
             emittedEncounterRef.current = emittedId;
             encounterCb(emittedId, result);
@@ -837,8 +858,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     } catch (err) {
       if (!options.skipStateUpdate) {
         setSessionError(
-          t('noteEditor.visitSessionError') ||
-            'Failed to update visit session',
+          t('noteEditor.visitSessionError') || 'Failed to update visit session',
         );
       }
     }
@@ -923,8 +943,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       .catch(() => {
         if (cancelled) return;
         setSessionError(
-          t('noteEditor.visitSessionError') ||
-            'Failed to start visit session',
+          t('noteEditor.visitSessionError') || 'Failed to start visit session',
         );
         sessionKeyRef.current = '';
       });
@@ -960,7 +979,11 @@ const NoteEditor = forwardRef(function NoteEditor(
       visit_session_id: sessionId,
       encounter_id: visitSession?.encounterId || '',
       patient_id:
-        visitSession?.patientId || selectedPatientId || patientInput || patientId || '',
+        visitSession?.patientId ||
+        selectedPatientId ||
+        patientInput ||
+        patientId ||
+        '',
     };
     const subscriptions = {};
     const dynamicParamsFor = (key) => () => {
@@ -976,10 +999,18 @@ const NoteEditor = forwardRef(function NoteEditor(
       touchStreamMetadata('transcription', payload);
       if (payload.event === 'connected') return;
       const text =
-        payload.transcript || payload.text || payload.message || payload.partial || '';
+        payload.transcript ||
+        payload.text ||
+        payload.message ||
+        payload.partial ||
+        '';
       if (!text) return;
       const speakerRaw =
-        payload.speakerLabel || payload.speaker || payload.role || payload.participant || '';
+        payload.speakerLabel ||
+        payload.speaker ||
+        payload.role ||
+        payload.participant ||
+        '';
       const speakerKey = resolveSpeakerKey(speakerRaw);
       const speakerLabel = formatSpeakerLabel(speakerRaw);
       setCurrentSpeaker(speakerKey);
@@ -990,7 +1021,8 @@ const NoteEditor = forwardRef(function NoteEditor(
             (item) =>
               item?.isInterim &&
               (item.speakerKey === speakerKey ||
-                (item.speaker || '').toLowerCase() === speakerLabel.toLowerCase()),
+                (item.speaker || '').toLowerCase() ===
+                  speakerLabel.toLowerCase()),
           );
           const interimEntry = {
             speaker: speakerLabel,
@@ -1009,7 +1041,8 @@ const NoteEditor = forwardRef(function NoteEditor(
             !(
               item?.isInterim &&
               (item.speakerKey === speakerKey ||
-                (item.speaker || '').toLowerCase() === speakerLabel.toLowerCase())
+                (item.speaker || '').toLowerCase() ===
+                  speakerLabel.toLowerCase())
             ),
         );
         filtered.push({
@@ -1043,11 +1076,17 @@ const NoteEditor = forwardRef(function NoteEditor(
           const message =
             typeof issue === 'string'
               ? issue
-              : issue.message || issue.summary || issue.description || issue.code;
+              : issue.message ||
+                issue.summary ||
+                issue.description ||
+                issue.code;
           if (!message) return;
           items.push({
             id: `${
-              payload.eventId ?? payload.analysisId ?? payload.timestamp ?? 'issue'
+              payload.eventId ??
+              payload.analysisId ??
+              payload.timestamp ??
+              'issue'
             }-${index}`,
             text: message,
             severity: issue.severity || payload.severity || 'info',
@@ -1059,7 +1098,12 @@ const NoteEditor = forwardRef(function NoteEditor(
         const message = payload.message || payload.description || '';
         if (message) {
           items.push({
-            id: String(payload.eventId ?? payload.analysisId ?? payload.timestamp ?? message),
+            id: String(
+              payload.eventId ??
+                payload.analysisId ??
+                payload.timestamp ??
+                message,
+            ),
             text: message,
             severity: payload.severity || 'info',
             live: true,
@@ -1070,7 +1114,10 @@ const NoteEditor = forwardRef(function NoteEditor(
       if (!items.length) return;
       setStreamingCompliance((prev) => {
         const map = new Map(
-          (Array.isArray(prev) ? prev : []).map((entry) => [entry.id || entry.text, entry]),
+          (Array.isArray(prev) ? prev : []).map((entry) => [
+            entry.id || entry.text,
+            entry,
+          ]),
         );
         items.forEach((entry) => {
           map.set(entry.id || entry.text, entry);
@@ -1107,7 +1154,10 @@ const NoteEditor = forwardRef(function NoteEditor(
       };
       setStreamingCodes((prev) => {
         const map = new Map(
-          (Array.isArray(prev) ? prev : []).map((item) => [item.id || item.code || item.rationale, item]),
+          (Array.isArray(prev) ? prev : []).map((item) => [
+            item.id || item.code || item.rationale,
+            item,
+          ]),
         );
         map.set(entry.id || entry.code || entry.rationale, entry);
         return Array.from(map.values()).slice(-50);
@@ -1117,10 +1167,14 @@ const NoteEditor = forwardRef(function NoteEditor(
       if (!payload) return;
       touchStreamMetadata('collaboration', payload);
       if (payload.event === 'connected') return;
-      if (payload.event === 'collaboration_clear' || payload.presence === 'clear') {
+      if (
+        payload.event === 'collaboration_clear' ||
+        payload.presence === 'clear'
+      ) {
         setCollaborators([]);
       }
-      const participants = payload.participants || payload.users || payload.presence;
+      const participants =
+        payload.participants || payload.users || payload.presence;
       if (Array.isArray(participants)) {
         const normalised = participants
           .map((entry) => normaliseCollaborator(entry))
@@ -1138,9 +1192,14 @@ const NoteEditor = forwardRef(function NoteEditor(
           });
         }
       }
-      if (payload.event === 'collaboration_left' && (payload.userId || payload.user)) {
+      if (
+        payload.event === 'collaboration_left' &&
+        (payload.userId || payload.user)
+      ) {
         const departing = String(payload.userId || payload.user);
-        setCollaborators((prev) => prev.filter((person) => person.id !== departing));
+        setCollaborators((prev) =>
+          prev.filter((person) => person.id !== departing),
+        );
       }
       if (payload.conflicts !== undefined) {
         const list = Array.isArray(payload.conflicts)
@@ -1403,7 +1462,13 @@ const NoteEditor = forwardRef(function NoteEditor(
           })}
         </div>
         {collaborationStatus ? (
-          <span style={{ marginLeft: 'auto', color: '#4b5563', fontSize: '0.85rem' }}>
+          <span
+            style={{
+              marginLeft: 'auto',
+              color: '#4b5563',
+              fontSize: '0.85rem',
+            }}
+          >
             {t('noteEditor.collaborationStatus', {
               defaultValue: 'Status: {{status}}',
               status: collaborationStatus,
@@ -1425,14 +1490,27 @@ const NoteEditor = forwardRef(function NoteEditor(
           marginBottom: '0.75rem',
         }}
       >
-        <strong>{t('noteEditor.collaborationConflict', 'Collaboration conflict')}</strong>
-        <ul style={{ marginTop: '0.5rem', marginBottom: 0, paddingLeft: '1.25rem' }}>
+        <strong>
+          {t('noteEditor.collaborationConflict', 'Collaboration conflict')}
+        </strong>
+        <ul
+          style={{
+            marginTop: '0.5rem',
+            marginBottom: 0,
+            paddingLeft: '1.25rem',
+          }}
+        >
           {collaborationConflicts.map((conflict, idx) => {
             const text =
               typeof conflict === 'string'
                 ? conflict
                 : conflict?.message || conflict?.text || conflict?.description;
-            return <li key={idx}>{text || t('noteEditor.collaborationUnknown', 'An issue occurred')}</li>;
+            return (
+              <li key={idx}>
+                {text ||
+                  t('noteEditor.collaborationUnknown', 'An issue occurred')}
+              </li>
+            );
           })}
         </ul>
       </div>
@@ -1448,8 +1526,13 @@ const NoteEditor = forwardRef(function NoteEditor(
         marginBottom: '0.75rem',
       }}
     >
-      <label htmlFor={patientFieldId} style={{ display: 'flex', flexDirection: 'column' }}>
-        <span style={{ fontWeight: 600 }}>{t('noteEditor.patientIdLabel')}</span>
+      <label
+        htmlFor={patientFieldId}
+        style={{ display: 'flex', flexDirection: 'column' }}
+      >
+        <span style={{ fontWeight: 600 }}>
+          {t('noteEditor.patientIdLabel')}
+        </span>
         <input
           id={patientFieldId}
           value={patientInput}
@@ -1461,7 +1544,9 @@ const NoteEditor = forwardRef(function NoteEditor(
         htmlFor={encounterFieldId}
         style={{ display: 'flex', flexDirection: 'column' }}
       >
-        <span style={{ fontWeight: 600 }}>{t('noteEditor.encounterIdLabel')}</span>
+        <span style={{ fontWeight: 600 }}>
+          {t('noteEditor.encounterIdLabel')}
+        </span>
         <input
           id={encounterFieldId}
           value={encounterInput}
@@ -1557,8 +1642,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
 
   const patientSuggestionListId =
-    (id ? `${id}-patient-suggestions` : 'note-patient-suggestions') +
-    '-menu';
+    (id ? `${id}-patient-suggestions` : 'note-patient-suggestions') + '-menu';
   const encounterStatusColor =
     encounterStatus.state === 'valid'
       ? '#2f6b2f'
@@ -1602,7 +1686,9 @@ const NoteEditor = forwardRef(function NoteEditor(
             borderRadius: '4px',
           }}
         />
-        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+        <small
+          style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}
+        >
           {t('noteEditor.patientLookupHint')}
         </small>
         {selectedPatientId && (
@@ -1722,7 +1808,9 @@ const NoteEditor = forwardRef(function NoteEditor(
             borderRadius: '4px',
           }}
         />
-        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+        <small
+          style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}
+        >
           {t('noteEditor.encounterHint')}
         </small>
         {encounterStatus.message && (
@@ -1788,7 +1876,9 @@ const NoteEditor = forwardRef(function NoteEditor(
             borderRadius: '4px',
           }}
         />
-        <small style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}>
+        <small
+          style={{ display: 'block', marginTop: '0.25rem', color: '#555' }}
+        >
           {t('noteEditor.payerHint')}
         </small>
       </div>
@@ -1856,8 +1946,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     const exportEncounterId = (() => {
       if (validatedEncounter?.encounterId || validatedEncounter?.encounter_id)
         return String(
-          validatedEncounter.encounterId ??
-            validatedEncounter.encounter_id,
+          validatedEncounter.encounterId ?? validatedEncounter.encounter_id,
         );
       if (encounterInput) return encounterInput;
       if (encounterId) return String(encounterId);

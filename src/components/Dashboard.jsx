@@ -93,7 +93,9 @@ function Dashboard() {
   const workflowSummary = alerts?.workflow || {};
   const exportSummary = alerts?.exports || {};
   const aiSummary = alerts?.ai || {};
-  const alertsUpdated = alerts?.updatedAt ? formatTimestamp(alerts.updatedAt) : null;
+  const alertsUpdated = alerts?.updatedAt
+    ? formatTimestamp(alerts.updatedAt)
+    : null;
 
   const workflowLast = workflowSummary.lastCompletion;
   const workflowLastText = workflowLast
@@ -885,7 +887,11 @@ function Dashboard() {
           className="dashboard-alerts"
           style={{ marginBottom: '1.5rem' }}
         >
-          <h3>{t('dashboard.alerts.title', { defaultValue: 'Operational alerts' })}</h3>
+          <h3>
+            {t('dashboard.alerts.title', {
+              defaultValue: 'Operational alerts',
+            })}
+          </h3>
           {alertsUpdated && (
             <p style={{ marginTop: 0 }}>
               {t('dashboard.alerts.lastUpdated', {
@@ -914,7 +920,9 @@ function Dashboard() {
                 }}
               >
                 <h4 style={{ marginTop: 0 }}>{card.title}</h4>
-                <p style={{ fontSize: '1.5rem', fontWeight: 600 }}>{card.count}</p>
+                <p style={{ fontSize: '1.5rem', fontWeight: 600 }}>
+                  {card.count}
+                </p>
                 <p style={{ margin: '0.25rem 0' }}>{card.last}</p>
                 {card.detail && (
                   <p style={{ fontSize: '0.875rem', color: '#4b5563' }}>

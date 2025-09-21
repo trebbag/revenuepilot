@@ -10,6 +10,8 @@ import {
   type WizardStepOverride
 } from "../features/finalization"
 import { useSession } from "../contexts/SessionContext"
+import type { LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
+import { Badge } from "./ui/badge"
 import type {
   PreFinalizeCheckResponse,
   StoredFinalizationSession,
@@ -80,6 +82,9 @@ interface FinalizationWizardAdapterProps {
   displayMode?: "overlay" | "embedded"
   initialPreFinalizeResult?: PreFinalizeCheckResponse | null
   initialSessionSnapshot?: StoredFinalizationSession | null
+  streamingCodeSuggestions?: LiveCodeSuggestion[]
+  codesConnection?: StreamConnectionState
+  complianceConnection?: StreamConnectionState
 }
 
 export type FinalizationWizardLaunchOptions = Omit<
@@ -587,7 +592,10 @@ export function FinalizationWizardAdapter({
   onError,
   displayMode = "overlay",
   initialPreFinalizeResult = null,
-  initialSessionSnapshot = null
+  initialSessionSnapshot = null,
+  streamingCodeSuggestions,
+  codesConnection,
+  complianceConnection
 }: FinalizationWizardAdapterProps) {
   const { state: sessionState, actions: sessionActions } = useSession()
   const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(
@@ -805,6 +813,56 @@ export function FinalizationWizardAdapter({
     return new Set(identifiers)
   }, [selectedCodesList])
 
+  const mapStreamingToWizard = useCallback(
+    (suggestions: LiveCodeSuggestion[]): WizardCodeItem[] => {
+      return suggestions
+        .map((item, index) => {
+          const codeValue = typeof item.code === "string" ? item.code.trim() : ""
+          const descriptionValue = typeof item.description === "string" ? item.description.trim() : ""
+          const rationaleValue = typeof item.rationale === "string" ? item.rationale.trim() : ""
+          const identifier =
+            (typeof item.id === "string" && item.id.trim().length > 0
+              ? item.id.trim()
+              : codeValue || descriptionValue) || `stream-${index + 1}`
+          if (selectedCodeSet.has(identifier.toUpperCase())) {
+            return null
+          }
+          const confidence =
+            typeof item.confidence === "number" && Number.isFinite(item.confidence)
+              ? item.confidence
+              : undefined
+          return {
+            id: identifier,
+            code: codeValue || undefined,
+            title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
+            description: descriptionValue || undefined,
+            details: rationaleValue || undefined,
+            aiReasoning: rationaleValue || undefined,
+            confidence,
+            status: "pending"
+          } satisfies WizardCodeItem
+        })
+        .filter((entry): entry is WizardCodeItem => Boolean(entry))
+    },
+    [selectedCodeSet]
+  )
+
+  const streamingCodesAvailable = useMemo(
+    () =>
+      codesConnection?.status === "open" &&
+      Array.isArray(streamingCodeSuggestions) &&
+      streamingCodeSuggestions.length > 0,
+    [codesConnection?.status, streamingCodeSuggestions]
+  )
+
+  const streamingWizardSuggestions = useMemo(
+    () =>
+      streamingCodesAvailable
+        ? mapStreamingToWizard(streamingCodeSuggestions ?? [])
+        : [],
+    [mapStreamingToWizard, streamingCodeSuggestions, streamingCodesAvailable]
+  )
+
   const initializationInput = useMemo(() => {
     const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
     const sessionNoteId = typeof sessionData?.noteId === "string" ? sessionData.noteId.trim() : ""
@@ -991,6 +1049,11 @@ export function FinalizationWizardAdapter({
       return
     }
 
+    if (streamingCodesAvailable) {
+      setWizardSuggestions(streamingWizardSuggestions)
+      return
+    }
+
     let cancelled = false
 
     const fetchSuggestions = async () => {
@@ -1045,7 +1108,26 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [fetchWithAuth, isOpen, noteContent, onError, selectedCodeSet, sessionData?.noteContent])
+  }, [
+    fetchWithAuth,
+    isOpen,
+    noteContent,
+    onError,
+    selectedCodeSet,
+    sessionData?.noteContent,
+    streamingCodesAvailable,
+    streamingWizardSuggestions
+  ])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+    if (!streamingCodesAvailable) {
+      return
+    }
+    setWizardSuggestions(streamingWizardSuggestions)
+  }, [isOpen, streamingCodesAvailable, streamingWizardSuggestions])
 
   const reimbursementLookup = useMemo(() => {
     const map = new Map<string, number>()
@@ -1515,31 +1597,69 @@ export function FinalizationWizardAdapter({
     [onClose]
   )
 
+  const renderConnectionBadge = useCallback(
+    (label: string, state?: StreamConnectionState) => {
+      const status = state?.status ?? "idle"
+      let display = "Idle"
+      let className = "border-border bg-muted/60 text-muted-foreground"
+      if (status === "open") {
+        display = "Live"
+        className = "border-emerald-200 bg-emerald-100 text-emerald-700"
+      } else if (status === "connecting") {
+        display = "Connecting"
+        className = "border-amber-200 bg-amber-100 text-amber-700"
+      } else if (status === "error") {
+        display = "Offline"
+        className = "border-red-200 bg-red-100 text-red-700"
+      } else if (status === "closed") {
+        display = "Retrying"
+        className = "border-slate-200 bg-slate-200 text-slate-700"
+      }
+      return (
+        <Badge key={label} variant="outline" className={`gap-2 px-3 py-1 text-xs font-medium ${className}`}>
+          <span>{label}</span>
+          <span>{display}</span>
+        </Badge>
+      )
+    },
+    []
+  )
+
+  const connectionBanner = (
+    <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border bg-muted/40 px-4 py-2">
+      {renderConnectionBadge("Codes", codesConnection)}
+      {renderConnectionBadge("Compliance", complianceConnection)}
+    </div>
+  )
+
   if (!isOpen) {
     return null
   }
 
   const wizard = (
-    <FinalizationWizard
-      selectedCodes={selectedWizardCodes}
-      suggestedCodes={wizardSuggestions}
-      complianceItems={complianceWizardItems}
-      noteContent={sessionData?.noteContent ?? noteContent ?? ""}
-      patientMetadata={patientMetadata}
-      reimbursementSummary={reimbursementSummary}
-      transcriptEntries={sanitizedTranscripts}
-      blockingIssues={combinedBlockingIssues}
-      stepOverrides={mergedStepOverrides.length ? mergedStepOverrides : undefined}
-      initialStep={derivedCurrentStep}
-      canFinalize={validationState.canFinalize}
-      onFinalize={handleFinalize}
-      onStepChange={handleWizardStepChange}
-      onClose={handleClose}
-    />
+    <div className="flex h-full w-full flex-col overflow-hidden">
+      {connectionBanner}
+      <FinalizationWizard
+        selectedCodes={selectedWizardCodes}
+        suggestedCodes={wizardSuggestions}
+        complianceItems={complianceWizardItems}
+        noteContent={sessionData?.noteContent ?? noteContent ?? ""}
+        patientMetadata={patientMetadata}
+        reimbursementSummary={reimbursementSummary}
+        transcriptEntries={sanitizedTranscripts}
+        blockingIssues={combinedBlockingIssues}
+        stepOverrides={mergedStepOverrides.length ? mergedStepOverrides : undefined}
+        initialStep={derivedCurrentStep}
+        canFinalize={validationState.canFinalize}
+        onFinalize={handleFinalize}
+        onStepChange={handleWizardStepChange}
+        onClose={handleClose}
+      />
+    </div>
   )
 
   if (displayMode === "embedded") {
-    return <div className="flex h-full w-full flex-col overflow-hidden">{wizard}</div>
+    return wizard
   }
 
   return (
