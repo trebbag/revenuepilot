@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n from './i18n.js';
 import NoteEditor from './components/NoteEditor.jsx';
@@ -26,6 +26,7 @@ import TemplatesModal from './components/TemplatesModal.jsx';
 import AdminUsers from './components/AdminUsers.jsx';
 import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
 import Notifications from './components/Notifications.jsx';
+import Scheduler from './components/Scheduler.tsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -197,6 +198,14 @@ function App() {
     differentials: [],
     followUp: null,
   });
+
+  const scheduleCodes = useMemo(
+    () =>
+      (suggestions?.codes || [])
+        .map((item) => (item && item.code ? item.code : null))
+        .filter(Boolean),
+    [suggestions],
+  );
 
   const calcRevenue = (codes = []) => {
     const map = { 99212: 50, 99213: 75, 99214: 110, 99215: 160 };
@@ -878,6 +887,16 @@ function App() {
             <Settings
               settings={settingsState}
               updateSettings={updateSettings}
+            />
+          )}
+          {view === 'scheduler' && (
+            <Scheduler
+              note={draftText}
+              codes={scheduleCodes}
+              specialty={settingsState.specialty}
+              payer={settingsState.payer}
+              patientId={patientID}
+              encounterId={encounterID}
             />
           )}
           {view === 'drafts' && (

@@ -132,8 +132,8 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 - **Notifications & surveys** – Persistent notifications, unread counts
   and satisfaction surveys are surfaced in the React shell and persisted
   through `/api/notifications` endpoints.【F:src/components/Notifications.jsx†L1-L200】【F:backend/main.py†L6530-L6636】
-- **Scheduling** – Follow-up recommendations export calendar events while
-  the scheduler module manages appointments and bulk operations.【F:src/components/FollowUpScheduler.jsx†L1-L160】【F:backend/scheduling.py†L1-L240】
+- **Scheduling** – The Scheduler view combines follow-up recommendations with
+  appointment creation, exports and bulk status updates backed by the scheduling module.【F:src/components/Scheduler.tsx†L1-L260】【F:backend/scheduling.py†L500-L980】
 
 ### Backend services
 
