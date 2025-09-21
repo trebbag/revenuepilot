@@ -1,6 +1,7 @@
 export const VIEW_KEYS = [
   "home",
   "app",
+  "finalization",
   "analytics",
   "settings",
   "activity",
@@ -44,7 +45,8 @@ const SERVER_ALIAS_MAP: Record<string, ViewKey> = {
   style: "style-guide",
   "figma-library": "figma-library",
   figma: "figma-library",
-  library: "figma-library"
+  library: "figma-library",
+  finalization: "finalization"
 }
 
 export function isViewKey(value: unknown): value is ViewKey {
@@ -75,6 +77,8 @@ export function mapViewKeyToServerView(view: ViewKey): string {
       return "dashboard"
     case "app":
       return "documentation"
+    case "finalization":
+      return "finalization"
     case "activity":
       return "activity-log"
     default:

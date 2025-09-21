@@ -1,2 +1,0 @@
-export declare const projectId = "tdcydbozopluiujmabyn";
-export declare const publicAnonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRkY3lkYm96b3BsdWl1am1hYnluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwMzYyNTUsImV4cCI6MjA3MzYxMjI1NX0.R3YoL6OBHSSqKUcuZnG6XouWmBu5y3_2Y7oPLj1cqP8";

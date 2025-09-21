@@ -41,20 +41,6 @@ vi.mock("../../contexts/SessionContext", () => ({
   })
 }))
 
-vi.mock(
-  "finalization-wizard",
-  () => ({
-    FinalizationWizard: () => null
-  }),
-  { virtual: true }
-)
-
-vi.mock(
-  "finalization-wizard/dist/style.css",
-  () => ({}),
-  { virtual: true }
-)
-
 vi.mock("../../components/FinalizationWizardAdapter", () => ({
   FinalizationWizardAdapter: () => null
 }))

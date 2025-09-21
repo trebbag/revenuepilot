@@ -31,7 +31,7 @@ export default defineConfig({
       },
     },
     {
-      command: `bash -c "npm --workspace finalization-wizard run build && npm --workspace revenuepilot-frontend run dev -- --host 127.0.0.1 --port ${FRONTEND_PORT} --strictPort"`,
+      command: `npm --workspace revenuepilot-frontend run dev -- --host 127.0.0.1 --port ${FRONTEND_PORT} --strictPort`,
       port: FRONTEND_PORT,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
