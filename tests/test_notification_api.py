@@ -70,6 +70,7 @@ def test_notifications_lifecycle(notification_client):
     assert manager.sent
     event_payload = manager.sent[-1][1]
     assert event_payload["unreadCount"] == 1
+    assert event_payload["notifications"] == 1
     assert event_payload["id"]
 
     resp = client.get("/api/notifications", headers=_auth_headers(token))
@@ -83,7 +84,9 @@ def test_notifications_lifecycle(notification_client):
     assert not first["isRead"]
 
     resp = client.get("/api/notifications/count", headers=_auth_headers(token))
-    assert resp.json()["count"] == 1
+    payload = resp.json()
+    assert payload["notifications"] == 1
+    assert "drafts" in payload
 
     resp = client.post(
         f"/api/notifications/{first['id']}/read",
@@ -127,4 +130,4 @@ def test_notifications_lifecycle(notification_client):
     assert all(item["isRead"] for item in data["items"])
 
     resp = client.get("/api/notifications/count", headers=_auth_headers(token))
-    assert resp.json()["count"] == 0
+    assert resp.json()["notifications"] == 0

@@ -1095,10 +1095,10 @@ COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 
 async def _broadcast_notification_count(username: str) -> None:
     """Send updated notification count to all websocket subscribers."""
-    count = notification_counts[username]
+    badges = _navigation_badges(username)
     for ws in list(notification_subscribers.get(username, [])):
         try:
-            await ws.send_json({"count": count})
+            await ws.send_json(badges)
         except Exception:
             try:
                 notification_subscribers[username].remove(ws)
@@ -4384,17 +4384,19 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
         "SELECT layout_prefs FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
         (user["sub"],),
     ).fetchone()
-    prefs: Dict[str, Any] = {}
+
+    data: Dict[str, Any] = {}
     if row and row["layout_prefs"]:
         try:
-            parsed = json.loads(row["layout_prefs"])
+            loaded = json.loads(row["layout_prefs"])
+            if isinstance(loaded, dict):
+                data = loaded
         except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            prefs = parsed
-    payload = {"success": True, "data": prefs}
-    payload.update(prefs)
-    return payload
+            logging.getLogger(__name__).warning(
+                "Failed to deserialize layout preferences for user %s", user.get("sub")
+            )
+    return {"success": True, "data": data}
+
 
 
 @app.put("/api/user/layout-preferences")
@@ -4429,17 +4431,21 @@ async def put_layout_preferences(
         "SELECT layout_prefs FROM settings WHERE user_id=?",
         (uid,),
     ).fetchone()
-    prefs_payload: Dict[str, Any] = {}
+
+    data_payload: Dict[str, Any] = {}
     if stored and stored["layout_prefs"]:
         try:
-            parsed = json.loads(stored["layout_prefs"])
+            loaded = json.loads(stored["layout_prefs"])
+            if isinstance(loaded, dict):
+                data_payload = loaded
         except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            prefs_payload = parsed
-    response_payload = {"success": True, "data": prefs_payload}
-    response_payload.update(prefs_payload)
-    return JSONResponse(content=response_payload)
+            logging.getLogger(__name__).warning(
+                "Failed to deserialize layout preferences for user %s", uid
+            )
+    if not data_payload and isinstance(prefs, dict):
+        data_payload = prefs
+    return JSONResponse(content={"success": True, "data": data_payload})
+
 
 
 class ErrorLogModel(BaseModel):
@@ -4570,6 +4576,43 @@ _DEFAULT_SELECTED_CODES: Dict[str, int] = {
 }
 
 _DEFAULT_PANEL_STATES: Dict[str, bool] = {"suggestionPanel": False}
+
+_DEFAULT_NAVIGATION_PREFS: Dict[str, Any] = {
+    "collapsed": False,
+    "hoverStates": {},
+    "animationPreferences": {"enabled": True, "speed": "normal"},
+}
+
+
+def _normalize_ui_preferences_payload(payload: Any) -> Dict[str, Any]:
+    """Ensure navigation/UI preference payloads include required structure."""
+
+    result: Dict[str, Any] = {}
+    if isinstance(payload, dict):
+        result = copy.deepcopy(payload)
+    navigation_raw = result.get("navigation") if isinstance(result.get("navigation"), dict) else {}
+    navigation = copy.deepcopy(navigation_raw) if isinstance(navigation_raw, dict) else {}
+    normalized_nav: Dict[str, Any] = {
+        "collapsed": bool(navigation.get("collapsed", _DEFAULT_NAVIGATION_PREFS["collapsed"])),
+        "hoverStates": navigation.get("hoverStates") if isinstance(navigation.get("hoverStates"), dict) else {},
+    }
+    anim = navigation.get("animationPreferences")
+    if not isinstance(anim, dict):
+        anim = {}
+    speed = anim.get("speed")
+    if speed not in {"slow", "normal", "fast"}:
+        speed = "normal"
+    normalized_nav["animationPreferences"] = {
+        "enabled": bool(anim.get("enabled", True)),
+        "speed": speed,
+    }
+    extras = {
+        key: value
+        for key, value in navigation.items()
+        if key not in {"collapsed", "hoverStates", "animationPreferences"}
+    }
+    result["navigation"] = {**_DEFAULT_NAVIGATION_PREFS, **extras, **normalized_nav}
+    return result
 
 
 class SessionCodeModel(BaseModel):
@@ -4866,15 +4909,29 @@ def _generate_patient_questions(
                 priority = "medium"
             else:
                 priority = "low"
+            timestamp = _utc_now_iso()
             questions.append(
                 {
                     "id": counter,
+                    "questionText": question_text,
                     "question": question_text,
                     "source": f"Code Gap: {code.get('code') or code.get('description') or 'Code'}",
                     "priority": priority,
-                    "codeRelated": code.get("code") or code.get("description"),
                     "category": "clinical",
-                    "status": "open",
+                    "questionType": "text_input",
+                    "possibleAnswers": [],
+                    "expectedDataType": "string",
+                    "relatedCode": code.get("code") or code.get("description"),
+                    "codeRelated": code.get("code") or code.get("description"),
+                    "relatedSection": None,
+                    "isRequired": True,
+                    "autoGenerated": True,
+                    "status": "pending",
+                    "answer": None,
+                    "answeredAt": None,
+                    "answeredBy": None,
+                    "createdAt": timestamp,
+                    "updatedAt": timestamp,
                 }
             )
             counter += 1
@@ -4885,15 +4942,29 @@ def _generate_patient_questions(
                 continue
             text = details.strip()
             priority = "high" if issue.get("severity") == "critical" else "medium"
+            timestamp = _utc_now_iso()
             questions.append(
                 {
                     "id": counter,
+                    "questionText": text if text.endswith("?") else f"Address compliance: {text}",
                     "question": text if text.endswith("?") else f"Address compliance: {text}",
                     "source": f"Compliance: {issue.get('title') or 'Item'}",
                     "priority": priority,
-                    "codeRelated": issue.get("code"),
                     "category": "documentation",
-                    "status": "open",
+                    "questionType": "text_input",
+                    "possibleAnswers": [],
+                    "expectedDataType": "string",
+                    "relatedCode": issue.get("code"),
+                    "codeRelated": issue.get("code"),
+                    "relatedSection": None,
+                    "isRequired": True,
+                    "autoGenerated": True,
+                    "status": "pending",
+                    "answer": None,
+                    "answeredAt": None,
+                    "answeredBy": None,
+                    "createdAt": timestamp,
+                    "updatedAt": timestamp,
                 }
             )
             counter += 1
@@ -5300,17 +5371,161 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
                 identifier = int(identifier)
             except Exception:
                 identifier = uuid4().int % 100000
+            question_text = (
+                item.get("questionText")
+                or item.get("question")
+                or item.get("question_text")
+                or "Clarify patient information"
+            )
+            source = item.get("source") or "Documentation"
+            priority_raw = str(item.get("priority") or "medium").lower()
+            if priority_raw not in {"high", "medium", "low"}:
+                priority_raw = "medium"
+            category_raw = str(item.get("category") or "clinical").lower()
+            if category_raw not in {"clinical", "administrative", "documentation", "billing"}:
+                category_raw = "clinical"
+            related_code = item.get("relatedCode") or item.get("codeRelated") or item.get("code")
+            if related_code is not None:
+                related_code = str(related_code)
+            related_section = item.get("relatedSection") or item.get("section")
+            if related_section is not None:
+                related_section = str(related_section)
+            question_type = str(item.get("questionType") or item.get("question_type") or "text_input").lower()
+            if question_type not in {"yes_no", "multiple_choice", "text_input", "numeric", "date"}:
+                question_type = "text_input"
+            expected_data_type = str(
+                item.get("expectedDataType")
+                or item.get("expected_data_type")
+                or "string"
+            ).lower()
+            if expected_data_type not in {"string", "number", "date", "boolean"}:
+                expected_data_type = "string"
+            possible_answers_raw = item.get("possibleAnswers") or item.get("possible_answers")
+            possible_answers: List[str] = []
+            if isinstance(possible_answers_raw, (list, tuple)):
+                for answer in possible_answers_raw:
+                    if answer is None:
+                        continue
+                    possible_answers.append(str(answer))
+            required_field = item.get("isRequired")
+            if required_field is None:
+                required_field = item.get("required")
+            is_required = bool(required_field) if required_field is not None else True
+            auto_generated_field = item.get("autoGenerated")
+            if auto_generated_field is None:
+                auto_generated_field = item.get("auto_generated")
+            auto_generated = bool(auto_generated_field) if auto_generated_field is not None else True
+            status_raw = str(item.get("status") or item.get("state") or "pending").lower()
+            status_map = {
+                "open": "pending",
+                "new": "pending",
+                "resolved": "answered",
+                "completed": "answered",
+                "complete": "answered",
+                "answered": "answered",
+                "dismissed": "skipped",
+                "skipped": "skipped",
+                "n/a": "not_applicable",
+                "not_applicable": "not_applicable",
+            }
+            status_value = status_map.get(status_raw, status_raw)
+            allowed_canonical = {"pending", "in_progress", "answered", "skipped", "not_applicable"}
+            if status_value not in allowed_canonical:
+                status_value = "pending"
+            canonical_status = status_value
+            legacy_candidates = {"pending", "in_progress", "resolved", "dismissed", "not_applicable"}
+            if status_raw in legacy_candidates:
+                legacy_status = status_raw
+            elif canonical_status == "answered":
+                legacy_status = "resolved"
+            elif canonical_status == "skipped":
+                legacy_status = "dismissed"
+            elif canonical_status == "not_applicable":
+                legacy_status = "not_applicable"
+            else:
+                legacy_status = canonical_status
+            if legacy_status not in legacy_candidates:
+                legacy_status = "pending"
+            now_ts = _utc_now_iso()
+            created_at = item.get("createdAt") or item.get("created_at") or now_ts
+            if not isinstance(created_at, str):
+                created_at = str(created_at)
+            updated_at = item.get("updatedAt") or item.get("updated_at") or created_at
+            if not isinstance(updated_at, str):
+                updated_at = str(updated_at)
+            answer_raw = item.get("answer")
+            if not isinstance(answer_raw, dict):
+                metadata_raw = item.get("answerMetadata")
+                if isinstance(metadata_raw, dict):
+                    answer_raw = metadata_raw
+            normalized_answer: Optional[Dict[str, Any]] = None
+            if isinstance(answer_raw, dict):
+                answer_text = (
+                    answer_raw.get("answerText")
+                    or answer_raw.get("answer_text")
+                    or answer_raw.get("value")
+                    or answer_raw.get("text")
+                )
+                if answer_text is not None:
+                    confidence = answer_raw.get("confidenceLevel") or answer_raw.get("confidence_level")
+                    if isinstance(confidence, str):
+                        confidence = confidence.lower()
+                    if confidence not in {"certain", "probable", "uncertain"}:
+                        confidence = "certain"
+                    verification = answer_raw.get("verificationNeeded")
+                    if verification is None:
+                        verification = answer_raw.get("verification_needed")
+                    notes = answer_raw.get("notes")
+                    normalized_answer = {
+                        "answerText": str(answer_text),
+                        "confidenceLevel": confidence or "certain",
+                        "notes": str(notes) if isinstance(notes, str) else notes,
+                        "verificationNeeded": bool(verification) if verification is not None else False,
+                    }
+            elif isinstance(answer_raw, str) and answer_raw.strip():
+                normalized_answer = {
+                    "answerText": answer_raw.strip(),
+                    "confidenceLevel": "certain",
+                    "notes": None,
+                    "verificationNeeded": False,
+                }
+            if normalized_answer and normalized_answer.get("confidenceLevel") not in {"certain", "probable", "uncertain"}:
+                normalized_answer["confidenceLevel"] = "certain"
+            answered_by = item.get("answeredBy") or item.get("answered_by")
+            if answered_by is not None:
+                answered_by = str(answered_by)
+            answered_at = item.get("answeredAt") or item.get("answered_at")
+            if not answered_at and status_value == "answered" and normalized_answer:
+                answered_at = updated_at
+            if answered_at is not None and not isinstance(answered_at, str):
+                answered_at = str(answered_at)
+            answer_value = None
+            if normalized_answer:
+                answer_value = normalized_answer.get("answerText")
             normalized_questions.append(
                 {
                     "id": identifier,
-                    "question": item.get("question") or "Clarify patient information",
-                    "source": item.get("source") or "Documentation",
-                    "priority": item.get("priority") or "medium",
-                    "codeRelated": item.get("codeRelated") or item.get("code"),
-                    "category": item.get("category") or "clinical",
-                    "status": item.get("status") or "open",
-                    "answer": item.get("answer"),
-                    "answeredAt": item.get("answeredAt"),
+                    "questionText": question_text,
+                    "question": question_text,
+                    "source": source,
+                    "priority": priority_raw,
+                    "category": category_raw,
+                    "questionType": question_type,
+                    "possibleAnswers": possible_answers,
+                    "expectedDataType": expected_data_type,
+                    "relatedCode": related_code,
+                    "codeRelated": related_code,
+                    "relatedSection": related_section,
+                    "isRequired": is_required,
+                    "autoGenerated": auto_generated,
+                    "status": legacy_status,
+                    "canonicalStatus": canonical_status,
+                    "answer": answer_value,
+                    "answerMetadata": normalized_answer,
+                    "answeredAt": answered_at,
+                    "answeredBy": answered_by,
+                    "createdAt": created_at,
+                    "updatedAt": updated_at,
                 }
             )
         data["patientQuestions"] = normalized_questions
@@ -5329,6 +5544,10 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
 def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
     normalized = _normalize_finalization_session(session)
     step_states = [normalized["stepStates"][str(step)] for step in _FINALIZATION_STEPS]
+    completion = {
+        f"step_{entry['step']}": entry.get("status") == "completed"
+        for entry in step_states
+    }
     return {
         "sessionId": normalized.get("sessionId"),
         "encounterId": normalized.get("encounterId"),
@@ -5342,6 +5561,7 @@ def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
         "context": normalized.get("context", {}),
         "currentStep": normalized.get("currentStep", 1),
         "stepStates": step_states,
+        "stepCompletionStatus": completion,
         "selectedCodes": normalized.get("selectedCodes", []),
         "complianceIssues": normalized.get("complianceIssues", []),
         "patientMetadata": normalized.get("patientMetadata") or {},
@@ -5649,6 +5869,95 @@ def _register_session_activity(
     session["activeEditors"] = active_entries
 
 
+def _load_user_settings_preferences(user_id: int) -> Dict[str, Any]:
+    """Load legacy user settings preferences for compatibility."""
+
+    defaults = UserSettings().model_dump()
+    preferences = copy.deepcopy(defaults)
+    try:
+        row = db_conn.execute(
+            """
+            SELECT
+                theme,
+                categories,
+                rules,
+                lang,
+                summary_lang,
+                specialty,
+                payer,
+                region,
+                use_local_models,
+                use_offline_mode,
+                agencies,
+                template,
+                beautify_model,
+                suggest_model,
+                summarize_model,
+                deid_engine
+            FROM settings
+            WHERE user_id=?
+            """,
+            (user_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    if not row:
+        return preferences
+    record = dict(row)
+    categories_default = copy.deepcopy(preferences.get("categories") or {})
+    categories_value = categories_default
+    categories_raw = record.get("categories")
+    if categories_raw:
+        try:
+            parsed = json.loads(categories_raw)
+            if isinstance(parsed, dict):
+                categories_value.update({key: bool(value) for key, value in parsed.items()})
+        except json.JSONDecodeError:
+            pass
+    preferences["categories"] = categories_value
+    rules_raw = record.get("rules")
+    rules_value: List[str] = []
+    if rules_raw:
+        try:
+            parsed_rules = json.loads(rules_raw)
+            if isinstance(parsed_rules, list):
+                rules_value = [str(item) for item in parsed_rules if isinstance(item, str)]
+        except json.JSONDecodeError:
+            rules_value = []
+    preferences["rules"] = rules_value or preferences.get("rules", [])
+    lang_value = record.get("lang") or preferences.get("lang")
+    preferences["lang"] = lang_value
+    summary_lang = record.get("summary_lang") or lang_value
+    preferences["summaryLang"] = summary_lang
+    preferences["specialty"] = record.get("specialty") or preferences.get("specialty")
+    preferences["payer"] = record.get("payer") or preferences.get("payer")
+    region = record.get("region")
+    preferences["region"] = region if isinstance(region, str) else preferences.get("region")
+    template = record.get("template")
+    preferences["template"] = template if template is not None else preferences.get("template")
+    preferences["useLocalModels"] = bool(record.get("use_local_models", preferences.get("useLocalModels", False)))
+    preferences["useOfflineMode"] = bool(record.get("use_offline_mode", preferences.get("useOfflineMode", False)))
+    agencies_raw = record.get("agencies")
+    agencies_value = preferences.get("agencies") or []
+    if agencies_raw:
+        try:
+            parsed_agencies = json.loads(agencies_raw)
+            if isinstance(parsed_agencies, list):
+                agencies_value = [str(item) for item in parsed_agencies if item]
+        except json.JSONDecodeError:
+            agencies_value = preferences.get("agencies") or []
+    preferences["agencies"] = agencies_value or ["CDC", "WHO"]
+    preferences["beautifyModel"] = record.get("beautify_model") or preferences.get("beautifyModel")
+    preferences["suggestModel"] = record.get("suggest_model") or preferences.get("suggestModel")
+    preferences["summarizeModel"] = record.get("summarize_model") or preferences.get("summarizeModel")
+    deid_engine = record.get("deid_engine") or os.getenv("DEID_ENGINE")
+    preferences["deidEngine"] = deid_engine or preferences.get("deidEngine")
+    theme = record.get("theme")
+    if isinstance(theme, str) and theme:
+        preferences["theme"] = theme
+    return preferences
+
+
 def _sync_selected_codes_to_session_state(
     session_state: Dict[str, Any], normalized_session: Dict[str, Any]
 ) -> None:
@@ -5674,7 +5983,94 @@ def _sync_selected_codes_to_session_state(
 
 @app.get("/api/user/profile")
 async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    return _build_user_profile_payload(user["sub"])
+
+    base_profile = UserProfile().model_dump()
+    defaults = UserSettings().model_dump()
+    normalized_defaults = _normalize_ui_preferences_payload(base_profile.get("uiPreferences", {}))
+    result: Dict[str, Any] = {
+        **base_profile,
+        "userId": None,
+        "username": user.get("sub"),
+        "name": None,
+        "role": None,
+        "permissions": [],
+        "preferences": defaults,
+        "uiPreferences": normalized_defaults,
+    }
+    row = db_conn.execute(
+        """
+        SELECT
+            u.id AS user_id,
+            u.username,
+            u.name,
+            u.role,
+            u.clinic_id,
+            up.current_view,
+            up.clinic,
+            up.preferences,
+            up.ui_preferences
+        FROM users u
+        LEFT JOIN user_profile up ON up.user_id = u.id
+        WHERE u.username=?
+        """,
+        (user["sub"],),
+    ).fetchone()
+    if not row:
+        return result
+    preferences_raw = row["preferences"] if row["preferences"] else {}
+    if isinstance(preferences_raw, str):
+        try:
+            profile_preferences = json.loads(preferences_raw)
+        except json.JSONDecodeError:
+            profile_preferences = {}
+    elif isinstance(preferences_raw, dict):
+        profile_preferences = preferences_raw
+    else:
+        profile_preferences = {}
+    ui_raw = row["ui_preferences"] if row["ui_preferences"] else {}
+    if isinstance(ui_raw, str):
+        try:
+            ui_dict = json.loads(ui_raw)
+        except json.JSONDecodeError:
+            ui_dict = {}
+    elif isinstance(ui_raw, dict):
+        ui_dict = ui_raw
+    else:
+        ui_dict = {}
+    normalized_ui = _normalize_ui_preferences_payload(ui_dict)
+    user_id = row["user_id"]
+    settings_preferences = _load_user_settings_preferences(user_id)
+    merged_preferences = copy.deepcopy(settings_preferences)
+    if isinstance(profile_preferences, dict):
+        for key, value in profile_preferences.items():
+            if key == "categories" and isinstance(value, dict):
+                base_categories = merged_preferences.get("categories") or {}
+                if isinstance(base_categories, dict):
+                    base_categories.update(value)
+                    merged_preferences["categories"] = base_categories
+                else:
+                    merged_preferences["categories"] = value
+            else:
+                merged_preferences[key] = value
+    clinic_value = row["clinic"] if row["clinic"] else row["clinic_id"]
+    if clinic_value is not None and not isinstance(clinic_value, str):
+        clinic_value = str(clinic_value)
+    result.update(
+        {
+            "userId": str(user_id) if user_id is not None else None,
+            "username": row["username"],
+            "name": row["name"] or row["username"],
+            "role": row["role"],
+            "permissions": [row["role"]] if row["role"] else [],
+            "clinic": clinic_value,
+            "currentView": row["current_view"] or base_profile.get("currentView"),
+            "preferences": merged_preferences,
+            "uiPreferences": normalized_ui,
+            "specialty": merged_preferences.get("specialty"),
+        }
+    )
+    return result
+
 
 
 @app.put("/api/user/profile")
@@ -5686,6 +6082,8 @@ async def update_user_profile(
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
+    preferences = profile.preferences if isinstance(profile.preferences, dict) else {}
+    ui_preferences = _normalize_ui_preferences_payload(profile.uiPreferences)
     db_conn.execute(
         "INSERT OR REPLACE INTO user_profile (user_id, current_view, clinic, preferences, ui_preferences) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -5693,12 +6091,13 @@ async def update_user_profile(
             row["id"],
             profile.currentView,
             profile.clinic,
-            json.dumps(profile.preferences),
-            json.dumps(profile.uiPreferences),
+            json.dumps(preferences),
+            json.dumps(ui_preferences),
         ),
     )
     db_conn.commit()
-    return _build_user_profile_payload(user["sub"])
+    return await get_user_profile(user=user)
+
 
 
 @app.get("/api/user/current-view")
@@ -5717,7 +6116,8 @@ async def get_ui_preferences(user=Depends(require_role("user"))) -> Dict[str, An
         (user["sub"],),
     ).fetchone()
     prefs = json.loads(row["ui_preferences"]) if row and row["ui_preferences"] else {}
-    return {"uiPreferences": prefs}
+    normalized = _normalize_ui_preferences_payload(prefs)
+    return {"uiPreferences": normalized}
 
 
 @app.put("/api/user/ui-preferences")
@@ -5729,7 +6129,8 @@ async def put_ui_preferences(
     ).fetchone()
     if not row:
         raise HTTPException(status_code=400, detail="User not found")
-    updated = json.dumps(model.uiPreferences)
+    normalized = _normalize_ui_preferences_payload(model.uiPreferences)
+    updated = json.dumps(normalized)
     cur = db_conn.execute(
         "UPDATE user_profile SET ui_preferences=? WHERE user_id=?",
         (updated, row["id"]),
@@ -5740,7 +6141,7 @@ async def put_ui_preferences(
             (row["id"], updated),
         )
     db_conn.commit()
-    return {"uiPreferences": model.uiPreferences}
+    return {"uiPreferences": normalized}
 
 
 @app.get("/api/user/session")
@@ -5804,7 +6205,7 @@ async def get_notification_count(
     user=Depends(require_role("user"))
 ) -> Dict[str, int]:
     count = _sync_unread_notification_count(user["sub"])
-    return {"count": count}
+    return _navigation_badges(user["sub"], count)
 
 
 @app.get("/api/notifications")
@@ -6156,6 +6557,7 @@ class WorkflowSessionResponse(BaseModel):
     context: Dict[str, Any] = Field(default_factory=dict)
     currentStep: int = 1
     stepStates: List[Dict[str, Any]] = Field(default_factory=list)
+    stepCompletionStatus: Dict[str, bool] = Field(default_factory=dict)
     selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
     complianceIssues: List[Dict[str, Any]] = Field(default_factory=list)
     patientMetadata: Dict[str, Any] = Field(default_factory=dict)
@@ -6359,11 +6761,22 @@ class QuestionAnswerRequest(BaseModel):
     answer: str
     answeredBy: Optional[str] = None
     timestamp: Optional[str] = None
+    confidenceLevel: Optional[Literal["certain", "probable", "uncertain"]] = None
+    notes: Optional[str] = None
+    verificationNeeded: Optional[bool] = None
 
 
 class QuestionStatusUpdateRequest(BaseModel):
     sessionId: Optional[str] = None
-    status: Literal["open", "in_progress", "resolved", "dismissed"]
+    status: Literal[
+        "pending",
+        "in_progress",
+        "answered",
+        "skipped",
+        "not_applicable",
+        "dismissed",
+        "resolved",
+    ]
     updatedBy: Optional[str] = None
     timestamp: Optional[str] = None
 
@@ -10370,10 +10783,32 @@ async def answer_patient_question_v1(
     answer_timestamp = req.timestamp or _utc_now_iso()
     for item in questions:
         if str(item.get("id")) == str(question_id):
-            item["answer"] = req.answer
+            existing_answer = item.get("answer") if isinstance(item.get("answer"), dict) else {}
+            if not existing_answer and isinstance(item.get("answerMetadata"), dict):
+                existing_answer = item.get("answerMetadata")
+            confidence = req.confidenceLevel or existing_answer.get("confidenceLevel") or "certain"
+            if not isinstance(confidence, str) or confidence not in {"certain", "probable", "uncertain"}:
+                confidence = "certain"
+            notes = req.notes if req.notes is not None else existing_answer.get("notes")
+            if notes is not None and not isinstance(notes, str):
+                notes = str(notes)
+            verification_needed = (
+                bool(req.verificationNeeded)
+                if req.verificationNeeded is not None
+                else bool(existing_answer.get("verificationNeeded", False))
+            )
+            metadata = {
+                "answerText": req.answer,
+                "confidenceLevel": confidence,
+                "notes": notes,
+                "verificationNeeded": verification_needed,
+            }
+            item["answer"] = metadata
+            item["answerMetadata"] = metadata
             item["answeredBy"] = req.answeredBy or user.get("sub")
             item["answeredAt"] = answer_timestamp
-            item["status"] = "resolved"
+            item["status"] = "answered"
+            item["updatedAt"] = answer_timestamp
             updated = item
             break
     if updated is None:
@@ -10427,12 +10862,31 @@ async def update_patient_question_status_v1(
     questions = session.get("patientQuestions") or []
     updated = None
     status_timestamp = req.timestamp or _utc_now_iso()
+    normalized_status_value: Optional[str] = None
     for item in questions:
         if str(item.get("id")) == str(question_id):
-            item["status"] = req.status
+            new_status = req.status or "pending"
+            if new_status == "resolved":
+                new_status = "answered"
+            item["status"] = new_status
             item["updatedBy"] = req.updatedBy or user.get("sub")
             item["updatedAt"] = status_timestamp
+            if new_status == "answered":
+                if not item.get("answeredAt"):
+                    item["answeredAt"] = status_timestamp
+                if not item.get("answeredBy"):
+                    item["answeredBy"] = req.updatedBy or user.get("sub")
+            elif new_status in {"pending", "in_progress"}:
+                answer_payload = item.get("answer")
+                if not (isinstance(answer_payload, dict) and answer_payload.get("answerText")):
+                    answer_payload = item.get("answerMetadata")
+                if not (isinstance(answer_payload, dict) and answer_payload.get("answerText")):
+                    item.pop("answeredAt", None)
+                    item.pop("answeredBy", None)
+                    item["answer"] = None
+                    item["answerMetadata"] = None
             updated = item
+            normalized_status_value = new_status
             break
     if updated is None:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -10442,7 +10896,7 @@ async def update_patient_question_status_v1(
     _append_audit_event(
         session,
         "question_status_updated",
-        {"questionId": question_id, "status": req.status},
+        {"questionId": question_id, "status": normalized_status_value or req.status},
         actor=user.get("sub"),
     )
     normalized = _normalize_finalization_session(session)
@@ -11802,12 +12256,52 @@ async def _push_notification_event(
         enriched["readAt"] = stored["readAt"]
     enriched["id"] = stored.get("id")
     enriched["unreadCount"] = count
+    enriched.update(_navigation_badges(username, count))
     session_id = notifications_manager.latest_session(username)
     if session_id:
         await notifications_manager.push(session_id, enriched)
     else:
         await notifications_manager.push_user(username, enriched)
     await _broadcast_notification_count(username)
+
+
+def _get_draft_count() -> int:
+    """Return the total number of draft notes available."""
+
+    try:
+        row = db_conn.execute(
+            "SELECT COUNT(*) AS total FROM notes WHERE status='draft'"
+        ).fetchone()
+    except sqlite3.Error:
+        return 0
+    if not row:
+        return 0
+    try:
+        value = row["total"]
+    except Exception:
+        value = 0
+    try:
+        return max(int(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _navigation_badges(username: Optional[str], notifications: Optional[int] = None) -> Dict[str, int]:
+    """Compute navigation badge counts for the sidebar."""
+
+    notif_count = notifications
+    if notif_count is None and username:
+        notif_count = current_notification_count(username)
+    try:
+        notif_value = max(int(notif_count or 0), 0)
+    except (TypeError, ValueError):
+        notif_value = 0
+    payload = {
+        "notifications": notif_value,
+        "drafts": _get_draft_count(),
+    }
+    payload["count"] = notif_value
+    return payload
 
 
 async def _notify_note_auto_save(username: str, note_id: Optional[int]) -> None:
@@ -11914,12 +12408,12 @@ async def ws_notifications(websocket: WebSocket) -> None:
 
     async def _initial(session_id: str, user_data: Dict[str, Any]) -> None:
         username = user_data.get("sub")
-        count = current_notification_count(username) if username else 0
+        badges = _navigation_badges(username) if username else {"notifications": 0, "drafts": 0, "count": 0}
         payload = {
             "channel": "notifications",
             "event": "notification_snapshot",
-            "count": count,
-            "unreadCount": count,
+            **badges,
+            "unreadCount": badges.get("notifications", 0),
             "timestamp": _iso_timestamp(),
         }
         await notifications_manager.push(session_id, payload)

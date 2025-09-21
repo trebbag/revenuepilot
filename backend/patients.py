@@ -331,7 +331,7 @@ def search_patients(
                 FROM patients
             """
                 + where_clause
-                + " ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE, id LIMIT ? OFFSET ?",
+                + " ORDER BY first_name COLLATE NOCASE, last_name COLLATE NOCASE, id LIMIT ? OFFSET ?",
                 params + [limit, offset],
             ).fetchall()
         except sqlite3.Error:

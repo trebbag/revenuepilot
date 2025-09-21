@@ -344,7 +344,7 @@ app.get('/api/user/current-view', (_req, res) => {
 });
 
 app.get('/api/notifications/count', (_req, res) => {
-  res.json({ count: 3 });
+  res.json({ notifications: 3, drafts: 2, count: 3 });
 });
 
 app.get('/api/dashboard/daily-overview', (_req, res) => {
