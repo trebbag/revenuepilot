@@ -304,6 +304,17 @@ class SuccessResponse(BaseModel):
     model_config = {"extra": "allow"}
 
 
+def _success_payload(data: Any) -> Dict[str, Any]:
+    """Return a ``SuccessResponse`` merged with dictionary data for legacy clients."""
+
+    payload = SuccessResponse(data=data).model_dump()
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key not in payload:
+                payload[key] = value
+    return payload
+
+
 class ErrorDetail(BaseModel):
     """Details describing an error response payload."""
 
@@ -4557,6 +4568,8 @@ def _build_user_profile_payload(username: str) -> Dict[str, Any]:
     email = user_row["email"]
     role = user_row["role"]
 
+    normalized_ui = _normalize_ui_preferences_payload(ui_preferences)
+
     payload = {
         "id": user_id,
         "username": user_row["username"],
@@ -4568,7 +4581,7 @@ def _build_user_profile_payload(username: str) -> Dict[str, Any]:
         "clinicId": clinic,
         "currentView": current_view,
         "preferences": combined_preferences,
-        "uiPreferences": ui_preferences,
+        "uiPreferences": normalized_ui,
         "specialty": combined_preferences.get("specialty"),
     }
     return payload
@@ -4596,28 +4609,50 @@ def _normalize_ui_preferences_payload(payload: Any) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     if isinstance(payload, dict):
         result = copy.deepcopy(payload)
+
     navigation_raw = result.get("navigation") if isinstance(result.get("navigation"), dict) else {}
     navigation = copy.deepcopy(navigation_raw) if isinstance(navigation_raw, dict) else {}
-    normalized_nav: Dict[str, Any] = {
-        "collapsed": bool(navigation.get("collapsed", _DEFAULT_NAVIGATION_PREFS["collapsed"])),
-        "hoverStates": navigation.get("hoverStates") if isinstance(navigation.get("hoverStates"), dict) else {},
-    }
+
+    collapsed_raw = navigation.get("collapsed")
+    if not isinstance(collapsed_raw, bool):
+        collapsed_raw = result.get("sidebarCollapsed") if isinstance(result.get("sidebarCollapsed"), bool) else None
+    collapsed = bool(collapsed_raw) if collapsed_raw is not None else _DEFAULT_NAVIGATION_PREFS["collapsed"]
+
+    hover_states_raw = navigation.get("hoverStates")
+    if not isinstance(hover_states_raw, dict):
+        hover_states_raw = result.get("hoverStates") if isinstance(result.get("hoverStates"), dict) else {}
+    hover_states = copy.deepcopy(hover_states_raw) if isinstance(hover_states_raw, dict) else {}
+
     anim = navigation.get("animationPreferences")
     if not isinstance(anim, dict):
-        anim = {}
-    speed = anim.get("speed")
+        raw_anim = result.get("animationPreferences") if isinstance(result.get("animationPreferences"), dict) else {}
+        anim = copy.deepcopy(raw_anim) if isinstance(raw_anim, dict) else {}
+    else:
+        anim = copy.deepcopy(anim)
+    speed = anim.get("speed") if isinstance(anim, dict) else None
     if speed not in {"slow", "normal", "fast"}:
         speed = "normal"
-    normalized_nav["animationPreferences"] = {
-        "enabled": bool(anim.get("enabled", True)),
-        "speed": speed,
+    enabled_raw = anim.get("enabled") if isinstance(anim, dict) else None
+    enabled = bool(enabled_raw) if isinstance(enabled_raw, bool) else True
+
+    normalized_nav: Dict[str, Any] = {
+        "collapsed": collapsed,
+        "hoverStates": hover_states if isinstance(hover_states, dict) else {},
+        "animationPreferences": {
+            "enabled": enabled,
+            "speed": speed,
+        },
     }
+
     extras = {
         key: value
         for key, value in navigation.items()
         if key not in {"collapsed", "hoverStates", "animationPreferences"}
     }
     result["navigation"] = {**_DEFAULT_NAVIGATION_PREFS, **extras, **normalized_nav}
+    result["sidebarCollapsed"] = normalized_nav["collapsed"]
+    result["hoverStates"] = normalized_nav["hoverStates"]
+    result["animationPreferences"] = normalized_nav["animationPreferences"]
     return result
 
 
@@ -4646,6 +4681,8 @@ class SessionStateModel(BaseModel):
     addedCodes: List[str] = Field(default_factory=list)
     isSuggestionPanelOpen: bool = False
     finalizationSessions: Dict[str, Any] = Field(default_factory=dict)
+    draftsPreferences: Dict[str, Any] = Field(default_factory=dict)
+    analyticsPreferences: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")
 
@@ -4781,6 +4818,10 @@ def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
             else:
                 sessions[session_key] = value
     normalized["finalizationSessions"] = sessions
+    if not isinstance(normalized.get("draftsPreferences"), dict):
+        normalized["draftsPreferences"] = {}
+    if not isinstance(normalized.get("analyticsPreferences"), dict):
+        normalized["analyticsPreferences"] = {}
     return normalized
 
 
@@ -12005,7 +12046,8 @@ async def get_code_categorization_rules(
 ) -> Dict[str, Any]:
     """Return categorization rules for client-side code organization."""
 
-    return load_code_categorization_rules()
+    rules = load_code_categorization_rules()
+    return _success_payload(rules)
 
 
 @app.get("/api/codes/validate/cpt/{code}")
@@ -12078,7 +12120,7 @@ async def validate_code_combination(
     gender = req.gender.strip() if req.gender else None
     encounter_type = req.encounterType.strip() if req.encounterType else None
     specialty = req.providerSpecialty.strip() if req.providerSpecialty else None
-    return code_tables.validate_combination(
+    result = code_tables.validate_combination(
         cpt_codes,
         icd10_codes,
         age=req.age,
@@ -12086,6 +12128,20 @@ async def validate_code_combination(
         encounter_type=encounter_type,
         specialty=specialty,
     )
+    conflicts: List[Dict[str, str]] = list(result.get("conflicts", []))
+    codes_set = {code for code in {*cpt_codes, *icd10_codes} if code}
+    for code1, code2, reason in load_conflicts():
+        if code1 in codes_set and code2 in codes_set:
+            entry = {"code1": code1, "code2": code2, "reason": reason}
+            if entry not in conflicts:
+                conflicts.append(entry)
+    valid = not conflicts and not result.get("contextIssues")
+    enriched = {
+        **result,
+        "conflicts": conflicts,
+        "validCombinations": valid,
+    }
+    return _success_payload(enriched)
 
 
 class BillingRequest(BaseModel):
@@ -12131,13 +12187,14 @@ async def billing_calculate(
         )
     except Exception as exc:  # pragma: no cover - best effort audit
         logging.warning("Failed to persist billing audit: %s", exc)
-    return result
+    return _success_payload(result)
 
 
 @app.get("/api/codes/documentation/{code}")
 async def get_code_documentation(code: str, user=Depends(require_role("user"))):
     """Return documentation requirements for a CPT or ICD-10 code."""
-    return code_tables.get_documentation(code)
+    documentation = code_tables.get_documentation(code)
+    return _success_payload(documentation)
 
 # ---------------------------------------------------------------------------
 # WebSocket endpoints
@@ -12474,6 +12531,50 @@ async def ws_notifications(websocket: WebSocket) -> None:
 
 
 
+class EncounterValidationRequest(BaseModel):
+    """Request payload for validating an encounter identifier."""
+
+    encounter_id: int = Field(alias="encounterId")
+    patient_id: Optional[str] = Field(default=None, alias="patientId")
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_keys(cls, values: Any) -> Any:  # noqa: D401
+        if not isinstance(values, dict):
+            return values
+        data = dict(values)
+        if "encounter_id" not in data and "encounterId" in data:
+            data["encounter_id"] = data["encounterId"]
+        if "patient_id" not in data and "patientId" in data:
+            data["patient_id"] = data["patientId"]
+        return data
+
+    @field_validator("encounter_id", mode="before")
+    @classmethod
+    def _coerce_encounter_id(cls, value: Any) -> Any:  # noqa: D401
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                raise ValueError("encounterId cannot be empty")
+            try:
+                return int(text)
+            except ValueError as exc:  # pragma: no cover - defensive guard
+                raise ValueError("encounterId must be numeric") from exc
+        return value
+
+    @field_validator("patient_id", mode="before")
+    @classmethod
+    def _normalize_patient_id(cls, value: Any) -> Optional[str]:  # noqa: D401
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        return str(value)
+
+
 class VisitSessionCreate(BaseModel):
     encounter_id: int
 
@@ -12481,6 +12582,53 @@ class VisitSessionCreate(BaseModel):
 class VisitSessionUpdate(BaseModel):
     session_id: int
     action: str
+
+
+def _build_encounter_validation_response(
+    encounter_id: int, patient_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Return a normalized validation payload for *encounter_id*."""
+
+    encounter = patients.get_encounter(encounter_id)
+    if encounter is None:
+        return {
+            "valid": False,
+            "errors": ["Encounter not found"],
+            "encounterId": encounter_id,
+        }
+
+    patient_info = encounter.get("patient") if isinstance(encounter.get("patient"), dict) else None
+    encounter_patient_id = None
+    if patient_info:
+        encounter_patient_id = (
+            patient_info.get("patientId")
+            or patient_info.get("patient_id")
+        )
+    if encounter_patient_id is None:
+        encounter_patient_id = encounter.get("patientId") or encounter.get("patient_id")
+
+    if not patient_info or encounter_patient_id is None:
+        result = {
+            "valid": False,
+            "errors": ["Encounter is missing an associated patient"],
+            "encounter": encounter,
+            "encounterId": encounter_id,
+        }
+        if encounter_patient_id is not None:
+            result["patientId"] = str(encounter_patient_id)
+        return result
+
+    result: Dict[str, Any] = {
+        "valid": True,
+        "encounter": encounter,
+        "encounterId": encounter_id,
+        "patientId": str(encounter_patient_id),
+    }
+
+    if patient_id is not None and str(encounter_patient_id) != str(patient_id):
+        result["valid"] = False
+        result["errors"] = ["Encounter is associated with a different patient"]
+    return result
 
 
 @app.get("/api/patients/search")
@@ -12538,16 +12686,16 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
 async def validate_encounter_v2(
     encounter_id: int, user=Depends(require_role("user"))
 ):
-    encounter = patients.get_encounter(encounter_id)
-    if encounter is None:
-        return {"valid": False, "errors": ["Encounter not found"], "encounterId": encounter_id}
-    if "patient" not in encounter or not encounter["patient"].get("patientId"):
-        return {
-            "valid": False,
-            "errors": ["Encounter is missing an associated patient"],
-            "encounter": encounter,
-        }
-    return {"valid": True, "encounter": encounter}
+    return _build_encounter_validation_response(encounter_id)
+
+
+@app.post("/api/encounters/validate")
+async def validate_encounter_post(
+    payload: EncounterValidationRequest, user=Depends(require_role("user"))
+) -> Dict[str, Any]:
+    return _build_encounter_validation_response(
+        payload.encounter_id, patient_id=payload.patient_id
+    )
 
 
 @app.post("/api/visits/session")
@@ -13239,7 +13387,7 @@ async def billing_calculate(
         )
     except Exception as exc:  # pragma: no cover - best effort audit
         logging.warning("Failed to persist billing audit: %s", exc)
-    return result
+    return _success_payload(result)
 
 
 @app.get("/api/billing/audits")
@@ -13333,8 +13481,9 @@ async def validate_code_combination(
                 conflicts.append(entry)
 
     valid = not conflicts and not result.get("contextIssues")
-    return {
+    enriched = {
         **result,
         "validCombinations": valid,
         "conflicts": conflicts,
     }
+    return _success_payload(enriched)
