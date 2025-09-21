@@ -135,7 +135,7 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
   their previous view after finishing finalisation.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L785-L820】【F:revenuepilot-frontend/src/ProtectedApp.tsx†L1661-L1670】
 - **Validation & attestation panels** – Trigger note validation, review
   reimbursement details, record attestation metadata and monitor dispatch
-  results without leaving the workspace.【F:src/components/WorkflowView.jsx†L130-L370】
+  results without leaving the workspace.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1320-L1556】【F:revenuepilot-frontend/src/features/finalization/WorkflowWizard.tsx†L540-L624】
 - **Live coding stream awareness** – The finalization wizard surfaces
   websocket status badges, reuses streaming suggestions when available
   and only hits REST fallbacks when streams are offline.【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L69-L118】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L832-L1140】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1600-L1652】

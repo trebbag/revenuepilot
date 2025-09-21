@@ -141,10 +141,11 @@ interfaces. `backend/main.py` ties together the modules listed below.
    from `/api/user/*` endpoints.【F:backend/main.py†L4239-L4473】
 2. **Drafting** – `NoteEditor` tracks patient and encounter IDs, performs
    client-side caching and posts to `/api/notes/*` for auto-save and
-   versioning.【F:src/components/NoteEditor.jsx†L80-L160】【F:backend/main.py†L7970-L8046】
+   versioning.【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1000-L1058】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1166-L1245】【F:backend/main.py†L7970-L8046】
 3. **AI interactions** – Beautify/suggest/summarise requests travel
-   through `api.js`, hit FastAPI where text is de-identified, prompts are
-   assembled and responses logged for analytics.【F:src/api.js†L520-L760】【F:backend/main.py†L9755-L12084】
+   through the TypeScript API helpers, hit FastAPI where text is
+   de-identified, prompts are assembled and responses logged for
+   analytics.【F:revenuepilot-frontend/src/lib/api.ts†L425-L590】【F:backend/main.py†L9755-L12084】
  4. **Compliance & workflow** – Compliance issues and selected codes feed
    into the workflow APIs, culminating in finalisation and optional FHIR
    export.【F:backend/main.py†L10374-L11270】
@@ -154,11 +155,10 @@ interfaces. `backend/main.py` ties together the modules listed below.
    alerts.【F:backend/main.py†L7536-L8912】
   6. **Live visit telemetry** – Active visit sessions open websocket
      channels for `/ws/transcription`, `/ws/compliance`, `/ws/codes` and
-     `/ws/collaboration`. `api.js` tracks the reconnection state and
-     resumes from the last `eventId`, while `NoteEditor` merges interim
-     transcripts, streaming compliance alerts, code suggestions and
-     collaborator presence into the existing UI without interrupting the
-     draft.【F:src/api.js†L1804-L2015】【F:src/components/NoteEditor.jsx†L860-L1110】
+     `/ws/collaboration`. The API utilities build authenticated websocket
+     URLs while `NoteEditor` resumes streaming transcripts, compliance
+     alerts, code suggestions and collaborator presence without
+     interrupting the draft.【F:revenuepilot-frontend/src/lib/api.ts†L425-L479】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L1000-L1058】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L2117-L2124】
 
 ## External services & configuration
 
