@@ -212,6 +212,20 @@ export function resolveApiBaseUrl(): string | null {
     }
   }
 
+  if (!candidate && typeof globalThis === "object" && globalThis) {
+    const maybeProcess = (globalThis as { process?: { env?: Record<string, unknown> } }).process
+    const envVars = maybeProcess?.env
+    if (envVars) {
+      for (const key of ["VITE_API_URL", "API_URL", "BACKEND_URL"]) {
+        const value = envVars[key]
+        if (typeof value === "string" && value.trim().length > 0) {
+          candidate = value
+          break
+        }
+      }
+    }
+  }
+
   cachedApiBaseUrl = normalizeBaseUrl(candidate)
   return cachedApiBaseUrl ?? null
 }

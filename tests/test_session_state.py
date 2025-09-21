@@ -153,3 +153,107 @@ def test_session_state_partial_update_preserves_existing_fields():
     assert fetched['currentNote'] == {'id': 42}
     assert fetched['panelStates']['suggestionPanel'] is True
     assert fetched['addedCodes'] == ['11111']
+
+
+def test_session_state_finalization_sessions_roundtrip():
+    username = f"final_{uuid4().hex}"
+    r = client.post('/register', json={'username': username, 'password': 'pw'})
+    assert r.status_code == 200, r.text
+    token = r.json()['access_token']
+    user_row = main.db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
+    assert user_row is not None
+
+    session_id = f"session-{uuid4().hex}"
+    selected_codes = [
+        {
+            'code': '99213',
+            'type': 'CPT',
+            'category': 'codes',
+            'description': 'Office visit, established patient',
+            'docSupport': ['exam'],
+        },
+        {
+            'code': 'J45.909',
+            'type': 'ICD-10',
+            'category': 'diagnoses',
+            'description': 'Unspecified asthma, uncomplicated',
+            'aiReasoning': 'Matches documented diagnosis',
+        },
+    ]
+    final_session = {
+        'sessionId': session_id,
+        'encounterId': 'enc-123',
+        'patientId': 'patient-999',
+        'noteId': 'note-42',
+        'noteContent': 'Finalized clinical note',
+        'selectedCodes': selected_codes,
+        'complianceIssues': [
+            {
+                'id': 'issue-1',
+                'title': 'Missing attestation',
+                'description': 'Attestation section incomplete',
+                'severity': 'high',
+                'category': 'documentation',
+            }
+        ],
+        'stepStates': [
+            {
+                'step': 1,
+                'status': 'completed',
+                'progress': 100,
+                'startedAt': '2024-01-01T10:00:00Z',
+                'completedAt': '2024-01-01T10:05:00Z',
+                'updatedAt': '2024-01-01T10:05:00Z',
+                'notes': 'Intake complete',
+                'blockingIssues': ['verify-docs'],
+            }
+        ],
+        'reimbursementSummary': {'total': 125.0},
+        'patientMetadata': {'patientId': 'patient-999', 'name': 'Jane Doe'},
+        'patientQuestions': [
+            {'id': 7, 'question': 'Any medication changes?', 'status': 'open'}
+        ],
+        'transcriptEntries': [{'id': 1, 'text': 'Patient is feeling better.'}],
+        'lastValidation': {'status': 'ok'},
+    }
+    payload = {
+        'selectedCodes': {'codes': 1, 'diagnoses': 1, 'prevention': 0, 'differentials': 0},
+        'selectedCodesList': selected_codes,
+        'addedCodes': ['99213', 'J45.909'],
+        'isSuggestionPanelOpen': True,
+        'finalizationSessions': {session_id: final_session},
+    }
+
+    r2 = client.put('/api/user/session', headers=auth_header(token), json=payload)
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert session_id in body['finalizationSessions']
+    stored_session = body['finalizationSessions'][session_id]
+    assert stored_session['sessionId'] == session_id
+    assert stored_session['selectedCodes'][0]['code'] == '99213'
+    assert stored_session['selectedCodes'][1]['category'] == 'diagnoses'
+    assert stored_session['stepStates']['1']['status'] == 'completed'
+    assert stored_session['patientMetadata']['patientId'] == 'patient-999'
+    assert stored_session['patientQuestions'][0]['question'] == 'Any medication changes?'
+    assert stored_session['transcriptEntries'][0]['text'] == 'Patient is feeling better.'
+    assert body['selectedCodesList'][0]['docSupport'] == ['exam']
+
+    r3 = client.get('/api/user/session', headers=auth_header(token))
+    assert r3.status_code == 200
+    fetched = r3.json()
+    assert session_id in fetched['finalizationSessions']
+    fetched_session = fetched['finalizationSessions'][session_id]
+    assert fetched_session['stepStates']['1']['status'] == 'completed'
+    assert fetched_session['selectedCodes'][0]['code'] == '99213'
+    assert fetched['selectedCodesList'][1]['aiReasoning'] == 'Matches documented diagnosis'
+
+    stored_row = main.db_conn.execute(
+        "SELECT data FROM session_state WHERE user_id=?",
+        (user_row['id'],),
+    ).fetchone()
+    assert stored_row is not None
+    persisted = json.loads(stored_row['data'])
+    assert session_id in persisted['finalizationSessions']
+    persisted_session = persisted['finalizationSessions'][session_id]
+    assert persisted_session['stepStates']['1']['status'] == 'completed'
+    assert persisted_session['selectedCodes'][0]['code'] == '99213'
