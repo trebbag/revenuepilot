@@ -215,12 +215,27 @@ The generated artifacts live in `dist/` and can be distributed per
 platform. Refer to [Desktop Build and Auto-Update Guide](DESKTOP_BUILD.md)
 for certificate management and smoke tests.【F:docs/DESKTOP_BUILD.md†L1-L80】
 
+## Monitoring and observability
+
+The backend now emits JSON structured logs via `structlog`, automatically
+including a per-request trace identifier propagated through the
+`X-Trace-Id` header for correlation with frontend events. Prometheus
+metrics are exposed from FastAPI at `/metrics`; request the endpoint with
+`format=prometheus` or an `Accept: text/plain` header to retrieve scrape-
+ready output containing request/latency histograms and business counters
+for workflow completions, AI failures and EHR export issues. An
+aggregated operational summary is available at `/status/alerts` and is
+surfaced on the admin dashboard for quick triage. Deployment pipelines
+should configure log shipping to handle JSON payloads and register the
+Prometheus endpoint with the monitoring stack.【F:backend/main.py†L231-L362】【F:src/components/Dashboard.jsx†L1-L220】
+
 Production deployments should source `OPENAI_API_KEY`, `JWT_SECRET` and
 other credentials from an external secrets manager (Vault, SSM, etc.)
 and provide the corresponding `*_ROTATED_AT` metadata so the backend can
 enforce rotation policies. Set `SECRETS_BACKEND=env` and leave
 `SECRETS_FALLBACK=never` in hosted environments; the development scripts
 only provision local fallbacks when `ENVIRONMENT` is a development value.【F:backend/key_manager.py†L85-L230】【F:start.sh†L1-L48】
+
 
 ## Additional references
 

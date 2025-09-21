@@ -1,7 +1,7 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getMetrics } from '../api.js';
+import { getMetrics, getAlertSummary } from '../api.js';
 import { Line, Bar } from 'react-chartjs-2';
 import jsPDF from 'jspdf';
 import {
@@ -53,6 +53,8 @@ function Dashboard() {
   const [filters, setFilters] = useState({ start: '', end: '', clinician: '' });
   const [inputs, setInputs] = useState({ ...filters, range: '' });
   const [error, setError] = useState(null);
+  const [alerts, setAlerts] = useState(null);
+  const [alertError, setAlertError] = useState(null);
   const revenueBarRef = useRef(null);
   const denialRateRef = useRef(null);
 
@@ -68,19 +70,161 @@ function Dashboard() {
     setFilters({ start, end, clinician });
   };
 
+  const formatTimestamp = (value) => {
+    if (!value) return '–';
+    try {
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return value;
+      return dt.toLocaleString();
+    } catch {
+      return value || '–';
+    }
+  };
+
+  const summarizeBreakdown = (mapping) => {
+    if (!mapping) return null;
+    const entries = Object.entries(mapping).filter(
+      ([, count]) => typeof count === 'number' && count > 0,
+    );
+    if (!entries.length) return null;
+    return entries.map(([key, count]) => `${key}: ${count}`).join(', ');
+  };
+
+  const workflowSummary = alerts?.workflow || {};
+  const exportSummary = alerts?.exports || {};
+  const aiSummary = alerts?.ai || {};
+  const alertsUpdated = alerts?.updatedAt ? formatTimestamp(alerts.updatedAt) : null;
+
+  const workflowLast = workflowSummary.lastCompletion;
+  const workflowLastText = workflowLast
+    ? t('dashboard.alerts.workflowLast', {
+        defaultValue: '{{dest}} • {{ts}}',
+        dest:
+          workflowLast.destination ||
+          t('dashboard.alerts.unknownDestination', { defaultValue: 'unknown' }),
+        ts: formatTimestamp(workflowLast.timestamp),
+      })
+    : t('dashboard.alerts.workflowNone', {
+        defaultValue: 'No completions recorded',
+      });
+
+  const exportLast = exportSummary.lastFailure;
+  const exportLastText = exportLast
+    ? t('dashboard.alerts.exportLast', {
+        defaultValue: '{{ehr}} • {{ts}}',
+        ehr:
+          exportLast.ehrSystem ||
+          t('dashboard.alerts.unknownDestination', { defaultValue: 'unknown' }),
+        ts: formatTimestamp(exportLast.timestamp),
+      })
+    : t('dashboard.alerts.exportNone', {
+        defaultValue: 'No export issues detected',
+      });
+  const exportDetail = exportLast?.detail
+    ? t('dashboard.alerts.lastDetail', {
+        defaultValue: 'Detail: {{detail}}',
+        detail: exportLast.detail,
+      })
+    : null;
+
+  const aiLast = aiSummary.lastError;
+  const aiLastText = aiLast
+    ? t('dashboard.alerts.aiLast', {
+        defaultValue: '{{route}} • {{ts}}',
+        route:
+          aiLast.route ||
+          t('dashboard.alerts.unknownRoute', { defaultValue: 'unknown route' }),
+        ts: formatTimestamp(aiLast.timestamp),
+      })
+    : t('dashboard.alerts.aiNone', {
+        defaultValue: 'No AI failures recorded',
+      });
+  const aiDetail = aiLast?.detail
+    ? t('dashboard.alerts.lastDetail', {
+        defaultValue: 'Detail: {{detail}}',
+        detail: aiLast.detail,
+      })
+    : null;
+
+  const alertCards = alerts
+    ? [
+        {
+          key: 'workflow',
+          title: t('dashboard.alerts.workflowTitle', {
+            defaultValue: 'Workflow completions',
+          }),
+          count: workflowSummary.total || 0,
+          last: workflowLastText,
+          breakdown: summarizeBreakdown(workflowSummary.byDestination),
+        },
+        {
+          key: 'exports',
+          title: t('dashboard.alerts.exportTitle', {
+            defaultValue: 'Export failures',
+          }),
+          count: exportSummary.failures || 0,
+          last: exportLastText,
+          breakdown: summarizeBreakdown(exportSummary.bySystem),
+          detail: exportDetail,
+        },
+        {
+          key: 'ai',
+          title: t('dashboard.alerts.aiTitle', {
+            defaultValue: 'AI route errors',
+          }),
+          count: aiSummary.errors || 0,
+          last: aiLastText,
+          breakdown: summarizeBreakdown(aiSummary.byRoute),
+          detail: aiDetail,
+        },
+      ]
+    : [];
+
   useEffect(() => {
+    let active = true;
+
+    const handleUnauthorized = () => {
+      if (typeof window !== 'undefined') {
+        alert(t('dashboard.accessDenied'));
+        localStorage.removeItem('token');
+        window.location.href = '/';
+      }
+    };
+
     getMetrics(filters)
-      .then((data) => setMetrics(data))
+      .then((data) => {
+        if (!active) return;
+        setMetrics(data);
+        setError(null);
+      })
       .catch((err) => {
-        if (err.message === 'Unauthorized' && typeof window !== 'undefined') {
-          alert(t('dashboard.accessDenied'));
-          localStorage.removeItem('token');
-          window.location.href = '/';
+        if (!active) return;
+        if (err.message === 'Unauthorized') {
+          handleUnauthorized();
         } else {
           setError(err.message);
         }
       });
-  }, [filters]);
+
+    getAlertSummary()
+      .then((data) => {
+        if (!active) return;
+        setAlerts(data);
+        setAlertError(null);
+      })
+      .catch((err) => {
+        if (!active) return;
+        if (err.message === 'Unauthorized') {
+          handleUnauthorized();
+        } else {
+          setAlertError(err.message);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [filters, t]);
 
   // Define display cards using the fetched metrics.  Missing values will
   // default to zero.  When numeric metrics are present, format them to
@@ -735,6 +879,61 @@ function Dashboard() {
           {t('clipboard.exportPdf')}
         </button>
       </div>
+      {alertError && <p style={{ color: '#dc2626' }}>{alertError}</p>}
+      {alerts && (
+        <section
+          className="dashboard-alerts"
+          style={{ marginBottom: '1.5rem' }}
+        >
+          <h3>{t('dashboard.alerts.title', { defaultValue: 'Operational alerts' })}</h3>
+          {alertsUpdated && (
+            <p style={{ marginTop: 0 }}>
+              {t('dashboard.alerts.lastUpdated', {
+                defaultValue: 'Last updated: {{ts}}',
+                ts: alertsUpdated,
+              })}
+            </p>
+          )}
+          <div
+            className="dashboard-alerts-grid"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+              gap: '1rem',
+            }}
+          >
+            {alertCards.map((card) => (
+              <div
+                key={card.key}
+                className="dashboard-alert-card"
+                style={{
+                  border: '1px solid #d1d5db',
+                  borderRadius: '0.5rem',
+                  padding: '1rem',
+                  background: '#fff',
+                }}
+              >
+                <h4 style={{ marginTop: 0 }}>{card.title}</h4>
+                <p style={{ fontSize: '1.5rem', fontWeight: 600 }}>{card.count}</p>
+                <p style={{ margin: '0.25rem 0' }}>{card.last}</p>
+                {card.detail && (
+                  <p style={{ fontSize: '0.875rem', color: '#4b5563' }}>
+                    {card.detail}
+                  </p>
+                )}
+                {card.breakdown && (
+                  <p style={{ fontSize: '0.875rem', color: '#4b5563' }}>
+                    {t('dashboard.alerts.breakdown', {
+                      defaultValue: 'Breakdown: {{details}}',
+                      details: card.breakdown,
+                    })}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <table className="metrics-table">
         <thead>
           <tr>

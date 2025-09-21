@@ -1147,6 +1147,32 @@ export async function getMetrics(filters = {}) {
   return await resp.json();
 }
 
+export async function getAlertSummary() {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  if (!baseUrl) {
+    return {
+      workflow: { total: 0, byDestination: {}, lastCompletion: null },
+      exports: { failures: 0, bySystem: {}, lastFailure: null },
+      ai: { errors: 0, byRoute: {}, lastError: null },
+      updatedAt: null,
+    };
+  }
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const resp = await fetch(`${baseUrl}/status/alerts`, { headers });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to fetch alerts');
+  }
+  return await resp.json();
+}
+
 /**
  * Retrieve persisted backend settings such as the advanced scrubber toggle.
  * Returns an empty object if the backend is unreachable.
