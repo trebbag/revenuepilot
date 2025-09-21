@@ -28,7 +28,7 @@ import { useAuth } from "../contexts/AuthContext"
 import { useSession } from "../contexts/SessionContext"
 import type { StoredFinalizationSession } from "../features/finalization/workflowTypes"
 
-interface ComplianceIssue {
+export interface ComplianceIssue {
   id: string
   severity: 'critical' | 'warning' | 'info'
   title: string
@@ -102,6 +102,43 @@ interface TranscriptEntry {
   speaker?: string
 }
 
+export type StreamConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error'
+
+export interface StreamConnectionState {
+  status: StreamConnectionStatus
+  attempts: number
+  lastError?: string | null
+  lastConnectedAt?: number | null
+  nextRetryDelayMs?: number | null
+}
+
+export interface LiveCodeSuggestion {
+  id: string
+  code?: string
+  description?: string
+  rationale?: string
+  type?: string
+  confidence?: number | null
+  category?: string | null
+  receivedAt: number
+  source?: string | null
+}
+
+export interface CollaborationPresence {
+  id: string
+  name?: string
+  role?: string
+  status?: string
+  lastSeen?: number
+}
+
+export interface CollaborationStreamState {
+  participants: CollaborationPresence[]
+  conflicts: string[]
+  status?: string | null
+  connection: StreamConnectionState
+}
+
 interface InitialNoteData {
   noteId: string
   content: string
@@ -163,6 +200,7 @@ interface PerformAutoSaveOptions {
 }
 
 const AUTO_SAVE_DEBOUNCE_MS = 5_000
+const STREAM_HISTORY_LIMIT = 50
 
 interface NoteEditorProps {
   prePopulatedPatient?: {
@@ -197,6 +235,9 @@ interface NoteEditorProps {
   } | null
   onRecentFinalizationHandled?: () => void
   onOpenFinalization?: (options: FinalizationWizardLaunchOptions) => void
+  onComplianceStreamUpdate?: (issues: ComplianceIssue[], state: StreamConnectionState) => void
+  onCodeStreamUpdate?: (suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => void
+  onCollaborationStreamUpdate?: (state: CollaborationStreamState) => void
 }
 
 export function NoteEditor({
@@ -216,7 +257,10 @@ export function NoteEditor({
   onEhrExportStateChange,
   recentFinalization,
   onRecentFinalizationHandled,
-  onOpenFinalization
+  onOpenFinalization,
+  onComplianceStreamUpdate,
+  onCodeStreamUpdate,
+  onCollaborationStreamUpdate
 }: NoteEditorProps) {
   const auth = useAuth()
   const { state: sessionState } = useSession()
@@ -282,6 +326,33 @@ export function NoteEditor({
   const [complianceIssues, setComplianceIssues] = useState<ComplianceIssue[]>([])
   const [complianceLoading, setComplianceLoading] = useState(false)
   const [complianceError, setComplianceError] = useState<string | null>(null)
+  const [complianceStreamState, setComplianceStreamState] = useState<StreamConnectionState>({
+    status: 'idle',
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null
+  })
+
+  const [liveCodeSuggestions, setLiveCodeSuggestions] = useState<LiveCodeSuggestion[]>([])
+  const [codeStreamState, setCodeStreamState] = useState<StreamConnectionState>({
+    status: 'idle',
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null
+  })
+
+  const [collaborationParticipants, setCollaborationParticipants] = useState<CollaborationPresence[]>([])
+  const [collaborationConflicts, setCollaborationConflicts] = useState<string[]>([])
+  const [collaborationStatus, setCollaborationStatus] = useState<string | null>(null)
+  const [collaborationStreamState, setCollaborationStreamState] = useState<StreamConnectionState>({
+    status: 'idle',
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null
+  })
 
   const [isRecording, setIsRecording] = useState(false)
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
@@ -521,6 +592,15 @@ export function NoteEditor({
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
+  const complianceSocketRef = useRef<WebSocket | null>(null)
+  const complianceReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const complianceAttemptsRef = useRef(0)
+  const codesSocketRef = useRef<WebSocket | null>(null)
+  const codesReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const codesAttemptsRef = useRef(0)
+  const collaborationSocketRef = useRef<WebSocket | null>(null)
+  const collaborationReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const collaborationAttemptsRef = useRef(0)
   const prevInitialNoteIdRef = useRef<string | null>(initialNoteData?.noteId ?? null)
   const prevInitialContentRef = useRef<string>(initialNoteData?.content ?? "")
   const prevInitialPatientIdRef = useRef<string | undefined>(initialNoteData?.patientId)
@@ -671,6 +751,313 @@ export function NoteEditor({
       })
       .filter((item): item is ComplianceIssue => Boolean(item))
   }, [])
+
+  const normalizeComplianceStreamPayload = useCallback(
+    (payload: any): ComplianceIssue[] => {
+      if (!payload) {
+        return []
+      }
+
+      const timestampRaw =
+        typeof payload?.timestamp === "number"
+          ? payload.timestamp
+          : typeof payload?.timestamp === "string"
+            ? Date.parse(payload.timestamp)
+            : Date.now()
+      const timestamp = Number.isFinite(timestampRaw) ? timestampRaw : Date.now()
+      const baseIdentifier =
+        payload?.eventId ??
+        payload?.event_id ??
+        payload?.analysisId ??
+        payload?.analysis_id ??
+        timestamp
+
+      const issues: Array<Record<string, unknown>> = []
+
+      const pushIssue = (issue: any, index: number) => {
+        let message = ""
+        let explicitSeverity: string | undefined
+        if (issue && typeof issue === "object") {
+          const sources = [
+            issue.message,
+            issue.description,
+            issue.summary,
+            issue.text,
+            issue.title,
+            issue.detail
+          ]
+          for (const source of sources) {
+            if (typeof source === "string" && source.trim().length > 0) {
+              message = source.trim()
+              break
+            }
+          }
+          if (typeof issue.severity === "string" && issue.severity.trim().length > 0) {
+            explicitSeverity = issue.severity.trim().toLowerCase()
+          }
+        } else if (typeof issue === "string") {
+          message = issue.trim()
+        }
+
+        if (!message) {
+          return
+        }
+
+        const severity: ComplianceIssue["severity"] =
+          explicitSeverity === "critical" || explicitSeverity === "warning" || explicitSeverity === "info"
+            ? (explicitSeverity as ComplianceIssue["severity"])
+            : severityFromText(message)
+
+        issues.push({
+          id: `${baseIdentifier}-${index + 1}`,
+          title: message,
+          description: message,
+          severity,
+          timestamp
+        })
+      }
+
+      const rawIssues = Array.isArray(payload?.issues)
+        ? payload.issues
+        : Array.isArray(payload?.alerts)
+          ? payload.alerts
+          : null
+
+      if (rawIssues && rawIssues.length > 0) {
+        rawIssues.forEach((entry: any, index: number) => pushIssue(entry, index))
+      } else if (payload?.message || payload?.description || payload?.text) {
+        pushIssue(payload, 0)
+      }
+
+      if (issues.length === 0) {
+        return []
+      }
+
+      return convertComplianceResponse(issues)
+    },
+    [convertComplianceResponse]
+  )
+
+  const normalizeLiveCodeSuggestions = useCallback((payload: any): LiveCodeSuggestion[] => {
+    if (!payload) {
+      return []
+    }
+
+    const now = Date.now()
+    const entries = Array.isArray(payload?.suggestions) && payload.suggestions.length > 0
+      ? payload.suggestions
+      : [payload]
+
+    const suggestions: LiveCodeSuggestion[] = []
+
+    entries.forEach((entry: any, index: number) => {
+      if (!entry) {
+        return
+      }
+
+      const codeSource =
+        typeof entry.code === "string" && entry.code.trim().length > 0
+          ? entry.code.trim()
+          : typeof entry.codeValue === "string" && entry.codeValue.trim().length > 0
+            ? entry.codeValue.trim()
+            : typeof entry.code_id === "string" && entry.code_id.trim().length > 0
+              ? entry.code_id.trim()
+              : typeof entry.icd === "string" && entry.icd.trim().length > 0
+                ? entry.icd.trim()
+                : typeof payload.code === "string" && payload.code.trim().length > 0
+                  ? payload.code.trim()
+                  : ""
+
+      const descriptionSource =
+        typeof entry.description === "string" && entry.description.trim().length > 0
+          ? entry.description.trim()
+          : typeof entry.title === "string" && entry.title.trim().length > 0
+            ? entry.title.trim()
+            : typeof payload.description === "string" && payload.description.trim().length > 0
+              ? payload.description.trim()
+              : ""
+
+      const rationaleSource =
+        typeof entry.rationale === "string" && entry.rationale.trim().length > 0
+          ? entry.rationale.trim()
+          : typeof entry.reasoning === "string" && entry.reasoning.trim().length > 0
+            ? entry.reasoning.trim()
+            : typeof payload.rationale === "string" && payload.rationale.trim().length > 0
+              ? payload.rationale.trim()
+              : typeof payload.reasoning === "string" && payload.reasoning.trim().length > 0
+                ? payload.reasoning.trim()
+                : descriptionSource
+
+      if (!codeSource && !descriptionSource && !rationaleSource) {
+        return
+      }
+
+      const idSource =
+        entry.id ??
+        entry.suggestionId ??
+        entry.eventId ??
+        entry.event_id ??
+        entry.code ??
+        entry.codeValue ??
+        payload.eventId ??
+        `${now}-${index}`
+
+      const confidenceSource =
+        typeof entry.confidence === "number"
+          ? entry.confidence
+          : typeof payload.confidence === "number"
+            ? payload.confidence
+            : typeof entry.confidence === "string"
+              ? Number.parseFloat(entry.confidence)
+              : typeof payload.confidence === "string"
+                ? Number.parseFloat(payload.confidence)
+                : undefined
+
+      const typeSource =
+        typeof entry.type === "string" && entry.type.trim().length > 0
+          ? entry.type.trim()
+          : typeof payload.type === "string" && payload.type.trim().length > 0
+            ? payload.type.trim()
+            : undefined
+
+      const categorySource =
+        typeof entry.category === "string" && entry.category.trim().length > 0
+          ? entry.category.trim()
+          : typeof payload.category === "string" && payload.category.trim().length > 0
+            ? payload.category.trim()
+            : undefined
+
+      const sourceLabel =
+        typeof entry.source === "string" && entry.source.trim().length > 0
+          ? entry.source.trim()
+          : typeof payload.source === "string" && payload.source.trim().length > 0
+            ? payload.source.trim()
+            : undefined
+
+      suggestions.push({
+        id: String(idSource),
+        code: codeSource || undefined,
+        description: descriptionSource || undefined,
+        rationale: rationaleSource || undefined,
+        type: typeSource,
+        confidence:
+          typeof confidenceSource === "number" && Number.isFinite(confidenceSource)
+            ? confidenceSource
+            : undefined,
+        category: categorySource || undefined,
+        source: sourceLabel || undefined,
+        receivedAt: now
+      })
+    })
+
+    return suggestions
+  }, [])
+
+  const normalizeCollaborator = useCallback((entry: any): CollaborationPresence | null => {
+    if (!entry) {
+      return null
+    }
+
+    if (typeof entry === "string") {
+      const trimmed = entry.trim()
+      if (!trimmed) {
+        return null
+      }
+      return { id: trimmed, name: trimmed, lastSeen: Date.now() }
+    }
+
+    if (typeof entry !== "object") {
+      return null
+    }
+
+    const identifier =
+      entry.userId ??
+      entry.id ??
+      entry.user ??
+      entry.email ??
+      entry.handle ??
+      entry.participantId ??
+      entry.name
+
+    if (!identifier) {
+      return null
+    }
+
+    const nameSource = entry.displayName ?? entry.name ?? entry.fullName ?? identifier
+    const roleSource = entry.role ?? entry.title ?? entry.position ?? null
+    const statusSource = entry.status ?? entry.presence ?? entry.state ?? null
+
+    return {
+      id: String(identifier),
+      name: typeof nameSource === "string" ? nameSource : String(identifier),
+      role: typeof roleSource === "string" ? roleSource : undefined,
+      status: typeof statusSource === "string" ? statusSource : undefined,
+      lastSeen: Date.now()
+    }
+  }, [])
+
+  const streamBaseParams = useMemo(() => {
+    const sessionIdValue =
+      typeof visitSession?.sessionId === "number"
+        ? String(visitSession.sessionId)
+        : typeof visitSession?.sessionId === "string" && visitSession.sessionId.trim().length > 0
+          ? visitSession.sessionId.trim()
+          : null
+
+    const encounterValue = (() => {
+      if (typeof visitSession?.encounterId === "string" && visitSession.encounterId.trim().length > 0) {
+        return visitSession.encounterId.trim()
+      }
+      if (typeof encounterId === "string" && encounterId.trim().length > 0) {
+        return encounterId.trim()
+      }
+      return null
+    })()
+
+    const patientValue = (() => {
+      if (typeof visitSession?.patientId === "string" && visitSession.patientId.trim().length > 0) {
+        return visitSession.patientId.trim()
+      }
+      if (typeof patientId === "string" && patientId.trim().length > 0) {
+        return patientId.trim()
+      }
+      return null
+    })()
+
+    const noteValue = typeof noteId === "string" && noteId.trim().length > 0 ? noteId.trim() : null
+
+    return {
+      sessionId: sessionIdValue,
+      encounterId: encounterValue,
+      patientId: patientValue,
+      noteId: noteValue
+    }
+  }, [visitSession?.sessionId, visitSession?.encounterId, visitSession?.patientId, encounterId, patientId, noteId])
+
+  const buildStreamUrl = useCallback(
+    (path: string) => {
+      const base = resolveWebsocketUrl(path)
+      const target = new URL(base)
+      const token = getStoredToken()
+      if (token) {
+        target.searchParams.set("token", token)
+      }
+      if (streamBaseParams.sessionId) {
+        target.searchParams.set("visit_session_id", streamBaseParams.sessionId)
+      }
+      if (streamBaseParams.encounterId) {
+        target.searchParams.set("encounter_id", streamBaseParams.encounterId)
+      }
+      if (streamBaseParams.patientId) {
+        target.searchParams.set("patient_id", streamBaseParams.patientId)
+      }
+      if (streamBaseParams.noteId) {
+        target.searchParams.set("note_id", streamBaseParams.noteId)
+      }
+      return { url: target, token }
+    },
+    [streamBaseParams]
+  )
 
   const convertWizardIssuesToCompliance = useCallback(
     (issues?: Record<string, unknown>): ComplianceIssue[] => {
@@ -918,6 +1305,722 @@ export function NoteEditor({
     queuedAudioChunksRef.current = []
     setIsRecording(false)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return () => undefined
+    }
+
+    if (!streamBaseParams.sessionId) {
+      if (complianceReconnectTimerRef.current) {
+        clearTimeout(complianceReconnectTimerRef.current)
+        complianceReconnectTimerRef.current = null
+      }
+      if (complianceSocketRef.current) {
+        try {
+          complianceSocketRef.current.close()
+        } catch {
+          // ignore
+        }
+        complianceSocketRef.current = null
+      }
+      complianceAttemptsRef.current = 0
+      setComplianceStreamState(prev => ({
+        status: 'idle',
+        attempts: 0,
+        lastError: null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null
+      }))
+      return () => undefined
+    }
+
+    let cancelled = false
+
+    const cleanupTimer = () => {
+      if (complianceReconnectTimerRef.current) {
+        clearTimeout(complianceReconnectTimerRef.current)
+        complianceReconnectTimerRef.current = null
+      }
+    }
+
+    const closeSocket = () => {
+      const socket = complianceSocketRef.current
+      if (socket) {
+        try {
+          socket.onopen = null
+          socket.onclose = null
+          socket.onerror = null
+          socket.onmessage = null
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close()
+          }
+        } catch {
+          // ignore
+        }
+      }
+      complianceSocketRef.current = null
+    }
+
+    const scheduleReconnect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      const attempt = complianceAttemptsRef.current + 1
+      complianceAttemptsRef.current = attempt
+      const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
+      setComplianceStreamState(prev => ({
+        status: 'closed',
+        attempts: attempt,
+        lastError: prev.lastError ?? null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: delay
+      }))
+      complianceReconnectTimerRef.current = window.setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+        setComplianceStreamState(prev => ({
+          status: 'connecting',
+          attempts: complianceAttemptsRef.current,
+          lastError: prev.lastError ?? null,
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: null
+        }))
+        connect()
+      }, delay)
+    }
+
+    const connect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      closeSocket()
+
+      const { url, token } = buildStreamUrl('/ws/compliance')
+      try {
+        const socket =
+          token != null
+            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
+            : new WebSocket(url.toString())
+
+        complianceSocketRef.current = socket
+
+        socket.onopen = () => {
+          if (cancelled) {
+            return
+          }
+          complianceAttemptsRef.current = 0
+          setComplianceStreamState({
+            status: 'open',
+            attempts: 0,
+            lastError: null,
+            lastConnectedAt: Date.now(),
+            nextRetryDelayMs: null
+          })
+          setComplianceLoading(false)
+          setComplianceError(null)
+        }
+
+        socket.onmessage = async event => {
+          if (cancelled) {
+            return
+          }
+          try {
+            const rawData =
+              typeof event.data === 'string'
+                ? event.data
+                : event.data instanceof Blob
+                  ? await event.data.text()
+                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const payload = JSON.parse(rawData)
+            if (payload?.event === 'connected') {
+              return
+            }
+            const normalized = normalizeComplianceStreamPayload(payload)
+            if (normalized.length === 0) {
+              return
+            }
+            setComplianceIssues(prev => {
+              const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
+              const map = new Map(prev.map(issue => [issue.id, issue]))
+              normalized.forEach(issue => {
+                map.set(issue.id, {
+                  ...issue,
+                  dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
+                })
+              })
+              return Array.from(map.values()).slice(-STREAM_HISTORY_LIMIT)
+            })
+            lastComplianceInputRef.current = createComplianceSignature(
+              noteContentRef.current ?? '',
+              complianceCodeValues
+            )
+            setComplianceError(null)
+            setComplianceLoading(false)
+          } catch (error) {
+            console.error('Failed to process compliance stream payload', error)
+            setComplianceStreamState(prev => ({
+              ...prev,
+              status: prev.status === 'open' ? prev.status : 'error',
+              lastError:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to parse compliance stream payload'
+            }))
+          }
+        }
+
+        socket.onerror = event => {
+          if (cancelled) {
+            return
+          }
+          const message =
+            event instanceof Event
+              ? 'Compliance stream error'
+              : (event as ErrorEvent)?.message ?? 'Compliance stream error'
+          setComplianceStreamState(prev => ({
+            ...prev,
+            status: 'error',
+            lastError: message
+          }))
+          try {
+            socket.close()
+          } catch {
+            // ignore
+          }
+        }
+
+        socket.onclose = () => {
+          complianceSocketRef.current = null
+          if (cancelled) {
+            return
+          }
+          scheduleReconnect()
+        }
+      } catch (error) {
+        setComplianceStreamState(prev => ({
+          status: 'error',
+          attempts: complianceAttemptsRef.current,
+          lastError: error instanceof Error ? error.message : 'Unable to open compliance stream',
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+        }))
+        scheduleReconnect()
+      }
+    }
+
+    complianceAttemptsRef.current = 0
+    setComplianceStreamState(prev => ({
+      status: 'connecting',
+      attempts: 0,
+      lastError: prev.lastError ?? null,
+      lastConnectedAt: prev.lastConnectedAt ?? null,
+      nextRetryDelayMs: null
+    }))
+    connect()
+
+    return () => {
+      cancelled = true
+      cleanupTimer()
+      closeSocket()
+    }
+  }, [
+    buildStreamUrl,
+    normalizeComplianceStreamPayload,
+    streamBaseParams.sessionId,
+    complianceCodeValues
+  ])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return () => undefined
+    }
+
+    if (!streamBaseParams.sessionId) {
+      if (codesReconnectTimerRef.current) {
+        clearTimeout(codesReconnectTimerRef.current)
+        codesReconnectTimerRef.current = null
+      }
+      if (codesSocketRef.current) {
+        try {
+          codesSocketRef.current.close()
+        } catch {
+          // ignore
+        }
+        codesSocketRef.current = null
+      }
+      codesAttemptsRef.current = 0
+      setLiveCodeSuggestions([])
+      setCodeStreamState(prev => ({
+        status: 'idle',
+        attempts: 0,
+        lastError: null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null
+      }))
+      return () => undefined
+    }
+
+    let cancelled = false
+
+    const cleanupTimer = () => {
+      if (codesReconnectTimerRef.current) {
+        clearTimeout(codesReconnectTimerRef.current)
+        codesReconnectTimerRef.current = null
+      }
+    }
+
+    const closeSocket = () => {
+      const socket = codesSocketRef.current
+      if (socket) {
+        try {
+          socket.onopen = null
+          socket.onclose = null
+          socket.onerror = null
+          socket.onmessage = null
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close()
+          }
+        } catch {
+          // ignore
+        }
+      }
+      codesSocketRef.current = null
+    }
+
+    const scheduleReconnect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      const attempt = codesAttemptsRef.current + 1
+      codesAttemptsRef.current = attempt
+      const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
+      setCodeStreamState(prev => ({
+        status: 'closed',
+        attempts: attempt,
+        lastError: prev.lastError ?? null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: delay
+      }))
+      codesReconnectTimerRef.current = window.setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+        setCodeStreamState(prev => ({
+          status: 'connecting',
+          attempts: codesAttemptsRef.current,
+          lastError: prev.lastError ?? null,
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: null
+        }))
+        connect()
+      }, delay)
+    }
+
+    const connect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      closeSocket()
+
+      const { url, token } = buildStreamUrl('/ws/codes')
+      try {
+        const socket =
+          token != null
+            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
+            : new WebSocket(url.toString())
+
+        codesSocketRef.current = socket
+
+        socket.onopen = () => {
+          if (cancelled) {
+            return
+          }
+          codesAttemptsRef.current = 0
+          setCodeStreamState({
+            status: 'open',
+            attempts: 0,
+            lastError: null,
+            lastConnectedAt: Date.now(),
+            nextRetryDelayMs: null
+          })
+        }
+
+        socket.onmessage = async event => {
+          if (cancelled) {
+            return
+          }
+          try {
+            const rawData =
+              typeof event.data === 'string'
+                ? event.data
+                : event.data instanceof Blob
+                  ? await event.data.text()
+                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const payload = JSON.parse(rawData)
+            if (payload?.event === 'connected') {
+              return
+            }
+            const normalized = normalizeLiveCodeSuggestions(payload)
+            if (!normalized.length) {
+              return
+            }
+            setLiveCodeSuggestions(prev => {
+              const map = new Map(prev.map(item => [item.id, item]))
+              normalized.forEach(item => {
+                map.set(item.id, item)
+              })
+              return Array.from(map.values())
+                .sort((a, b) => a.receivedAt - b.receivedAt)
+                .slice(-STREAM_HISTORY_LIMIT)
+            })
+            setCodeStreamState(prev => ({
+              ...prev,
+              lastError: null
+            }))
+          } catch (error) {
+            console.error('Failed to process codes stream payload', error)
+            setCodeStreamState(prev => ({
+              ...prev,
+              status: prev.status === 'open' ? prev.status : 'error',
+              lastError:
+                error instanceof Error ? error.message : 'Failed to parse codes stream payload'
+            }))
+          }
+        }
+
+        socket.onerror = event => {
+          if (cancelled) {
+            return
+          }
+          const message =
+            event instanceof Event
+              ? 'Code suggestion stream error'
+              : (event as ErrorEvent)?.message ?? 'Code suggestion stream error'
+          setCodeStreamState(prev => ({
+            ...prev,
+            status: 'error',
+            lastError: message
+          }))
+          try {
+            socket.close()
+          } catch {
+            // ignore
+          }
+        }
+
+        socket.onclose = () => {
+          codesSocketRef.current = null
+          if (cancelled) {
+            return
+          }
+          scheduleReconnect()
+        }
+      } catch (error) {
+        setCodeStreamState(prev => ({
+          status: 'error',
+          attempts: codesAttemptsRef.current,
+          lastError: error instanceof Error ? error.message : 'Unable to open codes stream',
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+        }))
+        scheduleReconnect()
+      }
+    }
+
+    codesAttemptsRef.current = 0
+    setCodeStreamState(prev => ({
+      status: 'connecting',
+      attempts: 0,
+      lastError: prev.lastError ?? null,
+      lastConnectedAt: prev.lastConnectedAt ?? null,
+      nextRetryDelayMs: null
+    }))
+    connect()
+
+    return () => {
+      cancelled = true
+      cleanupTimer()
+      closeSocket()
+    }
+  }, [buildStreamUrl, normalizeLiveCodeSuggestions, streamBaseParams.sessionId])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return () => undefined
+    }
+
+    if (!streamBaseParams.sessionId) {
+      if (collaborationReconnectTimerRef.current) {
+        clearTimeout(collaborationReconnectTimerRef.current)
+        collaborationReconnectTimerRef.current = null
+      }
+      if (collaborationSocketRef.current) {
+        try {
+          collaborationSocketRef.current.close()
+        } catch {
+          // ignore
+        }
+        collaborationSocketRef.current = null
+      }
+      collaborationAttemptsRef.current = 0
+      setCollaborationParticipants([])
+      setCollaborationConflicts([])
+      setCollaborationStatus(null)
+      setCollaborationStreamState(prev => ({
+        status: 'idle',
+        attempts: 0,
+        lastError: null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null
+      }))
+      return () => undefined
+    }
+
+    let cancelled = false
+
+    const cleanupTimer = () => {
+      if (collaborationReconnectTimerRef.current) {
+        clearTimeout(collaborationReconnectTimerRef.current)
+        collaborationReconnectTimerRef.current = null
+      }
+    }
+
+    const closeSocket = () => {
+      const socket = collaborationSocketRef.current
+      if (socket) {
+        try {
+          socket.onopen = null
+          socket.onclose = null
+          socket.onerror = null
+          socket.onmessage = null
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close()
+          }
+        } catch {
+          // ignore
+        }
+      }
+      collaborationSocketRef.current = null
+    }
+
+    const scheduleReconnect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      const attempt = collaborationAttemptsRef.current + 1
+      collaborationAttemptsRef.current = attempt
+      const delay = Math.min(30_000, Math.max(1_000, 1_000 * 2 ** Math.min(attempt, 5)))
+      setCollaborationStreamState(prev => ({
+        status: 'closed',
+        attempts: attempt,
+        lastError: prev.lastError ?? null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: delay
+      }))
+      collaborationReconnectTimerRef.current = window.setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+        setCollaborationStreamState(prev => ({
+          status: 'connecting',
+          attempts: collaborationAttemptsRef.current,
+          lastError: prev.lastError ?? null,
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: null
+        }))
+        connect()
+      }, delay)
+    }
+
+    const connect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      closeSocket()
+
+      const { url, token } = buildStreamUrl('/ws/collaboration')
+      try {
+        const socket =
+          token != null
+            ? new WebSocket(url.toString(), ['authorization', `Bearer ${token}`])
+            : new WebSocket(url.toString())
+
+        collaborationSocketRef.current = socket
+
+        socket.onopen = () => {
+          if (cancelled) {
+            return
+          }
+          collaborationAttemptsRef.current = 0
+          setCollaborationStreamState({
+            status: 'open',
+            attempts: 0,
+            lastError: null,
+            lastConnectedAt: Date.now(),
+            nextRetryDelayMs: null
+          })
+        }
+
+        socket.onmessage = async event => {
+          if (cancelled) {
+            return
+          }
+          try {
+            const rawData =
+              typeof event.data === 'string'
+                ? event.data
+                : event.data instanceof Blob
+                  ? await event.data.text()
+                  : new TextDecoder().decode(event.data as ArrayBuffer)
+            const payload = JSON.parse(rawData)
+            if (payload?.event === 'connected') {
+              return
+            }
+
+            if (payload?.event === 'collaboration_clear' || payload?.presence === 'clear') {
+              setCollaborationParticipants([])
+            }
+
+            const participantList =
+              Array.isArray(payload?.participants)
+                ? payload.participants
+                : Array.isArray(payload?.users)
+                  ? payload.users
+                  : Array.isArray(payload?.presence)
+                    ? payload.presence
+                    : null
+
+            if (participantList) {
+              const normalizedList = participantList
+                .map((entry: any) => normalizeCollaborator(entry))
+                .filter((entry): entry is CollaborationPresence => Boolean(entry))
+              if (normalizedList.length > 0) {
+                setCollaborationParticipants(normalizedList)
+              } else if (payload?.presence === 'clear') {
+                setCollaborationParticipants([])
+              }
+            } else {
+              const collaborator = normalizeCollaborator(payload)
+              if (collaborator) {
+                setCollaborationParticipants(prev => {
+                  const map = new Map(prev.map(person => [person.id, person]))
+                  map.set(collaborator.id, collaborator)
+                  return Array.from(map.values())
+                })
+              }
+            }
+
+            if (payload?.event === 'collaboration_left' && (payload.userId || payload.user)) {
+              const departing = String(payload.userId ?? payload.user)
+              setCollaborationParticipants(prev => prev.filter(person => person.id !== departing))
+            }
+
+            if (payload?.conflicts !== undefined) {
+              const conflicts = Array.isArray(payload.conflicts)
+                ? payload.conflicts
+                : payload.conflicts
+                  ? [payload.conflicts]
+                  : []
+              setCollaborationConflicts(
+                conflicts
+                  .map(value => (typeof value === 'string' ? value.trim() : ''))
+                  .filter((value): value is string => value.length > 0)
+                  .slice(-STREAM_HISTORY_LIMIT)
+              )
+            } else if (
+              payload?.event === 'collaboration_resolved' ||
+              payload?.event === 'collaboration_sync'
+            ) {
+              setCollaborationConflicts([])
+            }
+
+            if (typeof payload?.status === 'string' && payload.status.trim().length > 0) {
+              setCollaborationStatus(payload.status.trim())
+            }
+
+            setCollaborationStreamState(prev => ({
+              ...prev,
+              lastError: null
+            }))
+          } catch (error) {
+            console.error('Failed to process collaboration stream payload', error)
+            setCollaborationStreamState(prev => ({
+              ...prev,
+              status: prev.status === 'open' ? prev.status : 'error',
+              lastError:
+                error instanceof Error
+                  ? error.message
+                  : 'Failed to parse collaboration stream payload'
+            }))
+          }
+        }
+
+        socket.onerror = event => {
+          if (cancelled) {
+            return
+          }
+          const message =
+            event instanceof Event
+              ? 'Collaboration stream error'
+              : (event as ErrorEvent)?.message ?? 'Collaboration stream error'
+          setCollaborationStreamState(prev => ({
+            ...prev,
+            status: 'error',
+            lastError: message
+          }))
+          try {
+            socket.close()
+          } catch {
+            // ignore
+          }
+        }
+
+        socket.onclose = () => {
+          collaborationSocketRef.current = null
+          if (cancelled) {
+            return
+          }
+          scheduleReconnect()
+        }
+      } catch (error) {
+        setCollaborationStreamState(prev => ({
+          status: 'error',
+          attempts: collaborationAttemptsRef.current,
+          lastError:
+            error instanceof Error ? error.message : 'Unable to open collaboration stream',
+          lastConnectedAt: prev.lastConnectedAt ?? null,
+          nextRetryDelayMs: prev.nextRetryDelayMs ?? null
+        }))
+        scheduleReconnect()
+      }
+    }
+
+    collaborationAttemptsRef.current = 0
+    setCollaborationStreamState(prev => ({
+      status: 'connecting',
+      attempts: 0,
+      lastError: prev.lastError ?? null,
+      lastConnectedAt: prev.lastConnectedAt ?? null,
+      nextRetryDelayMs: null
+    }))
+    connect()
+
+    return () => {
+      cancelled = true
+      cleanupTimer()
+      closeSocket()
+    }
+  }, [buildStreamUrl, normalizeCollaborator, streamBaseParams.sessionId])
+
+
 
   useEffect(() => {
     const incomingId = initialNoteData?.noteId ?? null
@@ -1542,6 +2645,17 @@ export function NoteEditor({
       clearTimeout(complianceTimeoutRef.current)
     }
 
+    if (complianceStreamState.status === 'open') {
+      complianceAbortRef.current?.abort()
+      setComplianceLoading(false)
+      setComplianceError(null)
+      return () => {
+        if (complianceTimeoutRef.current) {
+          clearTimeout(complianceTimeoutRef.current)
+        }
+      }
+    }
+
     if (!noteContent || noteContent.trim().length === 0) {
       lastComplianceInputRef.current = createComplianceSignature("", [])
       setComplianceIssues([])
@@ -1608,7 +2722,13 @@ export function NoteEditor({
       }
       complianceAbortRef.current?.abort()
     }
-  }, [noteContent, complianceCodeValues, fetchWithAuth, convertComplianceResponse])
+  }, [
+    noteContent,
+    complianceCodeValues,
+    fetchWithAuth,
+    convertComplianceResponse,
+    complianceStreamState.status
+  ])
 
   useEffect(() => {
     if (autoSaveIntervalRef.current) {
@@ -1696,6 +2816,32 @@ export function NoteEditor({
       clearInterval(interval)
     }
   }, [visitStarted, isRecording])
+
+  useEffect(() => {
+    onComplianceStreamUpdate?.(complianceIssues, complianceStreamState)
+  }, [complianceIssues, complianceStreamState, onComplianceStreamUpdate])
+
+  useEffect(() => {
+    onCodeStreamUpdate?.(liveCodeSuggestions, codeStreamState)
+  }, [liveCodeSuggestions, codeStreamState, onCodeStreamUpdate])
+
+  useEffect(() => {
+    if (!onCollaborationStreamUpdate) {
+      return
+    }
+    onCollaborationStreamUpdate({
+      participants: collaborationParticipants,
+      conflicts: collaborationConflicts,
+      status: collaborationStatus,
+      connection: collaborationStreamState
+    })
+  }, [
+    collaborationParticipants,
+    collaborationConflicts,
+    collaborationStatus,
+    collaborationStreamState,
+    onCollaborationStreamUpdate
+  ])
 
   useEffect(() => {
     if (!transcriptEntries.length) {
@@ -2000,7 +3146,10 @@ export function NoteEditor({
         onPreFinalizeResult: handlePreFinalizeResult,
         onError: handleFinalizationError,
         onClose: handleFinalizationClose,
-        displayMode: "embedded"
+        displayMode: "embedded",
+        streamingCodeSuggestions: liveCodeSuggestions,
+        codesConnection: codeStreamState,
+        complianceConnection: complianceStreamState
       }
 
       onOpenFinalization(launchOptions)
@@ -2031,7 +3180,10 @@ export function NoteEditor({
     patientSexValue,
     selectedCodesList,
     transcriptEntries,
-    noteId
+    noteId,
+    liveCodeSuggestions,
+    codeStreamState,
+    complianceStreamState
   ])
 
 

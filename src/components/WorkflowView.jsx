@@ -52,7 +52,10 @@ function StepList({ steps, onComplete, onReopen, busy }) {
             <div className="workflow-step-header">
               <div>
                 <strong>
-                  {t('workflow.stepLabel', { index: step.id, title: step.title })}
+                  {t('workflow.stepLabel', {
+                    index: step.id,
+                    title: step.title,
+                  })}
                 </strong>
                 <div className="workflow-step-status">
                   {statusLabels[step.status] || step.status}
@@ -72,16 +75,18 @@ function StepList({ steps, onComplete, onReopen, busy }) {
                     {t('workflow.markComplete')}
                   </button>
                 )}
-                {step.status === 'completed' && onReopen && step.id < STEP_COUNT && (
-                  <button
-                    type="button"
-                    className="workflow-action secondary"
-                    onClick={() => onReopen(step.id)}
-                    disabled={busy}
-                  >
-                    {t('workflow.reopenStep')}
-                  </button>
-                )}
+                {step.status === 'completed' &&
+                  onReopen &&
+                  step.id < STEP_COUNT && (
+                    <button
+                      type="button"
+                      className="workflow-action secondary"
+                      onClick={() => onReopen(step.id)}
+                      disabled={busy}
+                    >
+                      {t('workflow.reopenStep')}
+                    </button>
+                  )}
               </div>
             </div>
             <p className="workflow-step-description">{step.description}</p>
@@ -90,16 +95,17 @@ function StepList({ steps, onComplete, onReopen, busy }) {
                 <span>{t('workflow.notesLabel')}:</span> {step.notes}
               </p>
             )}
-            {Array.isArray(step.blockingIssues) && step.blockingIssues.length > 0 && (
-              <div className="workflow-blockers">
-                <strong>{t('workflow.blockingIssues')}</strong>
-                <ul>
-                  {step.blockingIssues.map((issue, idx) => (
-                    <li key={idx}>{issue}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            {Array.isArray(step.blockingIssues) &&
+              step.blockingIssues.length > 0 && (
+                <div className="workflow-blockers">
+                  <strong>{t('workflow.blockingIssues')}</strong>
+                  <ul>
+                    {step.blockingIssues.map((issue, idx) => (
+                      <li key={idx}>{issue}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
           </li>
         ))}
       </ol>
@@ -133,10 +139,11 @@ function ValidationPanel({
         encounterId,
         noteId: noteId || session.noteId,
         content: noteContent || session.noteContent || '',
-        codes: (session.selectedCodes || suggestions?.codes || []).map((entry) =>
-          typeof entry === 'string'
-            ? entry
-            : entry.code || entry.id || entry.title || 'code',
+        codes: (session.selectedCodes || suggestions?.codes || []).map(
+          (entry) =>
+            typeof entry === 'string'
+              ? entry
+              : entry.code || entry.id || entry.title || 'code',
         ),
         prevention: Array.isArray(suggestions?.compliance)
           ? suggestions.compliance
@@ -147,7 +154,9 @@ function ValidationPanel({
           : [],
         compliance: Array.isArray(suggestions?.compliance)
           ? suggestions.compliance.map((item) =>
-              typeof item === 'string' ? item : item?.title || item?.description || '',
+              typeof item === 'string'
+                ? item
+                : item?.title || item?.description || '',
             )
           : [],
       };
@@ -231,7 +240,8 @@ function AttestationPanel({ session, onSessionUpdate, onError }) {
     if (attestation && typeof attestation === 'object') {
       setForm((prev) => ({
         ...prev,
-        attestedBy: attestation.attestedBy || attestation.attested_by || prev.attestedBy,
+        attestedBy:
+          attestation.attestedBy || attestation.attested_by || prev.attestedBy,
         statement: attestation.attestationText || prev.statement,
       }));
     }
@@ -321,7 +331,9 @@ function AttestationPanel({ session, onSessionUpdate, onError }) {
           </label>
         </div>
         <button type="submit" disabled={submitting}>
-          {submitting ? t('workflow.submitting') : t('workflow.submitAttestation')}
+          {submitting
+            ? t('workflow.submitting')
+            : t('workflow.submitAttestation')}
         </button>
       </form>
       {attestation && (
@@ -334,9 +346,11 @@ function AttestationPanel({ session, onSessionUpdate, onError }) {
             </li>
             <li>
               <strong>{t('workflow.statementLabel')}:</strong>{' '}
-              {attestation.attestation?.attestationText || t('workflow.unknown')}
+              {attestation.attestation?.attestationText ||
+                t('workflow.unknown')}
             </li>
-            {attestation.billingValidation?.estimatedReimbursement !== undefined && (
+            {attestation.billingValidation?.estimatedReimbursement !==
+              undefined && (
               <li>
                 <strong>{t('workflow.estimatedReimbursement')}:</strong>{' '}
                 {attestation.billingValidation.estimatedReimbursement}
@@ -370,7 +384,10 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
 
   const handleChange = (event) => {
     const { name, value, type, checked } = event.target;
-    setForm((prev) => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
+    setForm((prev) => ({
+      ...prev,
+      [name]: type === 'checkbox' ? checked : value,
+    }));
   };
 
   const handleSubmit = async (event) => {
@@ -390,7 +407,10 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
           sendToBilling: form.sendToBilling,
         },
       };
-      const response = await dispatchWorkflowSession(session.sessionId, payload);
+      const response = await dispatchWorkflowSession(
+        session.sessionId,
+        payload,
+      );
       const updatedSession = response?.session || session;
       onSessionUpdate(updatedSession);
       onResult(response?.result || null);
@@ -410,7 +430,11 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
       <form onSubmit={handleSubmit} className="workflow-form">
         <label>
           <span>{t('workflow.destinationLabel')}</span>
-          <select name="destination" value={form.destination} onChange={handleChange}>
+          <select
+            name="destination"
+            value={form.destination}
+            onChange={handleChange}
+          >
             <option value="ehr">{t('workflow.destinationEhr')}</option>
             <option value="billing">{t('workflow.destinationBilling')}</option>
             <option value="export">{t('workflow.destinationExport')}</option>
@@ -418,7 +442,11 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
         </label>
         <label>
           <span>{t('workflow.deliveryLabel')}</span>
-          <select name="deliveryMethod" value={form.deliveryMethod} onChange={handleChange}>
+          <select
+            name="deliveryMethod"
+            value={form.deliveryMethod}
+            onChange={handleChange}
+          >
             <option value="wizard">{t('workflow.deliveryWizard')}</option>
             <option value="api">{t('workflow.deliveryApi')}</option>
             <option value="manual">{t('workflow.deliveryManual')}</option>
@@ -445,7 +473,9 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
           </label>
         </div>
         <button type="submit" disabled={submitting}>
-          {submitting ? t('workflow.dispatching') : t('workflow.dispatchButton')}
+          {submitting
+            ? t('workflow.dispatching')
+            : t('workflow.dispatchButton')}
         </button>
       </form>
       {dispatch && (
@@ -453,10 +483,12 @@ function DispatchPanel({ session, onSessionUpdate, onError, onResult }) {
           <h3>{t('workflow.dispatchSummary')}</h3>
           <ul>
             <li>
-              <strong>{t('workflow.destinationLabel')}:</strong> {dispatch.destination}
+              <strong>{t('workflow.destinationLabel')}:</strong>{' '}
+              {dispatch.destination}
             </li>
             <li>
-              <strong>{t('workflow.deliveryLabel')}:</strong> {dispatch.deliveryMethod}
+              <strong>{t('workflow.deliveryLabel')}:</strong>{' '}
+              {dispatch.deliveryMethod}
             </li>
             <li>
               <strong>{t('workflow.dispatchStatus')}:</strong>{' '}
@@ -512,10 +544,13 @@ function mapSteps(definitions, session) {
     const state = stateMap.get(definition.id) || {};
     return {
       ...definition,
-      status: state.status || (definition.id === 1 ? 'in_progress' : 'not_started'),
+      status:
+        state.status || (definition.id === 1 ? 'in_progress' : 'not_started'),
       progress: typeof state.progress === 'number' ? state.progress : undefined,
       notes: state.notes,
-      blockingIssues: Array.isArray(state.blockingIssues) ? state.blockingIssues : [],
+      blockingIssues: Array.isArray(state.blockingIssues)
+        ? state.blockingIssues
+        : [],
     };
   });
 }
@@ -571,7 +606,10 @@ function WorkflowView({
   }, [sessionId, onSessionChange, onSessionIdChange]);
 
   const definitions = useMemo(() => buildStepDefinitions(t), [t]);
-  const steps = useMemo(() => mapSteps(definitions, session), [definitions, session]);
+  const steps = useMemo(
+    () => mapSteps(definitions, session),
+    [definitions, session],
+  );
 
   const handleSessionUpdate = (updatedSession) => {
     const normalized = updatedSession?.session || updatedSession;
@@ -596,7 +634,11 @@ function WorkflowView({
       const baseCodes = Array.isArray(suggestions?.codes)
         ? suggestions.codes.map((code) => {
             if (!code || typeof code !== 'object') {
-              return { code: String(code || ''), type: 'CPT', category: 'procedure' };
+              return {
+                code: String(code || ''),
+                type: 'CPT',
+                category: 'procedure',
+              };
             }
             return {
               code: code.code || code.id || '',
@@ -631,7 +673,10 @@ function WorkflowView({
       const normalized = data?.session || data;
       handleSessionUpdate(normalized);
       if (onSessionIdChange && normalized?.sessionId) {
-        onSessionIdChange(normalized.sessionId, normalized.encounterId || encounterId);
+        onSessionIdChange(
+          normalized.sessionId,
+          normalized.encounterId || encounterId,
+        );
       }
     } catch (err) {
       const message = err?.message || String(err);
@@ -695,10 +740,18 @@ function WorkflowView({
           <p className="workflow-subtitle">{t('workflow.subtitle')}</p>
         </div>
         <div className="workflow-actions">
-          <button type="button" onClick={handleRefresh} disabled={!sessionId || loading}>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={!sessionId || loading}
+          >
             {t('workflow.refresh')}
           </button>
-          <button type="button" onClick={handleCreateSession} disabled={creating || loading}>
+          <button
+            type="button"
+            onClick={handleCreateSession}
+            disabled={creating || loading}
+          >
             {creating ? t('workflow.creating') : t('workflow.createSession')}
           </button>
         </div>

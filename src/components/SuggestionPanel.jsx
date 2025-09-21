@@ -283,7 +283,11 @@ function SuggestionPanel({
       }
       const isObject = typeof item === 'object' && item !== null;
       const textValue = isObject
-        ? item.text || item.message || item.description || item.code || item.summary
+        ? item.text ||
+          item.message ||
+          item.description ||
+          item.code ||
+          item.summary
         : item;
       const isLive = isObject && Boolean(item.live || item.streaming);
       const severity = isObject && (item.severity || item.level);
@@ -329,7 +333,13 @@ function SuggestionPanel({
     });
   };
 
-  const specialtyOptions = ['', 'cardiology', 'dermatology', 'paediatrics', 'geriatrics'];
+  const specialtyOptions = [
+    '',
+    'cardiology',
+    'dermatology',
+    'paediatrics',
+    'geriatrics',
+  ];
   const payerOptions = ['', 'medicare', 'medicaid', 'aetna'];
 
   const handleSpecialtyChange = (event) => {
@@ -367,7 +377,11 @@ function SuggestionPanel({
         </label>
         <label htmlFor="suggestion-payer">
           {t('settings.payer')}
-          <select id="suggestion-payer" value={payer} onChange={handlePayerChange}>
+          <select
+            id="suggestion-payer"
+            value={payer}
+            onChange={handlePayerChange}
+          >
             {payerOptions.map((option) => (
               <option key={option || 'default'} value={option}>
                 {option ? t(`settings.payers.${option}`) : '--'}

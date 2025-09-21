@@ -99,13 +99,17 @@ function Notifications() {
             {t('notifications.markAll')}
           </button>
           <button type="button" onClick={loadNotifications} disabled={loading}>
-            {loading ? t('notifications.refreshing') : t('notifications.refresh')}
+            {loading
+              ? t('notifications.refreshing')
+              : t('notifications.refresh')}
           </button>
         </div>
       </div>
       {error && <div className="notifications-error">{error}</div>}
       {loading ? (
-        <div className="notifications-loading">{t('notifications.loading')}</div>
+        <div className="notifications-loading">
+          {t('notifications.loading')}
+        </div>
       ) : notifications.length === 0 ? (
         <div className="notifications-empty">{t('notifications.empty')}</div>
       ) : (
@@ -120,7 +124,9 @@ function Notifications() {
                   {notification.title || t('notifications.untitled')}
                 </span>
                 {notification.severity && (
-                  <span className={`notification-severity severity-${notification.severity}`}>
+                  <span
+                    className={`notification-severity severity-${notification.severity}`}
+                  >
                     {notification.severity.toUpperCase()}
                   </span>
                 )}
