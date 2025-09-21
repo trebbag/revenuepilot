@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
-import { apiFetch, clearStoredTokens } from "../lib/api"
+import { apiFetch, clearStoredTokens, getStoredRefreshToken } from "../lib/api"
 
 export type AuthStatus = "authenticated" | "unauthenticated"
 
@@ -79,7 +79,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           json: false
         })
 
-        if (response.status === 401) {
+        if (response.status === 401 || response.status === 419) {
+          clearStoredTokens()
           setState({
             status: "unauthenticated",
             user: null,
@@ -128,10 +129,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     try {
-      await apiFetch("/api/auth/logout", {
-        method: "POST",
-        json: false
-      })
+      const refreshToken = getStoredRefreshToken()
+      const options = refreshToken
+        ? { method: "POST", jsonBody: { token: refreshToken }, skipAuth: true }
+        : { method: "POST", json: false, skipAuth: true as const }
+
+      await apiFetch("/api/auth/logout", options)
     } catch (error) {
       if ((error as DOMException)?.name !== "AbortError") {
         console.error("Failed to call logout endpoint", error)

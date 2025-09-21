@@ -2,6 +2,7 @@ export type AuthTokenStorageKey = "token" | "accessToken" | "authToken"
 
 const TOKEN_STORAGE_KEYS: AuthTokenStorageKey[] = ["token", "accessToken", "authToken"]
 const REFRESH_TOKEN_STORAGE_KEY = "refreshToken"
+const AUTH_REFRESH_ENDPOINT = "/api/auth/refresh"
 const ABSOLUTE_URL_RE = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//
 
 let cachedApiBaseUrl: string | null | undefined
@@ -85,6 +86,66 @@ function sanitizeToken(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+function shouldRememberTokens(): boolean {
+  const local = getLocalStorage()
+  if (!local) {
+    return false
+  }
+
+  try {
+    for (const key of TOKEN_STORAGE_KEYS) {
+      if (sanitizeToken(local.getItem(key))) {
+        return true
+      }
+    }
+    if (sanitizeToken(local.getItem(REFRESH_TOKEN_STORAGE_KEY))) {
+      return true
+    }
+  } catch {
+    // ignore access errors and fall back to session-based storage
+  }
+
+  return false
+}
+
+export interface TokenBundle {
+  accessToken: string | null
+  refreshToken: string | null
+}
+
+export function extractAuthTokens(payload: unknown): TokenBundle {
+  if (!isRecord(payload)) {
+    return { accessToken: null, refreshToken: null }
+  }
+
+  const directAccess =
+    sanitizeToken(payload.accessToken) ||
+    sanitizeToken(payload.access_token) ||
+    sanitizeToken(payload.token)
+
+  const directRefresh =
+    sanitizeToken(payload.refreshToken) ||
+    sanitizeToken(payload.refresh_token)
+
+  const nestedTokens = isRecord(payload.tokens) ? payload.tokens : undefined
+  const nestedAccess =
+    sanitizeToken(nestedTokens?.accessToken) ||
+    sanitizeToken(nestedTokens?.access_token) ||
+    sanitizeToken(nestedTokens?.token)
+  const nestedRefresh =
+    sanitizeToken(nestedTokens?.refreshToken) ||
+    sanitizeToken(nestedTokens?.refresh_token)
+
+  return {
+    accessToken: directAccess || nestedAccess || null,
+    refreshToken: directRefresh || nestedRefresh || null
+  }
+}
+
 export interface PersistAuthTokensOptions {
   accessToken: string
   refreshToken?: string
@@ -160,6 +221,89 @@ export function getStoredRefreshToken(): string | null {
     }
   }
   return null
+}
+
+interface RefreshOutcome {
+  tokens: TokenBundle | null
+  status: number
+}
+
+async function performTokenRefresh(refreshToken: string): Promise<RefreshOutcome> {
+  const requestInfo = resolveRequestInfo(AUTH_REFRESH_ENDPOINT)
+  const headers = buildAuthHeaders(undefined, { json: true, skipAuth: true })
+
+  try {
+    const response = await fetch(requestInfo, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      credentials: "include"
+    })
+
+    const text = await response.text()
+    let payload: unknown = null
+    if (text) {
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        // ignore parse errors – payload stays null
+      }
+    }
+
+    if (!response.ok) {
+      return { tokens: null, status: response.status }
+    }
+
+    if (!payload) {
+      return { tokens: { accessToken: null, refreshToken: null }, status: response.status }
+    }
+
+    return { tokens: extractAuthTokens(payload), status: response.status }
+  } catch (error) {
+    if ((error as DOMException)?.name === "AbortError") {
+      throw error
+    }
+    return { tokens: null, status: 0 }
+  }
+}
+
+interface RefreshAttemptResult {
+  token: string | null
+  invalid: boolean
+}
+
+let refreshPromise: Promise<RefreshAttemptResult> | null = null
+
+async function requestAccessTokenRefresh(): Promise<RefreshAttemptResult> {
+  const existingRefresh = getStoredRefreshToken()
+  if (!existingRefresh) {
+    return { token: null, invalid: true }
+  }
+
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const outcome = await performTokenRefresh(existingRefresh)
+      const tokenBundle = outcome.tokens
+      if (!tokenBundle || !tokenBundle.accessToken) {
+        return { token: null, invalid: outcome.status !== 0 }
+      }
+
+      const remember = shouldRememberTokens()
+      const nextRefresh = tokenBundle.refreshToken || existingRefresh
+      persistAuthTokens({
+        accessToken: tokenBundle.accessToken,
+        refreshToken: nextRefresh,
+        remember
+      })
+      return { token: tokenBundle.accessToken, invalid: false }
+    })()
+
+    refreshPromise.finally(() => {
+      refreshPromise = null
+    })
+  }
+
+  return refreshPromise
 }
 
 function normalizeBaseUrl(rawBase: string | null | undefined): string | null {
@@ -369,12 +513,46 @@ export async function apiFetch(input: RequestInfo | URL, options: ApiFetchOption
   const mergedHeaders = buildAuthHeaders(headers, { json, acceptJson, skipAuth })
   const requestInfo = resolveRequestInfo(input)
 
-  return fetch(requestInfo, {
+  let response = await fetch(requestInfo, {
     ...rest,
     body: finalBody ?? undefined,
     headers: mergedHeaders,
     credentials: credentials ?? "include"
   })
+
+  const shouldAttemptRefresh =
+    !skipAuth &&
+    !rest.signal?.aborted &&
+    (response.status === 401 || response.status === 419)
+
+  let refreshAttempt: RefreshAttemptResult | null = null
+
+  if (shouldAttemptRefresh) {
+    refreshAttempt = await requestAccessTokenRefresh()
+    if (refreshAttempt.token) {
+      mergedHeaders.set("Authorization", `Bearer ${refreshAttempt.token}`)
+      response = await fetch(requestInfo, {
+        ...rest,
+        body: finalBody ?? undefined,
+        headers: mergedHeaders,
+        credentials: credentials ?? "include"
+      })
+    } else if (refreshAttempt.invalid) {
+      clearStoredTokens()
+    }
+  }
+
+  if ((response.status === 401 || response.status === 419) && !skipAuth) {
+    const retriedWithToken = Boolean(refreshAttempt?.token)
+    const shouldClear =
+      !shouldAttemptRefresh ||
+      (refreshAttempt ? refreshAttempt.invalid || retriedWithToken : true)
+    if (shouldClear) {
+      clearStoredTokens()
+    }
+  }
+
+  return response
 }
 
 export interface ApiFetchJsonOptions<T> extends ApiFetchOptions {
