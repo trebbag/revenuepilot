@@ -102,6 +102,25 @@ The script creates admin, analyst, and clinician accounts using the credentials 
 
 Once the database is bootstrapped, start the backend (`uvicorn backend.main:app --reload --port 8000` or via `./start.sh`). After the API reports a successful startup, launch the frontend (`npm run dev` with `VITE_API_URL` set) so the React contexts can hydrate from the populated backend.
 
+#### Integration checklist
+
+Complete this quick checklist before testing new frontend builds against the live API:
+
+1. Review the environment variable table above and export any overrides required for your setup (`REVENUEPILOT_DB_PATH`, `JWT_SECRET`, role credentials, etc.).
+2. Prime the SQLite database with current reference data and seeded users:
+   ```bash
+   python scripts/bootstrap_database.py
+   ```
+3. Point the Vite frontend at the running API instance:
+   ```bash
+   export VITE_API_URL=http://localhost:8000
+   ```
+   Adjust the URL when targeting remote backends.
+4. Start the FastAPI server (`./start.sh` or `uvicorn backend.main:app --reload --port 8000`) and wait for the startup log indicating migrations completed.
+5. Launch the frontend (`npm run dev`) with the environment above so components hydrate against real data rather than mock fixtures.
+
+Run through this list whenever you refresh the database or swap between mock and live services—the hydration step depends on both the seeded data and the API URL.
+
 ### JWT secret
 
 Authentication tokens issued by the backend are signed with a secret. In production the `JWT_SECRET` environment variable **must** be set before starting the server. If it is missing while `ENVIRONMENT` is anything other than `development`, the application will raise an error at startup. For local development the default `dev-secret` is used so you can run the app without additional configuration.
@@ -389,6 +408,8 @@ These JSON files drive the dynamic shields.io badges at the top of this README. 
 npm run test:coverage
 pytest --cov=backend --cov-report=json:coverage/python-coverage-raw.json
 ```
+
+End-to-end quality gates are back through the workspace scripts. Execute `npm run test:e2e` to drive the Playwright suite once the backend endpoints are running—the tests rely on real API hydration and now cover the newly wired flows alongside the Vitest and pytest coverage checks above.
 
 Then convert the Python JSON to badge format (replicating the CI step) if desired.
 
