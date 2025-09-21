@@ -1,4 +1,5 @@
 # RevenuePilot Backend Data Integration Analysis
+> ⚠️ **Archived reference:** Retained for historical context. The live implementation is described in docs/README.md.
 
 This document identifies every UI element in the RevenuePilot application that requires dynamic data from the backend, organized by component and functionality. Each element includes specific data type requirements and validation constraints.
 

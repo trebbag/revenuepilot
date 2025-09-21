@@ -1,11 +1,21 @@
+# RevenuePilot Frontend Workspace
 
-  # AI-Powered Clinical Note Editor
+This workspace mirrors the production React application located under
+`../src/`. It exists so designers and frontend engineers can iterate with
+Vite independently of the Electron/Node packaging scripts.
 
-  This is a code bundle for AI-Powered Clinical Note Editor. The original project is available at https://www.figma.com/design/FCk3sMWzjg6daDx98MCH19/AI-Powered-Clinical-Note-Editor.
+## Quick start
 
-  ## Running the code
+```bash
+npm install
+npm run dev
+```
 
-  Run `npm i` to install the dependencies.
+The dev server will serve the UI on `http://localhost:5173`. Set
+`VITE_API_URL` to point at a running backend (defaults to
+`http://127.0.0.1:8000`). The workspace shares tests, components and
+translations with the main application.
 
-  Run `npm run dev` to start the development server.
-  
+For a full description of the product surface, development workflow and
+available scripts, read the consolidated documentation in
+[`../docs/README.md`](../docs/README.md).

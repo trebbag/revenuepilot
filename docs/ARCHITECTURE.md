@@ -1,134 +1,160 @@
 # RevenuePilot Architecture Overview
 
-This document provides a high‑level overview of the components that make up the RevenuePilot application.  It explains how requests flow through the system, where data is stored and what third‑party services are involved.  The intention is to orient new developers so they can navigate the codebase quickly and identify the key modules to extend.
+This document explains how the RevenuePilot application fits together. It
+is a companion to the handbook and should be used when making structural
+changes or onboarding new contributors.
 
-## Layers and Modules
+## Frontend (React / Vite)
 
-### Frontend (`src/`)
+The production UI lives under `src/` and is also exposed via the
+`revenuepilot-frontend` workspace for isolated Vite development.
 
-- **App shell** (`App.jsx`): Houses the main layout, view router and tab system.  It mounts the rich‑text editor, the suggestion panel, the dashboard, logs, settings and drafts views.  The app maintains React state for the current draft, beautified note, summary, patient ID and user settings.
-- **Rich‑text editor** (`NoteEditor.jsx`): Wraps `react‑quill` to provide a WYSIWYG editor for clinicians.  It exposes callbacks for changes, integrates with templates and now includes an **Export to EHR** action that posts the beautified note and selected codes to the `/export` endpoint.
-- **Suggestion panel** (`SuggestionPanel.jsx`): Displays coding suggestions, compliance prompts, public‑health reminders, differential diagnoses and follow‑up scheduling.  Recommended intervals can be exported to a calendar via an `.ics` download.
-- **Dashboard** (`Dashboard.jsx`): Queries the `/metrics` endpoint and renders aggregate counts, averages and time‑series charts for key metrics using Chart.js.
-- **Logs** (`Logs.jsx`): Calls `/events` to stream recent events for debugging.  Shows event type, timestamp and any details.
-- **Settings** (`Settings.jsx`): Lets users select a theme, enable/disable suggestion categories, enter custom clinical rules and store the OpenAI API key.  Saving the key posts to `/apikey` which writes it to `backend/openai_key.txt`.
-- **Drafts** (`Drafts.jsx`): Saves drafts to `localStorage` using the patient ID as a key.  Users can switch patients and recall previous drafts.
-- **Transcript view** (`TranscriptView.jsx`): Displays diarised audio segments with timestamps and buttons to insert or ignore individual pieces before merging them into the note.
-- **Sidebar** (`Sidebar.jsx`): Provides navigation between note taking, drafts, dashboard, logs, settings and help views.  It collapses on small screens.
+### Application shell
 
-### Backend (`backend/`)
+- **`App.jsx`** orchestrates authentication, view routing and the main
+  layout. It coordinates the draft/beautified editor tabs, the
+  suggestion panel, dashboard, logs, settings, drafts, admin, scheduler,
+  notifications and help views.【F:src/App.jsx†L1-L180】【F:src/App.jsx†L236-L360】
+- **`Sidebar.jsx`** exposes navigation with persisted collapse state and
+  unread notification badges supplied by the backend.【F:src/components/Sidebar.jsx†L1-L200】
+- **`Login.jsx`** issues registration/login requests, stores JWT access
+  and refresh tokens and kicks off refresh flows via `api.js`. It also
+  renders MFA prompts when configured.【F:src/components/Login.jsx†L1-L200】【F:src/api.js†L320-L520】
 
-- **FastAPI application** (`main.py`): Exposes endpoints to beautify notes (`/beautify`), suggest codes and compliance (`/suggest`), generate patient‑friendly summaries (`/summarize`), transcribe audio (`/transcribe?diarise=true|false`), record analytics events (`/event`), return aggregated metrics (`/metrics`), stream events (`/events`), export notes to a FHIR server (`/export`) and set the OpenAI API key (`/apikey`).  It also initialises a SQLite database in the user's data directory to persist events.
-- **Prompt templates** (`prompts.py`): Contains functions to build chat prompts for beautification, suggestion generation and summarisation.  Each prompt includes system instructions emphasising de‑identification, no hallucination and JSON output formats.  Prompts accept a `lang` parameter (`en` or `es`) and may load extra instructions from `backend/prompt_templates.json` or `.yaml` keyed by specialty or payer.
-- **OpenAI client wrapper** (`openai_client.py`): Wraps `openai.ChatCompletion.create` and reads the API key either from the environment or from `openai_key.txt`.  It hides the details of the OpenAI SDK from the rest of the codebase.
-- **Audio processing** (`audio_processing.py`): Implements speech‑to‑text using OpenAI Whisper with a local fallback.  When the optional `pyannote.audio` dependency is available (configured via `PYANNOTE_TOKEN`) the module performs speaker diarisation and returns provider/patient segments.  Errors are surfaced via an `error` field so callers can handle failures gracefully.
-- **Scheduling utilities** (`scheduling.py`): Recommends follow‑up intervals using ICD‑10 prefixes and keyword heuristics.  Specialty and payer specific overrides can be supplied via `CODE_INTERVALS_FILE`, a JSON mapping of code intervals.  The module also exposes `export_ics` to produce calendar events that the UI downloads through the `/export_ics` endpoint.
-- **PHI scrubbing** (`deidentify` in `main.py`): Removes protected health information
-  before text is sent to AI services.  `DEID_ENGINE` selects between `presidio`
-  (accurate but heavy), `philter` (clinical focus), `scrubadub` (lightweight) or
-  regex patterns.  Placeholders embed a short hash by default; set
-  `DEID_HASH_TOKENS=false` to keep the original text in placeholders.
-- **EHR integration** (`ehr_integration.py`): Builds FHIR transaction bundles and posts them to the server configured by `FHIR_SERVER_URL`. OAuth2 credentials (`EHR_TOKEN_URL`, `EHR_CLIENT_ID`, `EHR_CLIENT_SECRET`) are cached with expiry and fall back to basic auth (`EHR_BASIC_USER`/`EHR_BASIC_PASSWORD`) or a static bearer token (`EHR_BEARER_TOKEN`).
+### Clinical workspace
 
-### Storage
+- **`NoteEditor.jsx`** wraps ReactQuill with custom toolbars, patient &
+  encounter fields, chart upload helpers, transcription controls and
+  template insertion. It surfaces auto-save state and delegates AI
+  actions to callbacks provided by `App.jsx`.【F:src/components/NoteEditor.jsx†L1-L160】
+- **`SuggestionPanel.jsx`** renders expandable cards for codes,
+  compliance, public health, differentials and follow-up. It debounces
+  backend calls, respects specialty/payer filters and exports follow-up
+  events via the scheduling API.【F:src/components/SuggestionPanel.jsx†L1-L160】
+- **`TranscriptView.jsx`** displays diarised transcript segments,
+  allowing clinicians to insert speaker-labelled snippets into the
+  draft. It highlights transcription errors surfaced by the backend.【F:src/components/TranscriptView.jsx†L1-L200】
+- **`TemplatesModal.jsx`** manages reusable note templates and persists
+  CRUD operations through the templates API, caching results offline when
+  possible.【F:src/components/TemplatesModal.jsx†L1-L200】【F:src/api.js†L1-L170】
 
-- **SQLite analytics database** (`analytics.db` in the user data directory): A lightweight embedded database created on startup.  It stores rows of events with their type, timestamp and JSON‑encoded details.  The `/metrics` endpoint computes aggregates directly from this table.
-- **API key file** (`backend/openai_key.txt`): When the user saves their OpenAI key in the settings UI, it is written to this file.  On startup, the backend loads it into the process environment.
-- **Client‑side storage**: Drafts, chart uploads and audio data are stored in the browser’s `localStorage` to avoid transmitting PHI.
+### Administrative tooling
 
-### User Settings
+- **`Dashboard.jsx`** fetches baseline/current metrics, renders Chart.js
+  visualisations and offers PDF exports. The component gates access to
+  admin users by decoding the JWT role claim.【F:src/components/Dashboard.jsx†L1-L120】
+- **`Logs.jsx`** streams recent events and audit entries from the backend
+  for troubleshooting.【F:src/components/Logs.jsx†L1-L120】
+- **`AdminUsers.jsx`** lets administrators invite, update and deactivate
+  accounts and shows the audit log component inline.【F:src/components/AdminUsers.jsx†L1-L120】
+- **`Notifications.jsx`** lists notification events, unread counts and
+  quick actions sourced from `/api/notifications/*` endpoints.【F:src/components/Notifications.jsx†L1-L200】
+- **`FollowUpScheduler.jsx`** and `Scheduler.tsx` manage appointment data,
+  ICS exports and bulk actions against the scheduling API.【F:src/components/FollowUpScheduler.jsx†L1-L160】【F:backend/scheduling.py†L1-L240】
 
-User preferences such as theme, enabled suggestion categories and custom rules are
-stored in a dedicated `settings` table. Each row links to a `users.id` and
-contains JSON columns for categories and agencies alongside simple text fields:
+### Infrastructure helpers
 
-- `theme` – current UI theme.
-- `categories` – JSON object of enabled suggestion types.
-- `rules` – JSON array of custom clinical rules.
-- `lang` / `summary_lang` – interface and summary languages.
-- `specialty`, `payer`, `region` – optional context strings.
-- `template` – default template identifier.
-- `use_local_models` – boolean flag for offline inference.
-- `agencies` – JSON array of guideline agencies.
-- `beautify_model`, `suggest_model`, `summarize_model` – optional model paths.
+- **`api.js`** centralises HTTP calls, offline caching and the retry
+  queue. It resolves the backend base URL, attaches JWTs, refreshes
+  tokens and replays queued mutations when connectivity returns.【F:src/api.js†L1-L320】
+- **`context/` & `hooks/`** contain React context providers for settings,
+  notifications and analytics as well as custom hooks for polling and
+  keyboard shortcuts.【F:src/context/SettingsContext.jsx†L1-L160】
+- **Internationalisation** is configured via `i18n.js` with translation
+  bundles in `src/locales/`. Keys align with the backend prompt language
+  fields and user preferences.【F:src/i18n.js†L1-L120】【F:backend/main.py†L4239-L4333】
 
-Settings are fetched on login via `/settings` and saved back whenever they change,
-allowing a user's preferences to follow them across devices.
+## Backend (FastAPI)
 
-### Third‑Party Services
+The backend lives in `backend/` and exposes both REST and WebSocket
+interfaces. `backend/main.py` ties together the modules listed below.
 
-- **OpenAI**: Used for beautification, coding/compliance suggestions and patient‑friendly summaries.  Requests are made through the wrapper in `openai_client.py` using chat models (GPT‑4o by default).  Only de‑identified text is sent.
-- **FHIR server**: Optional target for the `/export` endpoint. Configure connection details with `FHIR_SERVER_URL`, `EHR_TOKEN_URL`, `EHR_CLIENT_ID`, `EHR_CLIENT_SECRET`, `EHR_BASIC_USER`, `EHR_BASIC_PASSWORD` or `EHR_BEARER_TOKEN`.
-- **Potential future services**: The plan mentions using a speech‑to‑text API (e.g. Whisper) for audio transcription and possibly Redis/Postgres in place of SQLite for analytics.  These are not implemented yet but are considered in the roadmap.
+### Authentication & authorisation
 
-## Data Flow
+- **JWT issuance** – `/register` and `/login` return access and refresh
+  tokens signed with `JWT_SECRET`. Refresh tokens can be rotated via
+  `/refresh` and logout revokes them from the database.【F:backend/main.py†L3187-L4035】
+- **Role enforcement** – `require_role()` guards admin-only endpoints.
+  MFA challenges, account lockouts and audit logging are handled in the
+  auth workflow.【F:backend/main.py†L2784-L2905】【F:backend/auth.py†L1-L160】
 
-1. A clinician uses the lookup field above the editor to search for a patient by name, MRN or identifier, then types or pastes a note into the rich‑text editor.  Drafts are stored locally using the selected patient ID so reopening the chart restores the in‑progress note.
-2. When the user clicks **Beautify**, the frontend strips HTML tags and sends the plain note to `/beautify`.  The backend de‑identifies the text, calls the beautify prompt via OpenAI and returns a cleaned version.  On failure it uppercases the note as a fallback.
-3. When the user clicks **Suggest**, the frontend concatenates the note with any uploaded chart text, audio transcript and custom rules, then calls `/suggest`.  The backend de‑identifies the text, builds a prompt instructing the model to return JSON with codes, compliance tips, public‑health suggestions and differentials.  If the LLM call fails, a rule‑based fallback provides basic suggestions.
-4. When the user clicks **Summarize**, the frontend sends the note, chart and audio transcript to `/summarize`.  The backend de‑identifies and calls the summary prompt; on failure it truncates the note as a fallback.
-5. Each significant action (starting a note, beautifying, suggesting, summarising, uploading a chart, recording audio) is logged via `/event`.  The backend inserts the event into the SQLite table and appends it to an in‑memory list.  The `/metrics` endpoint queries this table to compute counts and averages; `/events` returns the most recent events.
+### Note lifecycle & workflow
 
-## Metrics Schema
+- **Draft management** – `/api/notes/create`, `/api/notes/auto-save` and
+  `/api/notes/versions/{note_id}` persist draft content, track versions
+  and expose auto-save status. Bulk operations support archival and
+  search.【F:backend/main.py†L7970-L8060】【F:backend/main.py†L13393-L13580】
+- **Finalisation workflow** – `/api/v1/workflow/*` endpoints drive the
+  six-step attestation and dispatch process documented in
+  `docs/finalization_workflow_regression.md`. State persists in the
+  `shared_workflow_sessions` tables and surfaces code selections,
+  compliance issues and billing summaries.【F:backend/main.py†L10374-L11270】
 
-The `/metrics` endpoint aggregates analytics about clinician activity.  Core
-fields include:
+### AI orchestration & clinical intelligence
 
-- `revenue_projection` – sum of projected reimbursement based on CPT codes.
-- `revenue_per_visit` – average revenue per encounter.
-- `avg_time_to_close` – mean time in seconds between starting and closing a
-  note.
-- `denial_rate` – percentage of closed notes flagged as denied.
-- `compliance_counts` – tally of documentation flags returned by the AI.
+- **Beautify/Suggest/Summarise** – REST and WebSocket endpoints call
+  `openai_client.call_openai`, merge prompt templates and run
+  de-identification before hitting the AI provider. Offline and local
+  model modes emit deterministic fallbacks.【F:backend/main.py†L9755-L12084】【F:backend/deid.py†L1-L200】
+- **Compliance & coding** – Endpoints under `/api/ai/compliance.*`,
+  `/api/ai/codes.*` and `/api/compliance/*` manage rule catalogues,
+  issue-tracking and websocket monitors. Rule seeds live in
+  `compliance.py` and `code_tables.py`.【F:backend/main.py†L11348-L11972】【F:backend/compliance.py†L1-L320】
+- **Public health & scheduling** – `public_health.py` fetches guidance
+  while `scheduling.py` determines follow-up intervals and exports ICS
+  data. Both feed the suggestion panel and scheduling UI.【F:backend/public_health.py†L1-L240】【F:backend/scheduling.py†L1-L240】
+- **Transcription** – `audio_processing.py` provides synchronous
+  Whisper-based transcription and diarisation with optional
+  `pyannote.audio`. `/transcribe` supports file uploads and websockets for
+  live streaming.【F:backend/audio_processing.py†L1-L240】【F:backend/main.py†L9651-L9716】
 
-Metrics are grouped by day and week under a `timeseries` key so the dashboard
-can chart trends.  Each record contains totals for the day plus rolling
-averages.  The environment variable `METRICS_LOOKBACK_DAYS` (default 30) limits
-how many days of events are retained for aggregation.
+### Data management & integrations
 
-## Deployment Notes
+- **Migrations & seeding** – `migrations.py` creates tables for users,
+  settings, templates, sessions, analytics, notifications, codes and
+  payer schedules. `_seed_reference_data` populates CPT/ICD/HCPCS and
+  compliance datasets on startup.【F:backend/migrations.py†L1-L360】【F:backend/main.py†L1205-L1375】
+- **Analytics** – Events land in SQLite tables via `/api/activity/log`
+  and `/event`. Aggregations feed `/metrics`, `/api/analytics/*` and the
+  admin dashboard charts.【F:backend/main.py†L7664-L9256】
+- **FHIR export** – `/api/export/ehr` assembles transaction bundles using
+  `ehr_integration.py`. OAuth2 credentials are cached, with basic/bearer
+  fallbacks. Export jobs are tracked in `exports` tables.【F:backend/main.py†L8141-L8198】【F:backend/ehr_integration.py†L1-L240】
+- **Key management** – `/apikey` writes the OpenAI key through
+  `key_manager.py`, storing metadata and supporting multi-service keys.
+  Keys may also be injected via environment variables.【F:backend/key_manager.py†L1-L200】【F:backend/main.py†L9716-L9738】
 
-The current repository is designed for local development.  The `start.sh` script (or `start.ps1` on Windows) runs `uvicorn` for the backend on port 8000 and `npm run dev` for the React frontend on port 5173, setting `VITE_API_URL` accordingly.  For distribution, the project provides an Electron builder setup that bundles the frontend with the FastAPI backend, performs code signing and enables auto‑updates.  Production deployments can alternatively package the backend with Gunicorn/Uvicorn.  Future work will migrate the embedded SQLite database to a full database such as Postgres.
+## Data flow
 
-Custom follow‑up intervals can be supplied by setting the `CODE_INTERVALS_FILE` environment variable to a JSON file containing specialty and payer overrides (see `backend/code_intervals_by_specialty.json` for an example).
+1. **User session** – The clinician registers/logs in, obtaining JWTs and
+   persisted settings. The sidebar loads notifications and layout prefs
+   from `/api/user/*` endpoints.【F:backend/main.py†L4239-L4473】
+2. **Drafting** – `NoteEditor` tracks patient and encounter IDs, performs
+   client-side caching and posts to `/api/notes/*` for auto-save and
+   versioning.【F:src/components/NoteEditor.jsx†L80-L160】【F:backend/main.py†L7970-L8046】
+3. **AI interactions** – Beautify/suggest/summarise requests travel
+   through `api.js`, hit FastAPI where text is de-identified, prompts are
+   assembled and responses logged for analytics.【F:src/api.js†L520-L760】【F:backend/main.py†L9755-L12084】
+4. **Compliance & workflow** – Compliance issues and selected codes feed
+   into the workflow APIs, culminating in finalisation and optional FHIR
+   export.【F:backend/main.py†L10374-L11270】
+5. **Analytics & notifications** – Events from actions above populate the
+   `events`, `event_aggregates`, `notifications` and `audit_log` tables.
+   Admin views pull from these tables to render dashboards, logs and
+   alerts.【F:backend/main.py†L7536-L8912】
 
-## Customising Prompt Templates
+## External services & configuration
 
-Prompt instructions can be overridden at runtime. Place a `prompt_templates.json`
-or `prompt_templates.yaml` file in the `backend/` directory. The file may
-contain `default`, `specialty` and `payer` sections, each providing
-`beautify`, `suggest` and `summary` entries with language codes (`en`, `es`,
-etc.) and optional `examples`:
+- **OpenAI / local models** – `openai_client.py` decides between
+  deterministic offline responses, llama.cpp local inference or remote
+  OpenAI calls based on environment flags.【F:backend/openai_client.py†L1-L117】
+- **spaCy & de-identification engines** – `install.sh` installs the spaCy
+  English model. Optional packages (Presidio, Philter) can be added to
+  enhance de-identification via the `DEID_ENGINE` variable.【F:install.sh†L39-L55】【F:backend/deid.py†L1-L200】
+- **Electron packaging** – The root `package.json` scripts orchestrate
+  the build, fetch icons, copy backend resources and run
+  `electron-builder`. Refer to `docs/DESKTOP_BUILD.md` for certificate
+  requirements.【F:package.json†L11-L94】【F:docs/DESKTOP_BUILD.md†L1-L68】
 
-```json
-{
-  "default": {
-    "beautify": { "en": "Base instruction" },
-    "suggest": { "en": "Base suggest instruction" },
-    "summary": { "en": "Base summary instruction" }
-  },
-  "specialty": {
-    "cardiology": {
-      "beautify": { "en": "Cardiology wording" },
-      "suggest": { "en": "Cardiology codes" },
-      "summary": { "en": "Cardiology summary" }
-    }
-  },
-  "payer": {
-    "medicare": {
-      "beautify": { "en": "Medicare docs" },
-      "suggest": { "en": "Follow Medicare coding rules" },
-      "summary": { "en": "Medicare summary" }
-    }
-  }
-}
-```
-
-The backend reads this file via `_load_custom_templates()` and merges any
-matching instructions with the built‑in defaults. The helper `_resolve_lang`
-selects the appropriate language string for each entry, falling back to
-English when a translation is missing.
-
-Administrators can edit or upload these overrides through **Settings → Prompt
-Overrides** in the UI; saving persists the file back to the backend
-directory.
+This architecture should remain synchronised with code changes. Update it
+whenever major modules or flows are introduced or retired.

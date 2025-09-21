@@ -1,4 +1,5 @@
 # Medical Note-Taking Workflow: Backend Data Specification
+> ⚠️ **Archived reference:** Retained for historical context. Consult docs/README.md for current behaviour.
 
 ## Overview
 

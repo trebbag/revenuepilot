@@ -1,4 +1,5 @@
 # Distilled Chat Archive
+> ⚠️ **Archived reference:** Retained for historical context. Consult docs/README.md for current behaviour.
 
 The `rp_chats` archive contained a set of planning documents and business discussions.  The following points capture the essential reasoning, decisions and rules expressed by the founders.  Non‑technical chit‑chat has been omitted.
 
