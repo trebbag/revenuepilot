@@ -261,7 +261,7 @@ export function ProtectedApp() {
 
   const buildPatientEmail = useCallback((name: string, id: number | string) => {
     const baseName = name.toLowerCase().replace(/[^a-z0-9]/g, '.') || 'patient'
-    const idComponent = String(id ?? '').trim().replace(/[^a-z0-9]/g, '')
+    const idComponent = String(id ?? '').trim().replace(/[^a-z0-9]/g, '.')
     const suffix = idComponent.length > 0 ? `.${idComponent}` : ''
     return `${baseName}${suffix}@example.com`
   }, [])
