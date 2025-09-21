@@ -5578,6 +5578,7 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(data.get("lastValidation"), dict):
         last_validation = data.get("lastValidation")
         data["lastValidation"] = last_validation if isinstance(last_validation, dict) else {}
+    _ensure_session_context(data)
     data.setdefault("createdAt", _utc_now_iso())
     data.setdefault("updatedAt", data["createdAt"])
     _recalculate_current_step(data)
@@ -5609,12 +5610,17 @@ def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
         "selectedCodes": normalized.get("selectedCodes", []),
         "complianceIssues": normalized.get("complianceIssues", []),
         "patientMetadata": normalized.get("patientMetadata") or {},
+        "patientSummary": normalized.get("patientSummary") or {},
+        "encounterSummary": normalized.get("encounterSummary") or {},
+        "visitSummary": normalized.get("visitSummary") or {},
         "noteContent": normalized.get("noteContent", ""),
         "reimbursementSummary": normalized.get("reimbursementSummary", {}),
         "auditTrail": normalized.get("auditTrail", []),
         "patientQuestions": normalized.get("patientQuestions", []),
         "blockingIssues": normalized.get("blockingIssues", []),
         "sessionProgress": normalized.get("sessionProgress", {}),
+        "transcriptEntries": normalized.get("transcriptEntries", []),
+        "timeline": normalized.get("timeline", []),
         "createdAt": normalized.get("createdAt"),
         "updatedAt": normalized.get("updatedAt"),
         "attestation": normalized.get("attestation", _normalize_attestation_payload({})),
@@ -5871,6 +5877,242 @@ def _normalize_active_editor_entries(entries: Any) -> List[Dict[str, Any]]:
             normalized.append({"userId": user_id, "lastActiveAt": last_active})
             seen.add(user_id)
     return normalized
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    """Attempt to coerce ``value`` into an int where possible."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or not re.fullmatch(r"-?\d+", text):
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_transcript_entries(entries: Any) -> List[Dict[str, Any]]:
+    """Normalize transcript payloads into a consistent list of dicts."""
+
+    if not isinstance(entries, list):
+        return []
+    normalized: List[Dict[str, Any]] = []
+    for index, item in enumerate(entries):
+        data = item if isinstance(item, dict) else {}
+        text_value = None
+        if isinstance(item, dict):
+            text_value = (
+                item.get("text")
+                or item.get("transcript")
+                or item.get("content")
+                or item.get("value")
+            )
+        elif isinstance(item, str):
+            text_value = item
+        if text_value is None:
+            continue
+        text = str(text_value).strip()
+        if not text:
+            continue
+        identifier: Any = data.get("id") or data.get("segmentId") or index + 1
+        try:
+            normalized_id: Any = int(identifier)
+        except Exception:
+            normalized_id = str(identifier)
+        speaker_raw = data.get("speaker") or data.get("role") or data.get("speakerLabel") or data.get("participant")
+        speaker = str(speaker_raw) if speaker_raw is not None else None
+        timestamp_raw = data.get("timestamp") or data.get("time") or data.get("offset") or data.get("start")
+        if isinstance(timestamp_raw, (int, float)):
+            timestamp: Any = timestamp_raw
+        elif isinstance(timestamp_raw, str) and timestamp_raw.strip():
+            timestamp = timestamp_raw.strip()
+        else:
+            timestamp = None
+        confidence_raw = (
+            data.get("confidence")
+            or data.get("confidenceScore")
+            or data.get("accuracy")
+        )
+        confidence: Optional[float] = None
+        if isinstance(confidence_raw, (int, float)):
+            value = float(confidence_raw)
+            if 1.0 < value <= 100.0:
+                value = value / 100.0
+            confidence = max(0.0, min(1.0, value))
+        elif isinstance(confidence_raw, str):
+            try:
+                parsed = float(confidence_raw)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                if 1.0 < parsed <= 100.0:
+                    parsed = parsed / 100.0
+                confidence = max(0.0, min(1.0, parsed))
+        entry: Dict[str, Any] = {"id": normalized_id, "text": text}
+        if speaker:
+            entry["speaker"] = speaker
+        if timestamp is not None:
+            entry["timestamp"] = timestamp
+        if confidence is not None:
+            entry["confidence"] = confidence
+        normalized.append(entry)
+    return normalized
+
+
+def _ensure_session_context(session: Dict[str, Any]) -> None:
+    """Populate patient, encounter, transcript, and timeline context fields."""
+
+    context = session.get("context") if isinstance(session.get("context"), dict) else {}
+    encounter_id = session.get("encounterId")
+    patient_id = session.get("patientId")
+
+    encounter_summary: Dict[str, Any] = {}
+    patient_summary: Dict[str, Any] = {}
+    visit_summary: Dict[str, Any] = {}
+
+    encounter_record: Optional[Dict[str, Any]] = None
+    encounter_lookup = _coerce_int(encounter_id)
+    if encounter_lookup is not None:
+        try:
+            encounter_record = patients.get_encounter(encounter_lookup)
+        except Exception:
+            encounter_record = None
+    if encounter_record:
+        encounter_summary = {
+            "encounterId": encounter_record.get("encounterId") or encounter_id,
+            "patientId": encounter_record.get("patientId"),
+            "date": encounter_record.get("date"),
+            "type": encounter_record.get("type"),
+            "provider": encounter_record.get("provider"),
+            "description": encounter_record.get("description"),
+        }
+        if isinstance(encounter_record.get("patient"), dict):
+            context.setdefault("patientSnapshot", encounter_record["patient"])
+
+    patient_record: Optional[Dict[str, Any]] = None
+    if patient_id:
+        try:
+            patient_record = patients.get_patient(patient_id)
+        except Exception:
+            patient_record = None
+    if not patient_record and encounter_record and isinstance(encounter_record.get("patient"), dict):
+        patient_record = encounter_record.get("patient")
+
+    if patient_record:
+        patient_summary = {
+            "patientId": patient_record.get("patientId") or patient_id,
+            "mrn": patient_record.get("mrn"),
+            "name": patient_record.get("name"),
+            "firstName": patient_record.get("firstName"),
+            "lastName": patient_record.get("lastName"),
+            "dob": patient_record.get("dob"),
+            "age": patient_record.get("age"),
+            "sex": patient_record.get("gender"),
+            "gender": patient_record.get("gender"),
+            "insurance": patient_record.get("insurance"),
+            "lastVisit": patient_record.get("lastVisit"),
+            "allergies": patient_record.get("allergies") or [],
+            "medications": patient_record.get("medications") or [],
+        }
+        metadata = session.get("patientMetadata") if isinstance(session.get("patientMetadata"), dict) else {}
+        metadata.setdefault("patientId", patient_summary.get("patientId"))
+        metadata.setdefault("name", patient_summary.get("name"))
+        if patient_summary.get("age") is not None:
+            metadata.setdefault("age", patient_summary.get("age"))
+        if patient_summary.get("sex"):
+            metadata.setdefault("sex", patient_summary.get("sex"))
+        if patient_summary.get("dob"):
+            metadata.setdefault("dob", patient_summary.get("dob"))
+        if encounter_summary.get("date"):
+            metadata.setdefault("encounterDate", encounter_summary.get("date"))
+        if encounter_summary.get("provider"):
+            metadata.setdefault("providerName", encounter_summary.get("provider"))
+        session["patientMetadata"] = metadata
+
+    if encounter_summary and encounter_summary.get("date"):
+        visit_summary = {
+            "status": "in_progress" if session.get("currentStep", 1) < 6 else "completed",
+            "encounterDate": encounter_summary.get("date"),
+            "provider": encounter_summary.get("provider"),
+        }
+
+    visit_state = visits.get_visit(str(encounter_id)) if encounter_id else None
+    if visit_state:
+        visit_summary.update(
+            {
+                "visitStatus": visit_state.get("visitStatus"),
+                "startTime": visit_state.get("startTime"),
+                "duration": visit_state.get("duration"),
+                "documentationComplete": visit_state.get("documentationComplete"),
+            }
+        )
+
+    transcript_context = context.get("transcript") if isinstance(context.get("transcript"), dict) else {}
+    if session.get("transcriptEntries"):
+        transcript_source = session.get("transcriptEntries")
+    elif transcript_context.get("entries"):
+        transcript_source = transcript_context.get("entries")
+    elif transcript_context.get("segments"):
+        transcript_source = transcript_context.get("segments")
+    else:
+        transcript_source = []
+    transcripts = _normalize_transcript_entries(transcript_source)
+    session["transcriptEntries"] = transcripts
+    transcript_context = dict(transcript_context)
+    transcript_context["entries"] = transcripts
+    transcript_context["hasTranscript"] = bool(transcripts)
+    if transcripts and not transcript_context.get("summary"):
+        summary_text = " ".join(entry.get("text", "") for entry in transcripts[:2]).strip()
+        transcript_context["summary"] = summary_text[:500]
+    transcript_context.setdefault("lastUpdated", _utc_now_iso())
+    context["transcript"] = transcript_context
+
+    audit_entries = session.get("auditTrail") if isinstance(session.get("auditTrail"), list) else []
+    normalized_audit: List[Dict[str, Any]] = []
+    for entry in audit_entries:
+        if not isinstance(entry, dict):
+            continue
+        normalized_audit.append(
+            {
+                "id": entry.get("id") or uuid4().hex,
+                "timestamp": entry.get("timestamp") or _utc_now_iso(),
+                "action": entry.get("action") or "event",
+                "actor": entry.get("actor"),
+                "details": entry.get("details") or {},
+            }
+        )
+    session["auditTrail"] = normalized_audit
+    context["auditTimeline"] = [
+        {
+            "timestamp": entry.get("timestamp"),
+            "action": entry.get("action"),
+            "actor": entry.get("actor"),
+            "details": entry.get("details", {}),
+        }
+        for entry in normalized_audit
+    ]
+
+    if patient_summary:
+        context["patientSummary"] = patient_summary
+        context.setdefault("patient", patient_summary)
+    if encounter_summary:
+        context["encounterSummary"] = encounter_summary
+    if visit_summary:
+        context["visitSummary"] = visit_summary
+
+    session["patientSummary"] = context.get("patientSummary", {})
+    session["encounterSummary"] = context.get("encounterSummary", {})
+    session["visitSummary"] = context.get("visitSummary", {})
+    session["timeline"] = context.get("auditTimeline", [])
+    session["context"] = context
 
 
 def _register_session_activity(
@@ -6605,12 +6847,17 @@ class WorkflowSessionResponse(BaseModel):
     selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
     complianceIssues: List[Dict[str, Any]] = Field(default_factory=list)
     patientMetadata: Dict[str, Any] = Field(default_factory=dict)
+    patientSummary: Dict[str, Any] = Field(default_factory=dict)
+    encounterSummary: Dict[str, Any] = Field(default_factory=dict)
+    visitSummary: Dict[str, Any] = Field(default_factory=dict)
     noteContent: Optional[str] = None
     reimbursementSummary: Dict[str, Any] = Field(default_factory=dict)
     auditTrail: List[Dict[str, Any]] = Field(default_factory=list)
     patientQuestions: List[Dict[str, Any]] = Field(default_factory=list)
     blockingIssues: List[str] = Field(default_factory=list)
     sessionProgress: Dict[str, Any] = Field(default_factory=dict)
+    transcriptEntries: List[Dict[str, Any]] = Field(default_factory=list)
+    timeline: List[Dict[str, Any]] = Field(default_factory=list)
     createdAt: Optional[str] = None
     updatedAt: Optional[str] = None
     attestation: Dict[str, Any] = Field(default_factory=dict)
