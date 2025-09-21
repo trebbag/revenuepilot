@@ -12,6 +12,21 @@ vi.mock('../../api.js', () => ({
   transcribeAudio: vi.fn().mockResolvedValue({ provider: '', patient: '' }),
   exportToEhr: vi.fn().mockResolvedValue({ status: 'exported' }),
   logEvent: vi.fn().mockResolvedValue(undefined),
+  startVisitSession: vi
+    .fn()
+    .mockResolvedValue({
+      sessionId: 101,
+      status: 'started',
+      startTime: '2023-01-01T00:00:00.000Z',
+    }),
+  updateVisitSession: vi
+    .fn()
+    .mockResolvedValue({
+      sessionId: 101,
+      status: 'pause',
+      startTime: '2023-01-01T00:00:00.000Z',
+      endTime: null,
+    }),
 }));
 
 // mock typed client wrappers
@@ -22,12 +37,19 @@ vi.mock('../../api/client.ts', () => ({
 
 import '../../i18n.js';
 import NoteEditor from '../NoteEditor.jsx';
-import { exportToEhr, fetchLastTranscript } from '../../api.js';
+import {
+  exportToEhr,
+  fetchLastTranscript,
+  startVisitSession,
+  updateVisitSession,
+  logEvent,
+} from '../../api.js';
 import { beautifyNote, getSuggestions } from '../../api/client.ts';
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.clearAllMocks();
 });
 
 test('record button toggles recording state', async () => {
@@ -66,6 +88,8 @@ test('selecting template inserts content', async () => {
     return <NoteEditor id="t" value={val} onChange={setVal} />;
   }
   const { findByText, container } = render(<Wrapper />);
+  const toggle = await findByText('Templates ▾');
+  fireEvent.click(toggle);
   const btn = await findByText('Tpl');
   fireEvent.click(btn);
   const editor = container.querySelector('.ql-editor');
@@ -79,6 +103,8 @@ test('inserts template and merges audio transcript', async () => {
     return <NoteEditor id="m" value={val} onChange={setVal} />;
   }
   const { findByText, container, findAllByText } = render(<Wrapper />);
+  const toggle = await findByText('Templates ▾');
+  fireEvent.click(toggle);
   const tplBtn = await findByText('Tpl');
   fireEvent.click(tplBtn);
   // Insert provider transcript: match Insert case-insensitively
@@ -105,6 +131,8 @@ test('preloads default template', async () => {
     );
   }
   const { container, findByText } = render(<Wrapper />);
+  const toggle = await findByText('Templates ▾');
+  fireEvent.click(toggle);
   await findByText('Tpl');
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => expect(editor.innerHTML).toContain('Hello'));
@@ -188,4 +216,63 @@ test('suggestion panel renders codes and inserts into draft', async () => {
   const editor = container.querySelector('.ql-editor');
   await waitFor(() => expect(editor.innerHTML).toMatch(/99213/));
   expect(changeSpy).toHaveBeenCalled();
+});
+
+test('starts visit session when identifiers are provided and completes on export', async () => {
+  startVisitSession.mockResolvedValue({
+    sessionId: 55,
+    status: 'started',
+    startTime: '2024-01-01T00:00:00.000Z',
+  });
+  updateVisitSession.mockResolvedValueOnce({
+    sessionId: 55,
+    status: 'complete',
+    startTime: '2024-01-01T00:00:00.000Z',
+    endTime: '2024-01-01T00:10:00.000Z',
+  });
+
+  const { getByText, findByText } = render(
+    <NoteEditor id="sess" value="<p>note</p>" onChange={() => {}} patientId="P123" encounterId="42" />,
+  );
+
+  await waitFor(() => expect(startVisitSession).toHaveBeenCalledWith({ encounterId: 42 }));
+  await findByText(/Visit Duration:/i);
+
+  fireEvent.click(getByText('Export to EHR'));
+
+  await waitFor(() =>
+    expect(updateVisitSession).toHaveBeenCalledWith({ sessionId: 55, action: 'complete' }),
+  );
+  expect(logEvent).toHaveBeenCalledWith(
+    'visit_session_start',
+    expect.objectContaining({ sessionId: 55, patientId: 'P123', encounterId: 42 }),
+  );
+  expect(logEvent).toHaveBeenCalledWith(
+    'visit_session_complete',
+    expect.objectContaining({ sessionId: 55, encounterId: 42 }),
+  );
+});
+
+test('pauses visit session on unmount when still active', async () => {
+  startVisitSession.mockResolvedValue({
+    sessionId: 77,
+    status: 'started',
+    startTime: '2024-02-01T12:00:00.000Z',
+  });
+
+  const { unmount } = render(
+    <NoteEditor id="cleanup" value="<p>note</p>" onChange={() => {}} patientId="PX" encounterId="77" />,
+  );
+
+  await waitFor(() => expect(startVisitSession).toHaveBeenCalled());
+
+  unmount();
+
+  await waitFor(() =>
+    expect(updateVisitSession).toHaveBeenCalledWith({ sessionId: 77, action: 'pause' }),
+  );
+  expect(logEvent).toHaveBeenCalledWith(
+    'visit_session_pause',
+    expect.objectContaining({ sessionId: 77, reason: 'exit' }),
+  );
 });

@@ -166,7 +166,14 @@
     "loadingTranscript": "Cargando transcripción...",
     "recording": "Grabando...",
     "transcribing": "Transcribiendo...",
-    "segments": "Segmentos"
+    "segments": "Segmentos",
+    "patientIdLabel": "ID de paciente",
+    "encounterIdLabel": "ID de encuentro",
+    "visitDuration": "Duración de la visita",
+    "visitSessionError": "No se pudo iniciar la sesión de visita",
+    "visitSessionActive": "Visita en curso",
+    "visitSessionPaused": "Visita en pausa",
+    "visitSessionComplete": "Visita finalizada"
   },
   "settings": {
     "title": "Configuración",

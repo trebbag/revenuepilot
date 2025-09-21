@@ -12,6 +12,8 @@ import {
   transcribeAudio,
   exportToEhr,
   logEvent,
+  startVisitSession,
+  updateVisitSession,
 } from '../api.js';
 import SuggestionPanel from './SuggestionPanel.jsx';
 import { beautifyNote, getSuggestions } from '../api/client.ts';
@@ -46,6 +48,24 @@ const quillFormats = [
 
 // Maximum number of history entries to retain for undo/redo in beautified mode
 const HISTORY_LIMIT = 20;
+
+function formatDuration(totalSeconds) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+    return '00:00';
+  }
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(
+      seconds,
+    ).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(
+    2,
+    '0',
+  )}`;
+}
 
 function useAudioRecorder(onTranscribed) {
   const { t } = useTranslation();
@@ -125,6 +145,8 @@ const NoteEditor = forwardRef(function NoteEditor(
     codes = [],
     patientId = '',
     encounterId = '',
+    onPatientIdChange,
+    onEncounterIdChange,
     role = '',
     settingsState = null,
   },
@@ -154,7 +176,24 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [isNarrow, setIsNarrow] = useState(false);
   const [patientInput, setPatientInput] = useState(patientId || '');
   const [encounterInput, setEncounterInput] = useState(encounterId || '');
+  const [visitSession, rawSetVisitSession] = useState(null);
+  const [sessionError, setSessionError] = useState('');
+  const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
   const debounceRef = useRef(null); // ensure present after modifications
+  const sessionStateRef = useRef(null);
+  const sessionKeyRef = useRef('');
+  const sessionTimerRef = useRef(null);
+  const setSessionState = (valueOrUpdater) => {
+    rawSetVisitSession((prev) => {
+      const next =
+        typeof valueOrUpdater === 'function'
+          ? valueOrUpdater(prev)
+          : valueOrUpdater;
+      sessionStateRef.current = next;
+      return next;
+    });
+  };
+  sessionStateRef.current = visitSession;
   const classifiedCounts = (() => {
     const counts = {
       Condition: 0,
@@ -186,10 +225,33 @@ const NoteEditor = forwardRef(function NoteEditor(
   const quillRef = useRef(null);
   const textAreaRef = useRef(null);
   const audioRef = useRef(null);
+  const sanitizedId = id || 'note';
+  const patientFieldId = `${sanitizedId}-patient-id`;
+  const encounterFieldId = `${sanitizedId}-encounter-id`;
+
+  const handlePatientInputChange = (e) => {
+    const val = e.target.value;
+    setPatientInput(val);
+    if (onPatientIdChange) onPatientIdChange(val);
+  };
+
+  const handleEncounterInputChange = (e) => {
+    const val = e.target.value;
+    setEncounterInput(val);
+    if (onEncounterIdChange) onEncounterIdChange(val);
+  };
 
   useEffect(() => {
     if (mode === 'draft') setLocalValue(value || '');
   }, [value, mode]);
+
+  useEffect(() => {
+    setPatientInput(patientId || '');
+  }, [patientId]);
+
+  useEffect(() => {
+    setEncounterInput(encounterId || '');
+  }, [encounterId]);
 
   useEffect(() => {
     if (mode !== 'beautified') return;
@@ -341,6 +403,167 @@ const NoteEditor = forwardRef(function NoteEditor(
     [audioUrl],
   );
 
+  const pauseVisitSession = async (reason = 'exit', options = {}) => {
+    const session = sessionStateRef.current;
+    if (!session?.sessionId || session.status === 'complete') return;
+    try {
+      const res = await updateVisitSession({
+        sessionId: session.sessionId,
+        action: 'pause',
+      });
+      if (!options.skipStateUpdate) {
+        setSessionState((prev) => (prev ? { ...prev, ...res } : prev));
+      }
+      logEvent('visit_session_pause', {
+        sessionId: session.sessionId,
+        reason,
+        patientId: session.patientId,
+        encounterId: session.encounterId,
+      }).catch(() => {});
+    } catch (err) {
+      if (!options.skipStateUpdate) {
+        setSessionError(
+          t('noteEditor.visitSessionError') ||
+            'Failed to update visit session',
+        );
+      }
+    }
+  };
+
+  const completeVisitSession = async (reason = 'finalize') => {
+    const session = sessionStateRef.current;
+    if (!session?.sessionId || session.status === 'complete') return;
+    try {
+      const res = await updateVisitSession({
+        sessionId: session.sessionId,
+        action: 'complete',
+      });
+      setSessionState((prev) => (prev ? { ...prev, ...res } : prev));
+      sessionKeyRef.current = '';
+      logEvent('visit_session_complete', {
+        sessionId: session.sessionId,
+        reason,
+        patientId: session.patientId,
+        encounterId: session.encounterId,
+        endTime: res.endTime,
+      }).catch(() => {});
+    } catch (err) {
+      setSessionError(
+        t('noteEditor.visitSessionError') || 'Failed to update visit session',
+      );
+    }
+  };
+
+  useEffect(() => {
+    if (mode !== 'draft') return undefined;
+    const hasIds = (patientInput || '').trim() && (encounterInput || '').trim();
+    if (!hasIds) {
+      if (
+        sessionStateRef.current?.sessionId &&
+        sessionStateRef.current.status === 'started'
+      ) {
+        pauseVisitSession('missing_details');
+      }
+      sessionKeyRef.current = '';
+      return undefined;
+    }
+    const encounterNumeric = Number.parseInt(encounterInput, 10);
+    if (!Number.isFinite(encounterNumeric)) {
+      return undefined;
+    }
+    const key = `${patientInput}::${encounterNumeric}`;
+    const current = sessionStateRef.current;
+    if (
+      sessionKeyRef.current &&
+      sessionKeyRef.current !== key &&
+      current?.sessionId &&
+      current.status === 'started'
+    ) {
+      pauseVisitSession('switch_patient');
+    }
+    if (sessionKeyRef.current === key && current?.sessionId) {
+      return undefined;
+    }
+    let cancelled = false;
+    sessionKeyRef.current = key;
+    setSessionError('');
+    startVisitSession({ encounterId: encounterNumeric })
+      .then((res) => {
+        if (cancelled) return;
+        const info = {
+          sessionId: res.sessionId,
+          status: res.status || 'started',
+          startTime: res.startTime,
+          endTime: res.endTime || null,
+          patientId: patientInput,
+          encounterId: encounterNumeric,
+        };
+        setSessionState(info);
+        logEvent('visit_session_start', {
+          sessionId: info.sessionId,
+          patientId: info.patientId,
+          encounterId: info.encounterId,
+          startTime: info.startTime,
+        }).catch(() => {});
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSessionError(
+          t('noteEditor.visitSessionError') ||
+            'Failed to start visit session',
+        );
+        sessionKeyRef.current = '';
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [patientInput, encounterInput, mode, t]);
+
+  useEffect(() => {
+    const session = visitSession;
+    if (!session?.startTime) {
+      setSessionElapsedSeconds(0);
+      if (sessionTimerRef.current) {
+        clearInterval(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+      return () => {};
+    }
+    const startTs = Date.parse(session.startTime);
+    if (!Number.isFinite(startTs)) return () => {};
+    const updateElapsed = () => {
+      const endTs = session.endTime ? Date.parse(session.endTime) : Date.now();
+      if (!Number.isFinite(endTs)) return;
+      const seconds = Math.max(0, Math.floor((endTs - startTs) / 1000));
+      setSessionElapsedSeconds(seconds);
+    };
+    updateElapsed();
+    if (sessionTimerRef.current) {
+      clearInterval(sessionTimerRef.current);
+    }
+    if (!session.endTime && session.status !== 'complete') {
+      sessionTimerRef.current = setInterval(updateElapsed, 1000);
+    } else {
+      sessionTimerRef.current = null;
+    }
+    return () => {
+      if (sessionTimerRef.current) {
+        clearInterval(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+    };
+  }, [visitSession, setSessionElapsedSeconds]);
+
+  useEffect(() => {
+    return () => {
+      if (sessionTimerRef.current) {
+        clearInterval(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+      pauseVisitSession('exit', { skipStateUpdate: true });
+    };
+  }, []);
+
   const handleTimeUpdate = () => {
     if (!segments.length || !audioRef.current) return;
     const t = audioRef.current.currentTime;
@@ -418,6 +641,65 @@ const NoteEditor = forwardRef(function NoteEditor(
   ) : (
     <div style={{ padding: '0.5rem' }}>
       <p>{t('settings.noTemplates')}</p>
+    </div>
+  );
+
+  const hasVisitSession = Boolean(visitSession?.sessionId);
+  const formattedSessionDuration = formatDuration(sessionElapsedSeconds);
+  const sessionStatusLabel = visitSession?.status
+    ? visitSession.status === 'complete'
+      ? t('noteEditor.visitSessionComplete')
+      : visitSession.status === 'pause'
+        ? t('noteEditor.visitSessionPaused')
+        : t('noteEditor.visitSessionActive')
+    : '';
+
+  const visitSessionControls = (
+    <div
+      style={{
+        display: 'flex',
+        gap: '0.75rem',
+        alignItems: 'flex-end',
+        flexWrap: 'wrap',
+        marginBottom: '0.75rem',
+      }}
+    >
+      <label htmlFor={patientFieldId} style={{ display: 'flex', flexDirection: 'column' }}>
+        <span style={{ fontWeight: 600 }}>{t('noteEditor.patientIdLabel')}</span>
+        <input
+          id={patientFieldId}
+          value={patientInput}
+          onChange={handlePatientInputChange}
+          style={{ minWidth: '8rem' }}
+        />
+      </label>
+      <label
+        htmlFor={encounterFieldId}
+        style={{ display: 'flex', flexDirection: 'column' }}
+      >
+        <span style={{ fontWeight: 600 }}>{t('noteEditor.encounterIdLabel')}</span>
+        <input
+          id={encounterFieldId}
+          value={encounterInput}
+          onChange={handleEncounterInputChange}
+          style={{ minWidth: '8rem' }}
+        />
+      </label>
+      {hasVisitSession ? (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          <span style={{ fontWeight: 600 }}>
+            {t('noteEditor.visitDuration')}: {formattedSessionDuration}
+          </span>
+          {sessionStatusLabel ? (
+            <span style={{ color: '#555', fontSize: '0.875rem' }}>
+              {sessionStatusLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {sessionError ? (
+        <span style={{ color: 'red' }}>{sessionError}</span>
+      ) : null}
     </div>
   );
 
@@ -547,8 +829,10 @@ const NoteEditor = forwardRef(function NoteEditor(
     );
     if (res.status === 'exported') {
       setEhrFeedback(t('clipboard.exported'));
+      await completeVisitSession('export_to_ehr');
     } else if (res.status === 'bundle') {
       setEhrFeedback(t('clipboard.exported'));
+      await completeVisitSession('export_to_ehr');
       // Offer a download of the bundle JSON
       try {
         const blob = new Blob([JSON.stringify(res.bundle, null, 2)], {
@@ -652,6 +936,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         }}
       >
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {visitSessionControls}
           <div
             style={{
               marginBottom: '0.5rem',
@@ -925,6 +1210,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   return (
     <div style={{ display: 'flex', width: '100%', height: '100%' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        {visitSessionControls}
         <div
           style={{
             marginBottom: '0.5rem',
