@@ -7,6 +7,11 @@ can be added to a calendar client.
 """
 from __future__ import annotations
 
+
+import re
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
 import json
 import os
 import sqlite3
@@ -15,6 +20,12 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from backend.time_utils import ensure_utc, from_epoch_seconds, to_epoch_seconds, utc_now
+
+import sqlalchemy as sa
+from sqlalchemy import case, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 # Default intervals for broad condition categories.  These are defined as
@@ -229,31 +240,120 @@ _APPOINTMENTS: list[dict] = []
 _APPT_LOCK = Lock()
 _NEXT_ID = 1000
 
-_DB_CONN: Optional[sqlite3.Connection] = None
+_ENGINE: Optional[Engine] = None
+_SESSION_FACTORY: Optional[sessionmaker[Session]] = None
 
 
-def configure_database(conn: sqlite3.Connection) -> None:
-    """Cache *conn* so scheduling helpers can query real data."""
+_METADATA = sa.MetaData()
 
-    global _DB_CONN
-    _DB_CONN = conn
+_PATIENTS_TABLE = sa.Table(
+    "patients",
+    _METADATA,
+    sa.Column("id", sa.Integer),
+    sa.Column("first_name", sa.String),
+    sa.Column("last_name", sa.String),
+    sa.Column("mrn", sa.String),
+    sa.Column("last_visit", sa.String),
+    sa.Column("insurance", sa.String),
+)
+
+_ENCOUNTERS_TABLE = sa.Table(
+    "encounters",
+    _METADATA,
+    sa.Column("id", sa.Integer),
+    sa.Column("patient_id", sa.Integer),
+    sa.Column("date", sa.String),
+    sa.Column("type", sa.String),
+    sa.Column("provider", sa.String),
+    sa.Column("description", sa.Text),
+)
+
+_VISIT_SESSIONS_TABLE = sa.Table(
+    "visit_sessions",
+    _METADATA,
+    sa.Column("id", sa.Integer),
+    sa.Column("encounter_id", sa.Integer),
+    sa.Column("status", sa.String),
+    sa.Column("start_time", sa.DateTime(timezone=True)),
+    sa.Column("end_time", sa.DateTime(timezone=True)),
+    sa.Column("data", sa.JSON),
+    sa.Column("updated_at", sa.DateTime(timezone=True)),
+)
 
 
-def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[sqlite3.Connection]:
-    """Return an active SQLite connection if available."""
+def configure_database(
+    conn: sqlite3.Connection | sessionmaker[Session] | Engine,
+) -> None:
+    """Configure the session factory used for scheduling helpers."""
 
-    if conn is not None:
-        return conn
-    if _DB_CONN is not None:
-        return _DB_CONN
-    try:  # Late import avoids circular dependency during module import.
-        from backend import main  # type: ignore
-    except ImportError:
-        return None
+    global _ENGINE, _SESSION_FACTORY
+
+    if isinstance(conn, sessionmaker):
+        _SESSION_FACTORY = conn
+        _ENGINE = None
+        return
+
+    engine: Engine
+    if isinstance(conn, Engine):
+        engine = conn
+    else:
+        def _creator(connection: sqlite3.Connection = conn) -> sqlite3.Connection:
+            return connection
+
+        engine = sa.create_engine(
+            "sqlite://",
+            creator=_creator,
+            poolclass=StaticPool,
+            future=True,
+        )
+
+    if _ENGINE is not None and _ENGINE is not engine:
+        _ENGINE.dispose()
+
+    _ENGINE = engine
+    _SESSION_FACTORY = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        expire_on_commit=False,
+        future=True,
+    )
+
+
+@contextmanager
+def _optional_session(provided: Optional[Session] = None) -> Iterator[Optional[Session]]:
+    """Yield *provided* or a configured session if available."""
+
+    if provided is not None:
+        yield provided
+        return
+
+    if _SESSION_FACTORY is None:
+        yield None
+        return
+
+    session = _SESSION_FACTORY()
     try:
-        return getattr(main, "db_conn", None)
-    except AttributeError:
-        return None
+        yield session
+    finally:
+        session.close()
+
+
+@contextmanager
+def schedule_session_scope(session: Optional[Session] = None) -> Iterator[Session]:
+    """Context manager yielding a scheduling session."""
+
+    if session is not None:
+        yield session
+        return
+
+    if _SESSION_FACTORY is None:
+        raise RuntimeError("Scheduling session factory is not configured")
+
+    scoped = _SESSION_FACTORY()
+    try:
+        yield scoped
+    finally:
+        scoped.close()
 
 _DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
 
@@ -345,30 +445,33 @@ def _normalise_status(value: Optional[str]) -> str:
     return _STATUS_REMAP.get(normalised, normalised or "scheduled")
 
 
-def _load_visit_sessions(conn: sqlite3.Connection) -> Dict[int, sqlite3.Row]:
+def _visit_session_sort_key(value: Optional[datetime]) -> float:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+    return float("-inf")
+
+
+def _load_visit_sessions(session: Session) -> Dict[int, Mapping[str, Any]]:
     """Return a mapping of encounter_id -> latest visit session row."""
 
-    rows = conn.execute(
-        "SELECT id, encounter_id, status, start_time, end_time, data, updated_at "
-        "FROM visit_sessions"
-    ).fetchall()
-    latest: Dict[int, sqlite3.Row] = {}
+    rows = session.execute(select(_VISIT_SESSIONS_TABLE)).mappings().all()
+    latest: Dict[int, Mapping[str, Any]] = {}
     for row in rows:
-        encounter_id = row["encounter_id"]
+        encounter_id = row.get("encounter_id")
         if encounter_id is None:
             continue
         existing = latest.get(encounter_id)
-        candidate_ts = row["updated_at"] if row["updated_at"] is not None else 0
+        candidate_ts = _visit_session_sort_key(row.get("updated_at"))
         if existing is None:
-            latest[encounter_id] = row
+            latest[encounter_id] = dict(row)
             continue
-        existing_ts = (
-            existing["updated_at"] if existing["updated_at"] is not None else 0
-        )
+        existing_ts = _visit_session_sort_key(existing.get("updated_at"))
         if candidate_ts > existing_ts:
-            latest[encounter_id] = row
-        elif candidate_ts == existing_ts and row["id"] > existing["id"]:
-            latest[encounter_id] = row
+            latest[encounter_id] = dict(row)
+        elif candidate_ts == existing_ts and row.get("id", 0) > existing.get("id", 0):
+            latest[encounter_id] = dict(row)
     return latest
 
 
@@ -385,7 +488,7 @@ def _build_visit_summary(
     last_visit: Optional[str] = None,
     encounter_type: Optional[str] = None,
     insurance: Optional[str] = None,
-    session_row: Optional[sqlite3.Row] = None,
+    session_row: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble a structured visit summary payload."""
 
@@ -413,46 +516,57 @@ def _build_visit_summary(
         summary["insurance"] = insurance
 
     if session_row is not None:
-        session_data = session_row["data"]
+        session_data = session_row.get("data")
         if session_data:
-            try:
-                parsed = json.loads(session_data)
-                if isinstance(parsed, dict):
-                    summary["session"] = parsed
-            except json.JSONDecodeError:
-                summary["session"] = session_data
-        if session_row["updated_at"] is not None:
+            if isinstance(session_data, Mapping):
+                summary["session"] = dict(session_data)
+            else:
+                try:
+                    parsed = json.loads(session_data)
+                    if isinstance(parsed, dict):
+                        summary["session"] = parsed
+                except json.JSONDecodeError:
+                    summary["session"] = session_data
+        updated_at = session_row.get("updated_at")
+        if updated_at is not None:
             summary["sessionUpdatedAt"] = _serialize_datetime(
-                _parse_datetime(session_row["updated_at"])
+                _parse_datetime(updated_at)
             )
 
     return {key: value for key, value in summary.items() if value is not None}
 
 
-def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
+def _load_db_appointments(session: Session) -> list[dict]:
     """Return appointments derived from persisted encounter data."""
 
-    encounter_rows = conn.execute(
-        """
-        SELECT
-            e.id AS encounter_id,
-            e.patient_id,
-            e.date,
-            e.type,
-            e.provider,
-            e.description,
-            p.first_name,
-            p.last_name,
-            p.mrn,
-            p.last_visit,
-            p.insurance
-        FROM encounters e
-        LEFT JOIN patients p ON p.id = e.patient_id
-        ORDER BY e.date IS NULL, e.date, e.id
-        """
-    ).fetchall()
+    encounter_rows = session.execute(
+        select(
+            _ENCOUNTERS_TABLE.c.id.label("encounter_id"),
+            _ENCOUNTERS_TABLE.c.patient_id,
+            _ENCOUNTERS_TABLE.c.date,
+            _ENCOUNTERS_TABLE.c.type,
+            _ENCOUNTERS_TABLE.c.provider,
+            _ENCOUNTERS_TABLE.c.description,
+            _PATIENTS_TABLE.c.first_name,
+            _PATIENTS_TABLE.c.last_name,
+            _PATIENTS_TABLE.c.mrn,
+            _PATIENTS_TABLE.c.last_visit,
+            _PATIENTS_TABLE.c.insurance,
+        )
+        .select_from(_ENCOUNTERS_TABLE)
+        .join(
+            _PATIENTS_TABLE,
+            _PATIENTS_TABLE.c.id == _ENCOUNTERS_TABLE.c.patient_id,
+            isouter=True,
+        )
+        .order_by(
+            case((_ENCOUNTERS_TABLE.c.date.is_(None), 1), else_=0),
+            _ENCOUNTERS_TABLE.c.date.asc(),
+            _ENCOUNTERS_TABLE.c.id.asc(),
+        )
+    ).mappings().all()
 
-    sessions = _load_visit_sessions(conn)
+    sessions = _load_visit_sessions(session)
     appointments: list[dict] = []
 
     for row in encounter_rows:
@@ -461,9 +575,9 @@ def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
         session_row = sessions.get(encounter_id)
 
         start_dt = _parse_datetime(
-            session_row["start_time"] if session_row else row["date"]
+            session_row.get("start_time") if session_row else row["date"]
         )
-        end_dt = _parse_datetime(session_row["end_time"] if session_row else None)
+        end_dt = _parse_datetime(session_row.get("end_time") if session_row else None)
         if start_dt is None:
             # Default to encounter date at 9am when only the date is provided.
             start_dt = _parse_datetime(row["date"])
@@ -472,18 +586,18 @@ def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
         if end_dt is None:
             end_dt = start_dt + _DEFAULT_APPOINTMENT_DURATION
 
-        patient_first = row["first_name"] or ""
-        patient_last = row["last_name"] or ""
+        patient_first = row.get("first_name") or ""
+        patient_last = row.get("last_name") or ""
         name_parts = [part for part in (patient_first, patient_last) if part]
         patient_name = " ".join(name_parts) if name_parts else (
-            row["mrn"] or f"Patient {encounter_id}"
+            row.get("mrn") or f"Patient {encounter_id}"
         )
 
-        provider = (row["provider"] or "").strip() or None
-        reason = (row["description"] or row["type"] or "Follow-up").strip()
-        status_raw = session_row["status"] if session_row else None
+        provider = (row.get("provider") or "").strip() or None
+        reason = (row.get("description") or row.get("type") or "Follow-up").strip()
+        status_raw = session_row.get("status") if session_row else None
         status = _normalise_status(status_raw)
-        encounter_type = (row["type"] or "").strip() or None
+        encounter_type = (row.get("type") or "").strip() or None
 
         location = "Virtual" if (
             encounter_type and encounter_type.lower().startswith("tele")
@@ -498,9 +612,9 @@ def _load_db_appointments(conn: sqlite3.Connection) -> list[dict]:
             start_dt,
             end_dt,
             status,
-            last_visit=row["last_visit"],
+            last_visit=row.get("last_visit"),
             encounter_type=encounter_type,
-            insurance=row["insurance"],
+            insurance=row.get("insurance"),
             session_row=session_row,
         )
 
@@ -587,17 +701,17 @@ def create_appointment(
     return rec
 
 
-def list_appointments() -> list[dict]:
+def list_appointments(*, session: Optional[Session] = None) -> list[dict]:
     """Return all appointments sorted by start time."""
 
-    connection = _resolve_connection()
     records: list[dict] = []
-    if connection is not None:
-        try:
-            records.extend(_load_db_appointments(connection))
-        except sqlite3.Error:
-            # Fall back to in-memory records if the query fails.
-            pass
+    with _optional_session(session) as db_session:
+        if db_session is not None:
+            try:
+                records.extend(_load_db_appointments(db_session))
+            except Exception:
+                # Fall back to in-memory records if the query fails.
+                pass
 
     with _APPT_LOCK:
         for rec in _APPOINTMENTS:
@@ -714,110 +828,131 @@ def _apply_in_memory_operation(
 
 
 def _apply_db_bulk_operation(
-    conn: sqlite3.Connection,
+    session: Session,
     encounter_id: int,
     action: str,
     provider: Optional[str],
     new_start: Optional[datetime],
 ) -> bool:
     try:
-        encounter = conn.execute(
-            "SELECT id, provider FROM encounters WHERE id=?",
-            (encounter_id,),
-        ).fetchone()
-    except sqlite3.Error:
+        encounter = (
+            session.execute(
+                select(
+                    _ENCOUNTERS_TABLE.c.id,
+                    _ENCOUNTERS_TABLE.c.provider,
+                ).where(_ENCOUNTERS_TABLE.c.id == encounter_id)
+            )
+            .mappings()
+            .first()
+        )
+    except Exception:
+        session.rollback()
         return False
 
     if encounter is None:
         return False
 
-    provider_value = (
-        encounter["provider"]
-        if hasattr(encounter, "keys")
-        else encounter[1]  # type: ignore[index]
-    )
-    existing_provider = _normalise_provider(provider_value)
+    existing_provider = _normalise_provider(encounter.get("provider"))
     if provider:
         if existing_provider and existing_provider.casefold() != provider.casefold():
             return False
         if not existing_provider:
-            conn.execute(
-                "UPDATE encounters SET provider=? WHERE id=?",
-                (provider, encounter_id),
+            session.execute(
+                _ENCOUNTERS_TABLE.update()
+                .where(_ENCOUNTERS_TABLE.c.id == encounter_id)
+                .values(provider=provider)
             )
             existing_provider = provider
 
     action_lower = action.lower()
     if action_lower == "reschedule":
         if new_start is None:
-            conn.commit()
+            session.commit()
             return False
-        new_start = ensure_utc(new_start)
-        session_row = conn.execute(
-            """
-            SELECT id, start_time, end_time
-            FROM visit_sessions
-            WHERE encounter_id=?
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 1
-            """,
-            (encounter_id,),
-        ).fetchone()
+
+        session_row = (
+            session.execute(
+                select(_VISIT_SESSIONS_TABLE)
+                .where(_VISIT_SESSIONS_TABLE.c.encounter_id == encounter_id)
+                .order_by(
+                    _VISIT_SESSIONS_TABLE.c.updated_at.desc().nulls_last(),
+                    _VISIT_SESSIONS_TABLE.c.id.desc(),
+                )
+                .limit(1)
+            )
+            .mappings()
+            .first()
+        )
+
+
         duration = _DEFAULT_APPOINTMENT_DURATION
         if session_row:
-            start_value = (
-                session_row["start_time"]
-                if hasattr(session_row, "keys")
-                else session_row[1]  # type: ignore[index]
-            )
-            end_value = (
-                session_row["end_time"]
-                if hasattr(session_row, "keys")
-                else session_row[2]  # type: ignore[index]
-            )
-            start_dt = _parse_datetime(start_value)
-            end_dt = _parse_datetime(end_value)
+            start_dt = _parse_datetime(session_row.get("start_time"))
+            end_dt = _parse_datetime(session_row.get("end_time"))
             if start_dt and end_dt and end_dt > start_dt:
                 duration = end_dt - start_dt
+
+
+        end_dt = new_start + duration
+        now_dt = datetime.utcnow()
+
         start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
         end_dt = ensure_utc(new_start + duration)
         end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
         now_ts = to_epoch_seconds(utc_now())
+
         if session_row:
-            session_id = (
-                session_row["id"]
-                if hasattr(session_row, "keys")
-                else session_row[0]  # type: ignore[index]
-            )
-            conn.execute(
-                """
-                UPDATE visit_sessions
-                   SET start_time=?, end_time=?, status=?, updated_at=?
-                 WHERE id=?
-                """,
-                (start_iso, end_iso, "scheduled", now_ts, session_id),
+            session.execute(
+                _VISIT_SESSIONS_TABLE.update()
+                .where(_VISIT_SESSIONS_TABLE.c.id == session_row["id"])
+                .values(
+                    start_time=new_start,
+                    end_time=end_dt,
+                    status="scheduled",
+                    updated_at=now_dt,
+                )
             )
         else:
-            conn.execute(
-                """
-                INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (encounter_id, "scheduled", start_iso, end_iso, now_ts),
+            session.execute(
+                _VISIT_SESSIONS_TABLE.insert().values(
+                    encounter_id=encounter_id,
+                    status="scheduled",
+                    start_time=new_start,
+                    end_time=end_dt,
+                    updated_at=now_dt,
+                )
             )
-        conn.execute(
-            "UPDATE encounters SET date=? WHERE id=?",
-            (start_iso, encounter_id),
+
+        encounter_date = (
+            _serialize_datetime(new_start)
+            or new_start.replace(microsecond=0).isoformat()
         )
-        conn.commit()
+        session.execute(
+            _ENCOUNTERS_TABLE.update()
+            .where(_ENCOUNTERS_TABLE.c.id == encounter_id)
+            .values(date=encounter_date)
+        )
+        session.commit()
         return True
 
     status = _STATUS_ACTION_MAP.get(action_lower)
     if not status and action_lower in _ALLOWED_STATUSES:
         status = action_lower
     if not status:
-        conn.commit()
+        session.commit()
         return False
+
+
+    now_dt = datetime.utcnow()
+    session_row = (
+        session.execute(
+            select(_VISIT_SESSIONS_TABLE)
+            .where(_VISIT_SESSIONS_TABLE.c.encounter_id == encounter_id)
+            .order_by(
+                _VISIT_SESSIONS_TABLE.c.updated_at.desc().nulls_last(),
+                _VISIT_SESSIONS_TABLE.c.id.desc(),
+            )
+            .limit(1)
 
     now_ts = to_epoch_seconds(utc_now())
     session_row = conn.execute(
@@ -835,26 +970,36 @@ def _apply_db_bulk_operation(
             session_row["id"]
             if hasattr(session_row, "keys")
             else session_row[0]  # type: ignore[index]
+
         )
-        conn.execute(
-            "UPDATE visit_sessions SET status=?, updated_at=? WHERE id=?",
-            (status, now_ts, session_id),
+        .mappings()
+        .first()
+    )
+    if session_row:
+        session.execute(
+            _VISIT_SESSIONS_TABLE.update()
+            .where(_VISIT_SESSIONS_TABLE.c.id == session_row["id"])
+            .values(status=status, updated_at=now_dt)
         )
     else:
-        conn.execute(
-            """
-            INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
-            VALUES (?, ?, NULL, NULL, ?)
-            """,
-            (encounter_id, status, now_ts),
+        session.execute(
+            _VISIT_SESSIONS_TABLE.insert().values(
+                encounter_id=encounter_id,
+                status=status,
+                start_time=None,
+                end_time=None,
+                updated_at=now_dt,
+            )
         )
-    conn.commit()
+    session.commit()
     return True
 
 
 def apply_bulk_operations(
     updates: Sequence[Mapping[str, Any]],
     provider: Optional[str] = None,
+    *,
+    session: Optional[Session] = None,
 ) -> Tuple[int, int]:
     """Apply a series of bulk schedule operations.
 
@@ -876,27 +1021,16 @@ def apply_bulk_operations(
     succeeded = 0
     failed = 0
     provider_normalised = _normalise_provider(provider)
-    connection = _resolve_connection()
 
-    for update in updates:
-        if not isinstance(update, Mapping):
-            failed += 1
-            continue
+    with _optional_session(session) as db_session:
+        for update in updates:
+            if not isinstance(update, Mapping):
+                failed += 1
+                continue
 
-        try:
-            appt_id = int(update["id"])
-        except Exception:
-            failed += 1
-            continue
-
-        action_raw = update.get("action")
-        if not action_raw:
-            failed += 1
-            continue
-        action = str(action_raw).strip()
-        if not action:
-            failed += 1
-            continue
+            try:
+                appt_id = int(update["id"])
+            except Exception:
 
         time_value = update.get("time")
         if time_value is None:
@@ -907,34 +1041,61 @@ def apply_bulk_operations(
                 failed += 1
                 continue
 
-        handled = False
-        success = False
-        with _APPT_LOCK:
-            rec = _find_appointment_locked(appt_id)
-            if rec is not None:
-                handled = True
-                success = _apply_in_memory_operation(
-                    rec, action, provider_normalised, new_start
-                )
+            action_raw = update.get("action")
+            if not action_raw:
+                failed += 1
+                continue
+            action = str(action_raw).strip()
+            if not action:
+                failed += 1
+                continue
 
-        if handled:
-            if success:
-                succeeded += 1
+            time_value = update.get("time")
+            new_start: Optional[datetime]
+            if time_value is None:
+                new_start = None
+            elif isinstance(time_value, datetime):
+                new_start = time_value
+            elif isinstance(time_value, str):
+                try:
+                    new_start = datetime.fromisoformat(time_value)
+                except ValueError:
+                    failed += 1
+                    continue
             else:
                 failed += 1
-            continue
+                continue
 
-        if connection is not None:
-            try:
-                if _apply_db_bulk_operation(
-                    connection, appt_id, action, provider_normalised, new_start
-                ):
+            handled = False
+            success = False
+            with _APPT_LOCK:
+                rec = _find_appointment_locked(appt_id)
+                if rec is not None:
+                    handled = True
+                    success = _apply_in_memory_operation(
+                        rec, action, provider_normalised, new_start
+                    )
+
+            if handled:
+                if success:
                     succeeded += 1
-                    continue
-            except sqlite3.Error:
-                pass
+                else:
+                    failed += 1
+                continue
 
-        failed += 1
+            if db_session is not None:
+                try:
+                    if _apply_db_bulk_operation(
+                        db_session, appt_id, action, provider_normalised, new_start
+                    ):
+                        succeeded += 1
+                        continue
+                except Exception:
+                    db_session.rollback()
+                failed += 1
+                continue
+
+            failed += 1
 
     return succeeded, failed
 
@@ -948,6 +1109,7 @@ __all__ = [
     "get_appointment",
     "export_appointment_ics",
     "apply_bulk_operations",
+    "schedule_session_scope",
     "DEFAULT_EVENT_SUMMARY",
     "DEFAULT_CHRONIC_INTERVAL",
     "DEFAULT_ACUTE_INTERVAL",
