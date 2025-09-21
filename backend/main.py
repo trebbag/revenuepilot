@@ -210,6 +210,7 @@ from backend.scheduling import (  # type: ignore
     get_appointment,
     apply_bulk_operations,
     configure_database as configure_schedule_database,
+    schedule_session_scope,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -7920,7 +7921,9 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
         upper_bound = now_dt + timedelta(days=1)
         upcoming = 0
         try:
-            for appt in list_appointments():
+            with schedule_session_scope() as session:
+                appointments = list_appointments(session=session)
+            for appt in appointments:
                 try:
                     start_dt = datetime.fromisoformat(appt["start"])
                 except Exception:
@@ -12670,7 +12673,8 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
 
 @app.get("/schedule", response_model=AppointmentList)
 async def list_schedule_appointments(user=Depends(require_role("user"))):
-    items = list_appointments()
+    with schedule_session_scope() as session:
+        items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
     for item in items:
@@ -12721,17 +12725,20 @@ async def schedule_bulk_operations(
 ) -> ScheduleBulkSummary:
     if not req.updates:
         return ScheduleBulkSummary(succeeded=0, failed=0)
-    succeeded, failed = apply_bulk_operations(
-        [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
-        req.provider,
-    )
+    with schedule_session_scope() as session:
+        succeeded, failed = apply_bulk_operations(
+            [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
+            req.provider,
+            session=session,
+        )
     return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
 
 
 @app.get("/api/schedule/appointments", response_model=AppointmentList)
 async def api_list_appointments(user=Depends(require_role("user"))):
-    items = list_appointments()
+    with schedule_session_scope() as session:
+        items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
     for item in items:
