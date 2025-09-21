@@ -1,8 +1,20 @@
-require('dotenv').config();
-
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
+
+try {
+  const envPath = path.join(__dirname, '..', '.env');
+  const dotenv = require('dotenv');
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+  } else {
+    dotenv.config();
+  }
+} catch (err) {
+  if (err && err.code !== 'MODULE_NOT_FOUND') {
+    console.warn('Failed to load dotenv configuration:', err.message || err);
+  }
+}
 
 const port = process.env.UPDATE_SERVER_PORT || 8080;
 const baseDir = process.env.UPDATE_DIR || path.join(__dirname, '..', 'dist');

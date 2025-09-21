@@ -40,6 +40,12 @@ def test_profile_and_notifications(monkeypatch):
             profile_payload = nested
     assert isinstance(profile_payload, dict)
     assert "preferences" in profile_payload
+    assert profile_payload.get("userId") is None or isinstance(profile_payload.get("userId"), str)
+    assert profile_payload.get("role") in {None, "user"}
+    assert profile_payload.get("username") == "alice"
+    ui_defaults = profile_payload.get("uiPreferences", {})
+    assert "navigation" in ui_defaults
+    assert ui_defaults["navigation"]["animationPreferences"]["speed"] == "normal"
 
     payload = {
         "currentView": "dashboard",
@@ -58,7 +64,9 @@ def test_profile_and_notifications(monkeypatch):
     assert resp.json()["currentView"] == "dashboard"
 
     resp = client.get("/api/user/ui-preferences", headers={"Authorization": f"Bearer {token}"})
-    assert resp.json()["uiPreferences"]["theme"] == "dark"
+    prefs_payload = resp.json()["uiPreferences"]
+    assert prefs_payload["theme"] == "dark"
+    assert prefs_payload["navigation"]["collapsed"] is False
 
     resp = client.put(
         "/api/user/ui-preferences",
@@ -67,10 +75,12 @@ def test_profile_and_notifications(monkeypatch):
     )
     assert resp.status_code == 200
     resp = client.get("/api/user/ui-preferences", headers={"Authorization": f"Bearer {token}"})
-    assert resp.json()["uiPreferences"]["theme"] == "light"
+    updated_prefs = resp.json()["uiPreferences"]
+    assert updated_prefs["theme"] == "light"
+    assert "navigation" in updated_prefs
 
     resp = client.get("/api/notifications/count", headers={"Authorization": f"Bearer {token}"})
-    assert resp.json()["count"] == 0
+    assert resp.json()["notifications"] == 0
 
     # Persist a few unread notification records which should update counters.
     for idx in range(5):
@@ -85,10 +95,11 @@ def test_profile_and_notifications(monkeypatch):
         assert count == idx + 1
 
     resp = client.get("/api/notifications/count", headers={"Authorization": f"Bearer {token}"})
-    assert resp.json()["count"] == 5
+    assert resp.json()["notifications"] == 5
 
     with client.websocket_connect(
         "/ws/notifications", headers={"Authorization": f"Bearer {token}"}
     ) as ws:
         data = ws.receive_json()
-        assert data["count"] == 5
+        assert data["notifications"] == 5
+        assert "drafts" in data
