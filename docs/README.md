@@ -62,6 +62,16 @@ Python virtual environment for the FastAPI backend.
 The script installs frontend packages, creates `backend/venv`, and
 installs backend requirements including spaCy’s English model.【F:install.sh†L1-L55】
 
+### Apply database migrations
+
+Run Alembic migrations before starting services to ensure the SQLite
+schema matches the current application expectations (the same command
+runs in CI and production deployments):
+
+```bash
+backend/venv/bin/python -m alembic -c backend/alembic/alembic.ini upgrade head
+```
+
 ### Start the full stack
 
 Use the helper script to launch FastAPI and the Vite frontend together.
