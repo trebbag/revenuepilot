@@ -103,11 +103,18 @@ from backend import prompts as prompt_utils  # type: ignore
 from backend.prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt  # type: ignore
 from backend.openai_client import call_openai  # type: ignore
 from backend.key_manager import (
-    get_api_key,
-    save_api_key,
     APP_NAME,
+    SecretError,
+    SecretNotFoundError,
+    SecretReadOnlyError,
+    SecretRotationError,
+    ensure_local_secret,
+    get_api_key,
     list_key_metadata,
+    require_secret,
+    save_api_key,
     store_key,
+    store_secret,
 )  # type: ignore
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
@@ -2307,11 +2314,22 @@ class RateLimiter:
 # ---------------------------------------------------------------------------
 # JWT authentication helpers
 # ---------------------------------------------------------------------------
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET:
-    if ENVIRONMENT not in {"development", "dev"}:
-        raise RuntimeError("JWT_SECRET environment variable is required")
-    JWT_SECRET = "dev-secret"
+if ENVIRONMENT in {"development", "dev", "local"}:
+    try:
+        ensure_local_secret("jwt", "JWT_SECRET", lambda: secrets.token_urlsafe(48))
+    except SecretReadOnlyError:
+        pass
+
+try:
+    JWT_SECRET = require_secret(
+        "jwt",
+        "JWT_SECRET",
+        description="JWT signing secret",
+        allow_fallback=ENVIRONMENT in {"development", "dev", "local"},
+        max_age_days=int(os.getenv("JWT_SECRET_MAX_AGE_DAYS", "90")),
+    )
+except SecretError as exc:
+    raise RuntimeError(str(exc)) from exc
 JWT_ALGORITHM = "HS256"
 security = HTTPBearer()
 # Allow optional bearer credentials for endpoints that should respond with a
@@ -2908,6 +2926,9 @@ class ApiKeyModel(BaseModel):
 class ServiceKeyModel(BaseModel):
     service: str
     key: str
+    env_var: Optional[str] = Field(default=None, alias="envVar")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RegisterModel(BaseModel):
@@ -4385,7 +4406,22 @@ async def get_keys_endpoint(user=Depends(require_role("admin"))):
 async def post_keys_endpoint(
     model: ServiceKeyModel, user=Depends(require_role("admin"))
 ):
-    store_key(model.service, model.key)
+    env_var = model.env_var
+    if not env_var:
+        if model.service.lower() == "openai":
+            env_var = "OPENAI_API_KEY"
+        elif model.service.lower() == "jwt":
+            env_var = "JWT_SECRET"
+    try:
+        if env_var:
+            store_secret(model.service, env_var, model.key)
+        else:
+            store_key(model.service, model.key)
+    except SecretReadOnlyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {"status": "saved"}
 
 
@@ -9745,7 +9781,17 @@ async def set_api_key(model: ApiKeyModel, user=Depends(require_role("admin"))):
     try:
         save_api_key(key)
         return {"status": "saved"}
-    except Exception as exc:
+    except SecretReadOnlyError as exc:
+        return JSONResponse(
+            {
+                "status": "error",
+                "message": (
+                    "Secrets backend is read-only. Rotate OPENAI_API_KEY in the external secrets manager."
+                ),
+            },
+            status_code=409,
+        )
+    except SecretError as exc:
         return JSONResponse(
             {"status": "error", "message": f"Failed to save API key: {exc}"},
             status_code=400,
