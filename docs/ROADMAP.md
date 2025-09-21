@@ -1,40 +1,56 @@
 # RevenuePilot Roadmap
 
-This roadmap reflects the outstanding bugs, missing features and future enhancements discussed in the planning chats.  Each item is grouped by priority (P0–P2).  P0 items are blockers that should be tackled before new feature work; P1 items are important but not immediately blocking; P2 items are nice‑to‑haves or longer‑term goals.
+The current codebase ships a feature-complete pilot: clinicians can draft
+notes with AI assistance, admins can manage users and analytics, and the
+stack can be packaged as a desktop Electron app. The roadmap below
+focuses on turning the pilot into a production-ready product.
 
-**Status:** Speech‑to‑Text & Diarisation – 100% complete. Advanced PHI Scrubbing – 100% complete. User settings persistence – 100% complete. Refined Prompts – 100% complete. Follow‑up scheduling with calendar export – initial heuristics complete.
+## P0 – Production readiness
 
-## P0 – Blockers
+- **Harden persistence** – Replace the embedded SQLite connection with a
+  managed Postgres instance, introduce connection pooling, migrations and
+  automated backups. This unlocks true multi-user concurrency for the
+  workflow and analytics tables that are currently initialised via
+  `backend/migrations.py`.
+- **Secrets & configuration** – Externalise secrets (JWT signing keys,
+  service credentials) into a secrets manager and add rotation tooling.
+  The existing `.env` prompts from `npm run setup-env` should be replaced
+  with environment-based configuration in deployment manifests.
+- **Observability** – Add structured logging, metrics export (Prometheus)
+  and alerting for key endpoints such as `/api/v1/workflow/*`,
+  `/api/ai/*`, `/api/export/ehr` and auth flows. Surface failures in the
+  admin dashboard and include trace IDs in audit logs.
 
-- **Analytics Visualisation:** Expand `Dashboard.jsx` to render time‑series charts for each metric using Chart.js or Recharts.  Enhance `/metrics` to return aggregated data by day/week.
-- **Test Coverage:** Establish unit and integration tests for both backend and frontend.  Cover all endpoints, UI flows and edge cases.  Integrate `pytest`, `pytest‑asyncio`, `pytest‑cov` and React Testing Library.
+## P1 – Experience & scaling
 
-## P1 – Important Enhancements
+- **Real-time collaboration** – Wire the existing websocket endpoints for
+  transcription, compliance and code suggestions into the React app to
+  support live updates when multiple users share an encounter.
+- **Analytics deep dives** – Extend the dashboard with clinic, provider
+  and payer filters using the aggregates exposed under
+  `/api/analytics/*`. Allow scheduled PDF/email exports for leadership.
+- **Template library** – Curate specialty/payer template packs and expose
+  a marketplace view powered by the `templates` APIs, including tagging
+  and version control.
+- **Offline refinements** – Expand local model support beyond the current
+  llama.cpp hook, add confidence calibration tests and ship an opt-in UI
+  toggle for deterministic regression fixtures.
 
-- **EHR Integration:** Initial FHIR export workflow is in place. The `/export` API and matching UI button post the final note and selected billing codes to a configured FHIR server. Future work can expand resource coverage and vendor‑specific workflows.
-- **User Settings & Preferences:** Persist user settings (theme, enabled suggestion categories, custom rules) in a database so that they travel with the user rather than being stored solely in the browser.
-- **Internationalisation:** Add support for multiple locales and languages in the UI and prompts, starting with Spanish.
+## P2 – Long-term investments
 
-## P2 – Longer‑Term / Nice‑to‑Haves
+- **EHR connectors** – Build vendor-specific adapters on top of the FHIR
+  export to push finalized notes, billing codes and attachments directly
+  into popular EHRs.
+- **Mobile companion** – Explore packaging the React app with Capacitor
+  or React Native for on-the-go summary review and approval.
+- **AI assurance** – Incorporate human-in-the-loop feedback loops,
+  monitoring for drift and automated prompt evaluation harnesses.
 
-- **Specialty Templates and Workflows:** Add note templates for paediatrics, geriatrics, psychiatry and other specialties.  Allow clinics to define their own templates via `prompt_templates.json` or separate template files organised by specialty or payer.
-- **Smart Suggestions for Public Health:** Public health guidance is pulled from CDC and WHO APIs via `backend/public_health.py`.  The `/suggest` endpoint accepts optional `age`, `sex`, `region` and `agencies` fields and returns a `publicHealth` array with recommendations, source agency and evidence level.  Results are cached in memory using the `GUIDELINE_CACHE_TTL` environment variable and are keyed by region and selected agencies.  Region‑specific endpoints can be provided by setting `CDC_GUIDELINES_URL` or `WHO_GUIDELINES_URL` to either JSON mappings or `REGION:url` pairs.  Users can choose which agencies to consult and specify their region in Settings.
-- **Offline Mode:** Investigate offline LLM inference for beautification and suggestions to avoid network dependence.
-- **AI‑Driven Scheduling:** Initial heuristics implemented with specialty/payer overrides (`CODE_INTERVALS_FILE`) and calendar export via `/export_ics`. Future work will incorporate predictive models.
+## Quality gates
 
-## Metrics Schema
-
-The analytics dashboard draws from a SQLite events table.  Key metrics include
-`revenue_projection`, `revenue_per_visit`, `avg_time_to_close`, `denial_rate`
-and counts of compliance flags.  Results are aggregated by day and week and
-returned under a `timeseries` key for charting.  Set the environment variable
-`METRICS_LOOKBACK_DAYS` (default 30) to limit how many days of events are kept
-for calculations.
-
-## Localisation Guidelines
-
-- Store translations under `src/locales/` with one JSON file per language. The English file (`en.json`) acts as the reference; other locales must mirror its keys.
-- Register new languages in `src/i18n.js` and update tests to include the new locale file.
-- Use `t('namespace.key')` from `react-i18next` for all user-facing strings. Group keys logically (e.g., `settings.saveButton`, `dashboard.revenueChart`).
-- For pluralisation, use i18next's plural forms (`key_one`, `key_other`) and call `t('key', { count })`.
-- Run `npm test` to ensure the locale key coverage test passes after adding or modifying translation files.
+- Maintain 90%+ coverage across backend pytest and frontend Vitest suites
+  while adding regression cases for every workflow change.
+- Keep Playwright smoke tests green and expand them to cover scheduling,
+  notifications and admin flows as new features land.
+- Ensure documentation in [`docs/README.md`](README.md) and
+  [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) is updated alongside code.
