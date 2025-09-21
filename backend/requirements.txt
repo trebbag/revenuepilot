@@ -24,4 +24,5 @@ requests-mock
 cryptography
 bleach
 SQLAlchemy
+alembic
 

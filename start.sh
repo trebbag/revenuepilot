@@ -51,6 +51,9 @@ else:
         )
 PY
 
+echo "Applying database migrations..."
+"$BACKEND_PYTHON" -m alembic -c backend/alembic/alembic.ini upgrade head
+
 echo "Starting backend (FastAPI) on port 8000..."
 
 # Start backend in background.  --reload enables live code reloading.
