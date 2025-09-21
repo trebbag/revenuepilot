@@ -1,4 +1,5 @@
 import sqlite3
+
 from fastapi.testclient import TestClient
 
 import backend.main as main
@@ -40,14 +41,18 @@ def test_layout_preferences_roundtrip():
     body = resp.json()
     assert body["success"] is True
     assert body["data"] == {}
-    payload = {"panels": [{"id": "a", "visible": True}]}
+    payload = {"noteEditor": 65, "suggestionPanel": 35, "sidebarCollapsed": True}
     resp = client.put("/api/user/layout-preferences", json=payload, headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
     assert body["data"] == payload
+    assert body["noteEditor"] == 65
+    assert body["suggestionPanel"] == 35
     resp = client.get("/api/user/layout-preferences", headers=headers)
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
     assert body["data"] == payload
+    assert body["noteEditor"] == 65
+    assert body["suggestionPanel"] == 35

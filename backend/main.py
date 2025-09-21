@@ -4761,9 +4761,19 @@ def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
         panel_states = {key: bool(value) for key, value in panel_states_raw.items()}
     panel_states["suggestionPanel"] = suggestion
     normalized["panelStates"] = panel_states
-    sessions = normalized.get("finalizationSessions")
-    if not isinstance(sessions, dict):
-        sessions = {}
+    sessions_raw = normalized.get("finalizationSessions")
+    sessions: Dict[str, Any] = {}
+    if isinstance(sessions_raw, dict):
+        logger = logging.getLogger(__name__)
+        for key, value in sessions_raw.items():
+            session_key = str(key)
+            if isinstance(value, dict):
+                try:
+                    sessions[session_key] = _normalize_finalization_session(value)
+                except Exception:  # pragma: no cover - defensive logging
+                    logger.exception("Failed to normalize stored finalization session %s", session_key)
+            else:
+                sessions[session_key] = value
     normalized["finalizationSessions"] = sessions
     return normalized
 
@@ -5280,28 +5290,56 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
         candidate = data.get("owner") or data.get("createdBy")
         if candidate:
             data["lastUpdatedBy"] = candidate
-    if "stepStates" not in data or not isinstance(data.get("stepStates"), dict):
-        data["stepStates"] = _default_step_states()
-    else:
-        normalized_states: Dict[str, Dict[str, Any]] = {}
-        now = _utc_now_iso()
-        for step in _FINALIZATION_STEPS:
-            key = str(step)
-            entry = data["stepStates"].get(key) or {}
-            status = entry.get("status") or ("in_progress" if step == 1 else "not_started")
-            if status not in {"not_started", "in_progress", "completed", "blocked"}:
-                status = "not_started"
-            normalized_states[key] = {
-                "step": step,
-                "status": status,
-                "progress": int(entry.get("progress", 0) or 0),
-                "startedAt": entry.get("startedAt") or (now if step == 1 else None),
-                "completedAt": entry.get("completedAt"),
-                "updatedAt": entry.get("updatedAt") or now,
-                "notes": entry.get("notes"),
-                "blockingIssues": entry.get("blockingIssues") if isinstance(entry.get("blockingIssues"), list) else [],
-            }
-        data["stepStates"] = normalized_states
+    raw_states = data.get("stepStates")
+    normalized_states: Dict[str, Dict[str, Any]] = {}
+    states_map: Dict[str, Dict[str, Any]] = {}
+    if isinstance(raw_states, dict):
+        for key, entry in raw_states.items():
+            if isinstance(entry, dict):
+                states_map[str(key)] = entry
+    elif isinstance(raw_states, list):
+        for index, entry in enumerate(raw_states):
+            if not isinstance(entry, dict):
+                continue
+            raw_step = entry.get("step")
+            step_number: Optional[int] = None
+            if isinstance(raw_step, (int, float)):
+                try:
+                    step_number = int(raw_step)
+                except Exception:
+                    step_number = None
+            elif isinstance(raw_step, str):
+                try:
+                    step_number = int(raw_step.strip())
+                except Exception:
+                    step_number = None
+            if step_number not in _FINALIZATION_STEPS:
+                if index < len(_FINALIZATION_STEPS):
+                    step_number = _FINALIZATION_STEPS[index]
+                else:
+                    step_number = None
+            if step_number is None:
+                continue
+            states_map[str(step_number)] = entry
+    now = _utc_now_iso()
+    for step in _FINALIZATION_STEPS:
+        key = str(step)
+        entry = states_map.get(key) or {}
+        raw_status = entry.get("status")
+        status = str(raw_status).strip().lower() if isinstance(raw_status, str) else raw_status
+        if status not in {"not_started", "in_progress", "completed", "blocked"}:
+            status = "in_progress" if step == 1 else "not_started"
+        normalized_states[key] = {
+            "step": step,
+            "status": status,
+            "progress": int(entry.get("progress", 0) or 0),
+            "startedAt": entry.get("startedAt") or (now if step == 1 else None),
+            "completedAt": entry.get("completedAt"),
+            "updatedAt": entry.get("updatedAt") or now,
+            "notes": entry.get("notes"),
+            "blockingIssues": entry.get("blockingIssues") if isinstance(entry.get("blockingIssues"), list) else [],
+        }
+    data["stepStates"] = normalized_states
     codes_input = data.get("selectedCodes") or []
     if not isinstance(codes_input, list):
         codes_input = []
