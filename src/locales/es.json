@@ -197,14 +197,19 @@
     "encounterError": "No se pudo validar el encuentro.",
     "specialtyPlaceholder": "p. ej. Medicina familiar",
     "payerPlaceholder": "p. ej. Blue Shield PPO",
-    "payerHint": "Ajusta especialidad y pagador para adaptar plantillas y sugerencias."
+    "payerHint": "Ajusta especialidad y pagador para adaptar plantillas y sugerencias.",
     "patientIdLabel": "ID de paciente",
     "encounterIdLabel": "ID de encuentro",
     "visitDuration": "Duración de la visita",
     "visitSessionError": "No se pudo iniciar la sesión de visita",
     "visitSessionActive": "Visita en curso",
     "visitSessionPaused": "Visita en pausa",
-    "visitSessionComplete": "Visita finalizada"
+    "visitSessionComplete": "Visita finalizada",
+    "liveInterim": "En vivo (interino)",
+    "collaborators": "Colaboradores",
+    "collaborationStatus": "Estado: {{status}}",
+    "collaborationConflict": "Conflicto de colaboración",
+    "collaborationUnknown": "Un colaborador tuvo un problema"
   },
   "settings": {
     "title": "Configuración",
@@ -312,6 +317,7 @@
     "differentials": "Diagnósticos diferenciales",
     "loading": "Cargando sugerencias...",
     "none": "Sin sugerencias aún",
+    "liveBadge": "En vivo",
     "followUp": "Seguimiento",
     "addToCalendar": "Agregar al calendario",
     "followUpAppointment": "Cita de seguimiento",

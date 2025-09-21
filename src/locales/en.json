@@ -197,14 +197,19 @@
     "encounterError": "Unable to validate encounter.",
     "specialtyPlaceholder": "e.g. Family medicine",
     "payerPlaceholder": "e.g. Blue Shield PPO",
-    "payerHint": "Adjust specialty and payer to tailor templates and suggestions."
+    "payerHint": "Adjust specialty and payer to tailor templates and suggestions.",
     "patientIdLabel": "Patient ID",
     "encounterIdLabel": "Encounter ID",
     "visitDuration": "Visit Duration",
     "visitSessionError": "Unable to start visit session",
     "visitSessionActive": "Visit active",
     "visitSessionPaused": "Visit paused",
-    "visitSessionComplete": "Visit complete"
+    "visitSessionComplete": "Visit complete",
+    "liveInterim": "Live (interim)",
+    "collaborators": "Collaborators",
+    "collaborationStatus": "Status: {{status}}",
+    "collaborationConflict": "Collaboration conflict",
+    "collaborationUnknown": "A collaborator encountered an issue"
   },
   "settings": {
     "title": "Settings",
@@ -312,6 +317,7 @@
     "differentials": "Differentials",
     "loading": "Loading suggestions...",
     "none": "No suggestions yet",
+    "liveBadge": "Live",
     "followUp": "Follow-Up",
     "addToCalendar": "Add to calendar",
     "followUpAppointment": "Follow-up appointment",

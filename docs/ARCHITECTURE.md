@@ -26,7 +26,11 @@ The production UI lives under `src/` and is also exposed via the
 - **`NoteEditor.jsx`** wraps ReactQuill with custom toolbars, patient &
   encounter fields, chart upload helpers, transcription controls and
   template insertion. It surfaces auto-save state and delegates AI
-  actions to callbacks provided by `App.jsx`.【F:src/components/NoteEditor.jsx†L1-L160】
+  actions to callbacks provided by `App.jsx`. When a visit session is
+  active it also attaches resilient websocket listeners for
+  transcription, compliance, coding and collaboration channels so that
+  interim transcripts, streaming alerts and presence indicators stay in
+  sync with the clinician’s workspace.【F:src/components/NoteEditor.jsx†L620-L930】【F:src/components/NoteEditor.jsx†L1320-L2050】
 - **`SuggestionPanel.jsx`** renders expandable cards for codes,
   compliance, public health, differentials and follow-up. It debounces
   backend calls, respects specialty/payer filters and exports follow-up
@@ -56,7 +60,10 @@ The production UI lives under `src/` and is also exposed via the
 
 - **`api.js`** centralises HTTP calls, offline caching and the retry
   queue. It resolves the backend base URL, attaches JWTs, refreshes
-  tokens and replays queued mutations when connectivity returns.【F:src/api.js†L1-L320】
+  tokens and replays queued mutations when connectivity returns. The
+  module also exposes websocket helpers with automatic reconnection for
+  notifications, transcription, compliance, coding and collaboration
+  channels.【F:src/api.js†L1760-L2040】
 - **`context/` & `hooks/`** contain React context providers for settings,
   notifications and analytics as well as custom hooks for polling and
   keyboard shortcuts.【F:src/context/SettingsContext.jsx†L1-L160】
@@ -135,13 +142,20 @@ interfaces. `backend/main.py` ties together the modules listed below.
 3. **AI interactions** – Beautify/suggest/summarise requests travel
    through `api.js`, hit FastAPI where text is de-identified, prompts are
    assembled and responses logged for analytics.【F:src/api.js†L520-L760】【F:backend/main.py†L9755-L12084】
-4. **Compliance & workflow** – Compliance issues and selected codes feed
+ 4. **Compliance & workflow** – Compliance issues and selected codes feed
    into the workflow APIs, culminating in finalisation and optional FHIR
    export.【F:backend/main.py†L10374-L11270】
-5. **Analytics & notifications** – Events from actions above populate the
+ 5. **Analytics & notifications** – Events from actions above populate the
    `events`, `event_aggregates`, `notifications` and `audit_log` tables.
    Admin views pull from these tables to render dashboards, logs and
    alerts.【F:backend/main.py†L7536-L8912】
+  6. **Live visit telemetry** – Active visit sessions open websocket
+     channels for `/ws/transcription`, `/ws/compliance`, `/ws/codes` and
+     `/ws/collaboration`. `api.js` tracks the reconnection state and
+     resumes from the last `eventId`, while `NoteEditor` merges interim
+     transcripts, streaming compliance alerts, code suggestions and
+     collaborator presence into the existing UI without interrupting the
+     draft.【F:src/api.js†L1804-L2015】【F:src/components/NoteEditor.jsx†L860-L1110】
 
 ## External services & configuration
 
