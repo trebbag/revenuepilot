@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ruff check backend
-pytest
+pytest --cov=backend --cov-report=term
 npm run lint
-npx vitest run --coverage
+npm run test:coverage
 npx playwright install --with-deps chromium
-npx playwright test
+npm run test:e2e

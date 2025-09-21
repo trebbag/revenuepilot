@@ -19,10 +19,10 @@
     "backend:prebuild": "node scripts/backend-prebuild.js",
     "update-server": "node -r dotenv/config scripts/update-server.js",
     "setup-env": "node scripts/setup-env.js",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "npm --workspace revenuepilot-frontend run test",
+    "test:coverage": "npm --workspace revenuepilot-frontend run test:coverage",
     "lint": "eslint \"src/components/**/*.{js,jsx}\" && prettier --check \"src/components/**/*.{js,jsx}\"",
-    "test:e2e": "npx playwright test",
+    "test:e2e": "npm --workspace revenuepilot-frontend run test:e2e",
     "mock": "node mock/server.js"
   },
   "dependencies": {
