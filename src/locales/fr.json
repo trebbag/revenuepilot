@@ -83,6 +83,19 @@
     "none": "No drafts saved.",
     "delete": "Delete draft"
   },
+  "notifications": {
+    "title": "Notifications",
+    "loading": "Chargement des notifications…",
+    "refresh": "Actualiser",
+    "refreshing": "Actualisation…",
+    "markAll": "Tout marquer comme lu",
+    "markRead": "Marquer comme lu",
+    "read": "Lu",
+    "empty": "Aucune notification",
+    "error": "Impossible de charger les notifications.",
+    "unreadCount": "{{count}} non lues",
+    "untitled": "Notification"
+  },
   "followUp": {
     "recommend": "Recommend",
     "placeholder": "e.g., 2 weeks"
@@ -264,6 +277,7 @@
   "sidebar": {
     "notes": "Notes",
     "drafts": "Drafts",
+    "notifications": "Notifications",
     "analytics": "Analytics",
     "logs": "Logs",
     "settings": "Settings",

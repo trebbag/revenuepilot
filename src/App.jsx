@@ -25,6 +25,7 @@ import ClipboardExportButtons from './components/ClipboardExportButtons.jsx';
 import TemplatesModal from './components/TemplatesModal.jsx';
 import AdminUsers from './components/AdminUsers.jsx';
 import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
+import Notifications from './components/Notifications.jsx';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -833,6 +834,7 @@ function App() {
               }}
             />
           )}
+          {view === 'notifications' && <Notifications />}
           {view === 'logs' && <Logs />}
           {view === 'admin-users' && userRole === 'admin' && (
             <AdminUsers token={token} />
