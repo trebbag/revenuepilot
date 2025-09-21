@@ -8,8 +8,10 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, List, Tuple
 
+from alembic import command
+from alembic.config import Config
 from platformdirs import user_data_dir
 
 from backend import auth, code_tables, compliance
@@ -49,6 +51,18 @@ USER_ENV_VARS = {
 }
 
 
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def apply_migrations(database_path: Path) -> None:
+    """Apply Alembic migrations to *database_path*."""
+
+    cfg = Config(str((REPO_ROOT / "backend" / "alembic" / "alembic.ini").resolve()))
+    cfg.set_main_option("script_location", str((REPO_ROOT / "backend" / "alembic").resolve()))
+    cfg.set_main_option("sqlalchemy.url", f"sqlite:///{database_path}")
+    command.upgrade(cfg, "head")
+
 SCHEMA_FUNCTIONS: Iterable = (migrations.create_all_tables,)
 
 
@@ -56,6 +70,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     for func in SCHEMA_FUNCTIONS:
         func(conn)
     conn.commit()
+
 
 
 def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
@@ -198,11 +213,12 @@ def main() -> int:
     db_path = Path(args.database).expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    apply_migrations(db_path)
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
     try:
-        ensure_schema(conn)
         seed_reference_data(conn, overwrite=args.overwrite_reference_data)
         created_users: List[Tuple[str, str, str]] = []
         if not args.skip_user_seed:
