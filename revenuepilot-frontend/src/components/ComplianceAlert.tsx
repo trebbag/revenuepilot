@@ -23,6 +23,11 @@ interface ComplianceIssue {
   details: string
   suggestion: string
   learnMoreUrl?: string
+  confidence?: number | null
+  ruleReferences?: {
+    ruleId?: string
+    citations?: { title?: string; url?: string; citation?: string }[]
+  }[]
   dismissed?: boolean
 }
 
@@ -92,9 +97,43 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
     }
   }
 
+  const buildReferenceEntries = (issue: ComplianceIssue) => {
+    const entries: { key: string; text: string; url?: string }[] = []
+    issue.ruleReferences?.forEach((reference, refIndex) => {
+      const baseLabel =
+        typeof reference?.ruleId === 'string' && reference.ruleId.trim().length > 0
+          ? reference.ruleId.trim()
+          : ''
+      const citations = reference?.citations ?? []
+      if (citations.length === 0 && baseLabel) {
+        entries.push({ key: `ref-${refIndex}`, text: baseLabel })
+      }
+      citations.forEach((citation, citationIndex) => {
+        const title =
+          typeof citation?.title === 'string' && citation.title.trim().length > 0
+            ? citation.title.trim()
+            : typeof citation?.citation === 'string' && citation.citation.trim().length > 0
+              ? citation.citation.trim()
+              : ''
+        const textParts = [baseLabel, title].filter(part => part)
+        const textValue = textParts.join(' — ') || baseLabel || 'Reference'
+        const urlValue =
+          typeof citation?.url === 'string' && citation.url.trim().length > 0
+            ? citation.url.trim()
+            : undefined
+        entries.push({
+          key: `ref-${refIndex}-${citationIndex}`,
+          text: textValue,
+          url: urlValue
+        })
+      })
+    })
+    return entries
+  }
+
   const cardVariants = {
-    hidden: { 
-      opacity: 0, 
+    hidden: {
+      opacity: 0,
       y: 20,
       scale: 0.95
     },
@@ -260,6 +299,11 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                             {[...criticalIssues, ...warningIssues, ...infoIssues].map((issue, index) => {
                               const config = getSeverityConfig(issue.severity)
                               const IconComponent = config.icon
+                              const confidenceValue =
+                                typeof issue.confidence === 'number'
+                                  ? Math.max(0, Math.min(issue.confidence, 100))
+                                  : null
+                              const references = buildReferenceEntries(issue)
 
                               return (
                                 <motion.div
@@ -292,6 +336,11 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                               <Badge variant="outline" className="text-xs">
                                                 {getCategoryLabel(issue.category)}
                                               </Badge>
+                                              {confidenceValue !== null && (
+                                                <Badge variant="outline" className="text-xs">
+                                                  {confidenceValue}% confidence
+                                                </Badge>
+                                              )}
                                             </div>
                                           </div>
                                         </div>
@@ -326,7 +375,7 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                           <p className="text-xs">{issue.details}</p>
                                         </motion.div>
 
-                                        <motion.div 
+                                        <motion.div
                                           className="p-3 bg-green-50 rounded-md border border-green-200"
                                           initial={{ opacity: 0 }}
                                           animate={{ opacity: 1 }}
@@ -338,8 +387,39 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                           <p className="text-xs text-green-800">{issue.suggestion}</p>
                                         </motion.div>
 
+                                        {references.length > 0 && (
+                                          <motion.div
+                                            className="p-3 bg-white/50 rounded-md border border-white/80"
+                                            initial={{ opacity: 0 }}
+                                            animate={{ opacity: 1 }}
+                                            transition={{ delay: 0.45 + index * 0.1 }}
+                                          >
+                                            <div className="font-medium text-xs mb-1 text-muted-foreground uppercase tracking-wide">
+                                              Rule References
+                                            </div>
+                                            <ul className="space-y-1 text-xs text-muted-foreground">
+                                              {references.map(ref => (
+                                                <li key={ref.key}>
+                                                  {ref.url ? (
+                                                    <a
+                                                      href={ref.url}
+                                                      target="_blank"
+                                                      rel="noopener noreferrer"
+                                                      className={`${config.color} hover:underline`}
+                                                    >
+                                                      {ref.text}
+                                                    </a>
+                                                  ) : (
+                                                    <span>{ref.text}</span>
+                                                  )}
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </motion.div>
+                                        )}
+
                                         {issue.learnMoreUrl && (
-                                          <motion.div 
+                                          <motion.div
                                             className="pt-2 border-t border-white/50"
                                             initial={{ opacity: 0 }}
                                             animate={{ opacity: 1 }}
@@ -605,6 +685,11 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                   {[...criticalIssues, ...warningIssues, ...infoIssues].map((issue, index) => {
                                     const config = getSeverityConfig(issue.severity)
                                     const IconComponent = config.icon
+                                    const confidenceValue =
+                                      typeof issue.confidence === 'number'
+                                        ? Math.max(0, Math.min(issue.confidence, 100))
+                                        : null
+                                    const references = buildReferenceEntries(issue)
 
                                     return (
                                       <motion.div
@@ -638,6 +723,11 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                                     <Badge variant="outline" className="text-xs">
                                                       {getCategoryLabel(issue.category)}
                                                     </Badge>
+                                                    {confidenceValue !== null && (
+                                                      <Badge variant="outline" className="text-xs">
+                                                        {confidenceValue}% confidence
+                                                      </Badge>
+                                                    )}
                                                   </div>
                                                 </div>
                                               </div>
@@ -672,7 +762,7 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                                 <p className="text-xs">{issue.details}</p>
                                               </motion.div>
 
-                                              <motion.div 
+                                              <motion.div
                                                 className="p-3 bg-green-50 rounded-md border border-green-200"
                                                 initial={{ opacity: 0 }}
                                                 animate={{ opacity: 1 }}
@@ -684,8 +774,39 @@ export function ComplianceAlert({ issues, onDismissIssue, onRestoreIssue, compac
                                                 <p className="text-xs text-green-800">{issue.suggestion}</p>
                                               </motion.div>
 
+                                              {references.length > 0 && (
+                                                <motion.div
+                                                  className="p-3 bg-white/50 rounded-md border border-white/80"
+                                                  initial={{ opacity: 0 }}
+                                                  animate={{ opacity: 1 }}
+                                                  transition={{ delay: 0.45 + index * 0.1 }}
+                                                >
+                                                  <div className="font-medium text-xs mb-1 text-muted-foreground uppercase tracking-wide">
+                                                    Rule References
+                                                  </div>
+                                                  <ul className="space-y-1 text-xs text-muted-foreground">
+                                                    {references.map(ref => (
+                                                      <li key={ref.key}>
+                                                        {ref.url ? (
+                                                          <a
+                                                            href={ref.url}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className={`${config.color} hover:underline`}
+                                                          >
+                                                            {ref.text}
+                                                          </a>
+                                                        ) : (
+                                                          <span>{ref.text}</span>
+                                                        )}
+                                                      </li>
+                                                    ))}
+                                                  </ul>
+                                                </motion.div>
+                                              )}
+
                                               {issue.learnMoreUrl && (
-                                                <motion.div 
+                                                <motion.div
                                                   className="pt-2 border-t border-white/50"
                                                   initial={{ opacity: 0 }}
                                                   animate={{ opacity: 1 }}

@@ -37,6 +37,11 @@ interface ComplianceIssue {
   details: string
   suggestion: string
   learnMoreUrl?: string
+  confidence?: number | null
+  ruleReferences?: {
+    ruleId?: string
+    citations?: { title?: string; url?: string; citation?: string }[]
+  }[]
   dismissed?: boolean
 }
 

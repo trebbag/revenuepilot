@@ -35,6 +35,11 @@ interface ComplianceIssue {
   details: string
   suggestion: string
   learnMoreUrl?: string
+  confidence?: number | null
+  ruleReferences?: {
+    ruleId?: string
+    citations?: { title?: string; url?: string; citation?: string }[]
+  }[]
   dismissed?: boolean
 }
 
@@ -101,6 +106,29 @@ interface InitialNoteData {
   patientId?: string
   encounterId?: string
   patientName?: string
+}
+
+const normalizeCodeValueForCompliance = (value: unknown): string | null => {
+  if (value && typeof value === "object" && "code" in (value as Record<string, unknown>)) {
+    return normalizeCodeValueForCompliance((value as { code?: unknown }).code)
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value)
+  }
+  return null
+}
+
+const createComplianceSignature = (content: string, codes: string[]): string => {
+  const normalizedContent = typeof content === "string" ? content : ""
+  const sortedCodes = [...codes]
+    .filter(code => typeof code === "string" && code.trim().length > 0)
+    .map(code => code.trim())
+    .sort()
+  return JSON.stringify({ content: normalizedContent, codes: sortedCodes })
 }
 
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
@@ -325,6 +353,17 @@ export function NoteEditor({
     [ehrExportState, onEhrExportStateChange]
   )
 
+  const complianceCodeValues = useMemo(() => {
+    const unique = new Set<string>()
+    ;(selectedCodesList ?? []).forEach(item => {
+      const normalized = normalizeCodeValueForCompliance(item)
+      if (normalized) {
+        unique.add(normalized)
+      }
+    })
+    return Array.from(unique).sort()
+  }, [selectedCodesList])
+
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const encounterValidationAbortRef = useRef<AbortController | null>(null)
@@ -332,7 +371,9 @@ export function NoteEditor({
   const patientDetailsAbortRef = useRef<AbortController | null>(null)
   const complianceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAbortRef = useRef<AbortController | null>(null)
-  const lastComplianceContentRef = useRef<string>(initialNoteData?.content ?? "")
+  const lastComplianceInputRef = useRef<string>(
+    createComplianceSignature(initialNoteData?.content ?? "", complianceCodeValues)
+  )
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const autoSaveLastContentRef = useRef<string>(initialNoteData?.content ?? "")
@@ -364,17 +405,18 @@ export function NoteEditor({
       .map((item, index) => {
         if (item && typeof item === "object") {
           const rawId = typeof item.id === "string" && item.id.trim().length > 0 ? item.id : undefined
+          const descriptionSource =
+            typeof item.description === "string" && item.description.trim().length > 0
+              ? item.description.trim()
+              : typeof item.text === "string" && item.text.trim().length > 0
+                ? item.text.trim()
+                : undefined
           const titleCandidate =
             typeof item.title === "string" && item.title.trim().length > 0
               ? item.title.trim()
-              : typeof item.description === "string" && item.description.trim().length > 0
-                ? item.description.trim()
-                : undefined
+              : descriptionSource
           const title = titleCandidate ?? `Compliance issue ${index + 1}`
-          const description =
-            typeof item.description === "string" && item.description.trim().length > 0
-              ? item.description.trim()
-              : title
+          const description = descriptionSource ?? title
           const category =
             item.category === "documentation" ||
             item.category === "coding" ||
@@ -382,30 +424,93 @@ export function NoteEditor({
             item.category === "quality"
               ? item.category
               : "documentation"
+          const priority =
+            typeof item.priority === "string" && item.priority.trim().length > 0
+              ? item.priority.trim().toLowerCase()
+              : ""
           const severity =
             item.severity === "critical" ||
             item.severity === "warning" ||
             item.severity === "info"
               ? item.severity
-              : severityFromText(`${title} ${description}`)
+              : priority.includes("high") || priority.includes("critical")
+                ? "critical"
+                : priority.includes("medium") || priority.includes("warn")
+                  ? "warning"
+                  : priority.includes("low")
+                    ? "info"
+                    : severityFromText(`${title} ${description}`)
+          const normalizedReferences = Array.isArray(item.ruleReferences)
+            ? item.ruleReferences
+                .map((reference: any) => {
+                  const ruleId =
+                    typeof reference?.ruleId === "string" && reference.ruleId.trim().length > 0
+                      ? reference.ruleId.trim()
+                      : undefined
+                  const citations = Array.isArray(reference?.citations)
+                    ? reference.citations
+                        .map((citation: any) => {
+                          const citationTitle =
+                            typeof citation?.title === "string" && citation.title.trim().length > 0
+                              ? citation.title.trim()
+                              : undefined
+                          const citationUrl =
+                            typeof citation?.url === "string" && citation.url.trim().length > 0
+                              ? citation.url.trim()
+                              : undefined
+                          const citationText =
+                            typeof citation?.citation === "string" && citation.citation.trim().length > 0
+                              ? citation.citation.trim()
+                              : undefined
+                          if (!citationTitle && !citationUrl && !citationText) {
+                            return null
+                          }
+                          return { title: citationTitle, url: citationUrl, citation: citationText }
+                        })
+                        .filter((entry): entry is { title?: string; url?: string; citation?: string } => Boolean(entry))
+                    : []
+                  if (!ruleId && citations.length === 0) {
+                    return null
+                  }
+                  return { ruleId, citations }
+                })
+                .filter((entry): entry is { ruleId?: string; citations?: { title?: string; url?: string; citation?: string }[] } =>
+                  Boolean(entry)
+                )
+            : []
+          const primaryCitation = normalizedReferences
+            .flatMap(ref => ref.citations ?? [])
+            .find(citation => typeof citation?.url === "string" && citation.url.length > 0)
+          const reasoning =
+            typeof item.reasoning === "string" && item.reasoning.trim().length > 0
+              ? item.reasoning.trim()
+              : undefined
+          const detailsText =
+            typeof item.details === "string" && item.details.trim().length > 0
+              ? item.details.trim()
+              : reasoning ?? description
+          const suggestionText =
+            typeof item.suggestion === "string" && item.suggestion.trim().length > 0
+              ? item.suggestion.trim()
+              : reasoning ?? "Review the note content and update documentation to resolve this issue."
+          const confidenceValue =
+            typeof item.confidence === "number"
+              ? Math.round(Math.min(Math.max(item.confidence, 0), 1) * 100)
+              : undefined
           return {
             id: rawId ?? `issue-${slugify(title)}-${index}`,
             severity,
             title,
             description,
             category,
-            details:
-              typeof item.details === "string" && item.details.trim().length > 0
-                ? item.details.trim()
-                : description,
-            suggestion:
-              typeof item.suggestion === "string" && item.suggestion.trim().length > 0
-                ? item.suggestion.trim()
-                : "Review the note content and update documentation to resolve this issue.",
+            details: detailsText,
+            suggestion: suggestionText,
             learnMoreUrl:
               typeof item.learnMoreUrl === "string" && item.learnMoreUrl.trim().length > 0
                 ? item.learnMoreUrl.trim()
-                : undefined,
+                : primaryCitation?.url,
+            confidence: confidenceValue,
+            ruleReferences: normalizedReferences.length > 0 ? normalizedReferences : undefined,
             dismissed: Boolean(item.dismissed)
           } satisfies ComplianceIssue
         }
@@ -642,8 +747,11 @@ export function NoteEditor({
     setNoteContent(incomingContent)
     noteContentRef.current = incomingContent
     autoSaveLastContentRef.current = incomingContent
-    lastComplianceContentRef.current = incomingContent
-  }, [initialNoteData, initialRecordedSeconds, stopAudioStream])
+    lastComplianceInputRef.current = createComplianceSignature(incomingContent, complianceCodeValues)
+    if (onNoteContentChange) {
+      onNoteContentChange(incomingContent)
+    }
+  }, [initialNoteData, initialRecordedSeconds, stopAudioStream, complianceCodeValues, onNoteContentChange])
 
   const startAudioStream = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -1112,7 +1220,18 @@ export function NoteEditor({
         if (!Number.isFinite(numericId)) {
           throw new Error("Encounter ID must be numeric")
         }
-        const response = await fetchWithAuth(`/api/encounters/validate/${numericId}`, {
+        const payload: Record<string, unknown> = {
+          encounterId: numericId,
+          encounter_id: numericId
+        }
+        const trimmedPatientId = patientId.trim()
+        if (trimmedPatientId) {
+          payload.patientId = trimmedPatientId
+          payload.patient_id = trimmedPatientId
+        }
+        const response = await fetchWithAuth('/api/encounters/validate', {
+          method: 'POST',
+          jsonBody: payload,
           signal: controller.signal
         })
         if (!response.ok) {
@@ -1180,14 +1299,15 @@ export function NoteEditor({
     }
 
     if (!noteContent || noteContent.trim().length === 0) {
-      lastComplianceContentRef.current = ""
+      lastComplianceInputRef.current = createComplianceSignature("", [])
       setComplianceIssues([])
       setComplianceError(null)
       return
     }
 
     complianceTimeoutRef.current = window.setTimeout(async () => {
-      if (noteContentRef.current === lastComplianceContentRef.current) return
+      const signature = createComplianceSignature(noteContentRef.current ?? "", complianceCodeValues)
+      if (signature === lastComplianceInputRef.current) return
       const controller = new AbortController()
       complianceAbortRef.current?.abort()
       complianceAbortRef.current = controller
@@ -1195,14 +1315,12 @@ export function NoteEditor({
       setComplianceError(null)
       try {
         const payload: Record<string, unknown> = {
-          text: noteContentRef.current,
-          specialty: specialty ?? undefined,
-          payer: payer ?? undefined
+          content: typeof noteContentRef.current === "string" ? noteContentRef.current : ""
         }
-        if (noteId) {
-          payload.note_id = noteId
+        if (complianceCodeValues.length > 0) {
+          payload.codes = complianceCodeValues
         }
-        const response = await fetchWithAuth("/api/compliance/analyze", {
+        const response = await fetchWithAuth("/api/ai/compliance/check", {
           method: "POST",
           jsonBody: payload,
           signal: controller.signal
@@ -1212,16 +1330,24 @@ export function NoteEditor({
         }
         const data = await response.json()
         const normalized = convertComplianceResponse(
-          Array.isArray(data?.compliance) ? data.compliance : data?.issues ?? data?.results ?? data
+          Array.isArray(data?.alerts)
+            ? data.alerts
+            : Array.isArray(data?.compliance)
+              ? data.compliance
+              : Array.isArray(data?.issues)
+                ? data.issues
+                : Array.isArray(data?.results)
+                  ? data.results
+                  : data
         )
-        setComplianceIssues((prev) => {
-          const dismissed = new Map(prev.map((issue) => [issue.id, issue.dismissed]))
-          return normalized.map((issue) => ({
+        setComplianceIssues(prev => {
+          const dismissed = new Map(prev.map(issue => [issue.id, issue.dismissed]))
+          return normalized.map(issue => ({
             ...issue,
             dismissed: dismissed.get(issue.id) ?? issue.dismissed ?? false
           }))
         })
-        lastComplianceContentRef.current = noteContentRef.current
+        lastComplianceInputRef.current = signature
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
         setComplianceError(
@@ -1238,7 +1364,7 @@ export function NoteEditor({
       }
       complianceAbortRef.current?.abort()
     }
-  }, [noteContent, specialty, payer, noteId, fetchWithAuth, convertComplianceResponse])
+  }, [noteContent, complianceCodeValues, fetchWithAuth, convertComplianceResponse])
 
   useEffect(() => {
     if (autoSaveIntervalRef.current) {
@@ -1416,7 +1542,7 @@ export function NoteEditor({
           onNoteContentChange(finalizedContent)
         }
         autoSaveLastContentRef.current = finalizedContent
-        lastComplianceContentRef.current = finalizedContent
+        lastComplianceInputRef.current = createComplianceSignature(finalizedContent, complianceCodeValues)
       }
 
       applyWizardIssues(result.issues)
@@ -1430,6 +1556,7 @@ export function NoteEditor({
     [
       applyWizardIssues,
       currentSessionTime,
+      complianceCodeValues,
       onNoteContentChange,
       stopAudioStream
     ]
