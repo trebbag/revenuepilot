@@ -49,43 +49,7 @@ USER_ENV_VARS = {
 }
 
 
-SCHEMA_FUNCTIONS: Iterable = (
-    migrations.ensure_clinics_table,
-    migrations.ensure_users_table,
-    migrations.ensure_settings_table,
-    migrations.ensure_templates_table,
-    migrations.ensure_events_table,
-    migrations.ensure_refresh_table,
-    migrations.ensure_session_table,
-    migrations.ensure_password_reset_tokens_table,
-    migrations.ensure_mfa_challenges_table,
-    migrations.ensure_session_state_table,
-    migrations.ensure_shared_workflow_sessions_table,
-    migrations.ensure_user_profile_table,
-    migrations.ensure_error_log_table,
-    migrations.ensure_exports_table,
-    migrations.ensure_patients_table,
-    migrations.ensure_encounters_table,
-    migrations.ensure_visit_sessions_table,
-    migrations.ensure_note_auto_saves_table,
-    migrations.ensure_note_versions_table,
-    migrations.ensure_notifications_table,
-    migrations.ensure_notification_events_table,
-    migrations.ensure_notification_counters_table,
-    migrations.ensure_compliance_issues_table,
-    migrations.ensure_compliance_issue_history_table,
-    migrations.ensure_compliance_rules_table,
-    migrations.ensure_compliance_rule_catalog_table,
-    migrations.ensure_confidence_scores_table,
-    migrations.ensure_cpt_codes_table,
-    migrations.ensure_icd10_codes_table,
-    migrations.ensure_hcpcs_codes_table,
-    migrations.ensure_cpt_reference_table,
-    migrations.ensure_payer_schedule_table,
-    migrations.ensure_billing_audits_table,
-    migrations.ensure_audit_log_table,
-    migrations.ensure_notes_table,
-)
+SCHEMA_FUNCTIONS: Iterable = (migrations.create_all_tables,)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -96,20 +60,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
     compliance_rules = compliance.get_rules()
-    migrations.seed_compliance_rules(conn, compliance_rules, overwrite=overwrite)
-
-    migrations.seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items(), overwrite=overwrite)
-    migrations.seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items(), overwrite=overwrite)
-    migrations.seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items(), overwrite=overwrite)
-
     metadata = load_code_metadata()
     cpt_metadata: Dict[str, Dict[str, object]] = {}
     for code, info in metadata.items():
         code_type = str(info.get("type") or "").upper()
         if code_type == "CPT":
             cpt_metadata[code] = info
-
-    migrations.seed_cpt_reference(conn, cpt_metadata.items(), overwrite=overwrite)
 
     schedules: List[Dict[str, object]] = []
     for code, info in cpt_metadata.items():
@@ -125,7 +81,7 @@ def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
                 "payer_type": "commercial",
                 "location": "",
                 "code": code,
-                "reimbursement": round(base_amount, 2),
+                "reimbursement": base_amount,
                 "rvu": info.get("rvu"),
             }
         )
@@ -139,10 +95,14 @@ def seed_reference_data(conn: sqlite3.Connection, overwrite: bool) -> None:
             }
         )
 
-    if schedules:
-        migrations.seed_payer_schedules(conn, schedules, overwrite=overwrite)
-
-    conn.commit()
+    with migrations.session_scope(conn) as session:
+        migrations.seed_compliance_rules(session, compliance_rules, overwrite=overwrite)
+        migrations.seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items(), overwrite=overwrite)
+        migrations.seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items(), overwrite=overwrite)
+        migrations.seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items(), overwrite=overwrite)
+        migrations.seed_cpt_reference(session, cpt_metadata.items(), overwrite=overwrite)
+        if schedules:
+            migrations.seed_payer_schedules(session, schedules, overwrite=overwrite)
 
 
 def _resolve_user_spec(role: str, args: argparse.Namespace) -> Dict[str, str]:
