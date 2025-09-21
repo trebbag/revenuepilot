@@ -772,6 +772,7 @@ function App() {
                       onTranscriptChange={handleTranscriptChange}
                       specialty={settingsState.specialty}
                       payer={settingsState.payer}
+                      settingsState={settingsState}
                       patientId={patientID}
                       onPatientIdChange={(v) => setPatientID(v)}
                       onSpecialtyChange={(v) => {
