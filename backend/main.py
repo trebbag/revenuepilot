@@ -22,6 +22,7 @@ import threading
 import uuid
 import secrets
 import math
+from contextvars import ContextVar
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
@@ -57,6 +58,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    REGISTRY,
+    generate_latest,
+)
 from pydantic import (
     BaseModel,
     Field,
@@ -82,6 +90,8 @@ except Exception:  # fallback to platformdirs if available
 
 
 import jwt
+import structlog
+from structlog.contextvars import bind_contextvars, unbind_contextvars
 
 try:  # Load environment variables from a .env file if present
     from dotenv import load_dotenv
@@ -222,13 +232,169 @@ def deidentify(text: str) -> str:  # pragma: no cover - thin wrapper
         },
     )
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), format="%(message)s")
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer(),
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
 )
 
-# Logger before app so lifespan can reference it
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
+
+
+_TRACE_ID_CTX: ContextVar[str | None] = ContextVar("trace_id", default=None)
+
+def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames):
+    existing = REGISTRY._names_to_collectors.get(name)
+    if existing is not None:
+        return existing
+    return metric_cls(name, documentation, labelnames=labelnames)
+
+
+REQUEST_COUNTER = _get_or_create_metric(
+    Counter,
+    "revenuepilot_requests_total",
+    "Total HTTP requests processed by the backend",
+    ("method", "endpoint", "status"),
+)
+REQUEST_LATENCY = _get_or_create_metric(
+    Histogram,
+    "revenuepilot_request_latency_seconds",
+    "Latency of HTTP requests",
+    ("method", "endpoint"),
+)
+WORKFLOW_COMPLETIONS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_workflow_completions_total",
+    "Completed workflow dispatch operations",
+    ("destination",),
+)
+EXPORT_FAILURES = _get_or_create_metric(
+    Counter,
+    "revenuepilot_export_failures_total",
+    "EHR export attempts that resulted in an error",
+    ("ehr_system",),
+)
+AI_ROUTE_ERRORS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_route_errors_total",
+    "Number of AI route invocations that failed",
+    ("route",),
+)
+
+_ALERT_SUMMARY: Dict[str, Any] = {
+    "workflow": {"total": 0, "byDestination": {}, "lastCompletion": None},
+    "exports": {"failures": 0, "bySystem": {}, "lastFailure": None},
+    "ai": {"errors": 0, "byRoute": {}, "lastError": None},
+    "updatedAt": None,
+}
+_ALERT_LOCK = threading.Lock()
+
+
+def current_trace_id() -> str | None:
+    """Return the trace identifier bound to the current request context."""
+
+    return _TRACE_ID_CTX.get()
+
+
+def _snapshot_alert_summary() -> Dict[str, Any]:
+    with _ALERT_LOCK:
+        return copy.deepcopy(_ALERT_SUMMARY)
+
+
+def reset_alert_summary_for_tests() -> None:
+    """Reset alert tracking structures. Only used by automated tests."""
+
+    with _ALERT_LOCK:
+        _ALERT_SUMMARY["workflow"] = {"total": 0, "byDestination": {}, "lastCompletion": None}
+        _ALERT_SUMMARY["exports"] = {"failures": 0, "bySystem": {}, "lastFailure": None}
+        _ALERT_SUMMARY["ai"] = {"errors": 0, "byRoute": {}, "lastError": None}
+        _ALERT_SUMMARY["updatedAt"] = None
+
+
+def _record_workflow_completion(
+    destination: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    trace_id: str | None = None,
+) -> None:
+    WORKFLOW_COMPLETIONS.labels(destination=destination or "unknown").inc()
+    now = datetime.now(timezone.utc).isoformat()
+    with _ALERT_LOCK:
+        workflow = _ALERT_SUMMARY["workflow"]
+        by_dest = workflow.setdefault("byDestination", {})
+        key = destination or "unknown"
+        workflow["total"] = workflow.get("total", 0) + 1
+        by_dest[key] = by_dest.get(key, 0) + 1
+        workflow["lastCompletion"] = {
+            "destination": key,
+            "metadata": metadata or {},
+            "traceId": trace_id,
+            "timestamp": now,
+        }
+        _ALERT_SUMMARY["updatedAt"] = now
+
+
+def _record_export_failure(
+    ehr_system: str | None,
+    detail: Any,
+    trace_id: str | None = None,
+) -> None:
+    system = ehr_system or "unknown"
+    EXPORT_FAILURES.labels(ehr_system=system).inc()
+    now = datetime.now(timezone.utc).isoformat()
+    with _ALERT_LOCK:
+        exports = _ALERT_SUMMARY["exports"]
+        by_system = exports.setdefault("bySystem", {})
+        exports["failures"] = exports.get("failures", 0) + 1
+        by_system[system] = by_system.get(system, 0) + 1
+        exports["lastFailure"] = {
+            "ehrSystem": system,
+            "detail": str(detail),
+            "traceId": trace_id,
+            "timestamp": now,
+        }
+        _ALERT_SUMMARY["updatedAt"] = now
+
+
+def _record_ai_error(route: str, detail: Any, trace_id: str | None = None) -> None:
+    AI_ROUTE_ERRORS.labels(route=route).inc()
+    now = datetime.now(timezone.utc).isoformat()
+    with _ALERT_LOCK:
+        ai_state = _ALERT_SUMMARY["ai"]
+        by_route = ai_state.setdefault("byRoute", {})
+        ai_state["errors"] = ai_state.get("errors", 0) + 1
+        by_route[route] = by_route.get(route, 0) + 1
+        ai_state["lastError"] = {
+            "route": route,
+            "detail": str(detail),
+            "traceId": trace_id,
+            "timestamp": now,
+        }
+        _ALERT_SUMMARY["updatedAt"] = now
+
+
+_PATH_PARAM_RE = re.compile(r"/(?:[0-9]+|[0-9a-fA-F]{8,})")
+
+
+def _normalise_path_for_metrics(path: str) -> str:
+    """Reduce high-cardinality segments in request paths for metrics labels."""
+
+    if not path:
+        return "/"
+    return _PATH_PARAM_RE.sub("/:param", path)
 
 
 CATEGORIZATION_RULES_FILENAME = "code_categorization_rules.json"
@@ -271,7 +437,7 @@ def load_code_categorization_rules(force_refresh: bool = False) -> Dict[str, Any
 
     if not path.exists():
         logger.warning(
-            "Code categorization rules file not found at %s; using defaults.", path
+            "categorization_rules_missing", path=str(path)
         )
         data = copy.deepcopy(DEFAULT_CATEGORIZATION_RULES)
     else:
@@ -280,7 +446,9 @@ def load_code_categorization_rules(force_refresh: bool = False) -> Dict[str, Any
                 payload = json.load(fp)
         except (OSError, json.JSONDecodeError) as exc:
             logger.error(
-                "Failed to load code categorization rules from %s: %s", path, exc
+                "categorization_rules_load_failed",
+                path=str(path),
+                error=str(exc),
             )
             data = copy.deepcopy(DEFAULT_CATEGORIZATION_RULES)
         else:
@@ -426,7 +594,7 @@ _SHUTTING_DOWN = False  # exported for potential test assertions
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in integration
-    logger.info("Lifespan startup begin")
+    logger.info("lifespan_startup")
     # Lightweight startup tasks could go here (e.g. warm caches)
     worker.start_scheduler()
     start_ts = time.time()
@@ -441,10 +609,56 @@ async def lifespan(app: FastAPI):  # pragma: no cover - exercised indirectly in 
         except Exception:  # pragma: no cover - defensive
             pass
         shutdown_duration = time.time() - start_ts
-        logger.info("Lifespan shutdown complete (uptime=%.2fs)", shutdown_duration)
+        logger.info("lifespan_shutdown_complete", uptime=shutdown_duration)
 
 # Instantiate app with lifespan for graceful shutdown
 app = FastAPI(title="RevenuePilot API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def inject_trace_id(request: Request, call_next):
+    """Attach or propagate a trace identifier for each request."""
+
+    trace_id = request.headers.get("x-trace-id") or uuid.uuid4().hex
+    token = _TRACE_ID_CTX.set(trace_id)
+    bind_contextvars(trace_id=trace_id, path=request.url.path, method=request.method)
+    request.state.trace_id = trace_id
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    except Exception:
+        logger.exception("request_failed", path=request.url.path, method=request.method)
+        raise
+    finally:
+        if response is not None:
+            response.headers["X-Trace-Id"] = trace_id
+        try:
+            unbind_contextvars("trace_id", "path", "method")
+        except LookupError:  # pragma: no cover - defensive cleanup
+            pass
+        _TRACE_ID_CTX.reset(token)
+
+
+@app.middleware("http")
+async def track_http_metrics(request: Request, call_next):
+    """Emit Prometheus counters and histograms for each request."""
+
+    start = time.perf_counter()
+    path = request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration = time.perf_counter() - start
+        normalised = _normalise_path_for_metrics(path)
+        REQUEST_COUNTER.labels(request.method, normalised, "500").inc()
+        REQUEST_LATENCY.labels(request.method, normalised).observe(duration)
+        raise
+    duration = time.perf_counter() - start
+    normalised = _normalise_path_for_metrics(path)
+    REQUEST_COUNTER.labels(request.method, normalised, str(response.status_code)).inc()
+    REQUEST_LATENCY.labels(request.method, normalised).observe(duration)
+    return response
 
 
 @app.middleware("http")
@@ -456,7 +670,7 @@ async def wrap_api_response(request: Request, call_next):
     except HTTPException as exc:  # Allow dedicated handlers to run
         raise exc
     except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Unhandled error: %s", exc)
+        logger.exception("unhandled_error", path=request.url.path, error=str(exc))
         error_payload = _build_error_response(str(exc), status_code=500)
         return JSONResponse(status_code=500, content=error_payload.model_dump())
 
@@ -489,8 +703,7 @@ async def wrap_api_response(request: Request, call_next):
             payload = json.loads(body_bytes.decode(charset)) if body_bytes else None
         except Exception:  # pragma: no cover - non-json payload
             logger.debug(
-                "Failed to decode JSON response for %s; returning original payload",
-                request.url.path,
+                "response_decode_failed", path=request.url.path
             )
             headers = {
                 k: v
@@ -1189,10 +1402,10 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
         )
         db_conn.commit()
         logger.info(
-            "Pruned %s old analytics events (size %.2fMB > %.2fMB)",
-            to_delete,
-            db_size,
-            ANALYTICS_DB_MAX_MB,
+            "analytics_pruned",
+            removed=to_delete,
+            size_mb=db_size,
+            limit_mb=ANALYTICS_DB_MAX_MB,
         )
     except Exception:
         pass
@@ -1208,7 +1421,9 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
             "SELECT COUNT(*) FROM compliance_rule_catalog"
         ).fetchone()[0]
     except sqlite3.Error as exc:  # pragma: no cover - defensive
-        logger.warning("Unable to inspect compliance rules table: %s", exc)
+        logger.warning(
+            "compliance_rules_table_inspect_failed", error=str(exc)
+        )
         return
 
     try:
@@ -1271,7 +1486,7 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
 
         conn.commit()
     except Exception as exc:  # pragma: no cover - best effort
-        logger.warning("Failed to seed reference data: %s", exc)
+        logger.warning("reference_data_seed_failed", error=str(exc))
 
 
 def get_db() -> sqlite3.Connection:
@@ -1634,7 +1849,7 @@ def _insert_audit_log(
         db_conn.commit()
     except sqlite3.OperationalError as exc:
         if "no such table: audit_log" not in str(exc):
-            logger.exception("Failed to write audit log entry")
+            logger.exception("audit_log_write_failed", error=str(exc))
             return
         ensure_audit_log_table(db_conn)
         try:
@@ -1667,9 +1882,9 @@ def _insert_audit_log(
             )
             db_conn.commit()
         except Exception:
-            logger.exception("Failed to write audit log entry")
-    except Exception:
-        logger.exception("Failed to write audit log entry")
+            logger.exception("audit_log_write_failed")
+    except Exception as exc:
+        logger.exception("audit_log_write_failed", error=str(exc))
 
 
 def _create_auth_session(
@@ -1720,8 +1935,8 @@ def _create_auth_session(
             ),
         )
         db_conn.commit()
-    except sqlite3.Error:
-        logger.exception("Failed to persist auth session")
+    except sqlite3.Error as exc:
+        logger.exception("auth_session_persist_failed", error=str(exc))
     return session_id
 
 
@@ -1765,8 +1980,8 @@ def _touch_auth_session(
                     ),
                 )
                 db_conn.commit()
-            except sqlite3.Error:
-                logger.exception("Failed to update auth session")
+            except sqlite3.Error as exc:
+                logger.exception("auth_session_update_failed", error=str(exc))
             return row["id"]
     return None
 
@@ -1786,8 +2001,8 @@ def _remove_auth_session(user_id: int, refresh_token: str) -> bool:
                 db_conn.execute("DELETE FROM sessions WHERE id=?", (row["id"],))
                 db_conn.commit()
                 return True
-            except sqlite3.Error:
-                logger.exception("Failed to remove auth session")
+            except sqlite3.Error as exc:
+                logger.exception("auth_session_remove_failed", error=str(exc))
                 return False
     return False
 
@@ -1831,7 +2046,7 @@ def _log_confidence_scores(
     try:
         row = db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
     except sqlite3.Error as exc:  # pragma: no cover - defensive logging
-        logger.warning("Unable to record confidence scores: %s", exc)
+        logger.warning("confidence_score_lookup_failed", error=str(exc))
         return
     if not row:
         return
@@ -1851,7 +2066,7 @@ def _log_confidence_scores(
         )
         db_conn.commit()
     except sqlite3.Error as exc:  # pragma: no cover - defensive logging
-        logger.warning("Failed to persist confidence scores: %s", exc)
+        logger.warning("confidence_score_persist_failed", error=str(exc))
 
 
 def _normalise_severity(value: str | None) -> str:
@@ -1982,7 +2197,7 @@ def _log_compliance_history_entry(
             ),
         )
     except sqlite3.Error as exc:  # pragma: no cover - best effort logging
-        logging.warning("Failed to append compliance history: %s", exc)
+        logger.warning("compliance_history_append_failed", error=str(exc))
 
 
 def _persist_compliance_issue(
@@ -2102,7 +2317,7 @@ def _persist_billing_audit(
     try:
         ensure_billing_audits_table(db_conn)
     except sqlite3.Error as exc:  # pragma: no cover - defensive
-        logging.warning("Failed to ensure billing audits table: %s", exc)
+        logger.warning("billing_audit_table_ensure_failed", error=str(exc))
     now = time.time()
     payer_clean = _clean_optional_text(payer)
     user_clean = _clean_optional_text(user_id)
@@ -2180,7 +2395,7 @@ def _persist_billing_audit(
                 ),
             )
         except sqlite3.Error as exc:  # pragma: no cover - best effort logging
-            logging.warning("Failed to persist billing audit entry: %s", exc)
+            logger.warning("billing_audit_persist_failed", error=str(exc))
     try:
         db_conn.commit()
     except sqlite3.Error:
@@ -2241,8 +2456,8 @@ def _load_system_status() -> Dict[str, Any]:
         data = load_json_config("system_status")
         if isinstance(data, dict):
             payload.update({k: data.get(k, payload[k]) for k in payload})
-    except Exception:
-        logger.exception("Failed to load system status configuration")
+    except Exception as exc:
+        logger.exception("system_status_load_failed", error=str(exc))
     return payload
 
 
@@ -2450,8 +2665,8 @@ def _persist_session_record(
             ),
         )
         db_conn.commit()
-    except sqlite3.Error:
-        logger.exception("Failed to persist session metadata")
+    except sqlite3.Error as exc:
+        logger.exception("session_metadata_persist_failed", error=str(exc))
 
     return metadata
 
@@ -2547,8 +2762,8 @@ def _persist_refresh_token(user_id: int, refresh_token: str, days: int) -> None:
             ),
         )
         db_conn.commit()
-    except sqlite3.Error:
-        logger.exception("Failed to persist refresh token")
+    except sqlite3.Error as exc:
+        logger.exception("refresh_token_persist_failed", error=str(exc))
 
 
 def _load_user_preferences(user_id: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -2684,8 +2899,8 @@ def _create_mfa_challenge(
             ),
         )
         db_conn.commit()
-    except sqlite3.Error:
-        logger.exception("Failed to create MFA challenge")
+    except sqlite3.Error as exc:
+        logger.exception("mfa_challenge_create_failed", error=str(exc))
     return session_token, code, method
 
 
@@ -2704,8 +2919,8 @@ def _delete_mfa_challenge(session_token: str) -> None:
             (session_token,),
         )
         db_conn.commit()
-    except sqlite3.Error:
-        logger.exception("Failed to delete MFA challenge")
+    except sqlite3.Error as exc:
+        logger.exception("mfa_challenge_delete_failed", error=str(exc))
 
 
 def _validate_password_strength(password: str) -> None:
@@ -3097,10 +3312,10 @@ def _load_theme_catalog(path: Path = THEME_METADATA_PATH) -> List[ThemeMetadataM
         with path.open("r", encoding="utf-8") as f:
             raw_data = json.load(f)
     except FileNotFoundError:
-        logger.warning("Theme metadata file not found at %s; using defaults", path)
+        logger.warning("theme_metadata_missing", path=str(path))
         raw_data = _THEME_METADATA_FALLBACK
     except Exception:
-        logger.exception("Failed to load theme metadata; using defaults")
+        logger.exception("theme_metadata_load_failed", path=str(path))
         raw_data = _THEME_METADATA_FALLBACK
 
     if isinstance(raw_data, dict):
@@ -3113,7 +3328,7 @@ def _load_theme_catalog(path: Path = THEME_METADATA_PATH) -> List[ThemeMetadataM
         try:
             catalog.append(ThemeMetadataModel.model_validate(entry))
         except Exception:
-            logger.warning("Skipping invalid theme metadata entry: %s", entry)
+            logger.warning("theme_metadata_invalid_entry", entry=entry)
 
     if not catalog:
         catalog = [ThemeMetadataModel.model_validate(item) for item in _THEME_METADATA_FALLBACK]
@@ -4402,9 +4617,11 @@ async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str
             loaded = json.loads(row["layout_prefs"])
             if isinstance(loaded, dict):
                 data = loaded
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Failed to deserialize layout preferences for user %s", user.get("sub")
+        except Exception as exc:
+            logger.warning(
+                "layout_preferences_deserialize_failed",
+                user=user.get("sub"),
+                error=str(exc),
             )
     response_payload: Dict[str, Any] = {"success": True, "data": data}
     if isinstance(data, dict):
@@ -4452,9 +4669,11 @@ async def put_layout_preferences(
             loaded = json.loads(stored["layout_prefs"])
             if isinstance(loaded, dict):
                 data_payload = loaded
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Failed to deserialize layout preferences for user %s", uid
+        except Exception as exc:
+            logger.warning(
+                "layout_preferences_deserialize_failed",
+                user=uid,
+                error=str(exc),
             )
     if not data_payload and isinstance(prefs, dict):
         data_payload = {key: value for key, value in prefs.items() if key not in {"success", "data"}}
@@ -4807,14 +5026,17 @@ def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
     sessions_raw = normalized.get("finalizationSessions")
     sessions: Dict[str, Any] = {}
     if isinstance(sessions_raw, dict):
-        logger = logging.getLogger(__name__)
         for key, value in sessions_raw.items():
             session_key = str(key)
             if isinstance(value, dict):
                 try:
                     sessions[session_key] = _normalize_finalization_session(value)
-                except Exception:  # pragma: no cover - defensive logging
-                    logger.exception("Failed to normalize stored finalization session %s", session_key)
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.exception(
+                        "finalization_session_normalize_failed",
+                        session=session_key,
+                        error=str(exc),
+                    )
             else:
                 sessions[session_key] = value
     normalized["finalizationSessions"] = sessions
@@ -5713,9 +5935,11 @@ def _store_shared_workflow_session(session: Dict[str, Any]) -> None:
             (session_id, owner, json.dumps(session), time.time()),
         )
         db_conn.commit()
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Failed to persist shared workflow session %s", session_id
+    except Exception as exc:
+        logger.exception(
+            "shared_workflow_session_persist_failed",
+            session=session_id,
+            error=str(exc),
         )
 
 
@@ -5730,9 +5954,11 @@ def _fetch_shared_workflow_session(session_id: str) -> Optional[Dict[str, Any]]:
         return None
     try:
         return json.loads(row["data"])
-    except Exception:
-        logging.getLogger(__name__).warning(
-            "Unable to deserialize shared workflow session %s", session_id
+    except Exception as exc:
+        logger.warning(
+            "shared_workflow_session_deserialize_failed",
+            session=session_id,
+            error=str(exc),
         )
         return None
 
@@ -5764,9 +5990,11 @@ def _delete_shared_workflow_session(session_id: str) -> None:
             (session_id,),
         )
         db_conn.commit()
-    except Exception:
-        logging.getLogger(__name__).exception(
-            "Failed to delete shared workflow session %s", session_id
+    except Exception as exc:
+        logger.exception(
+            "shared_workflow_session_delete_failed",
+            session=session_id,
+            error=str(exc),
         )
 
 
@@ -6775,7 +7003,7 @@ def _validate_code(value: str) -> str:
         return canonical
     if canonical:
         # Preserve non-empty custom codes rather than failing the entire payload.
-        logger.debug("Accepting non-standard code %s without strict validation", value)
+        logger.debug("code_validation_non_standard", value=value)
         return value
     raise ValueError("invalid code format")
 
@@ -7684,7 +7912,7 @@ async def get_events(user=Depends(require_role("admin"))) -> List[Dict[str, Any]
             )
         return result
     except Exception as exc:
-        logging.error("Error fetching events: %s", exc)
+        logger.error("events_fetch_failed", error=str(exc))
         # Return empty list on error
         return []
 
@@ -7793,7 +8021,7 @@ async def log_event(
         db_conn.execute(insert_sql, params)
         db_conn.commit()
     except Exception as exc:
-        logging.error("Error inserting event into database: %s", exc)
+        logger.error("events_persist_failed", error=str(exc))
     return {"status": "logged"}
 
 
@@ -7838,7 +8066,7 @@ async def submit_survey(
         )
         db_conn.commit()
     except Exception as exc:
-        logging.error("Error inserting survey into database: %s", exc)
+        logger.error("survey_persist_failed", error=str(exc))
     return {"status": "recorded"}
 
 
@@ -7985,7 +8213,7 @@ def create_note(
         _save_note_version(note_id, req.content or "", user_id, created_at=now)
         db_conn.commit()
     except sqlite3.Error as exc:  # pragma: no cover - safety net
-        logger.exception("Failed to create note")
+        logger.exception("note_create_failed", error=str(exc))
         db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to create note") from exc
 
@@ -8008,7 +8236,9 @@ def auto_save_note(
         version_count = int(row[0] if row else 0)
         db_conn.commit()
     except sqlite3.Error as exc:  # pragma: no cover - safety net
-        logger.exception("Failed to auto-save note %s", req.noteId)
+        logger.exception(
+            "note_autosave_failed", note_id=str(req.noteId), error=str(exc)
+        )
         db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to auto-save note") from exc
     return {"status": "saved", "version": version_count}
@@ -8127,14 +8357,23 @@ async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
             req.procedures,
             req.medications,
         )
-        if result.get("status") not in {"exported", "bundle"}:
-            logger.error("EHR export failed: %s", result)
+        status = result.get("status")
+        if status not in {"exported", "bundle"}:
+            trace_id = current_trace_id()
+            logger.error(
+                "ehr_export_failed", status=status, detail=result
+            )
+            _record_export_failure(req.ehrSystem, result, trace_id)
         return result
     except requests.exceptions.RequestException as exc:  # pragma: no cover - network failures
-        logger.exception("Network error during EHR export")
+        trace_id = current_trace_id()
+        logger.exception("ehr_export_network_error", error=str(exc))
+        _record_export_failure(req.ehrSystem, str(exc), trace_id)
         return {"status": "error", "detail": str(exc)}
     except Exception as exc:  # pragma: no cover - unexpected failures
-        logger.exception("Unexpected error during EHR export")
+        trace_id = current_trace_id()
+        logger.exception("ehr_export_unexpected_error", error=str(exc))
+        _record_export_failure(req.ehrSystem, str(exc), trace_id)
         return {"status": "error", "detail": str(exc)}
 
 
@@ -8221,20 +8460,30 @@ async def get_export_status_generic(
 # notes created/saved, beautification actions and suggestions, as well
 # as the average note length (in characters) if provided in event
 # details.
-@app.get("/metrics")
+@app.get("/metrics", response_model=None)
 async def get_metrics(
+    request: Request,
     start: Optional[str] = None,
     end: Optional[str] = None,
     clinician: Optional[str] = None,
     daily: bool = True,
     weekly: bool = True,
     user=Depends(require_roles("analyst")),
-) -> Dict[str, Any]:
+) -> Response | Dict[str, Any]:
     """Aggregate analytics separately for baseline and current events.
 
     Events with ``baseline=true`` represent pre‑implementation metrics.
     The response contains aggregates for both baseline and current periods
     plus percentage improvement of current over baseline."""
+
+    accept_header = request.headers.get("accept", "")
+    if request.query_params.get("format") == "prometheus" or "text/plain" in accept_header:
+        metrics_payload = Response(
+            content=generate_latest(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+        metrics_payload.headers["X-Bypass-Envelope"] = "1"
+        return metrics_payload
 
     cursor = db_conn.cursor()
 
@@ -8710,6 +8959,13 @@ async def get_metrics(
     }
 
 
+@app.get("/status/alerts")
+async def get_status_alerts(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
+    """Return a snapshot of operational alert metrics for administrators."""
+
+    return _snapshot_alert_summary()
+
+
 def _aggregate_events_for_day(day: date) -> bool:
     """Aggregate metrics for a single UTC day into ``event_aggregates``."""
 
@@ -8745,7 +9001,9 @@ def _aggregate_events_for_day(day: date) -> bool:
         (start_ts, end_ts),
         ).fetchone()
     except sqlite3.OperationalError as exc:  # pragma: no cover - depends on SQLite build
-        logger.warning("Skipping detailed aggregation for %s: %s", day.isoformat(), exc)
+        logger.warning(
+            "daily_aggregation_skipped", day=day.isoformat(), error=str(exc)
+        )
         return False
 
     if row is None:
@@ -8834,10 +9092,10 @@ async def _run_nightly_aggregation() -> None:
 
     aggregated_days = await asyncio.to_thread(_aggregate_pending_days)
     if aggregated_days:
-        logger.info("Aggregated analytics for %s day(s)", aggregated_days)
+        logger.info("analytics_aggregation_completed", days=aggregated_days)
         _insert_audit_log(None, "system_aggregate_events", {"days": aggregated_days})
     else:
-        logger.debug("No analytics aggregation required")
+        logger.debug("analytics_aggregation_idle")
 
 
 worker.register_analytics_aggregator(_run_nightly_aggregation)
@@ -9635,7 +9893,13 @@ async def summarize(
             if "patient_friendly" not in data and "summary" in data:
                 data["patient_friendly"] = data["summary"]
         except Exception as exc:
-            logging.error("Error during summary LLM call: %s", exc)
+            trace_id = current_trace_id()
+            logger.error(
+                "Error during summary LLM call",
+                log_event="ai_summary_failed",
+                error=str(exc),
+            )
+            _record_ai_error("summary", exc, trace_id)
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
@@ -9802,7 +10066,13 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
         return {"beautified": beautified}
     except Exception as exc:
         # Log the exception and fall back to a basic transformation.
-        logging.error("Error during beautify LLM call: %s", exc)
+        trace_id = current_trace_id()
+        logger.error(
+            "Error during beautify LLM call",
+            log_event="ai_beautify_failed",
+            error=str(exc),
+        )
+        _record_ai_error("beautify", exc, trace_id)
         sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
         beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
         return {"beautified": beautified, "error": str(exc)}
@@ -9885,7 +10155,7 @@ async def suggest(
                 req.age, req.sex, req.region, req.agencies
             )
         except Exception as exc:  # pragma: no cover - network errors
-            logging.warning("Public health fetch failed: %s", exc)
+            logger.warning("public_health_fetch_failed", error=str(exc))
             extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
@@ -10018,7 +10288,7 @@ async def suggest(
                 req.age, req.sex, req.region, req.agencies
             )
         except Exception as exc:  # pragma: no cover - network errors
-            logging.warning("Public health fetch failed: %s", exc)
+            logger.warning("public_health_fetch_failed", error=str(exc))
             extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
@@ -10050,7 +10320,9 @@ async def suggest(
         )
     except Exception as exc:
         # Log error and use rule-based fallback suggestions.
-        logging.error("Error during suggest LLM call or parsing JSON: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_suggest_failed", error=str(exc))
+        _record_ai_error("suggest", exc, trace_id)
         codes: List[CodeSuggestion] = []  # fixed invalid generic syntax
         compliance: List[str] = []
         public_health: List[PublicHealthSuggestion] = []
@@ -10189,7 +10461,7 @@ async def suggest(
                 req.age, req.sex, req.region, req.agencies
             )
         except Exception as exc:  # pragma: no cover - network errors
-            logging.warning("Public health fetch failed: %s", exc)
+            logger.warning("public_health_fetch_failed", error=str(exc))
             extra_ph = []
         if extra_ph:
             existing = {p.recommendation for p in public_health}
@@ -11056,6 +11328,11 @@ async def dispatch_workflow_session_v1(
         exportReady=export_ready,
         issues=issues,
     )
+    _record_workflow_completion(
+        destination,
+        metadata={"sessionId": session_id, "exportReady": export_ready},
+        trace_id=current_trace_id(),
+    )
     return DispatchResponse(
         session=WorkflowSessionResponse(**_session_to_response(normalized)),
         result=result,
@@ -11341,7 +11618,9 @@ async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
         suggestions = [CodeSuggestItem(**s) for s in data.get("suggestions", [])]
         return CodesSuggestResponse(suggestions=suggestions)
     except Exception as exc:
-        logging.error("codes suggest failed: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_codes_suggest_failed", error=str(exc))
+        _record_ai_error("codes_suggest", exc, trace_id)
         return CodesSuggestResponse(suggestions=[])
 
 
@@ -11538,7 +11817,9 @@ async def _compliance_check(
         alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
         return _build_compliance_response(alerts, conn)
     except Exception as exc:
-        logging.error("compliance check failed: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_compliance_check_failed", error=str(exc))
+        _record_ai_error("compliance_check", exc, trace_id)
         return ComplianceCheckResponse(alerts=[], ruleReferences=[])
 
 
@@ -11830,7 +12111,9 @@ async def _differentials_generate(
         diffs = [DifferentialItem(**d) for d in data.get("differentials", [])]
         return DifferentialsResponse(differentials=diffs)
     except Exception as exc:
-        logging.error("differentials generate failed: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_differentials_failed", error=str(exc))
+        _record_ai_error("differentials_generate", exc, trace_id)
         return DifferentialsResponse(differentials=[])
 
 
@@ -11888,7 +12171,9 @@ async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionRespon
         recs = [PreventionItem(**r) for r in data.get("recommendations", [])]
         return PreventionResponse(recommendations=recs)
     except Exception as exc:
-        logging.error("prevention suggest failed: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_prevention_failed", error=str(exc))
+        _record_ai_error("prevention_suggest", exc, trace_id)
         return PreventionResponse(recommendations=[])
 
 
@@ -11941,7 +12226,9 @@ async def _realtime_analyze(req: RealtimeAnalyzeRequest) -> RealtimeAnalysisResp
             data["analysisId"] = str(uuid4())
         return RealtimeAnalysisResponse(**data)
     except Exception as exc:
-        logging.error("realtime analysis failed: %s", exc)
+        trace_id = current_trace_id()
+        logger.error("ai_realtime_analysis_failed", error=str(exc))
+        _record_ai_error("realtime_analysis", exc, trace_id)
         return RealtimeAnalysisResponse(
             analysisId=str(uuid4()),
             extractedSymptoms=[],
@@ -12433,7 +12720,7 @@ async def billing_calculate(
             user_id=user.get("sub"),
         )
     except Exception as exc:  # pragma: no cover - best effort audit
-        logging.warning("Failed to persist billing audit: %s", exc)
+        logger.warning("billing_audit_persist_failed", error=str(exc))
     return _success_payload(result)
 
 
@@ -13633,7 +13920,7 @@ async def billing_calculate(
             user_id=user.get("sub"),
         )
     except Exception as exc:  # pragma: no cover - best effort audit
-        logging.warning("Failed to persist billing audit: %s", exc)
+        logger.warning("billing_audit_persist_failed", error=str(exc))
     return _success_payload(result)
 
 
