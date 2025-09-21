@@ -24,6 +24,7 @@ import secrets
 import math
 import sqlalchemy as sa
 from contextvars import ContextVar
+from contextlib import contextmanager
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
@@ -39,6 +40,7 @@ from typing import (
     Iterable,
     Iterator,
     Awaitable,
+    Iterator,
 )
 from fastapi import (
     FastAPI,
@@ -78,6 +80,9 @@ from pydantic import (
     ValidationError,
 
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 import json, sqlite3
 from uuid import uuid4
 from sqlalchemy import create_engine
@@ -1424,6 +1429,47 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
 patients.configure_database(db_conn)
 configure_schedule_database(db_conn)
+
+
+_template_sessionmakers: Dict[int, sessionmaker[Session]] = {}
+
+
+def _get_template_session_factory(conn: sqlite3.Connection) -> sessionmaker[Session]:
+    """Return a session factory bound to the given SQLite connection."""
+
+    key = id(conn)
+    factory = _template_sessionmakers.get(key)
+    if factory is None:
+        engine = create_engine(
+            "sqlite://",
+            creator=lambda conn=conn: conn,
+            poolclass=StaticPool,
+            future=True,
+        )
+        factory = sessionmaker(
+            bind=engine,
+            autoflush=False,
+            expire_on_commit=False,
+            future=True,
+        )
+        _template_sessionmakers[key] = factory
+    return factory
+
+
+@contextmanager
+def _template_session(conn: sqlite3.Connection) -> Iterator[Session]:
+    """Context manager yielding a Session bound to the provided connection."""
+
+    session_factory = _get_template_session_factory(conn)
+    session = session_factory()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 # Keep the compliance ORM bound to the active database connection.
 compliance_engine.configure_engine(db_conn)
@@ -8166,9 +8212,10 @@ def get_templates(
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    return list_user_templates(
-        db_conn, user["sub"], user.get("clinic"), specialty, payer
-    )
+    with _template_session(db_conn) as session:
+        return list_user_templates(
+            session, user["sub"], user.get("clinic"), specialty, payer
+        )
 
 
 @app.post("/templates", response_model=TemplateModel)
@@ -8178,13 +8225,14 @@ def create_template(
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    return create_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        tpl,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        return create_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            tpl,
+            user.get("role") == "admin",
+        )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
@@ -8194,14 +8242,15 @@ def update_template(
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    return update_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        template_id,
-        tpl,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        return update_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            template_id,
+            tpl,
+            user.get("role") == "admin",
+        )
 
 
 @app.delete("/templates/{template_id}")
@@ -8211,13 +8260,14 @@ def delete_template(
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    delete_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        template_id,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        delete_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            template_id,
+            user.get("role") == "admin",
+        )
     return {"status": "deleted"}
 
 

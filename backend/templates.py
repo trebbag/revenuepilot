@@ -1,11 +1,29 @@
-from typing import Optional, List, Any
-import sqlite3
+from typing import Optional, List
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import Column, Integer, String, Text, and_, or_, select
+from sqlalchemy.orm import Session, declarative_base
 
 from backend import prompts as prompt_utils
 from backend.sanitizer import sanitize_text
+
+
+Base = declarative_base()
+
+
+class Template(Base):
+    """SQLAlchemy ORM model mirroring the ``templates`` table."""
+
+    __tablename__ = "templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user = Column(String, nullable=True)
+    clinic = Column(String, nullable=True)
+    specialty = Column(String, nullable=True)
+    payer = Column(String, nullable=True)
+    name = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
 
 
 class TemplateModel(BaseModel):
@@ -102,7 +120,7 @@ DEFAULT_TEMPLATES: List[TemplateModel] = load_builtin_templates()
 
 
 def list_user_templates(
-    conn: sqlite3.Connection,
+    session: Session,
     username: str,
     clinic: str | None,
     specialty: Optional[str] = None,
@@ -110,27 +128,26 @@ def list_user_templates(
 ) -> List[TemplateModel]:
     """Return templates for a user/clinic including built-ins."""
 
-    cursor = conn.cursor()
-    base_query = (
-        "SELECT id, name, content, specialty, payer FROM templates "
-        "WHERE (user=? OR (user IS NULL AND clinic=?))"
+    stmt = select(Template).where(
+        or_(
+            Template.user == username,
+            and_(Template.user.is_(None), Template.clinic == clinic),
+        )
     )
-    params: List[Any] = [username, clinic]
     if specialty:
-        base_query += " AND specialty=?"
-        params.append(specialty)
+        stmt = stmt.where(Template.specialty == specialty)
     if payer:
-        base_query += " AND payer=?"
-        params.append(payer)
-    rows = cursor.execute(base_query, params).fetchall()
+        stmt = stmt.where(Template.payer == payer)
+    stmt = stmt.order_by(Template.id.asc())
+    rows = session.execute(stmt).scalars().all()
 
     templates = [
         TemplateModel(
-            id=row["id"],
-            name=row["name"],
-            content=row["content"],
-            specialty=row["specialty"],
-            payer=row["payer"],
+            id=row.id,
+            name=row.name,
+            content=row.content,
+            specialty=row.specialty,
+            payer=row.payer,
         )
         for row in rows
     ]
@@ -146,7 +163,7 @@ def list_user_templates(
 
 
 def create_user_template(
-    conn: sqlite3.Connection,
+    session: Session,
     username: str,
     clinic: str | None,
     tpl: TemplateModel,
@@ -155,15 +172,19 @@ def create_user_template(
     """Insert a template for a user or clinic."""
 
     owner = None if is_admin else username
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO templates (user, clinic, specialty, payer, name, content) VALUES (?, ?, ?, ?, ?, ?)",
-        (owner, clinic, tpl.specialty, tpl.payer, tpl.name, tpl.content),
+    record = Template(
+        user=owner,
+        clinic=clinic,
+        specialty=tpl.specialty,
+        payer=tpl.payer,
+        name=tpl.name,
+        content=tpl.content,
     )
-    conn.commit()
-    tpl_id = cursor.lastrowid
+    session.add(record)
+    session.commit()
+    session.refresh(record)
     return TemplateModel(
-        id=tpl_id,
+        id=record.id,
         name=tpl.name,
         content=tpl.content,
         specialty=tpl.specialty,
@@ -172,7 +193,7 @@ def create_user_template(
 
 
 def update_user_template(
-    conn: sqlite3.Connection,
+    session: Session,
     username: str,
     clinic: str | None,
     template_id: int,
@@ -181,36 +202,26 @@ def update_user_template(
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    cursor = conn.cursor()
+    stmt = select(Template).where(Template.id == template_id)
     if is_admin:
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? "
-            "WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                username,
-                clinic,
-            ),
+        stmt = stmt.where(
+            or_(
+                Template.user == username,
+                and_(Template.user.is_(None), Template.clinic == clinic),
+            )
         )
     else:
-        cursor.execute(
-            "UPDATE templates SET name=?, content=?, specialty=?, payer=? WHERE id=? AND user=?",
-            (
-                tpl.name,
-                tpl.content,
-                tpl.specialty,
-                tpl.payer,
-                template_id,
-                username,
-            ),
-        )
-    conn.commit()
-    if cursor.rowcount == 0:
+        stmt = stmt.where(Template.user == username)
+
+    record = session.execute(stmt).scalar_one_or_none()
+    if record is None:
         raise HTTPException(status_code=404, detail="Template not found")
+    record.name = tpl.name
+    record.content = tpl.content
+    record.specialty = tpl.specialty
+    record.payer = tpl.payer
+    session.commit()
+    session.refresh(record)
     return TemplateModel(
         id=template_id,
         name=tpl.name,
@@ -221,7 +232,7 @@ def update_user_template(
 
 
 def delete_user_template(
-    conn: sqlite3.Connection,
+    session: Session,
     username: str,
     clinic: str | None,
     template_id: int,
@@ -229,18 +240,20 @@ def delete_user_template(
 ) -> None:
     """Remove a template owned by the user or clinic."""
 
-    cursor = conn.cursor()
+    stmt = select(Template).where(Template.id == template_id)
     if is_admin:
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND (user=? OR (user IS NULL AND clinic=?))",
-            (template_id, username, clinic),
+        stmt = stmt.where(
+            or_(
+                Template.user == username,
+                and_(Template.user.is_(None), Template.clinic == clinic),
+            )
         )
     else:
-        cursor.execute(
-            "DELETE FROM templates WHERE id=? AND user=?",
-            (template_id, username),
-        )
-    conn.commit()
-    if cursor.rowcount == 0:
+        stmt = stmt.where(Template.user == username)
+
+    record = session.execute(stmt).scalar_one_or_none()
+    if record is None:
         raise HTTPException(status_code=404, detail="Template not found")
+    session.delete(record)
+    session.commit()
 
