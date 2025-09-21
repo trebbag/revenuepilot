@@ -196,7 +196,61 @@ runtime:
   rotation metadata, and analytics retention window.【F:backend/main.py†L600-L760】
 - `SECRETS_BACKEND`, `SECRETS_FALLBACK`, `SECRET_MAX_AGE_DAYS` – Control
   whether secrets are loaded from environment managers only or allow the
-  encrypted local fallback, and configure stale-secret enforcement.【F:backend/key_manager.py†L85-L230】
+  encrypted local fallback, and configure stale-secret enforcement.
+- `SECRETS_PREFIX`, `AWS_REGION`, `VAULT_ADDR`, `VAULT_TOKEN`,
+  `VAULT_NAMESPACE`, `VAULT_MOUNT`, `VAULT_BASE_PATH` – Configure the
+  external secrets backend described below.【F:backend/key_manager.py†L85-L380】
+
+### Secrets management
+
+Production deployments must declare `SECRETS_BACKEND` to point at the
+authoritative store. Supported options are:
+
+- `aws` – Use AWS Secrets Manager. Set `AWS_REGION`/`AWS_DEFAULT_REGION`
+  and optionally `SECRETS_PREFIX` (e.g. `RevenuePilot/{name}`) to control
+  the secret naming scheme. Secrets are stored as JSON payloads of the
+  form:
+
+  ```json
+  {
+    "value": "<secret string>",
+    "metadata": {
+      "rotatedAt": "2024-01-15T00:00:00Z",
+      "version": "v3",
+      "expiresAt": "2024-04-15T00:00:00Z",
+      "source": "aws-secrets-manager"
+    }
+  }
+  ```
+
+  The helper automatically records the AWS version identifier and writes
+  fresh rotation timestamps when secrets are rotated via the API.
+
+- `vault` – Use HashiCorp Vault KV v2. Provide `VAULT_ADDR`,
+  `VAULT_TOKEN` and optionally `VAULT_NAMESPACE`. Secrets are stored at
+  `VAULT_MOUNT`/`VAULT_BASE_PATH/<name>` (override with
+  `VAULT_SECRET_TEMPLATE`) using the same JSON structure as above. The
+  KV metadata is mirrored into the local rotation ledger.
+
+- `env` – Treat process environment variables as read-only. Use this for
+  platforms that inject secrets at runtime; writing back is not
+  supported.
+
+Rotation metadata is mandatory outside development. Each secret should
+include:
+
+- `rotatedAt` – ISO-8601 timestamp in UTC.
+- `version` – Unique identifier for auditability (the backend will
+  generate a UUID if omitted).
+- `expiresAt` – Optional ISO-8601 timestamp matching your rotation
+  policy.
+- `source` – Human-readable description of the store (e.g.
+  `aws-secrets-manager`, `vault`).
+
+`backend/key_manager.py` persists the metadata locally for auditing and
+enforces freshness using `SECRET_MAX_AGE_DAYS`. The `start` scripts abort
+in non-development environments when secrets are missing or stale so the
+deployment pipeline can surface actionable errors.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】【F:start.ps1†L1-L64】
 
 See `docs/LOCAL_MODELS.md` for detailed offline model guidance and
 `docs/DESKTOP_BUILD.md` for packaging environment variables.
@@ -230,11 +284,13 @@ should configure log shipping to handle JSON payloads and register the
 Prometheus endpoint with the monitoring stack.【F:backend/main.py†L231-L362】【F:src/components/Dashboard.jsx†L1-L220】
 
 Production deployments should source `OPENAI_API_KEY`, `JWT_SECRET` and
-other credentials from an external secrets manager (Vault, SSM, etc.)
-and provide the corresponding `*_ROTATED_AT` metadata so the backend can
-enforce rotation policies. Set `SECRETS_BACKEND=env` and leave
-`SECRETS_FALLBACK=never` in hosted environments; the development scripts
-only provision local fallbacks when `ENVIRONMENT` is a development value.【F:backend/key_manager.py†L85-L230】【F:start.sh†L1-L48】
+other credentials from an external secrets manager (AWS Secrets Manager,
+Vault, etc.) and provide the corresponding rotation metadata so the
+backend can enforce policies. Hosted environments should set
+`SECRETS_BACKEND` to the chosen integration (`aws`, `vault` or `env` for
+platform-provided variables) and leave `SECRETS_FALLBACK=never`; the
+development scripts only provision local fallbacks when `ENVIRONMENT` is
+a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】
 
 
 ## Additional references
