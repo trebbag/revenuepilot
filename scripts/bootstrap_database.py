@@ -12,6 +12,10 @@ from typing import Dict, Iterable, List, Tuple
 
 from platformdirs import user_data_dir
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 from backend import auth, code_tables, compliance
 from backend.codes_data import load_code_metadata
 from backend.key_manager import APP_NAME
@@ -169,6 +173,18 @@ def _resolve_user_spec(role: str, args: argparse.Namespace) -> Dict[str, str]:
 
 def seed_default_users(conn: sqlite3.Connection, args: argparse.Namespace) -> List[Tuple[str, str, str]]:
     created: List[Tuple[str, str, str]] = []
+    engine = create_engine(
+        "sqlite://",
+        creator=lambda: conn,
+        poolclass=StaticPool,
+        future=True,
+    )
+    SessionLocal = sessionmaker(
+        bind=engine,
+        expire_on_commit=False,
+        autoflush=False,
+        future=True,
+    )
     for role in ("admin", "analyst", "clinician"):
         spec = _resolve_user_spec(role, args)
         username = spec["username"]
@@ -185,14 +201,15 @@ def seed_default_users(conn: sqlite3.Connection, args: argparse.Namespace) -> Li
                     (spec["role"], username),
                 )
             continue
-        auth.register_user(
-            conn,
-            username,
-            password,
-            role=spec["role"],
-            email=spec["email"],
-            name=spec["name"],
-        )
+        with SessionLocal.begin() as session:
+            auth.register_user(
+                session,
+                username,
+                password,
+                role=spec["role"],
+                email=spec["email"],
+                name=spec["name"],
+            )
         created.append((username, password, spec["role"]))
     conn.commit()
     return created

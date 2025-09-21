@@ -1,5 +1,4 @@
 import sqlite3
-import sqlite3
 from fastapi.testclient import TestClient
 
 from backend import main
@@ -21,7 +20,9 @@ def setup_module(module):
         "CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, eventType TEXT, timestamp REAL, details TEXT, revenue REAL, codes TEXT, compliance_flags TEXT, public_health INTEGER, satisfaction INTEGER)"
     )
     main.ensure_settings_table(db)
-    auth.register_user(db, "admin", "secret", "admin")
+    main.configure_auth_session_factory(db)
+    with main.auth_session_scope() as session:
+        auth.register_user(session, "admin", "secret", "admin")
 
 
 def test_registration_login_refresh_and_roles():

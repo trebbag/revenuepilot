@@ -36,6 +36,7 @@ from typing import (
     Tuple,
     Callable,
     Iterable,
+    Iterator,
     Awaitable,
 )
 from fastapi import (
@@ -78,6 +79,11 @@ from pydantic import (
 )
 import json, sqlite3
 from uuid import uuid4
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session as SQLAlchemySession, sessionmaker
+from sqlalchemy.pool import StaticPool
 try:  # prefer appdirs
     from appdirs import user_data_dir  # type: ignore
 except Exception:  # fallback to platformdirs if available
@@ -595,7 +601,7 @@ async def _collect_body_bytes(response: Response) -> bytes:
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 
 # Graceful shutdown via FastAPI lifespan (uvicorn will call this on SIGINT/SIGTERM)
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 _SHUTTING_DOWN = False  # exported for potential test assertions
 
@@ -1354,6 +1360,55 @@ if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
     except Exception:
         pass
 
+_auth_engine: Optional[Engine] = None
+_auth_sessionmaker: Optional[sessionmaker] = None
+_auth_connection_id: Optional[int] = None
+
+
+def configure_auth_session_factory(connection: sqlite3.Connection) -> None:
+    """Configure the SQLAlchemy session factory for authentication helpers."""
+
+    global _auth_engine, _auth_sessionmaker, _auth_connection_id
+
+    if _auth_engine is not None:
+        _auth_engine.dispose()
+
+    def _creator() -> sqlite3.Connection:
+        return connection
+
+    _auth_engine = create_engine(
+        "sqlite://",
+        creator=_creator,
+        poolclass=StaticPool,
+        future=True,
+    )
+    _auth_sessionmaker = sessionmaker(
+        bind=_auth_engine,
+        expire_on_commit=False,
+        autoflush=False,
+        future=True,
+    )
+    _auth_connection_id = id(connection)
+
+
+@contextmanager
+def auth_session_scope() -> Iterator[SQLAlchemySession]:
+    """Yield a SQLAlchemy session bound to the primary application database."""
+
+    if _auth_sessionmaker is None or _auth_connection_id != id(db_conn):
+        configure_auth_session_factory(db_conn)
+    assert _auth_sessionmaker is not None
+    session: SQLAlchemySession = _auth_sessionmaker()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
@@ -1375,6 +1430,8 @@ configure_schedule_database(db_conn)
 
 # Keep the compliance ORM bound to the active database connection.
 compliance_engine.configure_engine(db_conn)
+
+configure_auth_session_factory(db_conn)
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -3438,8 +3495,9 @@ async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     client_host = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     try:
-        _user_id = register_user(db_conn, model.username, model.password)
-    except sqlite3.IntegrityError:
+        with auth_session_scope() as session:
+            _user_id = register_user(session, model.username, model.password)
+    except IntegrityError:
         _insert_audit_log(
             model.username,
             "register_failed",
@@ -3488,7 +3546,8 @@ async def auth_register(model: RegisterModel, request: Request):
     client_host = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     try:
-        _user_id = register_user(db_conn, model.username, model.password)
+        with auth_session_scope() as session:
+            _user_id = register_user(session, model.username, model.password)
         _insert_audit_log(
             model.username,
             "register",
@@ -3497,7 +3556,7 @@ async def auth_register(model: RegisterModel, request: Request):
             ip_address=client_host,
             user_agent=user_agent,
         )
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         row = db_conn.execute(
             "SELECT id, role FROM users WHERE username=?", (model.username,)
         ).fetchone()
