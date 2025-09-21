@@ -79,6 +79,7 @@ interface FinalizationWizardAdapterProps {
   onError?: (message: string, error?: unknown) => void
   displayMode?: "overlay" | "embedded"
   initialPreFinalizeResult?: PreFinalizeCheckResponse | null
+  initialSessionSnapshot?: StoredFinalizationSession | null
 }
 
 export type FinalizationWizardLaunchOptions = Omit<
@@ -309,6 +310,268 @@ const toPatientMetadata = (info?: PatientInfoInput): PatientMetadata | undefined
   return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
+type StepStatus = "pending" | "in-progress" | "completed" | "blocked"
+
+interface StepAggregationState {
+  status: StepStatus
+  messages: string[]
+  totalChecks: number
+  completedChecks: number
+}
+
+interface ValidationMappingResult {
+  overrides: WizardStepOverride[]
+  blockingIssues: string[]
+  canFinalize: boolean
+  firstOpenStep: number | null
+}
+
+const STEP_STATUS_PRIORITY: Record<StepStatus, number> = {
+  completed: 0,
+  pending: 1,
+  "in-progress": 1,
+  blocked: 2
+}
+
+const mergeStepStatus = (current: StepStatus, incoming: StepStatus): StepStatus => {
+  return STEP_STATUS_PRIORITY[incoming] >= STEP_STATUS_PRIORITY[current] ? incoming : current
+}
+
+const sanitizeIssueText = (value: unknown): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+const toStringList = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value
+      .map(entry => sanitizeIssueText(entry))
+      .filter((entry): entry is string => Boolean(entry))
+  }
+  const single = sanitizeIssueText(value)
+  return single ? [single] : []
+}
+
+const flattenIssuesObject = (value: unknown): string[] => {
+  if (!value || typeof value !== "object") {
+    return []
+  }
+  const entries: string[] = []
+  Object.entries(value as Record<string, unknown>).forEach(([key, entryValue]) => {
+    const sanitizedKey = sanitizeIssueText(key) ?? "Issue"
+    const values = toStringList(entryValue)
+    if (values.length > 0) {
+      entries.push(`${sanitizedKey}: ${values.join(", ")}`)
+    }
+  })
+  return entries
+}
+
+const interpretValidationRecord = (
+  record: Record<string, unknown> | undefined,
+  label: string
+): { status: StepStatus; messages: string[] } => {
+  if (!record) {
+    return { status: "pending", messages: [] }
+  }
+
+  const passed = typeof record.passed === "boolean" ? record.passed : undefined
+  const messages: string[] = []
+
+  const collect = (input: unknown, prefix: string) => {
+    const list = toStringList(input)
+    if (list.length > 0) {
+      messages.push(`${prefix}: ${list.join(", ")}`)
+    }
+  }
+
+  collect(record.issues, "Issues")
+  collect(record.conflicts, "Conflicts")
+  collect(record.missing, "Missing")
+  collect(record.requirements, "Requirements")
+  collect(record.criticalIssues, "Critical")
+  collect((record as Record<string, unknown>).details, label)
+
+  const confidence =
+    typeof record.confidence === "number" && Number.isFinite(record.confidence)
+      ? Math.max(0, Math.min(1, record.confidence))
+      : undefined
+  if (typeof confidence === "number") {
+    messages.push(`${label} confidence ${Math.round(confidence * 100)}%`)
+  }
+
+  if (passed === true) {
+    if (!messages.length) {
+      messages.push(`${label} completed`)
+    }
+    return { status: "completed", messages }
+  }
+
+  if (passed === false) {
+    if (!messages.length) {
+      messages.push(`${label} requires attention`)
+    }
+    return { status: "blocked", messages }
+  }
+
+  if (messages.length > 0) {
+    return { status: "blocked", messages }
+  }
+
+  return { status: "pending", messages: [] }
+}
+
+const buildValidationState = (
+  validation?: PreFinalizeCheckResponse | null
+): ValidationMappingResult => {
+  const state = new Map<number, StepAggregationState>()
+  const blocking = new Set<string>()
+  let canFinalize = true
+
+  const register = (stepId: number, payload: { status: StepStatus; messages: string[] }) => {
+    if (!Number.isFinite(stepId)) {
+      return
+    }
+    const sanitizedMessages = payload.messages
+      .map(message => sanitizeIssueText(message))
+      .filter((message): message is string => Boolean(message))
+    if (!state.has(stepId)) {
+      state.set(stepId, {
+        status: payload.status,
+        messages: [...sanitizedMessages],
+        totalChecks: 1,
+        completedChecks: payload.status === "completed" ? 1 : 0
+      })
+    } else {
+      const existing = state.get(stepId) as StepAggregationState
+      existing.status = mergeStepStatus(existing.status, payload.status)
+      existing.messages.push(...sanitizedMessages)
+      existing.totalChecks += 1
+      if (payload.status === "completed") {
+        existing.completedChecks += 1
+      }
+    }
+
+    if (payload.status === "blocked") {
+      sanitizedMessages.forEach(message => blocking.add(message))
+    }
+  }
+
+  if (!validation) {
+    return { overrides: [], blockingIssues: [], canFinalize: true, firstOpenStep: null }
+  }
+
+  const stepValidation =
+    validation.stepValidation && typeof validation.stepValidation === "object"
+      ? (validation.stepValidation as Record<string, Record<string, unknown>>)
+      : {}
+
+  register(1, interpretValidationRecord(stepValidation.codeVerification, "Code verification"))
+
+  const suggestionValidations = [
+    interpretValidationRecord(stepValidation.preventionItems, "Prevention items"),
+    interpretValidationRecord(stepValidation.diagnosesConfirmation, "Diagnoses confirmation"),
+    interpretValidationRecord(stepValidation.differentialsReview, "Differential review")
+  ]
+  suggestionValidations.forEach(result => register(2, result))
+
+  register(3, interpretValidationRecord(stepValidation.contentReview, "Content review"))
+
+  const requiredFields = toStringList(validation.requiredFields)
+  const missingDocumentation = toStringList(validation.missingDocumentation)
+  if (requiredFields.length || missingDocumentation.length) {
+    const messages: string[] = []
+    if (requiredFields.length) {
+      messages.push(`Required fields: ${requiredFields.join(", ")}`)
+    }
+    if (missingDocumentation.length) {
+      messages.push(`Missing documentation: ${missingDocumentation.join(", ")}`)
+    }
+    register(4, { status: "blocked", messages })
+  } else {
+    register(4, { status: "completed", messages: ["Documentation complete"] })
+  }
+
+  register(5, interpretValidationRecord(stepValidation.complianceChecks, "Compliance checks"))
+
+  const complianceSummaries = Array.isArray(validation.complianceIssues)
+    ? validation.complianceIssues
+        .map(issue =>
+          sanitizeIssueText(
+            (issue as Record<string, unknown>)?.title ??
+              ((issue as Record<string, unknown>)?.description as string | undefined)
+          )
+        )
+        .filter((entry): entry is string => Boolean(entry))
+    : []
+  if (complianceSummaries.length) {
+    register(5, { status: "blocked", messages: complianceSummaries })
+  }
+
+  const flattenedIssues = flattenIssuesObject(validation.issues)
+  if (flattenedIssues.length) {
+    register(5, { status: "blocked", messages: flattenedIssues })
+  }
+
+  canFinalize = validation.canFinalize !== false
+  if (!canFinalize) {
+    register(6, {
+      status: "blocked",
+      messages: ["Resolve outstanding validation items before dispatch"]
+    })
+  } else {
+    register(6, { status: "pending", messages: ["Ready for dispatch review"] })
+  }
+
+  const overrides: WizardStepOverride[] = Array.from(state.entries()).map(([stepId, info]) => {
+    const uniqueMessages = Array.from(new Set(info.messages))
+    const description =
+      uniqueMessages.length > 0
+        ? uniqueMessages.join(" • ")
+        : info.status === "completed"
+          ? "All checks passed"
+          : info.status === "blocked"
+            ? "Attention required"
+            : "Pending validation"
+
+    const override: WizardStepOverride = {
+      id: stepId,
+      status: info.status,
+      description
+    }
+
+    if (info.totalChecks > 0) {
+      const progress = Math.round((info.completedChecks / info.totalChecks) * 100)
+      if (Number.isFinite(progress)) {
+        override.progress = progress
+      }
+    }
+
+    return override
+  })
+
+  const orderedSteps = [1, 2, 3, 4, 5, 6]
+  let firstOpenStep: number | null = null
+  for (const stepId of orderedSteps) {
+    const entry = state.get(stepId)
+    const status = entry?.status ?? (stepId === 1 ? "in-progress" : "pending")
+    if (status !== "completed") {
+      firstOpenStep = stepId
+      break
+    }
+  }
+
+  return {
+    overrides,
+    blockingIssues: Array.from(blocking),
+    canFinalize,
+    firstOpenStep
+  }
+}
+
 export function FinalizationWizardAdapter({
   isOpen,
   onClose,
@@ -323,17 +586,82 @@ export function FinalizationWizardAdapter({
   onPreFinalizeResult,
   onError,
   displayMode = "overlay",
-  initialPreFinalizeResult = null
+  initialPreFinalizeResult = null,
+  initialSessionSnapshot = null
 }: FinalizationWizardAdapterProps) {
   const { state: sessionState, actions: sessionActions } = useSession()
-  const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(null)
-  const sessionDataRef = useRef<WorkflowSessionResponsePayload | null>(null)
+  const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(
+    initialSessionSnapshot ?? null
+  )
+  const sessionDataRef = useRef<WorkflowSessionResponsePayload | null>(initialSessionSnapshot ?? null)
   const [wizardSuggestions, setWizardSuggestions] = useState<WizardCodeItem[]>([])
   const [preFinalizeResult, setPreFinalizeResult] = useState<PreFinalizeCheckResponse | null>(
     initialPreFinalizeResult
   )
   const preFinalizeResultRef = useRef<PreFinalizeCheckResponse | null>(initialPreFinalizeResult)
   const preFinalizeFingerprintRef = useRef<string | null>(null)
+
+  const encounterId = useMemo(() => {
+    const fromSession = sessionData?.encounterId ?? initialSessionSnapshot?.encounterId
+    if (typeof fromSession === "string" && fromSession.trim().length > 0) {
+      return fromSession.trim()
+    }
+    if (typeof patientInfo?.encounterId === "string" && patientInfo.encounterId.trim().length > 0) {
+      return patientInfo.encounterId.trim()
+    }
+    return "draft-encounter"
+  }, [initialSessionSnapshot?.encounterId, patientInfo?.encounterId, sessionData?.encounterId])
+
+  const contextSessionSnapshot = useMemo<StoredFinalizationSession | null>(() => {
+    const sessions = sessionState.finalizationSessions
+    if (!sessions) {
+      return null
+    }
+    const candidateIds = [sessionData?.sessionId, initialSessionSnapshot?.sessionId]
+      .map(id => (typeof id === "string" ? id.trim() : ""))
+      .filter(id => id.length > 0)
+    for (const id of candidateIds) {
+      if (sessions[id]) {
+        return sessions[id]
+      }
+    }
+    const normalizedEncounter = sanitizeString(encounterId)?.toLowerCase()
+    if (normalizedEncounter) {
+      const match = Object.values(sessions).find(entry => {
+        if (!entry || typeof entry !== "object") {
+          return false
+        }
+        const encounter = sanitizeString((entry as StoredFinalizationSession).encounterId)?.toLowerCase()
+        return encounter === normalizedEncounter
+      })
+      if (match) {
+        return match as StoredFinalizationSession
+      }
+    }
+    return null
+  }, [encounterId, initialSessionSnapshot?.sessionId, sessionData?.sessionId, sessionState.finalizationSessions])
+
+  const sessionSnapshot = useMemo<StoredFinalizationSession | null>(() => {
+    if (initialSessionSnapshot) {
+      return initialSessionSnapshot
+    }
+    return contextSessionSnapshot
+  }, [contextSessionSnapshot, initialSessionSnapshot])
+
+  const validationSource = useMemo<PreFinalizeCheckResponse | null>(() => {
+    if (preFinalizeResult) {
+      return preFinalizeResult
+    }
+    if (sessionData?.lastValidation && typeof sessionData.lastValidation === "object") {
+      return sessionData.lastValidation as PreFinalizeCheckResponse
+    }
+    if (sessionSnapshot?.lastPreFinalize && typeof sessionSnapshot.lastPreFinalize === "object") {
+      return sessionSnapshot.lastPreFinalize
+    }
+    return null
+  }, [preFinalizeResult, sessionData?.lastValidation, sessionSnapshot?.lastPreFinalize])
+
+  const validationState = useMemo(() => buildValidationState(validationSource), [validationSource])
 
   useEffect(() => {
     sessionDataRef.current = sessionData
@@ -349,45 +677,33 @@ export function FinalizationWizardAdapter({
     }
   }, [initialPreFinalizeResult])
 
-  const encounterId = useMemo(() => {
-    const fromSession = sessionData?.encounterId
-    if (typeof fromSession === "string" && fromSession.trim().length > 0) {
-      return fromSession.trim()
+  useEffect(() => {
+    if (!initialSessionSnapshot) {
+      return
     }
-    if (typeof patientInfo?.encounterId === "string" && patientInfo.encounterId.trim().length > 0) {
-      return patientInfo.encounterId.trim()
-    }
-    return "draft-encounter"
-  }, [patientInfo?.encounterId, sessionData?.encounterId])
-
-  const storedSession = useMemo<StoredFinalizationSession | null>(() => {
-    const sessions = sessionState.finalizationSessions
-    if (!sessions) {
-      return null
-    }
-    if (sessionData?.sessionId && sessions[sessionData.sessionId]) {
-      return sessions[sessionData.sessionId]
-    }
-    const normalizedEncounter = encounterId?.toLowerCase()
-    const match = Object.values(sessions).find(entry => {
-      if (!entry || typeof entry !== "object") {
-        return false
+    setSessionData(prev => {
+      if (!prev) {
+        return initialSessionSnapshot
       }
-      const encounter = sanitizeString((entry as StoredFinalizationSession).encounterId)?.toLowerCase()
-      return encounter && normalizedEncounter && encounter === normalizedEncounter
+      if (
+        initialSessionSnapshot.sessionId &&
+        (!prev.sessionId || prev.sessionId !== initialSessionSnapshot.sessionId)
+      ) {
+        return initialSessionSnapshot
+      }
+      return prev
     })
-    return (match as StoredFinalizationSession | undefined) ?? null
-  }, [encounterId, sessionData?.sessionId, sessionState.finalizationSessions])
+  }, [initialSessionSnapshot])
 
   useEffect(() => {
     if (!isOpen) {
       return
     }
-    if (!storedSession) {
+    if (!sessionSnapshot) {
       return
     }
-    setSessionData(prev => (prev ? prev : storedSession))
-  }, [isOpen, storedSession])
+    setSessionData(prev => (prev ? prev : sessionSnapshot))
+  }, [isOpen, sessionSnapshot])
 
   const patientMetadataPayload = useMemo(() => {
     const payload: Record<string, unknown> = {}
@@ -927,8 +1243,33 @@ export function FinalizationWizardAdapter({
         }
         setPreFinalizeResult(data)
         onPreFinalizeResult?.(data)
-        setSessionData(prev => (prev ? { ...prev, lastValidation: data } : prev))
-        persistSession(sessionDataRef.current, { lastPreFinalize: data })
+        setSessionData(prev => {
+          if (!prev) {
+            persistSession(sessionDataRef.current, { lastPreFinalize: data })
+            return prev
+          }
+          const validationInfo = buildValidationState(data)
+          const existingBlocking = Array.isArray(prev.blockingIssues)
+            ? prev.blockingIssues
+                .map(issue => sanitizeIssueText(issue))
+                .filter((issue): issue is string => Boolean(issue))
+            : []
+          const combinedBlocking = new Set<string>(existingBlocking)
+          validationInfo.blockingIssues.forEach(issue => combinedBlocking.add(issue))
+
+          const next: WorkflowSessionResponsePayload = {
+            ...prev,
+            lastValidation: data,
+            ...(Array.isArray(data.complianceIssues)
+              ? { complianceIssues: data.complianceIssues as Array<Record<string, unknown>> }
+              : {}),
+            ...(data.reimbursementSummary ? { reimbursementSummary: data.reimbursementSummary } : {}),
+            blockingIssues: combinedBlocking.size ? Array.from(combinedBlocking) : prev.blockingIssues
+          }
+
+          persistSession(next, { lastPreFinalize: data })
+          return next
+        })
       } catch (error) {
         if (!cancelled) {
           const message =
@@ -958,8 +1299,9 @@ export function FinalizationWizardAdapter({
     persistSession
   ])
 
-  const sessionStepOverrides = useMemo(() => {
+  const sessionStepState = useMemo(() => {
     const overrides: WizardStepOverride[] = []
+    const blocking: string[] = []
     const rawStates = sessionData?.stepStates
     const listStates: WorkflowStepStateLike[] = Array.isArray(rawStates)
       ? rawStates
@@ -972,37 +1314,60 @@ export function FinalizationWizardAdapter({
       if (!Number.isFinite(stepId)) {
         return
       }
-      const status = typeof state.status === "string" ? state.status.toLowerCase() : ""
+      const statusKey = typeof state.status === "string" ? state.status.toLowerCase() : ""
       let description: string | undefined
-      if (status === "completed") {
+      let normalizedStatus: StepStatus | undefined
+      if (statusKey === "completed") {
         description = "Step completed"
-      } else if (status === "in_progress") {
+        normalizedStatus = "completed"
+      } else if (statusKey === "in_progress") {
         description = "In progress"
-      } else if (status === "blocked") {
+        normalizedStatus = "in-progress"
+      } else if (statusKey === "blocked") {
         description = "Attention required"
-      } else if (status === "not_started") {
+        normalizedStatus = "blocked"
+      } else if (statusKey === "not_started") {
         description = "Not started"
+        normalizedStatus = "pending"
       }
 
+      let progressValue: number | undefined
       if (typeof state.progress === "number" && Number.isFinite(state.progress)) {
-        const suffix = `${Math.max(0, Math.min(100, Math.round(state.progress)))}%`
+        progressValue = Math.max(0, Math.min(100, Math.round(state.progress)))
+        const suffix = `${progressValue}%`
         description = description ? `${description} • ${suffix}` : `Progress ${suffix}`
       }
 
       const blockingList = Array.isArray((state as Record<string, unknown>)?.blockingIssues)
         ? ((state as Record<string, unknown>).blockingIssues as unknown[])
         : []
-      const blockingCount = blockingList.filter(item => typeof item === "string" && item.trim().length > 0).length
-      if (blockingCount > 0) {
-        const blockingText = `${blockingCount} blocking issue${blockingCount === 1 ? "" : "s"}`
+      const blockingMessages = blockingList
+        .map(entry => sanitizeIssueText(entry))
+        .filter((entry): entry is string => Boolean(entry))
+      if (blockingMessages.length > 0) {
+        const blockingText = `${blockingMessages.length} blocking issue${
+          blockingMessages.length === 1 ? "" : "s"
+        }`
         description = description ? `${description} • ${blockingText}` : blockingText
+        blockingMessages.forEach(message => blocking.push(message))
       }
 
-      overrides.push({ id: stepId, description })
+      const override: WizardStepOverride = { id: stepId, description }
+      if (normalizedStatus) {
+        override.status = normalizedStatus
+      }
+      if (typeof progressValue === "number") {
+        override.progress = progressValue
+      }
+
+      overrides.push(override)
     })
 
-    return overrides
+    return { overrides, blockingIssues: blocking }
   }, [sessionData?.stepStates])
+
+  const sessionOverrides = sessionStepState.overrides
+  const sessionBlockingIssues = sessionStepState.blockingIssues
 
   const mergedStepOverrides = useMemo(() => {
     const map = new Map<number, WizardStepOverride>()
@@ -1013,14 +1378,49 @@ export function FinalizationWizardAdapter({
         }
       })
     }
-    sessionStepOverrides.forEach(override => {
+    sessionOverrides.forEach(override => {
+      if (override && typeof override.id === "number") {
+        const existing = map.get(override.id)
+        map.set(override.id, { ...existing, ...override })
+      }
+    })
+    validationState.overrides.forEach(override => {
       if (override && typeof override.id === "number") {
         const existing = map.get(override.id)
         map.set(override.id, { ...existing, ...override })
       }
     })
     return Array.from(map.values())
-  }, [sessionStepOverrides, stepOverrides])
+  }, [sessionOverrides, stepOverrides, validationState.overrides])
+
+  const combinedBlockingIssues = useMemo(() => {
+    const result = new Set<string>()
+    const register = (list: unknown) => {
+      if (!Array.isArray(list)) {
+        return
+      }
+      list
+        .map(item => sanitizeIssueText(item))
+        .filter((item): item is string => Boolean(item))
+        .forEach(item => result.add(item))
+    }
+
+    register(sessionData?.blockingIssues)
+    sessionBlockingIssues.forEach(issue => result.add(issue))
+    validationState.blockingIssues.forEach(issue => result.add(issue))
+
+    return Array.from(result)
+  }, [sessionBlockingIssues, sessionData?.blockingIssues, validationState.blockingIssues])
+
+  const derivedCurrentStep = useMemo(() => {
+    if (typeof sessionData?.currentStep === "number" && Number.isFinite(sessionData.currentStep)) {
+      return Math.max(1, Math.floor(sessionData.currentStep))
+    }
+    if (validationState.firstOpenStep && Number.isFinite(validationState.firstOpenStep)) {
+      return Math.max(1, Math.floor(validationState.firstOpenStep))
+    }
+    return 1
+  }, [sessionData?.currentStep, validationState.firstOpenStep])
 
   const handleFinalize = useCallback(
     async (request: FinalizeRequest): Promise<FinalizeResult> => {
@@ -1039,10 +1439,39 @@ export function FinalizationWizardAdapter({
         const data = (await response.json()) as FinalizeResult & PreFinalizeCheckResponse
         setPreFinalizeResult(data)
         onPreFinalizeResult?.(data)
-        setSessionData(prev => (prev ? { ...prev, lastValidation: data } : prev))
-        persistSession(sessionDataRef.current, {
-          lastPreFinalize: data,
-          lastFinalizeResult: data
+        setSessionData(prev => {
+          if (!prev) {
+            persistSession(sessionDataRef.current, {
+              lastPreFinalize: data,
+              lastFinalizeResult: data
+            })
+            return prev
+          }
+
+          const validationInfo = buildValidationState(data)
+          const existingBlocking = Array.isArray(prev.blockingIssues)
+            ? prev.blockingIssues
+                .map(issue => sanitizeIssueText(issue))
+                .filter((issue): issue is string => Boolean(issue))
+            : []
+          const combinedBlocking = new Set<string>(existingBlocking)
+          validationInfo.blockingIssues.forEach(issue => combinedBlocking.add(issue))
+
+          const next: WorkflowSessionResponsePayload = {
+            ...prev,
+            lastValidation: data,
+            ...(Array.isArray(data.complianceIssues)
+              ? { complianceIssues: data.complianceIssues as Array<Record<string, unknown>> }
+              : {}),
+            ...(data.reimbursementSummary ? { reimbursementSummary: data.reimbursementSummary } : {}),
+            blockingIssues: combinedBlocking.size ? Array.from(combinedBlocking) : prev.blockingIssues
+          }
+
+          persistSession(next, {
+            lastPreFinalize: data,
+            lastFinalizeResult: data
+          })
+          return next
         })
         return data
       } catch (error) {
@@ -1094,8 +1523,10 @@ export function FinalizationWizardAdapter({
       patientMetadata={patientMetadata}
       reimbursementSummary={reimbursementSummary}
       transcriptEntries={sanitizedTranscripts}
-      blockingIssues={sessionData?.blockingIssues}
-      stepOverrides={mergedStepOverrides.length > 0 ? mergedStepOverrides : stepOverrides}
+      blockingIssues={combinedBlockingIssues}
+      stepOverrides={mergedStepOverrides.length ? mergedStepOverrides : undefined}
+      initialStep={derivedCurrentStep}
+      canFinalize={validationState.canFinalize}
       onFinalize={handleFinalize}
       onStepChange={handleWizardStepChange}
       onClose={handleClose}
