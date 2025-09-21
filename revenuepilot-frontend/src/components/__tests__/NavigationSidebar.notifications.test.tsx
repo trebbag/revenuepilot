@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, it, vi, afterEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import "@testing-library/jest-dom/vitest"
 
 import { NavigationSidebar } from "../NavigationSidebar"
 import { SidebarProvider } from "../ui/sidebar"
-import { apiFetch, apiFetchJson, resolveWebsocketUrl } from "../../lib/api"
+import * as api from "../../lib/api"
 
 declare global {
   interface Window {
@@ -12,17 +12,19 @@ declare global {
   }
 }
 
-vi.mock("../../lib/api", () => {
+vi.mock("../../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api")
   return {
+    ...actual,
     apiFetchJson: vi.fn(),
     apiFetch: vi.fn(),
     resolveWebsocketUrl: vi.fn()
   }
 })
 
-const mockedApiFetchJson = vi.mocked(apiFetchJson)
-const mockedApiFetch = vi.mocked(apiFetch)
-const mockedResolveWebsocketUrl = vi.mocked(resolveWebsocketUrl)
+const mockedApiFetchJson = vi.mocked(api.apiFetchJson)
+const mockedApiFetch = vi.mocked(api.apiFetch)
+const mockedResolveWebsocketUrl = vi.mocked(api.resolveWebsocketUrl)
 
 class MockWebSocket {
   static instances: MockWebSocket[] = []
@@ -33,7 +35,7 @@ class MockWebSocket {
   onopen: (() => void) | null = null
   onmessage: ((event: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
-  onclose: (() => void) | null = null
+  onclose: ((event: Event) => void) | null = null
 
   constructor(public url: string) {
     MockWebSocket.instances.push(this)
@@ -223,28 +225,32 @@ describe("NavigationSidebar notifications", () => {
       })
     } as MessageEvent)
 
-    expect(
-      await screen.findByText("New task", undefined, { timeout: 2000 })
-    ).toBeInTheDocument()
+    expect(await screen.findByText("New task", undefined, { timeout: 2000 })).toBeInTheDocument()
     expect(screen.getByText("Review the latest submission")).toBeInTheDocument()
-
-import { render, waitFor } from "@testing-library/react"
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest"
-
-import { NavigationSidebar } from "../NavigationSidebar"
-import { SidebarProvider } from "../ui/sidebar"
-import * as api from "../../lib/api"
+  })
+})
 
 describe("NavigationSidebar websocket authentication", () => {
-  const matchMediaMock = vi.fn().mockReturnValue({
-    matches: false,
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn()
-  })
+  const matchMediaMock = vi.fn(
+    (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    })
+  )
 
   beforeEach(() => {
     matchMediaMock.mockClear()
-    vi.stubGlobal("matchMedia", matchMediaMock)
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: matchMediaMock
+    })
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
@@ -253,6 +259,7 @@ describe("NavigationSidebar websocket authentication", () => {
   })
 
   afterEach(() => {
+    delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
@@ -276,6 +283,9 @@ describe("NavigationSidebar websocket authentication", () => {
       }
       if (url === "/api/notifications/count") {
         return { count: 0 }
+      }
+      if (url === "/api/notifications?limit=20&offset=0") {
+        return { items: [], total: 0, limit: 20, offset: 0, unreadCount: 0 }
       }
       if (url === "/api/user/profile") {
         return { currentView: null, clinic: null, preferences: {}, uiPreferences: {} }
@@ -323,8 +333,6 @@ describe("NavigationSidebar websocket authentication", () => {
     expect(url).toBe("ws://example.test/ws/notifications?token=abc123-token")
     expect(protocols).toEqual(["authorization", "Bearer abc123-token"])
 
-    // ensure cleanup does not throw when the component unmounts
     wsInstances.forEach(instance => instance.onclose?.())
-
   })
 })
