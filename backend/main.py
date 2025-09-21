@@ -2186,7 +2186,6 @@ def _audit_details_from_request(request: Request) -> Dict[str, Any]:
         payload["query"] = dict(request.query_params)
     if request.client:
         payload["client"] = request.client.host
-    payload["data"] = dict(payload)
     return payload
 
 
