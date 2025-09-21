@@ -123,6 +123,17 @@ const slugify = (value: string) =>
 
 type NoteViewMode = "draft" | "beautified"
 
+type AutoSaveTrigger = "debounced" | "interval" | "manual"
+
+interface PerformAutoSaveOptions {
+  reason?: AutoSaveTrigger
+  contentOverride?: string
+  noteIdOverride?: string
+  force?: boolean
+}
+
+const AUTO_SAVE_DEBOUNCE_MS = 5_000
+
 interface NoteEditorProps {
   prePopulatedPatient?: {
     patientId: string
@@ -252,6 +263,8 @@ export function NoteEditor({
   const [noteId, setNoteId] = useState<string | null>(initialNoteData?.noteId ?? null)
   const [lastAutoSaveTime, setLastAutoSaveTime] = useState<string | null>(null)
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null)
+  const [autoSaveInFlight, setAutoSaveInFlight] = useState(false)
+  const [lastAutoSaveVersion, setLastAutoSaveVersion] = useState<number | null>(null)
   const [saveDraftLoading, setSaveDraftLoading] = useState(false)
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
 
@@ -335,7 +348,9 @@ export function NoteEditor({
   const lastComplianceContentRef = useRef<string>(initialNoteData?.content ?? "")
   const noteContentRef = useRef(noteContent)
   const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const autoSaveLastContentRef = useRef<string>(initialNoteData?.content ?? "")
+  const autoSavePromiseRef = useRef<Promise<boolean> | null>(null)
   const noteCreatePromiseRef = useRef<Promise<string> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
@@ -530,6 +545,111 @@ export function NoteEditor({
       return createPromise
     },
     [noteId, patientId, encounterId, fetchWithAuth],
+  )
+
+  const performAutoSave = useCallback(
+    async (options?: PerformAutoSaveOptions): Promise<boolean> => {
+      const { reason = "debounced", contentOverride, noteIdOverride, force = false } = options ?? {}
+
+      if (isFinalized) {
+        return false
+      }
+
+      const trimmedPatientId = patientId.trim()
+      if (!trimmedPatientId) {
+        return false
+      }
+
+      const content =
+        typeof contentOverride === "string" ? contentOverride : noteContentRef.current ?? ""
+
+      if (!force && content === autoSaveLastContentRef.current) {
+        return false
+      }
+
+      if (autoSavePromiseRef.current) {
+        if (force || reason === "manual") {
+          try {
+            await autoSavePromiseRef.current
+          } catch {
+            // Ignore previous failure so we can attempt again immediately.
+          }
+        } else {
+          return false
+        }
+      }
+
+      const run = (async () => {
+        setAutoSaveInFlight(true)
+        try {
+          const ensuredId = noteIdOverride ?? noteId ?? (await ensureNoteCreated(content))
+          if (!ensuredId) {
+            throw new Error("Unable to determine note identifier")
+          }
+
+          const noteIdString = String(ensuredId)
+          const response = await fetchWithAuth("/api/notes/auto-save", {
+            method: "POST",
+            jsonBody: { noteId: noteIdString, content }
+          })
+
+          if (!response.ok) {
+            let message = `Auto-save failed (${response.status})`
+            try {
+              const errBody = await response.json()
+              const detail =
+                typeof errBody?.message === "string" && errBody.message.trim().length > 0
+                  ? errBody.message
+                  : typeof errBody?.detail === "string" && errBody.detail.trim().length > 0
+                    ? errBody.detail
+                    : ""
+              if (detail) {
+                message = detail
+              }
+            } catch {
+              // Ignore body parsing errors
+            }
+            throw new Error(message)
+          }
+
+          const data = await response.json().catch(() => ({}))
+          const version =
+            typeof data?.version === "number" && Number.isFinite(data.version)
+              ? data.version
+              : null
+
+          autoSaveLastContentRef.current = content
+          setLastAutoSaveTime(new Date().toISOString())
+          setLastAutoSaveVersion(version)
+          setAutoSaveError(null)
+          if (!noteId || noteId !== noteIdString) {
+            setNoteId(noteIdString)
+          }
+          return true
+        } catch (error) {
+          setAutoSaveError(
+            error instanceof Error ? error.message : "Unable to auto-save note",
+          )
+          return false
+        } finally {
+          setAutoSaveInFlight(false)
+          if (autoSaveTimeoutRef.current) {
+            clearTimeout(autoSaveTimeoutRef.current)
+            autoSaveTimeoutRef.current = null
+          }
+        }
+      })()
+
+      autoSavePromiseRef.current = run
+      try {
+        return await run
+      } finally {
+        if (autoSavePromiseRef.current === run) {
+          autoSavePromiseRef.current = null
+        }
+      }
+    },
+    [ensureNoteCreated, fetchWithAuth, isFinalized, noteId, patientId],
   )
 
   const stopAudioStream = useCallback(() => {
@@ -1249,63 +1369,14 @@ export function NoteEditor({
       return
     }
 
-    const trimmedPatientId = patientId.trim()
-    if (!trimmedPatientId) {
+    if (!patientId.trim()) {
       return
     }
 
-    const performAutoSave = async () => {
-      const content = noteContentRef.current
-      if (content === autoSaveLastContentRef.current) return
-      try {
-        const ensuredId = noteId ?? (await ensureNoteCreated(content))
-        if (!ensuredId) {
-          return
-        }
-        const numericId = Number(ensuredId)
-        const payload: Record<string, unknown> = {
-          note_id: Number.isFinite(numericId) ? numericId : ensuredId,
-          content
-        }
-        const response = await fetchWithAuth("/api/notes/auto-save", {
-          method: "PUT",
-          jsonBody: payload
-        })
-        if (!response.ok) {
-          let message = `Auto-save failed (${response.status})`
-          try {
-            const errBody = await response.json()
-            const detail =
-              typeof errBody?.message === "string" && errBody.message.trim().length > 0
-                ? errBody.message
-                : typeof errBody?.detail === "string" && errBody.detail.trim().length > 0
-                  ? errBody.detail
-                  : ""
-            if (detail) {
-              message = detail
-            }
-          } catch {
-            // ignore body parsing errors
-          }
-          throw new Error(message)
-        } else {
-          await response.json().catch(() => ({}))
-        }
-        autoSaveLastContentRef.current = content
-        setLastAutoSaveTime(new Date().toISOString())
-        setAutoSaveError(null)
-        if (!noteId) {
-          setNoteId(String(ensuredId))
-        }
-      } catch (error) {
-        setAutoSaveError(
-          error instanceof Error ? error.message : "Unable to auto-save note",
-        )
-      }
-    }
-
-    void performAutoSave()
-    autoSaveIntervalRef.current = window.setInterval(performAutoSave, 30_000)
+    void performAutoSave({ reason: "interval" })
+    autoSaveIntervalRef.current = window.setInterval(() => {
+      void performAutoSave({ reason: "interval" })
+    }, 30_000)
 
     return () => {
       if (autoSaveIntervalRef.current) {
@@ -1313,7 +1384,38 @@ export function NoteEditor({
         autoSaveIntervalRef.current = null
       }
     }
-  }, [noteId, patientId, fetchWithAuth, ensureNoteCreated, isFinalized])
+  }, [patientId, performAutoSave, isFinalized])
+
+  useEffect(() => {
+    if (isFinalized) {
+      return () => undefined
+    }
+
+    if (!patientId.trim()) {
+      return () => undefined
+    }
+
+    const content = noteContentRef.current ?? ""
+    if (content === autoSaveLastContentRef.current) {
+      return () => undefined
+    }
+
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current)
+    }
+
+    autoSaveTimeoutRef.current = window.setTimeout(() => {
+      autoSaveTimeoutRef.current = null
+      void performAutoSave({ reason: "debounced" })
+    }, AUTO_SAVE_DEBOUNCE_MS)
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current)
+        autoSaveTimeoutRef.current = null
+      }
+    }
+  }, [noteContent, patientId, isFinalized, performAutoSave])
 
   useEffect(() => {
     return () => {
@@ -1326,6 +1428,10 @@ export function NoteEditor({
       if (autoSaveIntervalRef.current) {
         clearInterval(autoSaveIntervalRef.current)
       }
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current)
+      }
+      autoSavePromiseRef.current = null
       noteCreatePromiseRef.current = null
       stopAudioStream()
     }
@@ -1604,11 +1710,9 @@ export function NoteEditor({
     }
 
     const previousAutoSaveTime = lastAutoSaveTime
-    const optimisticTimestamp = new Date().toISOString()
 
     setSaveDraftLoading(true)
     setSaveDraftError(null)
-    setLastAutoSaveTime(optimisticTimestamp)
 
     try {
       const content = noteContentRef.current ?? ""
@@ -1617,43 +1721,18 @@ export function NoteEditor({
         throw new Error("Unable to determine draft identifier")
       }
 
-      const numericId = Number(ensuredId)
-      const payload: Record<string, unknown> = {
-        note_id: Number.isFinite(numericId) ? numericId : ensuredId,
-        content
-      }
-
-      const response = await fetchWithAuth("/api/notes/auto-save", {
-        method: "PUT",
-        jsonBody: payload
+      const saved = await performAutoSave({
+        reason: "manual",
+        contentOverride: content,
+        noteIdOverride: String(ensuredId),
+        force: true
       })
 
-      if (!response.ok) {
-        let message = `Failed to save draft (${response.status})`
-        try {
-          const errorBody = await response.json()
-          const detail =
-            typeof errorBody?.message === "string" && errorBody.message.trim().length > 0
-              ? errorBody.message
-              : typeof errorBody?.detail === "string" && errorBody.detail.trim().length > 0
-                ? errorBody.detail
-                : ""
-          if (detail) {
-            message = detail
-          }
-        } catch {
-          // Ignore parsing errors
-        }
-        throw new Error(message)
+      if (!saved) {
+        throw new Error("Unable to auto-save note")
       }
 
-      await response.json().catch(() => ({}))
-
-      autoSaveLastContentRef.current = content
-      setAutoSaveError(null)
-      if (!noteId) {
-        setNoteId(String(ensuredId))
-      }
+      const ensuredNoteId = String(ensuredId)
 
       if (visitSession.sessionId) {
         try {
@@ -1680,17 +1759,17 @@ export function NoteEditor({
         const encounterValue = encounterId.trim()
         await fetchWithAuth("/api/activity/log", {
           method: "POST",
-          jsonBody: {
-            eventType: "draft_saved",
-            details: {
-              manual: true,
-              patientId: trimmedPatientId,
-              encounterId: encounterValue || undefined,
-              noteId: ensuredId,
-              source: "note-editor"
+            jsonBody: {
+              eventType: "draft_saved",
+              details: {
+                manual: true,
+                patientId: trimmedPatientId,
+                encounterId: encounterValue || undefined,
+                noteId: ensuredNoteId,
+                source: "note-editor"
+              }
             }
-          }
-        })
+          })
       } catch (error) {
         console.error("Failed to log draft save activity", error)
       }
@@ -1717,8 +1796,8 @@ export function NoteEditor({
     lastAutoSaveTime,
     noteContentRef,
     ensureNoteCreated,
+    performAutoSave,
     fetchWithAuth,
-    noteId,
     visitSession.sessionId,
     setVisitSession,
     stopAudioStream,
@@ -2019,13 +2098,22 @@ export function NoteEditor({
               {saveDraftError}
             </p>
           )}
-          <div className="text-xs text-muted-foreground">
-            {lastAutoSaveTime
-              ? `Auto-saved ${new Date(lastAutoSaveTime).toLocaleTimeString()}`
-              : "Auto-save pending"}
-            {autoSaveError && (
-              <span className="ml-2 text-destructive">{autoSaveError}</span>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {autoSaveInFlight ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                <span>Saving…</span>
+              </>
+            ) : lastAutoSaveTime ? (
+              <span>
+                Auto-saved
+                {lastAutoSaveVersion != null ? ` (v${lastAutoSaveVersion})` : ""}{" "}
+                {new Date(lastAutoSaveTime).toLocaleTimeString()}
+              </span>
+            ) : (
+              <span>Auto-save pending</span>
             )}
+            {autoSaveError && <span className="text-destructive">{autoSaveError}</span>}
           </div>
 
           {/* Start Visit with Recording Indicator */}
