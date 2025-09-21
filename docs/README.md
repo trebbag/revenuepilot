@@ -201,15 +201,40 @@ runtime:
   AI behaviour toggles.【F:backend/openai_client.py†L1-L117】
 - `FHIR_SERVER_URL` and related auth variables – Configure FHIR export
   destinations.【F:backend/ehr_integration.py†L30-L180】
-- `REVENUEPILOT_DB_PATH`, `JWT_SECRET`, `JWT_SECRET_ROTATED_AT`,
-  `METRICS_LOOKBACK_DAYS` – Database location, token signing secret with
-  rotation metadata, and analytics retention window.【F:backend/main.py†L600-L760】
+- `DATABASE_URL`, `SQLITE_DSN`, `POSTGRES_*`, `PGSSLMODE`, `PGCONNECT_TIMEOUT`,
+  `PGSSLROOTCERT`, `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `STATEMENT_TIMEOUT_MS`,
+  `JWT_SECRET`, `JWT_SECRET_ROTATED_AT`, `METRICS_LOOKBACK_DAYS` – Backend
+  database configuration, token signing secret with rotation metadata, and
+  analytics retention window.【F:backend/main.py†L600-L760】
 - `SECRETS_BACKEND`, `SECRETS_FALLBACK`, `SECRET_MAX_AGE_DAYS` – Control
   whether secrets are loaded from environment managers only or allow the
   encrypted local fallback, and configure stale-secret enforcement.
 - `SECRETS_PREFIX`, `AWS_REGION`, `VAULT_ADDR`, `VAULT_TOKEN`,
   `VAULT_NAMESPACE`, `VAULT_MOUNT`, `VAULT_BASE_PATH` – Configure the
   external secrets backend described below.【F:backend/key_manager.py†L85-L380】
+
+#### Database connection precedence
+
+The backend resolves its SQLAlchemy engine configuration in the following
+order:
+
+1. **Explicit DSN** – When `DATABASE_URL` is provided, it is used exactly
+   as supplied.
+2. **Component variables** – If `POSTGRES_HOST` (and related
+   `POSTGRES_*` settings) are present, the backend assembles a PostgreSQL
+   DSN using those values plus optional TLS overrides such as
+   `PGSSLMODE`, `PGSSLROOTCERT` and connection timeouts from
+   `PGCONNECT_TIMEOUT`.
+3. **SQLite fallback** – In the absence of the above, the application
+   falls back to `SQLITE_DSN`, which defaults to the local development
+   SQLite file.
+
+`DB_POOL_SIZE`, `DB_MAX_OVERFLOW` and `STATEMENT_TIMEOUT_MS` tune the
+connection pool while `PGSSLROOTCERT` can point at an AWS RDS combined CA
+bundle when TLS verification is required. Treat `POSTGRES_PASSWORD` and
+other secrets as production credentials that must be injected at runtime
+via a secrets manager (AWS Secrets Manager, SSM Parameter Store, Vault,
+etc.) rather than committed to `.env` files or source control.
 
 ### Secrets management
 

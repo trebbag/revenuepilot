@@ -1,3 +1,5 @@
+# Include the runtime stack (SQLAlchemy>=2.0, alembic>=1.13, psycopg[binary]>=3.2,
+# python-dotenv, etc.) and add development-time tooling.
 -r requirements.txt
 pytest
 pytest-cov
