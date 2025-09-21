@@ -663,6 +663,10 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       }
     }
 
+    const globalWarnings = Array.isArray(combinationResult?.warnings)
+      ? combinationResult.warnings.filter(warning => typeof warning === "string" && warning.trim().length > 0)
+      : []
+
     return (Array.isArray(selectedCodesList) ? selectedCodesList : []).map(codeItem => {
       const normalized = typeof codeItem?.code === "string" ? codeItem.code.trim().toUpperCase() : ""
       const detail = normalized ? codeDetails[normalized] : undefined
@@ -714,9 +718,26 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
         treatmentNotes: detail?.rationale ?? codeItem?.rationale ?? "Clinical assessment and appropriate treatment plan documented.",
         documentationRequirements: formatDocumentationSummary(documentation),
         documentation,
+        documentationNeeds: {
+          required: Array.isArray(documentation?.required) ? documentation.required : [],
+          recommended: Array.isArray(documentation?.recommended) ? documentation.recommended : [],
+          examples: Array.isArray(documentation?.examples) ? documentation.examples : [],
+          summary: formatDocumentationSummary(documentation)
+        },
         hasConflict,
         conflictDetails: conflictInfo,
-        billingBreakdown: breakdown
+        billingBreakdown: breakdown,
+        billingInfo: {
+          reimbursement,
+          rvu: rvuValue,
+          breakdown
+        },
+        validationFlags: {
+          hasConflicts: hasConflict,
+          conflicts: conflictInfo.conflicts,
+          contextIssues: conflictInfo.contextIssues,
+          warnings: globalWarnings
+        }
       }
     })
   }, [
@@ -729,7 +750,8 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     ensureCurrency,
     formatDocumentationSummary,
     sanitizeConfidence,
-    selectedCodesList
+    selectedCodesList,
+    combinationResult
   ])
 
   const computedCounts = useMemo(() => {
