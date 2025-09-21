@@ -2100,25 +2100,34 @@ export async function markAllNotificationsRead() {
   return { unreadCount: normaliseCount(data.unreadCount) };
 }
 
-export function connectNotificationsStream({
+function mergeParams(...sources) {
+  const combined = {};
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || value === null || value === '') continue;
+      combined[key] = value;
+    }
+  }
+  return combined;
+}
+
+function connectWebsocketStream(path, {
   onEvent,
-  onCount,
   onError,
   onOpen,
   onClose,
   reconnectDelayMs = 2000,
   maxRetries = Infinity,
   websocketFactory,
+  params = {},
+  getParams,
 } = {}) {
   if (typeof window === 'undefined') {
     return { close() {} };
   }
-  const url = resolveWebsocketUrl('/ws/notifications');
+  const baseUrl = resolveWebsocketUrl(path);
   const token = localStorage.getItem('token');
-  const target = new URL(url);
-  if (token) {
-    target.searchParams.set('token', token);
-  }
   const factory =
     typeof websocketFactory === 'function'
       ? websocketFactory
@@ -2128,29 +2137,22 @@ export function connectNotificationsStream({
   let closed = false;
   let attempts = 0;
 
+  const computeTargetUrl = () => {
+    const target = new URL(baseUrl);
+    if (token) target.searchParams.set('token', token);
+    const dynamicParams = typeof getParams === 'function' ? getParams() : {};
+    const merged = mergeParams(params, dynamicParams);
+    for (const [key, value] of Object.entries(merged)) {
+      target.searchParams.set(key, String(value));
+    }
+    return target.toString();
+  };
+
   const clearTimer = () => {
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-  };
-
-  const emitCount = (data) => {
-    if (!data || typeof onCount !== 'function') return;
-    const notifications =
-      typeof data.notifications === 'number'
-        ? data.notifications
-        : typeof data.unreadCount === 'number'
-          ? data.unreadCount
-          : undefined;
-    const drafts =
-      typeof data.drafts === 'number' ? data.drafts : undefined;
-    if (notifications === undefined && drafts === undefined) return;
-    onCount({
-      notifications: notifications !== undefined ? normaliseCount(notifications) : undefined,
-      drafts: drafts !== undefined ? normaliseCount(drafts) : undefined,
-      raw: data,
-    });
   };
 
   const scheduleReconnect = () => {
@@ -2170,8 +2172,9 @@ export function connectNotificationsStream({
   };
 
   const connect = () => {
+    const targetUrl = computeTargetUrl();
     try {
-      socket = factory(target.toString());
+      socket = factory(targetUrl);
     } catch (err) {
       onError?.(err);
       scheduleReconnect();
@@ -2185,9 +2188,8 @@ export function connectNotificationsStream({
     socket.addEventListener?.('message', (event) => {
       try {
         const payload =
-          typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+          typeof event?.data === 'string' ? JSON.parse(event.data) : event?.data;
         onEvent?.(payload);
-        emitCount(payload);
       } catch (err) {
         onError?.(err);
       }
@@ -2218,6 +2220,108 @@ export function connectNotificationsStream({
       }
     },
   };
+}
+
+export function connectNotificationsStream(options = {}) {
+  const { onCount, onEvent: userOnEvent, ...rest } = options;
+  const emitCount = (data) => {
+    if (!data || typeof onCount !== 'function') return;
+    const notifications =
+      typeof data.notifications === 'number'
+        ? data.notifications
+        : typeof data.unreadCount === 'number'
+          ? data.unreadCount
+          : undefined;
+    const drafts =
+      typeof data.drafts === 'number' ? data.drafts : undefined;
+    if (notifications === undefined && drafts === undefined) return;
+    onCount({
+      notifications: notifications !== undefined ? normaliseCount(notifications) : undefined,
+      drafts: drafts !== undefined ? normaliseCount(drafts) : undefined,
+      raw: data,
+    });
+  };
+  return connectWebsocketStream('/ws/notifications', {
+    ...rest,
+    onEvent: (payload) => {
+      userOnEvent?.(payload);
+      emitCount(payload);
+    },
+  });
+}
+
+export function connectTranscriptionStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/transcription', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectComplianceStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/compliance', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectCodesStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
+    params,
+  );
+  return connectWebsocketStream('/ws/codes', {
+    ...rest,
+    params: staticParams,
+  });
+}
+
+export function connectCollaborationStream({
+  visitSessionId,
+  encounterId,
+  patientId,
+  noteId,
+  params,
+  ...rest
+} = {}) {
+  const staticParams = mergeParams(
+    {
+      visit_session_id: visitSessionId,
+      encounter_id: encounterId,
+      patient_id: patientId,
+      note_id: noteId,
+    },
+    params,
+  );
+  return connectWebsocketStream('/ws/collaboration', {
+    ...rest,
+    params: staticParams,
+  });
 }
 
 export async function getUserSession() {

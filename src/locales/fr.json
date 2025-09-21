@@ -262,14 +262,19 @@
     "encounterError": "Impossible de valider la rencontre.",
     "specialtyPlaceholder": "ex. Médecine générale",
     "payerPlaceholder": "ex. Blue Shield PPO",
-    "payerHint": "Ajustez spécialité et payeur pour adapter modèles et suggestions."
+    "payerHint": "Ajustez spécialité et payeur pour adapter modèles et suggestions.",
     "patientIdLabel": "ID patient",
     "encounterIdLabel": "ID de consultation",
     "visitDuration": "Durée de la visite",
     "visitSessionError": "Impossible de démarrer la session de visite",
     "visitSessionActive": "Visite en cours",
     "visitSessionPaused": "Visite en pause",
-    "visitSessionComplete": "Visite terminée"
+    "visitSessionComplete": "Visite terminée",
+    "liveInterim": "En direct (intermédiaire)",
+    "collaborators": "Collaborateurs",
+    "collaborationStatus": "Statut : {{status}}",
+    "collaborationConflict": "Conflit de collaboration",
+    "collaborationUnknown": "Un collaborateur a rencontré un problème"
   },
   "settings": {
     "title": "Settings",
@@ -379,6 +384,7 @@
     "differentials": "Differentials",
     "loading": "Loading suggestions...",
     "none": "No suggestions yet",
+    "liveBadge": "Live",
     "followUp": "Follow-Up",
     "addToCalendar": "Add to calendar",
     "followUpAppointment": "Follow-up appointment",
