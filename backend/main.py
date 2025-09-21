@@ -1554,7 +1554,7 @@ def _deserialise_audit_details(details: Any) -> Any:
             return json.loads(stripped)
         except (TypeError, ValueError, json.JSONDecodeError):
             return stripped
-    return {"data": details}
+    return details
 
 
 def _insert_audit_log(
