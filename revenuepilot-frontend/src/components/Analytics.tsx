@@ -21,7 +21,7 @@ import {
   Brain,
   Shield,
   Building2,
-  CreditCard
+  CreditCard,
 } from "lucide-react"
 import type { DateRange } from "react-day-picker"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
@@ -117,7 +117,7 @@ interface DataState<T> {
   error: string | null
 }
 
-type DatePreset = '7days' | '30days' | '90days' | 'custom'
+type DatePreset = "7days" | "30days" | "90days" | "custom"
 
 interface AnalyticsFilters {
   datePreset: DatePreset
@@ -140,11 +140,11 @@ interface StoredAnalyticsFilters {
 
 function createDefaultFilters(): AnalyticsFilters {
   return {
-    datePreset: '30days',
+    datePreset: "30days",
     customRange: null,
     clinician: null,
     clinic: null,
-    payer: null
+    payer: null,
   }
 }
 
@@ -157,7 +157,7 @@ function normalizeFilterValue(value: unknown): string | null {
     return null
   }
   const lowered = text.toLowerCase()
-  if (lowered === 'all' || lowered === 'any' || lowered === '*') {
+  if (lowered === "all" || lowered === "any" || lowered === "*") {
     return null
   }
   return text
@@ -172,16 +172,16 @@ function serializeFilters(filters: AnalyticsFilters): StoredAnalyticsFilters {
     datePreset: filters.datePreset,
     clinician: filters.clinician,
     clinic: filters.clinic,
-    payer: filters.payer
+    payer: filters.payer,
   }
 
-  if (filters.datePreset === 'custom' && filters.customRange) {
+  if (filters.datePreset === "custom" && filters.customRange) {
     const from = filters.customRange.from
     const to = filters.customRange.to
     if (isValidDate(from) || isValidDate(to)) {
       payload.customRange = {
         from: isValidDate(from) ? from.toISOString() : null,
-        to: isValidDate(to) ? to.toISOString() : null
+        to: isValidDate(to) ? to.toISOString() : null,
       }
     }
   }
@@ -191,13 +191,13 @@ function serializeFilters(filters: AnalyticsFilters): StoredAnalyticsFilters {
 
 function deserializeFilters(raw: unknown): AnalyticsFilters {
   const base = createDefaultFilters()
-  if (!raw || typeof raw !== 'object') {
+  if (!raw || typeof raw !== "object") {
     return base
   }
 
   const record = raw as Record<string, unknown>
   const preset = normalizeFilterValue(record.datePreset)
-  if (preset === '7days' || preset === '30days' || preset === '90days' || preset === 'custom') {
+  if (preset === "7days" || preset === "30days" || preset === "90days" || preset === "custom") {
     base.datePreset = preset
   }
 
@@ -205,9 +205,9 @@ function deserializeFilters(raw: unknown): AnalyticsFilters {
   base.clinic = normalizeFilterValue(record.clinic)
   base.payer = normalizeFilterValue(record.payer)
 
-  if (base.datePreset === 'custom') {
+  if (base.datePreset === "custom") {
     const custom = record.customRange
-    if (custom && typeof custom === 'object') {
+    if (custom && typeof custom === "object") {
       const customRecord = custom as Record<string, unknown>
       const parseDate = (value: unknown): Date | undefined => {
         const parsed = normalizeFilterValue(value)
@@ -232,7 +232,7 @@ function deserializeFilters(raw: unknown): AnalyticsFilters {
 }
 
 function resolveDateRange(filters: AnalyticsFilters): { start?: Date; end?: Date } {
-  if (filters.datePreset === 'custom') {
+  if (filters.datePreset === "custom") {
     const from = filters.customRange?.from
     if (!isValidDate(from)) {
       return {}
@@ -249,13 +249,13 @@ function resolveDateRange(filters: AnalyticsFilters): { start?: Date; end?: Date
   const start = new Date(end)
   start.setHours(0, 0, 0, 0)
   switch (filters.datePreset) {
-    case '7days':
+    case "7days":
       start.setDate(start.getDate() - 6)
       break
-    case '30days':
+    case "30days":
       start.setDate(start.getDate() - 29)
       break
-    case '90days':
+    case "90days":
       start.setDate(start.getDate() - 89)
       break
     default:
@@ -268,19 +268,19 @@ function buildAnalyticsQuery(filters: AnalyticsFilters): string {
   const params = new URLSearchParams()
   const { start, end } = resolveDateRange(filters)
   if (isValidDate(start)) {
-    params.set('start', start.toISOString())
+    params.set("start", start.toISOString())
   }
   if (isValidDate(end)) {
-    params.set('end', end.toISOString())
+    params.set("end", end.toISOString())
   }
   if (filters.clinician) {
-    params.set('clinician', filters.clinician)
+    params.set("clinician", filters.clinician)
   }
   if (filters.clinic) {
-    params.set('clinic', filters.clinic)
+    params.set("clinic", filters.clinic)
   }
   if (filters.payer) {
-    params.set('payer', filters.payer)
+    params.set("payer", filters.payer)
   }
   return params.toString()
 }
@@ -290,8 +290,8 @@ interface MetricCardProps {
   value: string | number
   baseline: string | number
   change: number
-  changeType: 'increase' | 'decrease'
-  trend: 'up' | 'down'
+  changeType: "increase" | "decrease"
+  trend: "up" | "down"
   icon: any
   description?: string
   color?: string
@@ -318,19 +318,25 @@ interface NoteQualityDashboardProps {
 }
 
 function MetricCard({ title, value, baseline, change, changeType, trend, icon: Icon, description, color = "blue" }: MetricCardProps) {
-  const isPositive = (changeType === 'increase' && trend === 'up') || (changeType === 'decrease' && trend === 'down')
-  
+  const isPositive = (changeType === "increase" && trend === "up") || (changeType === "decrease" && trend === "down")
+
   return (
     <Card className="relative overflow-hidden">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium text-foreground">{title}</CardTitle>
-        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-          color === 'blue' ? 'bg-blue-100 text-blue-600' :
-          color === 'green' ? 'bg-emerald-100 text-emerald-600' :
-          color === 'purple' ? 'bg-purple-100 text-purple-600' :
-          color === 'orange' ? 'bg-orange-100 text-orange-600' :
-          'bg-slate-100 text-slate-600'
-        }`}>
+        <div
+          className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+            color === "blue"
+              ? "bg-blue-100 text-blue-600"
+              : color === "green"
+                ? "bg-emerald-100 text-emerald-600"
+                : color === "purple"
+                  ? "bg-purple-100 text-purple-600"
+                  : color === "orange"
+                    ? "bg-orange-100 text-orange-600"
+                    : "bg-slate-100 text-slate-600"
+          }`}
+        >
           <Icon className="w-4 h-4" />
         </div>
       </CardHeader>
@@ -338,20 +344,14 @@ function MetricCard({ title, value, baseline, change, changeType, trend, icon: I
         <div className="flex items-baseline justify-between">
           <div>
             <div className="text-2xl font-semibold">{value}</div>
-            <p className="text-xs text-muted-foreground">
-              Baseline: {baseline}
-            </p>
+            <p className="text-xs text-muted-foreground">Baseline: {baseline}</p>
           </div>
-          <div className={`flex items-center gap-1 text-xs font-medium ${
-            isPositive ? 'text-emerald-600' : 'text-red-600'
-          }`}>
-            {trend === 'up' ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+          <div className={`flex items-center gap-1 text-xs font-medium ${isPositive ? "text-emerald-600" : "text-red-600"}`}>
+            {trend === "up" ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
             {Math.abs(change)}%
           </div>
         </div>
-        {description && (
-          <p className="text-xs text-muted-foreground mt-2">{description}</p>
-        )}
+        {description && <p className="text-xs text-muted-foreground mt-2">{description}</p>}
       </CardContent>
     </Card>
   )
@@ -368,7 +368,7 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
     const preset = value as DatePreset
     onFiltersChange({
       datePreset: preset,
-      customRange: preset === 'custom' ? filters.customRange : null
+      customRange: preset === "custom" ? filters.customRange : null,
     })
   }
 
@@ -377,15 +377,15 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
   }
 
   const handleClinicianChange = (value: string) => {
-    onFiltersChange({ clinician: value === 'all' ? null : value })
+    onFiltersChange({ clinician: value === "all" ? null : value })
   }
 
   const handleClinicChange = (value: string) => {
-    onFiltersChange({ clinic: value === 'all' ? null : value })
+    onFiltersChange({ clinic: value === "all" ? null : value })
   }
 
   const handlePayerChange = (value: string) => {
-    onFiltersChange({ payer: value === 'all' ? null : value })
+    onFiltersChange({ payer: value === "all" ? null : value })
   }
 
   return (
@@ -405,17 +405,11 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
         </Select>
       </div>
 
-      {filters.datePreset === 'custom' && (
-        <DatePickerWithRange
-          className="w-[280px]"
-          date={filters.customRange ?? undefined}
-          onDateChange={handleRangeChange}
-        />
-      )}
+      {filters.datePreset === "custom" && <DatePickerWithRange className="w-[280px]" date={filters.customRange ?? undefined} onDateChange={handleRangeChange} />}
 
       <div className="flex items-center gap-2">
         <Users className="w-4 h-4 text-muted-foreground" />
-        <Select value={filters.clinician ?? 'all'} onValueChange={handleClinicianChange}>
+        <Select value={filters.clinician ?? "all"} onValueChange={handleClinicianChange}>
           <SelectTrigger className="w-[180px]">
             <SelectValue placeholder="Select clinician" />
           </SelectTrigger>
@@ -430,7 +424,7 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
 
       <div className="flex items-center gap-2">
         <Building2 className="w-4 h-4 text-muted-foreground" />
-        <Select value={filters.clinic ?? 'all'} onValueChange={handleClinicChange}>
+        <Select value={filters.clinic ?? "all"} onValueChange={handleClinicChange}>
           <SelectTrigger className="w-[200px]">
             <SelectValue placeholder="Select clinic" />
           </SelectTrigger>
@@ -445,7 +439,7 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
 
       <div className="flex items-center gap-2">
         <CreditCard className="w-4 h-4 text-muted-foreground" />
-        <Select value={filters.payer ?? 'all'} onValueChange={handlePayerChange}>
+        <Select value={filters.payer ?? "all"} onValueChange={handlePayerChange}>
           <SelectTrigger className="w-[200px]">
             <SelectValue placeholder="Select payer" />
           </SelectTrigger>
@@ -467,13 +461,13 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
 }
 
 function BillingCodingDashboard({ revenueState, codingState, usageState, currencyFormatter, filters, onFiltersChange, onRefresh }: BillingCodingDashboardProps) {
-  const palette = useMemo(() => ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#6b7280', '#0ea5e9', '#f97316'], [])
+  const palette = useMemo(() => ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#6b7280", "#0ea5e9", "#f97316"], [])
 
   const revenueLineData = useMemo(() => {
-    return (revenueState.data?.revenue_trend ?? []).map(point => ({
-      name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    return (revenueState.data?.revenue_trend ?? []).map((point) => ({
+      name: new Date(point.day).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
       value: Number(point.total_revenue ?? 0),
-      baseline: Number(point.average_revenue ?? 0)
+      baseline: Number(point.average_revenue ?? 0),
     }))
   }, [revenueState.data?.revenue_trend])
 
@@ -485,51 +479,49 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
     return entries.map(([code, amount], index) => ({
       name: code,
       value: Number(amount ?? 0),
-      color: palette[index % palette.length]
+      color: palette[index % palette.length],
     }))
   }, [palette, revenueState.data?.revenue_by_code])
 
   const denialData = useMemo(() => {
-    return (codingState.data?.accuracy_trend ?? []).map(point => ({
-      name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    return (codingState.data?.accuracy_trend ?? []).map((point) => ({
+      name: new Date(point.day).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
       denials: point.denials,
-      total: point.total_notes
+      total: point.total_notes,
     }))
   }, [codingState.data?.accuracy_trend])
 
   const latestRevenue = revenueLineData.length > 0 ? revenueLineData[revenueLineData.length - 1].value : 0
   const previousRevenue = revenueLineData.length > 1 ? revenueLineData[revenueLineData.length - 2].value : latestRevenue
   const revenueChange = previousRevenue ? ((latestRevenue - previousRevenue) / Math.max(previousRevenue, 1)) * 100 : 0
-  const revenueTrendDirection: 'up' | 'down' = revenueChange >= 0 ? 'up' : 'down'
+  const revenueTrendDirection: "up" | "down" = revenueChange >= 0 ? "up" : "down"
 
   const claimsTrend = codingState.data?.accuracy_trend ?? []
-  const latestClaims = claimsTrend.length > 0 ? claimsTrend[claimsTrend.length - 1].total_notes : codingState.data?.total_notes ?? 0
+  const latestClaims = claimsTrend.length > 0 ? claimsTrend[claimsTrend.length - 1].total_notes : (codingState.data?.total_notes ?? 0)
   const previousClaims = claimsTrend.length > 1 ? claimsTrend[claimsTrend.length - 2].total_notes : latestClaims
   const claimsChange = previousClaims ? ((latestClaims - previousClaims) / Math.max(previousClaims, 1)) * 100 : 0
-  const claimsTrendDirection: 'up' | 'down' = claimsChange >= 0 ? 'up' : 'down'
+  const claimsTrendDirection: "up" | "down" = claimsChange >= 0 ? "up" : "down"
 
   const latestDenialRatePoint = claimsTrend.length > 0 ? claimsTrend[claimsTrend.length - 1] : null
   const previousDenialRatePoint = claimsTrend.length > 1 ? claimsTrend[claimsTrend.length - 2] : latestDenialRatePoint
-  const latestDenialRate = latestDenialRatePoint && latestDenialRatePoint.total_notes
-    ? (latestDenialRatePoint.denials / Math.max(latestDenialRatePoint.total_notes, 1)) * 100
-    : (codingState.data?.denials ?? 0) / Math.max(codingState.data?.total_notes ?? 1, 1) * 100
-  const previousDenialRate = previousDenialRatePoint && previousDenialRatePoint.total_notes
-    ? (previousDenialRatePoint.denials / Math.max(previousDenialRatePoint.total_notes, 1)) * 100
-    : latestDenialRate
+  const latestDenialRate =
+    latestDenialRatePoint && latestDenialRatePoint.total_notes
+      ? (latestDenialRatePoint.denials / Math.max(latestDenialRatePoint.total_notes, 1)) * 100
+      : ((codingState.data?.denials ?? 0) / Math.max(codingState.data?.total_notes ?? 1, 1)) * 100
+  const previousDenialRate =
+    previousDenialRatePoint && previousDenialRatePoint.total_notes ? (previousDenialRatePoint.denials / Math.max(previousDenialRatePoint.total_notes, 1)) * 100 : latestDenialRate
   const denialChange = previousDenialRate ? ((latestDenialRate - previousDenialRate) / Math.max(Math.abs(previousDenialRate), 1)) * 100 : 0
-  const denialTrendDirection: 'up' | 'down' = denialChange >= 0 ? 'up' : 'down'
+  const denialTrendDirection: "up" | "down" = denialChange >= 0 ? "up" : "down"
 
   const usageTrend = usageState.data?.daily_trends ?? []
-  const latestUsageNotes = usageTrend.length > 0 ? usageTrend[usageTrend.length - 1].total_notes : usageState.data?.total_notes ?? 0
+  const latestUsageNotes = usageTrend.length > 0 ? usageTrend[usageTrend.length - 1].total_notes : (usageState.data?.total_notes ?? 0)
   const previousUsageNotes = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].total_notes : latestUsageNotes
   const latestRevenuePerVisit = latestUsageNotes ? latestRevenue / Math.max(latestUsageNotes, 1) : 0
   const previousRevenuePerVisit = previousUsageNotes ? previousRevenue / Math.max(previousUsageNotes, 1) : latestRevenuePerVisit
   const revenuePerVisitChange = previousRevenuePerVisit ? ((latestRevenuePerVisit - previousRevenuePerVisit) / Math.max(previousRevenuePerVisit, 1)) * 100 : 0
-  const revenuePerVisitTrend: 'up' | 'down' = revenuePerVisitChange >= 0 ? 'up' : 'down'
+  const revenuePerVisitTrend: "up" | "down" = revenuePerVisitChange >= 0 ? "up" : "down"
 
-  const revenuePerVisitDescription = usageState.data?.avg_note_length
-    ? `Avg note length ${Math.round(usageState.data.avg_note_length)} words`
-    : 'Average note length unavailable'
+  const revenuePerVisitDescription = usageState.data?.avg_note_length ? `Avg note length ${Math.round(usageState.data.avg_note_length)} words` : "Average note length unavailable"
 
   const showEmptyRevenueChart = revenueLineData.length === 0
   const showEmptyDistribution = codeDistribution.length === 0
@@ -537,16 +529,10 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
 
   return (
     <div className="space-y-6">
-      <DashboardFilters
-        filters={filters}
-        onFiltersChange={onFiltersChange}
-        onExport={() => console.log('Export billing dashboard')}
-      />
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export billing dashboard")} />
 
       {(revenueState.error || codingState.error || usageState.error) && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">
-          {revenueState.error || codingState.error || usageState.error}
-        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">{revenueState.error || codingState.error || usageState.error}</div>
       )}
 
       {(revenueState.loading || codingState.loading || usageState.loading) && (
@@ -610,9 +596,7 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
           </CardHeader>
           <CardContent>
             {showEmptyRevenueChart ? (
-              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
-                No revenue data available.
-              </div>
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">No revenue data available.</div>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={revenueLineData}>
@@ -635,9 +619,7 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
           </CardHeader>
           <CardContent>
             {showEmptyDistribution ? (
-              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
-                No billing data available.
-              </div>
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">No billing data available.</div>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>
@@ -676,9 +658,7 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
           </CardHeader>
           <CardContent>
             {showEmptyDenialChart ? (
-              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
-                No claims data available.
-              </div>
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">No claims data available.</div>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={denialData}>
@@ -706,67 +686,23 @@ interface HealthOutcomesDashboardProps {
 
 function HealthOutcomesDashboard({ filters, onFiltersChange }: HealthOutcomesDashboardProps) {
   const outcomeData = [
-    { name: 'Jan', satisfaction: 4.2, readmissions: 8, outcomes: 87 },
-    { name: 'Feb', satisfaction: 4.4, readmissions: 6, outcomes: 89 },
-    { name: 'Mar', satisfaction: 4.3, readmissions: 7, outcomes: 88 },
-    { name: 'Apr', satisfaction: 4.6, readmissions: 5, outcomes: 91 },
-    { name: 'May', satisfaction: 4.5, readmissions: 4, outcomes: 92 },
-    { name: 'Jun', satisfaction: 4.7, readmissions: 3, outcomes: 94 }
+    { name: "Jan", satisfaction: 4.2, readmissions: 8, outcomes: 87 },
+    { name: "Feb", satisfaction: 4.4, readmissions: 6, outcomes: 89 },
+    { name: "Mar", satisfaction: 4.3, readmissions: 7, outcomes: 88 },
+    { name: "Apr", satisfaction: 4.6, readmissions: 5, outcomes: 91 },
+    { name: "May", satisfaction: 4.5, readmissions: 4, outcomes: 92 },
+    { name: "Jun", satisfaction: 4.7, readmissions: 3, outcomes: 94 },
   ]
 
   return (
     <div className="space-y-6">
-      <DashboardFilters
-        filters={filters}
-        onFiltersChange={onFiltersChange}
-        onExport={() => console.log('Export health outcomes dashboard')}
-      />
-      
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export health outcomes dashboard")} />
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Patient Satisfaction"
-          value="4.7/5.0"
-          baseline="4.2/5.0"
-          change={11.9}
-          changeType="increase"
-          trend="up"
-          icon={Stethoscope}
-          color="green"
-          description="Above national avg"
-        />
-        <MetricCard
-          title="Readmission Rate"
-          value="3.2%"
-          baseline="8.1%"
-          change={60.5}
-          changeType="decrease"
-          trend="down"
-          icon={Activity}
-          color="blue"
-          description="Target: <5%"
-        />
-        <MetricCard
-          title="Care Quality Score"
-          value="94.2"
-          baseline="87.3"
-          change={7.9}
-          changeType="increase"
-          trend="up"
-          icon={Award}
-          color="purple"
-          description="Industry avg: 88.5"
-        />
-        <MetricCard
-          title="Preventive Care %"
-          value="86.7%"
-          baseline="78.2%"
-          change={10.9}
-          changeType="increase"
-          trend="up"
-          icon={Shield}
-          color="orange"
-          description="Target: 90%"
-        />
+        <MetricCard title="Patient Satisfaction" value="4.7/5.0" baseline="4.2/5.0" change={11.9} changeType="increase" trend="up" icon={Stethoscope} color="green" description="Above national avg" />
+        <MetricCard title="Readmission Rate" value="3.2%" baseline="8.1%" change={60.5} changeType="decrease" trend="down" icon={Activity} color="blue" description="Target: <5%" />
+        <MetricCard title="Care Quality Score" value="94.2" baseline="87.3" change={7.9} changeType="increase" trend="up" icon={Award} color="purple" description="Industry avg: 88.5" />
+        <MetricCard title="Preventive Care %" value="86.7%" baseline="78.2%" change={10.9} changeType="increase" trend="up" icon={Shield} color="orange" description="Target: 90%" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -829,20 +765,18 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
   }, [codingState.data?.accuracy_trend])
 
   const qualityData = useMemo(() => {
-    return usageTrend.map(point => {
+    return usageTrend.map((point) => {
       const compliancePoint = complianceTrendMap.get(point.day)
       const accuracyPoint = accuracyTrendMap.get(point.day)
       const completeness = compliancePoint
         ? 100 - Math.min(100, (compliancePoint.notes_with_flags / Math.max(point.total_notes, 1)) * 100)
         : 100 - Math.min(100, (complianceState.data?.flagged_rate ?? 0) * 100)
-      const accuracy = accuracyPoint
-        ? Math.max(0, Math.round(accuracyPoint.accuracy * 100))
-        : Math.max(0, Math.round((codingState.data?.accuracy ?? 0) * 100))
+      const accuracy = accuracyPoint ? Math.max(0, Math.round(accuracyPoint.accuracy * 100)) : Math.max(0, Math.round((codingState.data?.accuracy ?? 0) * 100))
       return {
-        name: new Date(point.day).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        name: new Date(point.day).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
         completeness: Number(completeness.toFixed(1)),
         accuracy,
-        beauty: point.beautify
+        beauty: point.beautify,
       }
     })
   }, [accuracyTrendMap, codingState.data?.accuracy, complianceState.data?.flagged_rate, complianceTrendMap, usageTrend])
@@ -850,41 +784,33 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
   const totalNotes = usageState.data?.total_notes ?? 0
   const previousNotes = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].total_notes : totalNotes
   const notesChange = previousNotes ? ((totalNotes - previousNotes) / Math.max(previousNotes, 1)) * 100 : 0
-  const notesTrend: 'up' | 'down' = notesChange >= 0 ? 'up' : 'down'
+  const notesTrend: "up" | "down" = notesChange >= 0 ? "up" : "down"
 
   const beautifyTotal = usageState.data?.beautify ?? 0
   const previousBeautify = usageTrend.length > 1 ? usageTrend[usageTrend.length - 2].beautify : beautifyTotal
   const beautifyChange = previousBeautify ? ((beautifyTotal - previousBeautify) / Math.max(previousBeautify, 1)) * 100 : 0
-  const beautifyTrend: 'up' | 'down' = beautifyChange >= 0 ? 'up' : 'down'
+  const beautifyTrend: "up" | "down" = beautifyChange >= 0 ? "up" : "down"
 
-  const completenessRate = complianceState.data
-    ? 100 - Math.min(100, (complianceState.data.notes_with_flags / Math.max(totalNotes, 1)) * 100)
-    : 100
+  const completenessRate = complianceState.data ? 100 - Math.min(100, (complianceState.data.notes_with_flags / Math.max(totalNotes, 1)) * 100) : 100
   const latestCompleteness = qualityData.length > 0 ? qualityData[qualityData.length - 1].completeness : completenessRate
   const previousCompleteness = qualityData.length > 1 ? qualityData[qualityData.length - 2].completeness : latestCompleteness
   const completenessChange = previousCompleteness ? ((latestCompleteness - previousCompleteness) / Math.max(previousCompleteness, 1)) * 100 : 0
-  const completenessTrend: 'up' | 'down' = completenessChange >= 0 ? 'up' : 'down'
+  const completenessTrend: "up" | "down" = completenessChange >= 0 ? "up" : "down"
 
   const avgNoteLength = usageState.data?.avg_note_length ?? 0
   const projectedAvg = usageState.data?.projected_totals?.expected_avg_note_length ?? avgNoteLength
   const avgChange = projectedAvg ? ((avgNoteLength - projectedAvg) / Math.max(projectedAvg, 1)) * 100 : 0
-  const avgTrend: 'up' | 'down' = avgChange >= 0 ? 'up' : 'down'
+  const avgTrend: "up" | "down" = avgChange >= 0 ? "up" : "down"
 
   const draftsCount = draftState.data?.drafts ?? 0
   const showQualityChart = qualityData.length > 0
 
   return (
     <div className="space-y-6">
-      <DashboardFilters
-        filters={filters}
-        onFiltersChange={onFiltersChange}
-        onExport={() => console.log('Export note quality dashboard')}
-      />
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export note quality dashboard")} />
 
       {(usageState.error || complianceState.error || draftState.error) && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">
-          {usageState.error || complianceState.error || draftState.error}
-        </div>
+        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">{usageState.error || complianceState.error || draftState.error}</div>
       )}
 
       {(usageState.loading || complianceState.loading || draftState.loading) && (
@@ -903,7 +829,7 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
           trend={notesTrend}
           icon={FileText}
           color="blue"
-          description={draftsCount ? `${draftsCount} active drafts` : 'Draft analytics unavailable'}
+          description={draftsCount ? `${draftsCount} active drafts` : "Draft analytics unavailable"}
         />
         <MetricCard
           title="Beautify Actions"
@@ -914,7 +840,7 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
           trend={beautifyTrend}
           icon={Zap}
           color="green"
-          description={totalNotes ? `${Math.round((beautifyTotal / Math.max(totalNotes, 1)) * 100)}% of notes` : 'Usage data unavailable'}
+          description={totalNotes ? `${Math.round((beautifyTotal / Math.max(totalNotes, 1)) * 100)}% of notes` : "Usage data unavailable"}
         />
         <MetricCard
           title="Note Completeness"
@@ -955,9 +881,7 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
           </CardHeader>
           <CardContent>
             {!showQualityChart ? (
-              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
-                No quality trend data available.
-              </div>
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">No quality trend data available.</div>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={qualityData}>
@@ -980,9 +904,7 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
           </CardHeader>
           <CardContent>
             {!showQualityChart ? (
-              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">
-                No usage data available.
-              </div>
+              <div className="flex h-[300px] items-center justify-center text-sm text-muted-foreground">No usage data available.</div>
             ) : (
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={qualityData}>
@@ -1008,10 +930,10 @@ interface StaffPerformanceDashboardProps {
 
 function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanceDashboardProps) {
   const staffData = [
-    { name: 'Dr. Johnson', notes: 145, accuracy: 94, efficiency: 87, revenue: 28450 },
-    { name: 'Dr. Smith', notes: 132, accuracy: 91, efficiency: 92, revenue: 25680 },
-    { name: 'NP Williams', notes: 98, accuracy: 89, efficiency: 88, revenue: 18920 },
-    { name: 'Dr. Brown', notes: 156, accuracy: 96, efficiency: 85, revenue: 31200 }
+    { name: "Dr. Johnson", notes: 145, accuracy: 94, efficiency: 87, revenue: 28450 },
+    { name: "Dr. Smith", notes: 132, accuracy: 91, efficiency: 92, revenue: 25680 },
+    { name: "NP Williams", notes: 98, accuracy: 89, efficiency: 88, revenue: 18920 },
+    { name: "Dr. Brown", notes: 156, accuracy: 96, efficiency: 85, revenue: 31200 },
   ]
 
   return (
@@ -1021,40 +943,14 @@ function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanc
           <Shield className="w-5 h-5 text-amber-600" />
           <span className="font-medium text-amber-800">Admin Access Required</span>
         </div>
-        <p className="text-sm text-amber-700 mt-1">
-          This dashboard contains sensitive staff performance data and is only accessible to administrators.
-        </p>
+        <p className="text-sm text-amber-700 mt-1">This dashboard contains sensitive staff performance data and is only accessible to administrators.</p>
       </div>
 
-      <DashboardFilters
-        filters={filters}
-        onFiltersChange={onFiltersChange}
-        onExport={() => console.log('Export staff performance dashboard')}
-      />
-      
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export staff performance dashboard")} />
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          title="Team Productivity"
-          value="127%"
-          baseline="100%"
-          change={27.0}
-          changeType="increase"
-          trend="up"
-          icon={TrendingUp}
-          color="green"
-          description="Above target"
-        />
-        <MetricCard
-          title="Avg Coding Accuracy"
-          value="92.5%"
-          baseline="88.1%"
-          change={5.0}
-          changeType="increase"
-          trend="up"
-          icon={Target}
-          color="blue"
-          description="Target: 95%"
-        />
+        <MetricCard title="Team Productivity" value="127%" baseline="100%" change={27.0} changeType="increase" trend="up" icon={TrendingUp} color="green" description="Above target" />
+        <MetricCard title="Avg Coding Accuracy" value="92.5%" baseline="88.1%" change={5.0} changeType="increase" trend="up" icon={Target} color="blue" description="Target: 95%" />
         <MetricCard
           title="Documentation Speed"
           value="8.3 min/note"
@@ -1066,17 +962,7 @@ function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanc
           color="purple"
           description="Industry avg: 12 min"
         />
-        <MetricCard
-          title="Compliance Score"
-          value="96.8%"
-          baseline="92.4%"
-          change={4.8}
-          changeType="increase"
-          trend="up"
-          icon={Award}
-          color="orange"
-          description="Target: 98%"
-        />
+        <MetricCard title="Compliance Score" value="96.8%" baseline="92.4%" change={4.8} changeType="increase" trend="up" icon={Award} color="orange" description="Target: 98%" />
       </div>
 
       <Card>
@@ -1104,27 +990,27 @@ function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanc
 }
 
 interface AnalyticsProps {
-  userRole?: 'admin' | 'user'
+  userRole?: "admin" | "user"
 }
 
-export function Analytics({ userRole = 'user' }: AnalyticsProps) {
-  const [activeTab, setActiveTab] = useState('billing')
+export function Analytics({ userRole = "user" }: AnalyticsProps) {
+  const [activeTab, setActiveTab] = useState("billing")
   const [usageState, setUsageState] = useState<DataState<UsageAnalyticsResponse>>({ data: null, loading: true, error: null })
   const [codingAccuracyState, setCodingAccuracyState] = useState<DataState<CodingAccuracyAnalyticsResponse>>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [revenueState, setRevenueState] = useState<DataState<RevenueAnalyticsResponse>>({ data: null, loading: true, error: null })
   const [complianceState, setComplianceState] = useState<DataState<ComplianceAnalyticsResponse>>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [draftAnalyticsState, setDraftAnalyticsState] = useState<DataState<DraftAnalyticsResponse>>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [sessionHydrated, setSessionHydrated] = useState(false)
   const [refreshCounter, setRefreshCounter] = useState(0)
@@ -1132,17 +1018,17 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
   const serializedFilters = useMemo(() => serializeFilters(filters), [filters])
 
   const handleFiltersChange = useCallback((updates: Partial<AnalyticsFilters>) => {
-    setFilters(prev => {
+    setFilters((prev) => {
       const next: AnalyticsFilters = {
         ...prev,
-        customRange: updates.customRange !== undefined ? updates.customRange : prev.customRange
+        customRange: updates.customRange !== undefined ? updates.customRange : prev.customRange,
       }
 
       if (updates.datePreset) {
         next.datePreset = updates.datePreset
       }
 
-      if (next.datePreset !== 'custom') {
+      if (next.datePreset !== "custom") {
         next.customRange = null
       }
 
@@ -1164,11 +1050,11 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
 
   const loadAnalyticsData = useCallback(
     async (signal?: AbortSignal) => {
-      setUsageState(prev => ({ ...prev, loading: true, error: null }))
-      setCodingAccuracyState(prev => ({ ...prev, loading: true, error: null }))
-      setRevenueState(prev => ({ ...prev, loading: true, error: null }))
-      setComplianceState(prev => ({ ...prev, loading: true, error: null }))
-      setDraftAnalyticsState(prev => ({ ...prev, loading: true, error: null }))
+      setUsageState((prev) => ({ ...prev, loading: true, error: null }))
+      setCodingAccuracyState((prev) => ({ ...prev, loading: true, error: null }))
+      setRevenueState((prev) => ({ ...prev, loading: true, error: null }))
+      setComplianceState((prev) => ({ ...prev, loading: true, error: null }))
+      setDraftAnalyticsState((prev) => ({ ...prev, loading: true, error: null }))
 
       const toMessage = (reason: unknown): string => {
         if (reason instanceof DOMException && reason.name === "AbortError") {
@@ -1188,7 +1074,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         apiFetchJson<CodingAccuracyAnalyticsResponse>(`/api/analytics/coding-accuracy${suffix}`, { signal }),
         apiFetchJson<RevenueAnalyticsResponse>(`/api/analytics/revenue${suffix}`, { signal }),
         apiFetchJson<ComplianceAnalyticsResponse>(`/api/analytics/compliance${suffix}`, { signal }),
-        apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal })
+        apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal }),
       ])
 
       if (signal?.aborted) {
@@ -1202,7 +1088,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         if (message) {
           console.error("Failed to load usage analytics", usageResult.reason)
         }
-        setUsageState(prev => ({ data: prev.data, loading: false, error: message || prev.error || "Unable to load usage analytics." }))
+        setUsageState((prev) => ({ data: prev.data, loading: false, error: message || prev.error || "Unable to load usage analytics." }))
       }
 
       if (codingResult.status === "fulfilled") {
@@ -1212,10 +1098,10 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         if (message) {
           console.error("Failed to load coding accuracy analytics", codingResult.reason)
         }
-        setCodingAccuracyState(prev => ({
+        setCodingAccuracyState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || "Unable to load coding analytics."
+          error: message || prev.error || "Unable to load coding analytics.",
         }))
       }
 
@@ -1226,10 +1112,10 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         if (message) {
           console.error("Failed to load revenue analytics", revenueResult.reason)
         }
-        setRevenueState(prev => ({
+        setRevenueState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || "Unable to load revenue analytics."
+          error: message || prev.error || "Unable to load revenue analytics.",
         }))
       }
 
@@ -1240,10 +1126,10 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         if (message) {
           console.error("Failed to load compliance analytics", complianceResult.reason)
         }
-        setComplianceState(prev => ({
+        setComplianceState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || "Unable to load compliance analytics."
+          error: message || prev.error || "Unable to load compliance analytics.",
         }))
       }
 
@@ -1254,19 +1140,19 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
         if (message) {
           console.error("Failed to load draft analytics", draftsResult.reason)
         }
-        setDraftAnalyticsState(prev => ({
+        setDraftAnalyticsState((prev) => ({
           data: prev.data,
           loading: false,
-          error: message || prev.error || "Unable to load draft analytics."
+          error: message || prev.error || "Unable to load draft analytics.",
         }))
       }
     },
-    [filters]
+    [filters],
   )
 
   useEffect(() => {
     const controller = new AbortController()
-    loadAnalyticsData(controller.signal).catch(error => {
+    loadAnalyticsData(controller.signal).catch((error) => {
       if ((error as DOMException)?.name !== "AbortError") {
         console.error("Unexpected analytics load error", error)
       }
@@ -1275,20 +1161,17 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
   }, [loadAnalyticsData, refreshCounter])
 
   const handleRefresh = useCallback(() => {
-    setRefreshCounter(prev => prev + 1)
+    setRefreshCounter((prev) => prev + 1)
   }, [])
 
-  const currencyFormatter = useMemo(
-    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }),
-    []
-  )
+  const currencyFormatter = useMemo(() => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }), [])
 
   useEffect(() => {
     const controller = new AbortController()
     let mounted = true
 
     apiFetchJson<{ analyticsPreferences?: { activeTab?: string; filters?: StoredAnalyticsFilters } }>("/api/user/session", { signal: controller.signal })
-      .then(data => {
+      .then((data) => {
         if (!mounted || !data?.analyticsPreferences) {
           return
         }
@@ -1300,7 +1183,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
           setFilters(deserializeFilters(prefs.filters))
         }
       })
-      .catch(error => {
+      .catch((error) => {
         if ((error as DOMException)?.name !== "AbortError") {
           console.error("Failed to load analytics preferences", error)
         }
@@ -1327,10 +1210,10 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
       apiFetch("/api/user/session", {
         method: "PUT",
         jsonBody: {
-          analyticsPreferences: { activeTab, filters: serializedFilters }
+          analyticsPreferences: { activeTab, filters: serializedFilters },
         },
-        signal: controller.signal
-      }).catch(error => {
+        signal: controller.signal,
+      }).catch((error) => {
         if ((error as DOMException)?.name !== "AbortError") {
           console.error("Failed to persist analytics preferences", error)
         }
@@ -1348,9 +1231,7 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Analytics Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
-            Comprehensive insights into your clinical documentation and billing performance
-          </p>
+          <p className="text-muted-foreground mt-1">Comprehensive insights into your clinical documentation and billing performance</p>
         </div>
         <Badge variant="outline" className="text-xs">
           Last updated: {new Date().toLocaleDateString()}
@@ -1371,14 +1252,10 @@ export function Analytics({ userRole = 'user' }: AnalyticsProps) {
             <FileText className="w-4 h-4" />
             Note Quality
           </TabsTrigger>
-          <TabsTrigger 
-            value="staff" 
-            disabled={userRole !== 'admin'}
-            className="flex items-center gap-2"
-          >
+          <TabsTrigger value="staff" disabled={userRole !== "admin"} className="flex items-center gap-2">
             <Users className="w-4 h-4" />
             Staff Performance
-            {userRole !== 'admin' && <Shield className="w-3 h-3 ml-1" />}
+            {userRole !== "admin" && <Shield className="w-3 h-3 ml-1" />}
           </TabsTrigger>
         </TabsList>
 

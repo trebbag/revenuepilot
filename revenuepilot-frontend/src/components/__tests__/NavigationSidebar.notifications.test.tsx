@@ -18,7 +18,7 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     apiFetchJson: vi.fn(),
     apiFetch: vi.fn(),
-    resolveWebsocketUrl: vi.fn()
+    resolveWebsocketUrl: vi.fn(),
   }
 })
 
@@ -65,15 +65,15 @@ describe("NavigationSidebar notifications", () => {
         removeEventListener: vi.fn(),
         dispatchEvent: vi.fn(),
         addListener: vi.fn(),
-        removeListener: vi.fn()
-      }))
+        removeListener: vi.fn(),
+      })),
     )
 
     mockedApiFetch.mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => ({}),
-      text: async () => ""
+      text: async () => "",
     } as unknown as Response)
 
     const baseNotifications = [
@@ -83,7 +83,7 @@ describe("NavigationSidebar notifications", () => {
         message: "Review required",
         severity: "high",
         timestamp: "2024-03-14T08:30:00Z",
-        isRead: false
+        isRead: false,
       },
       {
         id: "notif-2",
@@ -91,8 +91,8 @@ describe("NavigationSidebar notifications", () => {
         message: "Team standup at 4pm",
         severity: "info",
         timestamp: "2024-03-13T08:30:00Z",
-        isRead: true
-      }
+        isRead: true,
+      },
     ]
 
     let currentNotifications = [...baseNotifications]
@@ -107,7 +107,7 @@ describe("NavigationSidebar notifications", () => {
           total: currentNotifications.length,
           limit: 20,
           offset: 0,
-          unreadCount: currentNotifications.filter(item => !item.isRead).length
+          unreadCount: currentNotifications.filter((item) => !item.isRead).length,
         }
       }
       if (url.startsWith("/api/user/profile")) {
@@ -118,13 +118,11 @@ describe("NavigationSidebar notifications", () => {
       }
       if (url.startsWith("/api/notifications/") && url.endsWith("/read") && options?.method === "POST") {
         const id = decodeURIComponent(url.split("/").slice(-2)[0] ?? "")
-        currentNotifications = currentNotifications.map(item =>
-          item.id === id ? { ...item, isRead: true } : item
-        )
-        return { unreadCount: currentNotifications.filter(item => !item.isRead).length }
+        currentNotifications = currentNotifications.map((item) => (item.id === id ? { ...item, isRead: true } : item))
+        return { unreadCount: currentNotifications.filter((item) => !item.isRead).length }
       }
       if (url === "/api/notifications/read-all" && options?.method === "POST") {
-        currentNotifications = currentNotifications.map(item => ({ ...item, isRead: true }))
+        currentNotifications = currentNotifications.map((item) => ({ ...item, isRead: true }))
         return { unreadCount: 0 }
       }
 
@@ -143,7 +141,7 @@ describe("NavigationSidebar notifications", () => {
     return render(
       <SidebarProvider>
         <NavigationSidebar currentView="dashboard" userDraftCount={0} />
-      </SidebarProvider>
+      </SidebarProvider>,
     )
   }
 
@@ -151,10 +149,10 @@ describe("NavigationSidebar notifications", () => {
     renderSidebar()
 
     await waitFor(() => {
-      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+      expect(mockedApiFetchJson.mock.calls.some((call) => call[0] === notificationsEndpoint)).toBe(true)
     })
 
-    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTriggers = await screen.findAllByText("Notifications", { selector: "span.font-medium" })
     const navTrigger = navTriggers[navTriggers.length - 1]
     expect(navTrigger).toBeInTheDocument()
 
@@ -171,25 +169,22 @@ describe("NavigationSidebar notifications", () => {
     renderSidebar()
 
     await waitFor(() => {
-      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+      expect(mockedApiFetchJson.mock.calls.some((call) => call[0] === notificationsEndpoint)).toBe(true)
     })
 
-    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTriggers = await screen.findAllByText("Notifications", { selector: "span.font-medium" })
     const navTrigger = navTriggers[navTriggers.length - 1]
     fireEvent.click(navTrigger)
 
-    const cards = await screen.findAllByText("Compliance alert", { selector: 'h4', timeout: 2000 })
+    const cards = await screen.findAllByText("Compliance alert", { selector: "h4", timeout: 2000 })
     fireEvent.click(cards[0])
 
     await waitFor(() => {
-      expect(mockedApiFetchJson).toHaveBeenCalledWith(
-        "/api/notifications/notif-1/read",
-        expect.objectContaining({ method: "POST" })
-      )
+      expect(mockedApiFetchJson).toHaveBeenCalledWith("/api/notifications/notif-1/read", expect.objectContaining({ method: "POST" }))
     })
 
     await waitFor(() => {
-      const calls = mockedApiFetchJson.mock.calls.filter(call => call[0] === notificationsEndpoint)
+      const calls = mockedApiFetchJson.mock.calls.filter((call) => call[0] === notificationsEndpoint)
       expect(calls.length).toBeGreaterThan(1)
     })
   })
@@ -198,10 +193,10 @@ describe("NavigationSidebar notifications", () => {
     renderSidebar()
 
     await waitFor(() => {
-      expect(mockedApiFetchJson.mock.calls.some(call => call[0] === notificationsEndpoint)).toBe(true)
+      expect(mockedApiFetchJson.mock.calls.some((call) => call[0] === notificationsEndpoint)).toBe(true)
     })
 
-    const navTriggers = await screen.findAllByText("Notifications", { selector: 'span.font-medium' })
+    const navTriggers = await screen.findAllByText("Notifications", { selector: "span.font-medium" })
     const navTrigger = navTriggers[navTriggers.length - 1]
     fireEvent.click(navTrigger)
 
@@ -221,8 +216,8 @@ describe("NavigationSidebar notifications", () => {
         message: "Review the latest submission",
         severity: "warning",
         timestamp: "2024-03-15T10:00:00Z",
-        unreadCount: 2
-      })
+        unreadCount: 2,
+      }),
     } as MessageEvent)
 
     expect(await screen.findByText("New task", undefined, { timeout: 2000 })).toBeInTheDocument()
@@ -231,30 +226,28 @@ describe("NavigationSidebar notifications", () => {
 })
 
 describe("NavigationSidebar websocket authentication", () => {
-  const matchMediaMock = vi.fn(
-    (query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      dispatchEvent: vi.fn()
-    })
-  )
+  const matchMediaMock = vi.fn((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }))
 
   beforeEach(() => {
     matchMediaMock.mockClear()
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       writable: true,
-      value: matchMediaMock
+      value: matchMediaMock,
     })
     Object.defineProperty(window, "innerWidth", {
       configurable: true,
       writable: true,
-      value: 1024
+      value: 1024,
     })
   })
 
@@ -272,12 +265,7 @@ describe("NavigationSidebar websocket authentication", () => {
       return `ws://example.test${relative}`
     })
     vi.spyOn(api, "apiFetchJson").mockImplementation(async (input: RequestInfo | URL) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.toString()
-            : (input as Request).url
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
       if (url === "/api/user/current-view") {
         return { currentView: null }
       }
@@ -311,7 +299,7 @@ describe("NavigationSidebar websocket authentication", () => {
         close(this: any) {
           this.readyState = 3
           this.onclose?.()
-        }
+        },
       }
       wsInstances.push(instance)
       return instance as unknown as WebSocket
@@ -321,7 +309,7 @@ describe("NavigationSidebar websocket authentication", () => {
     render(
       <SidebarProvider>
         <NavigationSidebar userDraftCount={0} />
-      </SidebarProvider>
+      </SidebarProvider>,
     )
 
     await waitFor(() => {
@@ -333,6 +321,6 @@ describe("NavigationSidebar websocket authentication", () => {
     expect(url).toBe("ws://example.test/ws/notifications?token=abc123-token")
     expect(protocols).toEqual(["authorization", "Bearer abc123-token"])
 
-    wsInstances.forEach(instance => instance.onclose?.())
+    wsInstances.forEach((instance) => instance.onclose?.())
   })
 })

@@ -8,10 +8,7 @@ export function ThemeToggle() {
 
   useEffect(() => {
     const savedTheme = typeof window !== "undefined" ? window.localStorage.getItem("theme") : null
-    const prefersDark =
-      typeof window !== "undefined" && window.matchMedia
-        ? window.matchMedia("(prefers-color-scheme: dark)").matches
-        : false
+    const prefersDark = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)").matches : false
 
     if (savedTheme === "dark" || (!savedTheme && prefersDark)) {
       setIsDark(true)
@@ -33,13 +30,7 @@ export function ThemeToggle() {
   }
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={toggleTheme}
-      className="fixed top-4 left-4 z-50"
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-    >
+    <Button variant="ghost" size="sm" onClick={toggleTheme} className="fixed top-4 left-4 z-50" aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}>
       {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
     </Button>
   )

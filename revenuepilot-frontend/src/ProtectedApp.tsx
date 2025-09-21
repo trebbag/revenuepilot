@@ -10,12 +10,7 @@ import { Drafts } from "./components/Drafts"
 import { Schedule, type ScheduleChartUploadStatus } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
-import type {
-  CollaborationStreamState,
-  ComplianceIssue,
-  LiveCodeSuggestion,
-  StreamConnectionState
-} from "./components/NoteEditor"
+import type { CollaborationStreamState, ComplianceIssue, LiveCodeSuggestion, StreamConnectionState } from "./components/NoteEditor"
 import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
 import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
@@ -24,10 +19,7 @@ import { FigmaComponentLibrary } from "./components/FigmaComponentLibrary"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "./components/ui/resizable"
 import { Button } from "./components/ui/button"
 import { Badge } from "./components/ui/badge"
-import {
-  FinalizationWizardAdapter,
-  type FinalizationWizardLaunchOptions
-} from "./components/FinalizationWizardAdapter"
+import { FinalizationWizardAdapter, type FinalizationWizardLaunchOptions } from "./components/FinalizationWizardAdapter"
 import type { StoredFinalizationSession } from "./features/finalization/workflowTypes"
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
@@ -64,13 +56,13 @@ interface ScheduleAppointmentView {
   patientEmail: string
   appointmentTime: string
   duration: number
-  appointmentType: 'Wellness' | 'Follow-up' | 'New Patient' | 'Urgent' | 'Consultation'
+  appointmentType: "Wellness" | "Follow-up" | "New Patient" | "Urgent" | "Consultation"
   provider: string
   location: string
-  status: 'Scheduled' | 'Checked In' | 'In Progress' | 'Completed' | 'No Show' | 'Cancelled'
+  status: "Scheduled" | "Checked In" | "In Progress" | "Completed" | "No Show" | "Cancelled"
   notes?: string
   fileUpToDate: boolean
-  priority: 'low' | 'medium' | 'high'
+  priority: "low" | "medium" | "high"
   isVirtual: boolean
   sourceStatus: string
   visitSummary?: Record<string, unknown> | null
@@ -95,7 +87,6 @@ interface DraftAnalyticsSummary {
   drafts: number
 }
 
-
 type NoteViewMode = "draft" | "beautified"
 
 interface ActiveDraftState {
@@ -106,7 +97,6 @@ interface ActiveDraftState {
   patientName?: string
 }
 
-
 const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   analytics: "view:analytics",
   settings: "manage:settings",
@@ -114,7 +104,7 @@ const VIEW_PERMISSIONS: Partial<Record<ViewKey, string>> = {
   drafts: "view:drafts",
   schedule: "view:schedule",
   builder: "manage:builder",
-  "figma-library": "view:design-library"
+  "figma-library": "view:design-library",
 }
 
 const VIEW_LABELS: Record<ViewKey, string> = {
@@ -128,19 +118,14 @@ const VIEW_LABELS: Record<ViewKey, string> = {
   schedule: "Schedule",
   builder: "Builder",
   "style-guide": "Style Guide",
-  "figma-library": "Figma Library"
+  "figma-library": "Figma Library",
 }
 
 export function ProtectedApp() {
   const auth = useAuth()
-  const {
-    state: sessionState,
-    actions: sessionActions,
-    hydrated: sessionHydrated,
-    syncing: sessionSyncing
-  } = useSession()
+  const { state: sessionState, actions: sessionActions, hydrated: sessionHydrated, syncing: sessionSyncing } = useSession()
 
-  const [currentView, setCurrentView] = useState<ViewKey>('home')
+  const [currentView, setCurrentView] = useState<ViewKey>("home")
   const [viewHydrated, setViewHydrated] = useState(false)
   const [prePopulatedPatient, setPrePopulatedPatient] = useState<{
     patientId: string
@@ -150,85 +135,70 @@ export function ProtectedApp() {
   const [noteEditorContent, setNoteEditorContent] = useState<string>(activeDraft?.content ?? "")
   const [liveComplianceIssues, setLiveComplianceIssues] = useState<ComplianceIssue[]>([])
   const [complianceStreamState, setComplianceStreamState] = useState<StreamConnectionState>({
-    status: 'idle',
+    status: "idle",
     attempts: 0,
     lastError: null,
     lastConnectedAt: null,
-    nextRetryDelayMs: null
+    nextRetryDelayMs: null,
   })
   const [liveCodeSuggestions, setLiveCodeSuggestions] = useState<LiveCodeSuggestion[]>([])
   const [codeStreamState, setCodeStreamState] = useState<StreamConnectionState>({
-    status: 'idle',
+    status: "idle",
     attempts: 0,
     lastError: null,
     lastConnectedAt: null,
-    nextRetryDelayMs: null
+    nextRetryDelayMs: null,
   })
   const [collaborationState, setCollaborationState] = useState<CollaborationStreamState | null>(null)
 
-  const handleComplianceStreamUpdate = useCallback(
-    (issues: ComplianceIssue[], state: StreamConnectionState) => {
-      setLiveComplianceIssues(issues)
-      setComplianceStreamState(state)
-    },
-    []
-  )
+  const handleComplianceStreamUpdate = useCallback((issues: ComplianceIssue[], state: StreamConnectionState) => {
+    setLiveComplianceIssues(issues)
+    setComplianceStreamState(state)
+  }, [])
 
-  const handleCodeStreamUpdate = useCallback(
-    (suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => {
-      setLiveCodeSuggestions(suggestions)
-      setCodeStreamState(state)
-    },
-    []
-  )
+  const handleCodeStreamUpdate = useCallback((suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => {
+    setLiveCodeSuggestions(suggestions)
+    setCodeStreamState(state)
+  }, [])
 
-  const handleCollaborationStreamUpdate = useCallback(
-    (state: CollaborationStreamState) => {
-      setCollaborationState(state)
-    },
-    []
-  )
+  const handleCollaborationStreamUpdate = useCallback((state: CollaborationStreamState) => {
+    setCollaborationState(state)
+  }, [])
   const [accessDeniedMessage, setAccessDeniedMessage] = useState<string | null>(null)
   const [finalizationRequest, setFinalizationRequest] = useState<FinalizationWizardLaunchOptions | null>(null)
   const finalizationReturnViewRef = useRef<ViewKey>("app")
-  const [recentFinalization, setRecentFinalization] = useState<
-    | {
-        result: FinalizeResult
-        noteId?: string | null
-        encounterId?: string | null
-        patientId?: string | null
-      }
-    | null
-  >(null)
+  const [recentFinalization, setRecentFinalization] = useState<{
+    result: FinalizeResult
+    noteId?: string | null
+    encounterId?: string | null
+    patientId?: string | null
+  } | null>(null)
 
-  const userRole = (auth.user?.role === 'admin' ? 'admin' : 'user') as 'admin' | 'user'
+  const userRole = (auth.user?.role === "admin" ? "admin" : "user") as "admin" | "user"
 
   const currentUser = useMemo(
     () => ({
-      id: auth.user?.id ?? 'user-unknown',
+      id: auth.user?.id ?? "user-unknown",
       name:
-        typeof auth.user?.name === 'string' && auth.user.name.trim().length > 0
+        typeof auth.user?.name === "string" && auth.user.name.trim().length > 0
           ? auth.user.name
-          : typeof auth.user?.fullName === 'string' && auth.user.fullName.trim().length > 0
+          : typeof auth.user?.fullName === "string" && auth.user.fullName.trim().length > 0
             ? auth.user.fullName
-            : 'Clinician',
+            : "Clinician",
       fullName:
-        typeof auth.user?.fullName === 'string' && auth.user.fullName.trim().length > 0
+        typeof auth.user?.fullName === "string" && auth.user.fullName.trim().length > 0
           ? auth.user.fullName
-          : typeof auth.user?.name === 'string' && auth.user.name.trim().length > 0
+          : typeof auth.user?.name === "string" && auth.user.name.trim().length > 0
             ? auth.user.name
-            : 'Clinician',
+            : "Clinician",
       role: userRole,
-      specialty:
-        typeof auth.user?.specialty === 'string' && auth.user.specialty.trim().length > 0
-          ? auth.user.specialty
-          : 'General Medicine'
+      specialty: typeof auth.user?.specialty === "string" && auth.user.specialty.trim().length > 0 ? auth.user.specialty : "General Medicine",
     }),
-    [auth.user, userRole]
+    [auth.user, userRole],
   )
 
   const { selectedCodes, selectedCodesList, addedCodes, isSuggestionPanelOpen, layout } = sessionState
-  const isFinalizationView = currentView === 'finalization'
+  const isFinalizationView = currentView === "finalization"
   const finalizationSessionSnapshot = useMemo<StoredFinalizationSession | null>(() => {
     if (!finalizationRequest) {
       return null
@@ -239,23 +209,21 @@ export function ProtectedApp() {
     }
 
     const normalize = (value?: string | number | null): string => {
-      if (typeof value === 'number' && Number.isFinite(value)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
         return String(value).trim().toLowerCase()
       }
-      if (typeof value === 'string') {
+      if (typeof value === "string") {
         const trimmed = value.trim()
-        return trimmed.length > 0 ? trimmed.toLowerCase() : ''
+        return trimmed.length > 0 ? trimmed.toLowerCase() : ""
       }
-      return ''
+      return ""
     }
 
     const normalizedNoteId = normalize(finalizationRequest.noteId ?? null)
     const normalizedEncounterId = normalize(finalizationRequest.patientInfo?.encounterId ?? null)
     const normalizedPatientId = normalize(finalizationRequest.patientInfo?.patientId ?? null)
 
-    const entries = Object.values(sessions).filter(
-      (entry): entry is StoredFinalizationSession => Boolean(entry && typeof entry === 'object')
-    )
+    const entries = Object.values(sessions).filter((entry): entry is StoredFinalizationSession => Boolean(entry && typeof entry === "object"))
 
     if (!entries.length) {
       return null
@@ -263,7 +231,7 @@ export function ProtectedApp() {
 
     const sorted = entries.slice().sort((a, b) => {
       const parseTimestamp = (input?: string | null) => {
-        if (typeof input !== 'string') {
+        if (typeof input !== "string") {
           return 0
         }
         const timestamp = Date.parse(input)
@@ -275,27 +243,21 @@ export function ProtectedApp() {
     })
 
     if (normalizedNoteId) {
-      const match = sorted.find(
-        session => normalize(session.noteId ?? null) === normalizedNoteId
-      )
+      const match = sorted.find((session) => normalize(session.noteId ?? null) === normalizedNoteId)
       if (match) {
         return match
       }
     }
 
     if (normalizedEncounterId) {
-      const match = sorted.find(
-        session => normalize(session.encounterId ?? null) === normalizedEncounterId
-      )
+      const match = sorted.find((session) => normalize(session.encounterId ?? null) === normalizedEncounterId)
       if (match) {
         return match
       }
     }
 
     if (normalizedPatientId) {
-      const match = sorted.find(
-        session => normalize(session.patientId ?? null) === normalizedPatientId
-      )
+      const match = sorted.find((session) => normalize(session.patientId ?? null) === normalizedPatientId)
       if (match) {
         return match
       }
@@ -308,35 +270,23 @@ export function ProtectedApp() {
     if (!finalizationRequest) {
       return null
     }
-    const {
-      onClose: _onClose,
-      displayMode,
-      initialPreFinalizeResult,
-      initialSessionSnapshot,
-      ...rest
-    } = finalizationRequest
+    const { onClose: _onClose, displayMode, initialPreFinalizeResult, initialSessionSnapshot, ...rest } = finalizationRequest
     const snapshot = finalizationSessionSnapshot ?? initialSessionSnapshot ?? null
     return {
       ...rest,
-      displayMode: displayMode ?? 'embedded',
+      displayMode: displayMode ?? "embedded",
       initialPreFinalizeResult: initialPreFinalizeResult ?? snapshot?.lastPreFinalize ?? null,
       initialSessionSnapshot: snapshot ?? null,
       streamingCodeSuggestions: liveCodeSuggestions,
       codesConnection: codeStreamState,
-      complianceConnection: complianceStreamState
+      complianceConnection: complianceStreamState,
     }
-  }, [
-    finalizationRequest,
-    finalizationSessionSnapshot,
-    liveCodeSuggestions,
-    codeStreamState,
-    complianceStreamState
-  ])
+  }, [finalizationRequest, finalizationSessionSnapshot, liveCodeSuggestions, codeStreamState, complianceStreamState])
 
   const [appointmentsState, setAppointmentsState] = useState<ScheduleDataState>({
     data: null,
     loading: true,
-    error: null
+    error: null,
   })
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0)
   const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
@@ -359,59 +309,61 @@ export function ProtectedApp() {
     return trimmed.length > 0 ? trimmed : fallback
   }, [])
 
-  const mapScheduleStatus = useCallback((status?: string | null): ScheduleAppointmentView['status'] => {
-    switch ((status ?? '').toLowerCase()) {
-      case 'checked in':
-      case 'check-in':
-        return 'Checked In'
-      case 'in-progress':
-      case 'in progress':
-      case 'start':
-        return 'In Progress'
-      case 'completed':
-        return 'Completed'
-      case 'cancelled':
-      case 'canceled':
-        return 'Cancelled'
-      case 'no show':
-      case 'no-show':
-        return 'No Show'
+  const mapScheduleStatus = useCallback((status?: string | null): ScheduleAppointmentView["status"] => {
+    switch ((status ?? "").toLowerCase()) {
+      case "checked in":
+      case "check-in":
+        return "Checked In"
+      case "in-progress":
+      case "in progress":
+      case "start":
+        return "In Progress"
+      case "completed":
+        return "Completed"
+      case "cancelled":
+      case "canceled":
+        return "Cancelled"
+      case "no show":
+      case "no-show":
+        return "No Show"
       default:
-        return 'Scheduled'
+        return "Scheduled"
     }
   }, [])
 
-  const determineVisitType = useCallback((reason: string): ScheduleAppointmentView['appointmentType'] => {
+  const determineVisitType = useCallback((reason: string): ScheduleAppointmentView["appointmentType"] => {
     const lower = reason.toLowerCase()
-    if (lower.includes('wellness')) return 'Wellness'
-    if (lower.includes('follow')) return 'Follow-up'
-    if (lower.includes('urgent') || lower.includes('emergency')) return 'Urgent'
-    if (lower.includes('new')) return 'New Patient'
-    if (lower.includes('consult')) return 'Consultation'
-    return 'Consultation'
+    if (lower.includes("wellness")) return "Wellness"
+    if (lower.includes("follow")) return "Follow-up"
+    if (lower.includes("urgent") || lower.includes("emergency")) return "Urgent"
+    if (lower.includes("new")) return "New Patient"
+    if (lower.includes("consult")) return "Consultation"
+    return "Consultation"
   }, [])
 
-  const determinePriority = useCallback((start: Date, status: ScheduleAppointmentView['status'], reason: string): ScheduleAppointmentView['priority'] => {
-    if (status === 'Cancelled') {
-      return 'low'
+  const determinePriority = useCallback((start: Date, status: ScheduleAppointmentView["status"], reason: string): ScheduleAppointmentView["priority"] => {
+    if (status === "Cancelled") {
+      return "low"
     }
     if (/urgent|emergency|stat/.test(reason.toLowerCase())) {
-      return 'high'
+      return "high"
     }
     const diffHours = (start.getTime() - Date.now()) / (1000 * 60 * 60)
     if (diffHours <= 1) {
-      return 'high'
+      return "high"
     }
     if (diffHours <= 4) {
-      return 'medium'
+      return "medium"
     }
-    return 'low'
+    return "low"
   }, [])
 
   const buildPatientEmail = useCallback((name: string, id: number | string) => {
-    const baseName = name.toLowerCase().replace(/[^a-z0-9]/g, '.') || 'patient'
-    const idComponent = String(id ?? '').trim().replace(/[^a-z0-9]/g, '.')
-    const suffix = idComponent.length > 0 ? `.${idComponent}` : ''
+    const baseName = name.toLowerCase().replace(/[^a-z0-9]/g, ".") || "patient"
+    const idComponent = String(id ?? "")
+      .trim()
+      .replace(/[^a-z0-9]/g, ".")
+    const suffix = idComponent.length > 0 ? `.${idComponent}` : ""
     return `${baseName}${suffix}@example.com`
   }, [])
 
@@ -420,32 +372,24 @@ export function ProtectedApp() {
       const startCandidate = new Date(raw.start)
       const start = Number.isNaN(startCandidate.getTime()) ? new Date() : startCandidate
       const endCandidate = new Date(raw.end)
-      const end = Number.isNaN(endCandidate.getTime())
-        ? new Date(start.getTime() + 30 * 60 * 1000)
-        : endCandidate
+      const end = Number.isNaN(endCandidate.getTime()) ? new Date(start.getTime() + 30 * 60 * 1000) : endCandidate
       const durationMinutes = Math.max(15, Math.round((end.getTime() - start.getTime()) / (1000 * 60)) || 30)
 
-      const summary =
-        raw.visitSummary && typeof raw.visitSummary === 'object'
-          ? (raw.visitSummary as Record<string, unknown>)
-          : null
+      const summary = raw.visitSummary && typeof raw.visitSummary === "object" ? (raw.visitSummary as Record<string, unknown>) : null
       const readString = (value: unknown): string | undefined => {
-        if (typeof value !== 'string') return undefined
+        if (typeof value !== "string") return undefined
         const trimmed = value.trim()
         return trimmed.length > 0 ? trimmed : undefined
       }
 
-      const idString = typeof raw.id === 'string' ? raw.id : String(raw.id ?? '')
-      const idDigits = idString.replace(/[^0-9]/g, '')
+      const idString = typeof raw.id === "string" ? raw.id : String(raw.id ?? "")
+      const idDigits = idString.replace(/[^0-9]/g, "")
 
-      const patientName = normalizeText(
-        readString(summary?.patientName) ?? raw.patient,
-        `Patient ${idString || '0'}`
-      )
+      const patientName = normalizeText(readString(summary?.patientName) ?? raw.patient, `Patient ${idString || "0"}`)
       const summaryReason = readString(summary?.chiefComplaint) ?? readString(summary?.reason)
-      const reason = normalizeText(summaryReason ?? raw.reason, 'Scheduled visit')
+      const reason = normalizeText(summaryReason ?? raw.reason, "Scheduled visit")
       const summaryProvider = readString(summary?.provider)
-      const provider = normalizeText(summaryProvider ?? raw.provider, 'Unassigned')
+      const provider = normalizeText(summaryProvider ?? raw.provider, "Unassigned")
       const summaryStatus = readString(summary?.status)
       const status = mapScheduleStatus(summaryStatus ?? raw.status)
       const encounterType = readString(summary?.encounterType)
@@ -453,40 +397,27 @@ export function ProtectedApp() {
       const isVirtual = Boolean(
         (encounterType && /tele|virtual/.test(encounterType.toLowerCase())) ||
           (rawLocation && /virtual/.test(rawLocation.toLowerCase())) ||
-          /virtual|telehealth|telemedicine/.test(reason.toLowerCase())
+          /virtual|telehealth|telemedicine/.test(reason.toLowerCase()),
       )
-      const location = normalizeText(rawLocation, isVirtual ? 'Virtual' : 'Main Clinic')
+      const location = normalizeText(rawLocation, isVirtual ? "Virtual" : "Main Clinic")
 
-      const patientIdSource =
-        raw.patientId ??
-        readString(summary?.patientId) ??
-        readString(summary?.patientID) ??
-        readString(summary?.mrn)
-      const fallbackPatientId = idDigits
-        ? `PT-${idDigits.padStart(4, '0')}`
-        : `PT-${(idString || '0').padStart(4, '0')}`
+      const patientIdSource = raw.patientId ?? readString(summary?.patientId) ?? readString(summary?.patientID) ?? readString(summary?.mrn)
+      const fallbackPatientId = idDigits ? `PT-${idDigits.padStart(4, "0")}` : `PT-${(idString || "0").padStart(4, "0")}`
       const patientId = normalizeText(patientIdSource, fallbackPatientId)
 
-      const encounterIdSource =
-        raw.encounterId ?? readString(summary?.encounterId) ?? readString(summary?.encounterID)
-      const fallbackEncounterId = idDigits
-        ? `ENC-${idDigits.padStart(4, '0')}`
-        : `ENC-${(idString || '0').padStart(4, '0')}`
+      const encounterIdSource = raw.encounterId ?? readString(summary?.encounterId) ?? readString(summary?.encounterID)
+      const fallbackEncounterId = idDigits ? `ENC-${idDigits.padStart(4, "0")}` : `ENC-${(idString || "0").padStart(4, "0")}`
       const encounterId = normalizeText(encounterIdSource, fallbackEncounterId)
 
-      const documentationComplete =
-        typeof summary?.documentationComplete === 'boolean'
-          ? summary.documentationComplete
-          : undefined
-      const summaryNotes =
-        readString(summary?.summary) ?? readString(summary?.notes) ?? readString(summary?.chiefComplaint)
+      const documentationComplete = typeof summary?.documentationComplete === "boolean" ? summary.documentationComplete : undefined
+      const summaryNotes = readString(summary?.summary) ?? readString(summary?.notes) ?? readString(summary?.chiefComplaint)
 
       return {
         id: idString || patientId,
         patientId,
         encounterId,
         patientName,
-        patientPhone: '(555) 000-0000',
+        patientPhone: "(555) 000-0000",
         patientEmail: buildPatientEmail(patientName, raw.patientId ?? raw.id ?? patientId),
         appointmentTime: start.toISOString(),
         duration: durationMinutes,
@@ -495,35 +426,29 @@ export function ProtectedApp() {
         location,
         status,
         notes: summaryNotes ?? reason,
-        fileUpToDate: documentationComplete ?? status === 'Completed',
+        fileUpToDate: documentationComplete ?? status === "Completed",
         priority: determinePriority(start, status, reason),
         isVirtual,
-        sourceStatus: normalizeText(summaryStatus ?? raw.status, 'scheduled'),
+        sourceStatus: normalizeText(summaryStatus ?? raw.status, "scheduled"),
         visitSummary: summary,
       }
     },
-    [
-      buildPatientEmail,
-      determinePriority,
-      determineVisitType,
-      mapScheduleStatus,
-      normalizeText
-    ]
+    [buildPatientEmail, determinePriority, determineVisitType, mapScheduleStatus, normalizeText],
   )
 
-  const statusToAction = useCallback((status: ScheduleAppointmentView['status']): string | null => {
+  const statusToAction = useCallback((status: ScheduleAppointmentView["status"]): string | null => {
     switch (status) {
-      case 'Scheduled':
-        return 'scheduled'
-      case 'Checked In':
-        return 'check-in'
-      case 'In Progress':
-        return 'start'
-      case 'Completed':
-        return 'complete'
-      case 'Cancelled':
-      case 'No Show':
-        return 'cancelled'
+      case "Scheduled":
+        return "scheduled"
+      case "Checked In":
+        return "check-in"
+      case "In Progress":
+        return "start"
+      case "Completed":
+        return "complete"
+      case "Cancelled":
+      case "No Show":
+        return "cancelled"
       default:
         return null
     }
@@ -532,15 +457,15 @@ export function ProtectedApp() {
   const deriveScheduleOperations = useCallback(
     (previous: ScheduleAppointmentView[], next: ScheduleAppointmentView[]) => {
       const operations: Array<{ id: string; action: string; time?: string }> = []
-      const previousMap = new Map(previous.map(item => [item.id, item]))
+      const previousMap = new Map(previous.map((item) => [item.id, item]))
 
-      next.forEach(appointment => {
+      next.forEach((appointment) => {
         const prior = previousMap.get(appointment.id)
         if (!prior) {
           return
         }
         if (appointment.appointmentTime !== prior.appointmentTime) {
-          operations.push({ id: appointment.id, action: 'reschedule', time: appointment.appointmentTime })
+          operations.push({ id: appointment.id, action: "reschedule", time: appointment.appointmentTime })
         }
         if (appointment.status !== prior.status) {
           const action = statusToAction(appointment.status)
@@ -552,11 +477,11 @@ export function ProtectedApp() {
 
       return operations
     },
-    [statusToAction]
+    [statusToAction],
   )
 
   const triggerScheduleRefresh = useCallback(() => {
-    setScheduleRefreshKey(prev => prev + 1)
+    setScheduleRefreshKey((prev) => prev + 1)
   }, [])
 
   const applyScheduleOperations = useCallback(
@@ -566,14 +491,14 @@ export function ProtectedApp() {
       }
 
       const updates = operations
-        .map(operation => {
+        .map((operation) => {
           const numericId = Number(operation.id)
           if (!Number.isFinite(numericId)) {
             return null
           }
           const payload: { id: number; action: string; time?: string } = {
             id: numericId,
-            action: operation.action
+            action: operation.action,
           }
           if (operation.time) {
             payload.time = new Date(operation.time).toISOString()
@@ -586,52 +511,47 @@ export function ProtectedApp() {
         return
       }
 
-      setAppointmentsState(prev => ({ ...prev, loading: true }))
+      setAppointmentsState((prev) => ({ ...prev, loading: true }))
 
       try {
-        const result = await apiFetchJson<{ succeeded?: number; failed?: number }>(
-          '/api/schedule/bulk-operations',
-          {
-            method: 'POST',
-            jsonBody: {
-              updates,
-              provider: normalizeText(currentUser?.name)
-            },
-            returnNullOnEmpty: true
-          }
-        )
+        const result = await apiFetchJson<{ succeeded?: number; failed?: number }>("/api/schedule/bulk-operations", {
+          method: "POST",
+          jsonBody: {
+            updates,
+            provider: normalizeText(currentUser?.name),
+          },
+          returnNullOnEmpty: true,
+        })
 
         if (result?.failed && result.failed > 0) {
-          setAppointmentsState(prev => ({
+          setAppointmentsState((prev) => ({
             ...prev,
             loading: false,
-            error: `Unable to update ${result.failed} appointment${result.failed === 1 ? '' : 's'}.`
+            error: `Unable to update ${result.failed} appointment${result.failed === 1 ? "" : "s"}.`,
           }))
         } else {
-          setAppointmentsState(prev => ({ ...prev, error: null }))
+          setAppointmentsState((prev) => ({ ...prev, error: null }))
         }
         triggerScheduleRefresh()
       } catch (error) {
-        if ((error as DOMException)?.name === 'AbortError') {
+        if ((error as DOMException)?.name === "AbortError") {
           return
         }
-        setAppointmentsState(prev => ({
+        setAppointmentsState((prev) => ({
           ...prev,
           loading: false,
-          error: error instanceof Error ? error.message : 'Unable to update schedule.'
+          error: error instanceof Error ? error.message : "Unable to update schedule.",
         }))
       }
     },
-    [currentUser?.name, normalizeText, triggerScheduleRefresh]
+    [currentUser?.name, normalizeText, triggerScheduleRefresh],
   )
 
   const handleAppointmentsChange = useCallback(
     (updater: ScheduleAppointmentView[] | ((prev: ScheduleAppointmentView[]) => ScheduleAppointmentView[])) => {
-      setAppointmentsState(prev => {
+      setAppointmentsState((prev) => {
         const current = prev.data ?? []
-        const next = typeof updater === 'function'
-          ? (updater as (prev: ScheduleAppointmentView[]) => ScheduleAppointmentView[])(current)
-          : updater
+        const next = typeof updater === "function" ? (updater as (prev: ScheduleAppointmentView[]) => ScheduleAppointmentView[])(current) : updater
 
         if (!Array.isArray(next)) {
           return prev
@@ -639,9 +559,9 @@ export function ProtectedApp() {
 
         const operations = deriveScheduleOperations(current, next)
         if (operations.length > 0) {
-          applyScheduleOperations(operations).catch(error => {
-            if ((error as DOMException)?.name !== 'AbortError') {
-              console.error('Failed to apply schedule operations', error)
+          applyScheduleOperations(operations).catch((error) => {
+            if ((error as DOMException)?.name !== "AbortError") {
+              console.error("Failed to apply schedule operations", error)
             }
           })
         }
@@ -649,11 +569,11 @@ export function ProtectedApp() {
         return { ...prev, data: next }
       })
     },
-    [applyScheduleOperations, deriveScheduleOperations]
+    [applyScheduleOperations, deriveScheduleOperations],
   )
 
   const handleScheduleFiltersChange = useCallback((filters: ScheduleFiltersSnapshot) => {
-    setScheduleFilters(prev => {
+    setScheduleFilters((prev) => {
       if (prev && JSON.stringify(prev) === JSON.stringify(filters)) {
         return prev
       }
@@ -663,18 +583,15 @@ export function ProtectedApp() {
 
   const loadAppointments = useCallback(
     async (signal?: AbortSignal) => {
-      setAppointmentsState(prev => ({ ...prev, loading: true, error: null }))
+      setAppointmentsState((prev) => ({ ...prev, loading: true, error: null }))
 
       try {
-        const response = await apiFetchJson<ScheduleApiResponse>(
-          '/api/schedule/appointments',
-          { signal, returnNullOnEmpty: true }
-        )
+        const response = await apiFetchJson<ScheduleApiResponse>("/api/schedule/appointments", { signal, returnNullOnEmpty: true })
         if (signal?.aborted) {
           return
         }
         const summaries = response?.visitSummaries ?? {}
-        const transformed = (response?.appointments ?? []).map(appt => {
+        const transformed = (response?.appointments ?? []).map((appt) => {
           const idKey = appt?.id !== undefined && appt?.id !== null ? String(appt.id) : undefined
           const summary = idKey ? summaries[idKey] : undefined
           const enriched = summary && !appt.visitSummary ? { ...appt, visitSummary: summary } : appt
@@ -682,26 +599,26 @@ export function ProtectedApp() {
         })
         setAppointmentsState({ data: transformed, loading: false, error: null })
       } catch (error) {
-        if ((error as DOMException)?.name === 'AbortError') {
+        if ((error as DOMException)?.name === "AbortError") {
           return
         }
-        setAppointmentsState(prev => ({
+        setAppointmentsState((prev) => ({
           data: prev.data,
           loading: false,
-          error: error instanceof Error ? error.message : 'Unable to load schedule.'
+          error: error instanceof Error ? error.message : "Unable to load schedule.",
         }))
       }
     },
-    [transformAppointment]
+    [transformAppointment],
   )
 
-  const filtersKey = useMemo(() => (scheduleFilters ? JSON.stringify(scheduleFilters) : 'base'), [scheduleFilters])
+  const filtersKey = useMemo(() => (scheduleFilters ? JSON.stringify(scheduleFilters) : "base"), [scheduleFilters])
 
   useEffect(() => {
     const controller = new AbortController()
-    loadAppointments(controller.signal).catch(error => {
-      if ((error as DOMException)?.name !== 'AbortError') {
-        console.error('Unexpected schedule load error', error)
+    loadAppointments(controller.signal).catch((error) => {
+      if ((error as DOMException)?.name !== "AbortError") {
+        console.error("Unexpected schedule load error", error)
       }
     })
     return () => controller.abort()
@@ -709,15 +626,15 @@ export function ProtectedApp() {
 
   useEffect(() => {
     const controller = new AbortController()
-    apiFetchJson<DraftAnalyticsSummary>('/api/analytics/drafts', { signal: controller.signal })
-      .then(summary => {
-        if (summary && typeof summary.drafts === 'number') {
+    apiFetchJson<DraftAnalyticsSummary>("/api/analytics/drafts", { signal: controller.signal })
+      .then((summary) => {
+        if (summary && typeof summary.drafts === "number") {
           setDraftCount(summary.drafts)
         }
       })
-      .catch(error => {
-        if ((error as DOMException)?.name !== 'AbortError') {
-          console.error('Failed to load draft analytics summary', error)
+      .catch((error) => {
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to load draft analytics summary", error)
         }
       })
     return () => controller.abort()
@@ -729,7 +646,7 @@ export function ProtectedApp() {
       if (!permission) return true
       return auth.hasPermission(permission)
     },
-    [auth]
+    [auth],
   )
 
   useEffect(() => {
@@ -744,7 +661,7 @@ export function ProtectedApp() {
       try {
         const response = await apiFetchJson<{ currentView?: string }>("/api/user/current-view", {
           signal: controller.signal,
-          returnNullOnEmpty: true
+          returnNullOnEmpty: true,
         })
 
         if (!active) {
@@ -758,7 +675,7 @@ export function ProtectedApp() {
         }
 
         const resolved = mapServerViewToViewKey(serverView)
-        setCurrentView(prev => {
+        setCurrentView((prev) => {
           const allowed = canAccessView(resolved) ? resolved : "home"
           return prev === allowed ? prev : allowed
         })
@@ -783,7 +700,7 @@ export function ProtectedApp() {
 
   useEffect(() => {
     if (!canAccessView(currentView)) {
-      setCurrentView('home')
+      setCurrentView("home")
     }
   }, [currentView, canAccessView])
 
@@ -804,46 +721,42 @@ export function ProtectedApp() {
       setViewHydrated(true)
       setCurrentView(view)
     },
-    [canAccessView]
+    [canAccessView],
   )
 
-  const accessMessage = accessDeniedMessage ? (
-    <div className="mx-4 mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-      {accessDeniedMessage}
-    </div>
-  ) : null
+  const accessMessage = accessDeniedMessage ? <div className="mx-4 mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">{accessDeniedMessage}</div> : null
 
   const handleAddCode = useCallback(
     (code: SuggestionCodeInput | SessionCode) => {
       sessionActions.addCode(code)
     },
-    [sessionActions]
+    [sessionActions],
   )
 
   const handleRemoveCode = useCallback(
-    (code: SessionCode, action: 'clear' | 'return', reasoning?: string) => {
+    (code: SessionCode, action: "clear" | "return", reasoning?: string) => {
       sessionActions.removeCode(code, {
-        returnToSuggestions: action === 'return',
-        reasoning
+        returnToSuggestions: action === "return",
+        reasoning,
       })
     },
-    [sessionActions]
+    [sessionActions],
   )
 
   const handleChangeCategoryCode = useCallback(
-    (code: SessionCode, newCategory: 'diagnoses' | 'differentials') => {
+    (code: SessionCode, newCategory: "diagnoses" | "differentials") => {
       sessionActions.changeCodeCategory(code, newCategory)
     },
-    [sessionActions]
+    [sessionActions],
   )
 
   const handleOpenFinalization = useCallback(
     (options: FinalizationWizardLaunchOptions) => {
       finalizationReturnViewRef.current = currentView
       setFinalizationRequest(options)
-      setCurrentView('finalization')
+      setCurrentView("finalization")
     },
-    [currentView]
+    [currentView],
   )
 
   const handleFinalizationViewClose = useCallback(
@@ -857,30 +770,27 @@ export function ProtectedApp() {
           result,
           noteId: request?.noteId ?? null,
           encounterId: request?.patientInfo?.encounterId ?? null,
-          patientId: request?.patientInfo?.patientId ?? null
+          patientId: request?.patientInfo?.patientId ?? null,
         })
       }
       setFinalizationRequest(null)
-      setCurrentView(prev => {
-        if (prev !== 'finalization') {
+      setCurrentView((prev) => {
+        if (prev !== "finalization") {
           return prev
         }
-        const target =
-          finalizationReturnViewRef.current && finalizationReturnViewRef.current !== 'finalization'
-            ? finalizationReturnViewRef.current
-            : 'app'
-        finalizationReturnViewRef.current = 'app'
+        const target = finalizationReturnViewRef.current && finalizationReturnViewRef.current !== "finalization" ? finalizationReturnViewRef.current : "app"
+        finalizationReturnViewRef.current = "app"
         return target
       })
     },
-    [finalizationRequest]
+    [finalizationRequest],
   )
 
   useEffect(() => {
-    if (currentView !== 'finalization' && finalizationRequest) {
+    if (currentView !== "finalization" && finalizationRequest) {
       finalizationRequest.onClose?.()
       setFinalizationRequest(null)
-      finalizationReturnViewRef.current = 'app'
+      finalizationReturnViewRef.current = "app"
     }
   }, [currentView, finalizationRequest])
 
@@ -890,11 +800,11 @@ export function ProtectedApp() {
         return
       }
       sessionActions.setLayout({
-        noteEditor: typeof sizes[0] === 'number' ? sizes[0] : layout.noteEditor,
-        suggestionPanel: typeof sizes[1] === 'number' ? sizes[1] : layout.suggestionPanel
+        noteEditor: typeof sizes[0] === "number" ? sizes[0] : layout.noteEditor,
+        suggestionPanel: typeof sizes[1] === "number" ? sizes[1] : layout.suggestionPanel,
       })
     },
-    [sessionActions, layout.noteEditor, layout.suggestionPanel]
+    [sessionActions, layout.noteEditor, layout.suggestionPanel],
   )
 
   if (!sessionHydrated) {
@@ -907,7 +817,7 @@ export function ProtectedApp() {
 
   const extractDraftField = useCallback((content: string, pattern: RegExp) => {
     const match = pattern.exec(content)
-    if (!match || typeof match[1] !== 'string') {
+    if (!match || typeof match[1] !== "string") {
       return undefined
     }
     const value = match[1].trim()
@@ -916,7 +826,7 @@ export function ProtectedApp() {
 
   const handleEditDraft = useCallback(
     async (draftId: string) => {
-      const normalizedId = draftId.replace(/^draft-/i, '').trim()
+      const normalizedId = draftId.replace(/^draft-/i, "").trim()
       if (!normalizedId) {
         return
       }
@@ -924,14 +834,14 @@ export function ProtectedApp() {
       sessionActions.reset()
 
       try {
-        let draftContent = ''
+        let draftContent = ""
         const versions = await apiFetchJson<any[]>(`/api/notes/versions/${encodeURIComponent(normalizedId)}`, {
           fallbackValue: [],
-          returnNullOnEmpty: true
+          returnNullOnEmpty: true,
         })
         if (Array.isArray(versions) && versions.length > 0) {
           const latest = versions[versions.length - 1]
-          if (latest && typeof latest.content === 'string') {
+          if (latest && typeof latest.content === "string") {
             draftContent = latest.content
           }
         }
@@ -939,43 +849,38 @@ export function ProtectedApp() {
         if (!draftContent) {
           const drafts = await apiFetchJson<any[]>("/api/notes/drafts", {
             fallbackValue: [],
-            returnNullOnEmpty: true
+            returnNullOnEmpty: true,
           })
-          const match = Array.isArray(drafts)
-            ? drafts.find(entry => String(entry?.id) === normalizedId)
-            : undefined
-          if (match && typeof match.content === 'string') {
+          const match = Array.isArray(drafts) ? drafts.find((entry) => String(entry?.id) === normalizedId) : undefined
+          if (match && typeof match.content === "string") {
             draftContent = match.content
           }
         }
 
         const patientId = extractDraftField(draftContent, /patient\s*id\s*[:\-]\s*([^\n]+)/i)
         const encounterId = extractDraftField(draftContent, /encounter\s*id\s*[:\-]\s*([^\n]+)/i)
-        const patientName = extractDraftField(
-          draftContent,
-          /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i,
-        )
+        const patientName = extractDraftField(draftContent, /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i)
 
         setActiveDraft({
           noteId: normalizedId,
           content: draftContent,
           patientId,
           encounterId,
-          patientName
+          patientName,
         })
 
         if (patientId || encounterId) {
           setPrePopulatedPatient({
-            patientId: patientId ?? '',
-            encounterId: encounterId ?? ''
+            patientId: patientId ?? "",
+            encounterId: encounterId ?? "",
           })
         } else {
           setPrePopulatedPatient(null)
         }
 
-        handleNavigate('app')
+        handleNavigate("app")
       } catch (error) {
-        console.error('Failed to load draft note', error)
+        console.error("Failed to load draft note", error)
       }
     },
     [apiFetchJson, extractDraftField, handleNavigate, sessionActions],
@@ -984,199 +889,191 @@ export function ProtectedApp() {
   const handleStartVisit = useCallback(
     async (appointmentId: string, patientId: string, encounterId: string) => {
       try {
-        await applyScheduleOperations([{ id: appointmentId, action: 'start' }])
+        await applyScheduleOperations([{ id: appointmentId, action: "start" }])
       } catch (error) {
-        if ((error as DOMException)?.name !== 'AbortError') {
-          console.error('Failed to update appointment status', error)
+        if ((error as DOMException)?.name !== "AbortError") {
+          console.error("Failed to update appointment status", error)
         }
       }
       setActiveDraft(null)
       setPrePopulatedPatient({ patientId, encounterId })
-      handleNavigate('app')
+      handleNavigate("app")
     },
-    [applyScheduleOperations, handleNavigate]
+    [applyScheduleOperations, handleNavigate],
   )
 
   const handleDraftSummaryUpdate = useCallback((summary: { total: number }) => {
     setDraftCount(summary.total)
   }, [])
 
-  const handleUploadChart = useCallback((patientId: string) => {
-    const input = document.createElement("input")
-    input.type = "file"
-    input.accept = ".pdf,.txt,.rtf,.doc,.docx,.json,.xml"
+  const handleUploadChart = useCallback(
+    (patientId: string) => {
+      const input = document.createElement("input")
+      input.type = "file"
+      input.accept = ".pdf,.txt,.rtf,.doc,.docx,.json,.xml"
 
-    const cleanup = () => {
-      input.value = ""
-      input.remove()
-    }
-
-    const uploadFile = async (file: File) => {
-      const boundary = `----RevenuePilotUpload${Math.random().toString(16).slice(2)}`
-      const encoder = new TextEncoder()
-      const safeFileName = file.name.replace(/"/g, "%22") || "chart-upload"
-      const prefixBytes = encoder.encode(
-        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeFileName}"\r\nContent-Type: ${
-          file.type || "application/octet-stream"
-        }\r\n\r\n`
-      )
-      const suffixBytes = encoder.encode("\r\n--" + boundary + "--\r\n")
-      const totalBytes = Math.max(prefixBytes.byteLength + file.size + suffixBytes.byteLength, 1)
-      let uploadedBytes = 0
-      const reader = file.stream().getReader()
-
-      const updateProgress = (progress: number, status: ScheduleChartUploadStatus["status"] = "uploading", error?: string) => {
-        const boundedProgress = Math.max(0, Math.min(100, Math.round(progress)))
-        setChartUploadStatuses(prev => ({
-          ...prev,
-          [patientId]: {
-            status,
-            progress: boundedProgress,
-            fileName: file.name,
-            error
-          }
-        }))
+      const cleanup = () => {
+        input.value = ""
+        input.remove()
       }
 
-      updateProgress(0)
+      const uploadFile = async (file: File) => {
+        const boundary = `----RevenuePilotUpload${Math.random().toString(16).slice(2)}`
+        const encoder = new TextEncoder()
+        const safeFileName = file.name.replace(/"/g, "%22") || "chart-upload"
+        const prefixBytes = encoder.encode(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeFileName}"\r\nContent-Type: ${file.type || "application/octet-stream"}\r\n\r\n`,
+        )
+        const suffixBytes = encoder.encode("\r\n--" + boundary + "--\r\n")
+        const totalBytes = Math.max(prefixBytes.byteLength + file.size + suffixBytes.byteLength, 1)
+        let uploadedBytes = 0
+        const reader = file.stream().getReader()
 
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(prefixBytes)
-          uploadedBytes += prefixBytes.byteLength
-          updateProgress((uploadedBytes / totalBytes) * 100)
-
-          const pump = (): void => {
-            reader
-              .read()
-              .then(({ done, value }) => {
-                if (done) {
-                  controller.enqueue(suffixBytes)
-                  uploadedBytes += suffixBytes.byteLength
-                  updateProgress((uploadedBytes / totalBytes) * 100)
-                  controller.close()
-                  return
-                }
-
-                if (value) {
-                  controller.enqueue(value)
-                  uploadedBytes += value.byteLength
-                  updateProgress((uploadedBytes / totalBytes) * 100)
-                }
-
-                pump()
-              })
-              .catch(error => {
-                controller.error(error)
-              })
-          }
-
-          pump()
-        },
-        cancel(reason) {
-          reader.cancel(reason).catch(() => undefined)
-        }
-      })
-
-      const controller = new AbortController()
-
-      try {
-        const response = await apiFetch("/api/charts/upload", {
-          method: "POST",
-          body: stream,
-          headers: {
-            "Content-Type": `multipart/form-data; boundary=${boundary}`
-          },
-          signal: controller.signal
-        })
-
-        if (!response.ok) {
-          const message = await response.text()
-          throw new Error(message || "Unable to upload chart.")
-        }
-
-        try {
-          await response.json()
-        } catch {
-          // Ignore JSON parsing issues – upload succeeded
-        }
-
-        updateProgress(100, "success")
-
-        setAppointmentsState(prev => {
-          if (!prev.data) {
-            return prev
-          }
-          return {
+        const updateProgress = (progress: number, status: ScheduleChartUploadStatus["status"] = "uploading", error?: string) => {
+          const boundedProgress = Math.max(0, Math.min(100, Math.round(progress)))
+          setChartUploadStatuses((prev) => ({
             ...prev,
-            data: prev.data.map(appointment =>
-              appointment.patientId === patientId
-                ? { ...appointment, fileUpToDate: true }
-                : appointment
-            )
-          }
+            [patientId]: {
+              status,
+              progress: boundedProgress,
+              fileName: file.name,
+              error,
+            },
+          }))
+        }
+
+        updateProgress(0)
+
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(prefixBytes)
+            uploadedBytes += prefixBytes.byteLength
+            updateProgress((uploadedBytes / totalBytes) * 100)
+
+            const pump = (): void => {
+              reader
+                .read()
+                .then(({ done, value }) => {
+                  if (done) {
+                    controller.enqueue(suffixBytes)
+                    uploadedBytes += suffixBytes.byteLength
+                    updateProgress((uploadedBytes / totalBytes) * 100)
+                    controller.close()
+                    return
+                  }
+
+                  if (value) {
+                    controller.enqueue(value)
+                    uploadedBytes += value.byteLength
+                    updateProgress((uploadedBytes / totalBytes) * 100)
+                  }
+
+                  pump()
+                })
+                .catch((error) => {
+                  controller.error(error)
+                })
+            }
+
+            pump()
+          },
+          cancel(reason) {
+            reader.cancel(reason).catch(() => undefined)
+          },
         })
 
+        const controller = new AbortController()
+
         try {
-          await apiFetchJson("/api/activity/log", {
+          const response = await apiFetch("/api/charts/upload", {
             method: "POST",
-            jsonBody: {
-              action: "chart.upload",
-              category: "chart",
-              details: {
-                patientId,
-                fileName: file.name,
-                size: file.size
-              }
+            body: stream,
+            headers: {
+              "Content-Type": `multipart/form-data; boundary=${boundary}`,
+            },
+            signal: controller.signal,
+          })
+
+          if (!response.ok) {
+            const message = await response.text()
+            throw new Error(message || "Unable to upload chart.")
+          }
+
+          try {
+            await response.json()
+          } catch {
+            // Ignore JSON parsing issues – upload succeeded
+          }
+
+          updateProgress(100, "success")
+
+          setAppointmentsState((prev) => {
+            if (!prev.data) {
+              return prev
+            }
+            return {
+              ...prev,
+              data: prev.data.map((appointment) => (appointment.patientId === patientId ? { ...appointment, fileUpToDate: true } : appointment)),
             }
           })
-        } catch (error) {
-          console.error("Failed to log chart upload", error)
-        }
 
-        triggerScheduleRefresh()
-      } catch (error) {
-        if ((error as DOMException)?.name === "AbortError") {
+          try {
+            await apiFetchJson("/api/activity/log", {
+              method: "POST",
+              jsonBody: {
+                action: "chart.upload",
+                category: "chart",
+                details: {
+                  patientId,
+                  fileName: file.name,
+                  size: file.size,
+                },
+              },
+            })
+          } catch (error) {
+            console.error("Failed to log chart upload", error)
+          }
+
+          triggerScheduleRefresh()
+        } catch (error) {
+          if ((error as DOMException)?.name === "AbortError") {
+            return
+          }
+          const message = error instanceof Error ? error.message : "Unable to upload chart."
+          updateProgress(0, "error", message)
+        }
+      }
+
+      input.addEventListener("change", () => {
+        const file = input.files?.[0]
+        if (!file) {
+          cleanup()
           return
         }
-        const message = error instanceof Error ? error.message : "Unable to upload chart."
-        updateProgress(0, "error", message)
-      }
-    }
+        void uploadFile(file).finally(cleanup)
+      })
 
-    input.addEventListener("change", () => {
-      const file = input.files?.[0]
-      if (!file) {
-        cleanup()
-        return
-      }
-      void uploadFile(file).finally(cleanup)
-    })
-
-    input.click()
-  }, [triggerScheduleRefresh])
+      input.click()
+    },
+    [triggerScheduleRefresh],
+  )
 
   // Calculate user's draft count for navigation badge
   const getUserDraftCount = () => {
-    if (typeof draftCount === 'number') {
+    if (typeof draftCount === "number") {
       return draftCount
     }
     return 0
   }
 
   // Home Dashboard View
-  if (currentView === 'home') {
+  if (currentView === "home") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="home" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="home" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1184,15 +1081,15 @@ export function ProtectedApp() {
                   <h1 className="text-lg font-medium">RevenuePilot Dashboard</h1>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('style-guide')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
                     View Style Guide
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('figma-library')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
                     Figma Library
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
@@ -1206,37 +1103,32 @@ export function ProtectedApp() {
   }
 
   // Analytics View
-  if (currentView === 'analytics') {
+  if (currentView === "analytics") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="analytics" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="analytics" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
                   <SidebarTrigger />
                   <h1 className="text-lg font-medium">Analytics Dashboard</h1>
                   <Badge variant="outline" className="ml-2">
-                    {userRole === 'admin' ? 'Admin Access' : 'User Access'}
+                    {userRole === "admin" ? "Admin Access" : "User Access"}
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
                     Documentation
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
@@ -1250,47 +1142,39 @@ export function ProtectedApp() {
   }
 
   // Activity Log View
-  if (currentView === 'activity') {
+  if (currentView === "activity") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="activity" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="activity" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
                   <SidebarTrigger />
                   <h1 className="text-lg font-medium">Activity Log</h1>
                   <Badge variant="outline" className="ml-2">
-                    {userRole === 'admin' ? 'Administrator' : 'User'} Access
+                    {userRole === "admin" ? "Administrator" : "User"} Access
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('analytics')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("analytics")}>
                     Analytics
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('settings')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("settings")}>
                     Settings
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
-                <ActivityLog
-                  currentUser={currentUser}
-                  userRole={userRole}
-                />
+                <ActivityLog currentUser={currentUser} userRole={userRole} />
               </div>
             </main>
           </div>
@@ -1300,37 +1184,32 @@ export function ProtectedApp() {
   }
 
   // Settings View
-  if (currentView === 'settings') {
+  if (currentView === "settings") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="settings" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="settings" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
                   <SidebarTrigger />
                   <h1 className="text-lg font-medium">Settings & Configuration</h1>
                   <Badge variant="outline" className="ml-2">
-                    {userRole === 'admin' ? 'Administrator' : 'User'} Access
+                    {userRole === "admin" ? "Administrator" : "User"} Access
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
                     Documentation
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
@@ -1344,18 +1223,13 @@ export function ProtectedApp() {
   }
 
   // Drafts View
-  if (currentView === 'drafts') {
+  if (currentView === "drafts") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="drafts" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="drafts" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1366,23 +1240,19 @@ export function ProtectedApp() {
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
                     New Note
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
-                <Drafts
-                  onEditDraft={handleEditDraft}
-                  currentUser={currentUser}
-                  onDraftsSummaryUpdate={handleDraftSummaryUpdate}
-                />
+                <Drafts onEditDraft={handleEditDraft} currentUser={currentUser} onDraftsSummaryUpdate={handleDraftSummaryUpdate} />
               </div>
             </main>
           </div>
@@ -1392,18 +1262,13 @@ export function ProtectedApp() {
   }
 
   // Schedule View
-  if (currentView === 'schedule') {
+  if (currentView === "schedule") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="schedule" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="schedule" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1414,21 +1279,21 @@ export function ProtectedApp() {
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
                     Documentation
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('drafts')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("drafts")}>
                     Drafts
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('activity')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("activity")}>
                     Activity Log
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
@@ -1452,18 +1317,13 @@ export function ProtectedApp() {
   }
 
   // Builder View
-  if (currentView === 'builder') {
+  if (currentView === "builder") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="builder" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="builder" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1474,26 +1334,22 @@ export function ProtectedApp() {
                   </Badge>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('schedule')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("schedule")}>
                     Schedule
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('app')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
                     Documentation
                   </Button>
                 </div>
               </div>
-              
+
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
-                <Builder
-                  currentUser={currentUser}
-                  appointments={appointmentsState.data ?? []}
-                  onAppointmentsChange={handleAppointmentsChange}
-                />
+                <Builder currentUser={currentUser} appointments={appointmentsState.data ?? []} onAppointmentsChange={handleAppointmentsChange} />
               </div>
             </main>
           </div>
@@ -1503,18 +1359,13 @@ export function ProtectedApp() {
   }
 
   // Style Guide View
-  if (currentView === 'style-guide') {
+  if (currentView === "style-guide") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="style-guide" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="style-guide" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1522,10 +1373,10 @@ export function ProtectedApp() {
                   <h1 className="text-lg font-medium">RevenuePilot Design System</h1>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Back to Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('figma-library')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
                     Figma Library
                   </Button>
                 </div>
@@ -1543,18 +1394,13 @@ export function ProtectedApp() {
   }
 
   // Figma Library View
-  if (currentView === 'figma-library') {
+  if (currentView === "figma-library") {
     return (
       <TooltipProvider>
         <SidebarProvider defaultOpen={false}>
           <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar 
-              currentView="figma-library" 
-              onNavigate={handleNavigate}
-              currentUser={currentUser}
-              userDraftCount={getUserDraftCount()}
-            />
-            
+            <NavigationSidebar currentView="figma-library" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
             <main className="flex-1 flex flex-col min-w-0">
               <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
                 <div className="flex items-center gap-2">
@@ -1562,10 +1408,10 @@ export function ProtectedApp() {
                   <h1 className="text-lg font-medium">Figma Component Library</h1>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                     Back to Dashboard
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate('style-guide')}>
+                  <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
                     Style Guide
                   </Button>
                 </div>
@@ -1587,20 +1433,13 @@ export function ProtectedApp() {
     <TooltipProvider>
       <SidebarProvider defaultOpen={false}>
         <div className="flex h-screen w-full bg-background">
-          <NavigationSidebar 
-            currentView="app" 
-            onNavigate={handleNavigate}
-            currentUser={currentUser}
-            userDraftCount={getUserDraftCount()}
-          />
-          
+          <NavigationSidebar currentView="app" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+
           <main className="flex-1 flex flex-col min-w-0">
             <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
               <div className="flex items-center gap-2">
                 <SidebarTrigger />
-                <h1 className="text-lg font-medium">
-                  {isFinalizationView ? "Finalization Wizard" : "Clinical Documentation Assistant"}
-                </h1>
+                <h1 className="text-lg font-medium">{isFinalizationView ? "Finalization Wizard" : "Clinical Documentation Assistant"}</h1>
                 <Badge variant="outline" className="ml-2">
                   {isFinalizationView ? "Finalization Mode" : "Active Session"}
                 </Badge>
@@ -1616,28 +1455,28 @@ export function ProtectedApp() {
                     Exit Finalization
                   </Button>
                 )}
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('home')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
                   Dashboard
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('analytics')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("analytics")}>
                   Analytics
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('settings')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("settings")}>
                   Settings
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('drafts')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("drafts")}>
                   Drafts
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('schedule')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("schedule")}>
                   Schedule
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('activity')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("activity")}>
                   Activity Log
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('style-guide')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
                   Style Guide
                 </Button>
-                <Button variant="outline" size="sm" onClick={() => handleNavigate('figma-library')}>
+                <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
                   Figma Library
                 </Button>
                 {sessionSyncing && (
@@ -1651,11 +1490,7 @@ export function ProtectedApp() {
             {accessMessage}
 
             <div className="relative flex-1 overflow-hidden">
-              <ResizablePanelGroup
-                direction="horizontal"
-                className="flex-1"
-                onLayout={handleLayoutChange}
-              >
+              <ResizablePanelGroup direction="horizontal" className="flex-1" onLayout={handleLayoutChange}>
                 <ResizablePanel defaultSize={layout.noteEditor} minSize={50}>
                   <div className="flex flex-col h-full">
                     <NoteEditor
@@ -1664,7 +1499,7 @@ export function ProtectedApp() {
                       selectedCodes={selectedCodes}
                       selectedCodesList={selectedCodesList}
                       onNoteContentChange={setNoteEditorContent}
-                      onNavigateToDrafts={() => handleNavigate('drafts')}
+                      onNavigateToDrafts={() => handleNavigate("drafts")}
                       initialViewMode="draft"
                       viewMode={noteViewMode}
                       onViewModeChange={setNoteViewMode}
@@ -1712,10 +1547,7 @@ export function ProtectedApp() {
               </ResizablePanelGroup>
 
               {!isSuggestionPanelOpen && (
-                <button
-                  onClick={() => sessionActions.setSuggestionPanelOpen(true)}
-                  className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md"
-                >
+                <button onClick={() => sessionActions.setSuggestionPanelOpen(true)} className="fixed right-4 top-4 p-2 bg-primary text-primary-foreground rounded-md shadow-md">
                   Show Suggestions
                 </button>
               )}
@@ -1725,11 +1557,7 @@ export function ProtectedApp() {
                   <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" />
                   <div className="relative z-10 flex h-full w-full flex-col overflow-hidden p-6">
                     <div className="flex h-full flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
-                      <FinalizationWizardAdapter
-                        isOpen
-                        onClose={handleFinalizationViewClose}
-                        {...finalizationAdapterProps}
-                      />
+                      <FinalizationWizardAdapter isOpen onClose={handleFinalizationViewClose} {...finalizationAdapterProps} />
                     </div>
                   </div>
                 </div>

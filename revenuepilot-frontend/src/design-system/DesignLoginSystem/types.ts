@@ -1,11 +1,4 @@
-export type AuthErrorCode =
-  | "invalid_credentials"
-  | "account_locked"
-  | "server_error"
-  | "mfa_error"
-  | "invalid_email"
-  | "user_not_found"
-  | "rate_limited"
+export type AuthErrorCode = "invalid_credentials" | "account_locked" | "server_error" | "mfa_error" | "invalid_email" | "user_not_found" | "rate_limited"
 
 export class DesignLoginSystemError extends Error {
   readonly code: AuthErrorCode

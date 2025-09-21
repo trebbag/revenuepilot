@@ -4,29 +4,9 @@ import { Button } from "./ui/button"
 import { Separator } from "./ui/separator"
 import { Textarea } from "./ui/textarea"
 import { ComplianceAlert } from "./ComplianceAlert"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "./ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip"
-import {
-  Bold,
-  Italic,
-  Underline,
-  List,
-  ListOrdered,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  Plus,
-  ChevronDown,
-  Info,
-  Undo,
-  Redo,
-  Loader2,
-} from "lucide-react"
+import { Bold, Italic, Underline, List, ListOrdered, AlignLeft, AlignCenter, AlignRight, Plus, ChevronDown, Info, Undo, Redo, Loader2 } from "lucide-react"
 
 interface ComplianceIssue {
   id: string
@@ -90,8 +70,7 @@ const FALLBACK_TEMPLATES: TemplateOption[] = [
   {
     id: "soap",
     name: "SOAP Note",
-    description:
-      "Structured note format: Subjective, Objective, Assessment, Plan. Ideal for most clinical encounters and problem-focused visits.",
+    description: "Structured note format: Subjective, Objective, Assessment, Plan. Ideal for most clinical encounters and problem-focused visits.",
     content: `SUBJECTIVE:
 Chief Complaint:
 History of Present Illness:
@@ -120,8 +99,7 @@ Return Precautions:`,
   {
     id: "history-physical",
     name: "History & Physical",
-    description:
-      "Comprehensive H&P format for new patients, consultations, or detailed evaluations. Includes comprehensive history and thorough physical examination.",
+    description: "Comprehensive H&P format for new patients, consultations, or detailed evaluations. Includes comprehensive history and thorough physical examination.",
     content: `HISTORY OF PRESENT ILLNESS:
 
 PAST MEDICAL HISTORY:
@@ -166,8 +144,7 @@ ASSESSMENT AND PLAN:`,
   {
     id: "followup",
     name: "Follow-up Visit",
-    description:
-      "Streamlined format for established patients returning for routine follow-up or chronic disease management visits.",
+    description: "Streamlined format for established patients returning for routine follow-up or chronic disease management visits.",
     content: `INTERVAL HISTORY:
 Since last visit:
 Current symptoms:
@@ -197,8 +174,7 @@ Patient counseling:`,
   {
     id: "wellness",
     name: "Wellness/Preventive",
-    description:
-      "Annual wellness visit or preventive care template. Focuses on health maintenance, screening, and prevention strategies.",
+    description: "Annual wellness visit or preventive care template. Focuses on health maintenance, screening, and prevention strategies.",
     content: `HEALTH MAINTENANCE REVIEW:
 Immunizations:
 Cancer Screening:
@@ -231,8 +207,7 @@ Follow-up Recommendations:`,
   {
     id: "procedure",
     name: "Procedure Note",
-    description:
-      "Template for documenting minor office procedures, injections, or therapeutic interventions with pre/post care details.",
+    description: "Template for documenting minor office procedures, injections, or therapeutic interventions with pre/post care details.",
     content: `PROCEDURE: [Procedure Name]
 
 INDICATION:
@@ -303,16 +278,7 @@ function formatTimestamp(timestamp: string | null) {
   return parsed.toLocaleString()
 }
 
-export function RichTextEditor({
-  disabled = false,
-  complianceIssues = [],
-  onDismissIssue,
-  onRestoreIssue,
-  onContentChange,
-  noteId,
-  autoSaveDelayMs = 3000,
-  initialContent,
-}: RichTextEditorProps) {
+export function RichTextEditor({ disabled = false, complianceIssues = [], onDismissIssue, onRestoreIssue, onContentChange, noteId, autoSaveDelayMs = 3000, initialContent }: RichTextEditorProps) {
   const [content, setContent] = useState(initialContent ?? DEFAULT_NOTE_CONTENT)
   const [templates, setTemplates] = useState<TemplateOption[]>(FALLBACK_TEMPLATES)
   const [templatesLoading, setTemplatesLoading] = useState(false)
@@ -406,7 +372,7 @@ export function RichTextEditor({
         const data =
           (await apiFetchJson<any[]>("/api/templates/list", {
             signal: controller.signal,
-            fallbackValue: []
+            fallbackValue: [],
           })) ?? []
         if (!isActive || !isMountedRef.current) return
         const mapped: TemplateOption[] = Array.isArray(data)
@@ -452,7 +418,7 @@ export function RichTextEditor({
         const payload =
           (await apiFetchJson<any[]>(`/api/notes/versions/${encodeURIComponent(currentNoteId)}`, {
             signal,
-            fallbackValue: []
+            fallbackValue: [],
           })) ?? []
         if (!isMountedRef.current) return
         const normalized: NoteVersion[] = Array.isArray(payload)
@@ -480,7 +446,7 @@ export function RichTextEditor({
           setHistoryIndex(normalized.length ? normalized.length - 1 : -1)
         } else {
           const latestIndex = normalized.length ? normalized.length - 1 : -1
-          setHistoryIndex(prev => (prev > latestIndex ? latestIndex : prev))
+          setHistoryIndex((prev) => (prev > latestIndex ? latestIndex : prev))
         }
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") return
@@ -522,22 +488,17 @@ export function RichTextEditor({
         const numericId = Number(currentNoteId)
         const payload: Record<string, unknown> = {
           note_id: Number.isFinite(numericId) ? numericId : currentNoteId,
-          content: text
+          content: text,
         }
         const response = await apiFetch("/api/notes/auto-save", {
           method: "PUT",
-          jsonBody: payload
+          jsonBody: payload,
         })
         if (!response.ok) {
           let message = `Failed to auto-save note (${response.status})`
           try {
             const err = await response.json()
-            const detail =
-              typeof err?.message === "string" && err.message.trim().length > 0
-                ? err.message
-                : typeof err?.detail === "string" && err.detail.trim().length > 0
-                  ? err.detail
-                  : ""
+            const detail = typeof err?.message === "string" && err.message.trim().length > 0 ? err.message : typeof err?.detail === "string" && err.detail.trim().length > 0 ? err.detail : ""
             if (detail) {
               message = detail
             }
@@ -576,9 +537,12 @@ export function RichTextEditor({
       clearTimeout(autoSaveTimerRef.current)
     }
 
-    autoSaveTimerRef.current = setTimeout(() => {
-      void saveContent(content)
-    }, Math.max(500, autoSaveDelayMs))
+    autoSaveTimerRef.current = setTimeout(
+      () => {
+        void saveContent(content)
+      },
+      Math.max(500, autoSaveDelayMs),
+    )
 
     return () => {
       if (autoSaveTimerRef.current) {
@@ -609,8 +573,7 @@ export function RichTextEditor({
     const end = textarea.selectionEnd
     const selectedText = content.substring(start, end)
 
-    const newText =
-      content.substring(0, start) + beforeText + selectedText + afterText + content.substring(end)
+    const newText = content.substring(0, start) + beforeText + selectedText + afterText + content.substring(end)
     handleContentChange(newText)
 
     setTimeout(() => {
@@ -630,9 +593,7 @@ export function RichTextEditor({
 
     if (selectedText.trim()) {
       const lines = selectedText.split("\n")
-      const bulletLines = lines
-        .map(line => (line.trim() ? `• ${line.trim()}` : line))
-        .join("\n")
+      const bulletLines = lines.map((line) => (line.trim() ? `• ${line.trim()}` : line)).join("\n")
       const newText = content.substring(0, start) + bulletLines + content.substring(end)
       handleContentChange(newText)
     } else {
@@ -650,9 +611,7 @@ export function RichTextEditor({
 
     if (selectedText.trim()) {
       const lines = selectedText.split("\n")
-      const numberedLines = lines
-        .map((line, index) => (line.trim() ? `${index + 1}. ${line.trim()}` : line))
-        .join("\n")
+      const numberedLines = lines.map((line, index) => (line.trim() ? `${index + 1}. ${line.trim()}` : line)).join("\n")
       const newText = content.substring(0, start) + numberedLines + content.substring(end)
       handleContentChange(newText)
     } else {
@@ -749,12 +708,7 @@ export function RichTextEditor({
       {complianceIssues.length > 0 && (
         <div className="absolute top-3 right-3 z-50 bg-background rounded-md">
           <div className="p-1">
-            <ComplianceAlert
-              issues={complianceIssues}
-              onDismissIssue={onDismissIssue || (() => {})}
-              onRestoreIssue={onRestoreIssue || (() => {})}
-              compact={true}
-            />
+            <ComplianceAlert issues={complianceIssues} onDismissIssue={onDismissIssue || (() => {})} onRestoreIssue={onRestoreIssue || (() => {})} compact={true} />
           </div>
         </div>
       )}
@@ -763,60 +717,27 @@ export function RichTextEditor({
         <div className="border-b p-3 bg-background">
           <div className="flex items-center gap-1 justify-between">
             <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0"
-                title="Undo"
-                disabled={disabled || !canUndo}
-                onClick={handleUndo}
-              >
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="Undo" disabled={disabled || !canUndo} onClick={handleUndo}>
                 <Undo className="h-4 w-4" />
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0"
-                title="Redo"
-                disabled={disabled || !canRedo}
-                onClick={handleRedo}
-              >
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0" title="Redo" disabled={disabled || !canRedo} onClick={handleRedo}>
                 <Redo className="h-4 w-4" />
               </Button>
               <Separator orientation="vertical" className="mx-2 h-6" />
-              {formatButtons.map(button => (
-                <Button
-                  key={button.label}
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 w-8 p-0"
-                  title={button.label}
-                  disabled={disabled}
-                  onClick={() => handleFormat(button.label)}
-                >
+              {formatButtons.map((button) => (
+                <Button key={button.label} variant="ghost" size="sm" className="h-8 w-8 p-0" title={button.label} disabled={disabled} onClick={() => handleFormat(button.label)}>
                   <button.icon className="h-4 w-4" />
                 </Button>
               ))}
               <Separator orientation="vertical" className="mx-2 h-6" />
-              <Button
-                variant="ghost"
-                size="sm"
-                title="Insert Template Section"
-                disabled={disabled}
-                onClick={insertSection}
-              >
+              <Button variant="ghost" size="sm" title="Insert Template Section" disabled={disabled} onClick={insertSection}>
                 <Plus className="h-4 w-4 mr-1" />
                 Section
               </Button>
               <Separator orientation="vertical" className="mx-2 h-6" />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8"
-                    disabled={disabled}
-                  >
+                  <Button variant="ghost" size="sm" className="h-8" disabled={disabled}>
                     Templates
                     <ChevronDown className="h-3 w-3 ml-1" />
                   </Button>
@@ -833,17 +754,11 @@ export function RichTextEditor({
                     </DropdownMenuItem>
                   )}
                   {!templatesLoading &&
-                    templates.map(template => (
-                      <DropdownMenuItem
-                        key={template.id}
-                        className="flex items-start gap-3 p-3 cursor-pointer"
-                        onClick={() => handleTemplateSelect(template)}
-                      >
+                    templates.map((template) => (
+                      <DropdownMenuItem key={template.id} className="flex items-start gap-3 p-3 cursor-pointer" onClick={() => handleTemplateSelect(template)}>
                         <div className="flex-1">
                           <div className="font-medium text-sm mb-1">{template.name}</div>
-                          <div className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
-                            {getTemplateDescription(template)}
-                          </div>
+                          <div className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{getTemplateDescription(template)}</div>
                         </div>
                       </DropdownMenuItem>
                     ))}
@@ -870,14 +785,10 @@ export function RichTextEditor({
                     <div className="text-xs text-muted-foreground">No versions yet.</div>
                   ) : (
                     <div className="space-y-2">
-                      {latestVersions.map(version => (
+                      {latestVersions.map((version) => (
                         <div key={version.version} className="space-y-0.5">
-                          <div className="font-medium text-xs">
-                            Version {version.version}
-                          </div>
-                          <div className="text-[11px] text-muted-foreground">
-                            {formatTimestamp(version.timestamp)}
-                          </div>
+                          <div className="font-medium text-xs">Version {version.version}</div>
+                          <div className="text-[11px] text-muted-foreground">{formatTimestamp(version.timestamp)}</div>
                         </div>
                       ))}
                     </div>
@@ -892,13 +803,9 @@ export function RichTextEditor({
           <Textarea
             ref={textareaRef}
             value={content}
-            onChange={e => handleContentChange(e.target.value)}
+            onChange={(e) => handleContentChange(e.target.value)}
             className="min-h-full resize-none border-none shadow-none focus-visible:ring-0"
-            placeholder={
-              disabled
-                ? "Start a visit to begin documenting..."
-                : "Start typing your clinical note here..."
-            }
+            placeholder={disabled ? "Start a visit to begin documenting..." : "Start typing your clinical note here..."}
             disabled={disabled}
           />
           {disabled && (

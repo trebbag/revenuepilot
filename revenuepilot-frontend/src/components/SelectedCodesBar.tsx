@@ -4,17 +4,7 @@ import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
 import { Textarea } from "./ui/textarea"
-import {
-  FileText,
-  Activity,
-  Pill,
-  Stethoscope,
-  X,
-  ArrowUpDown,
-  AlertTriangle,
-  CheckCircle,
-  Loader2
-} from "lucide-react"
+import { FileText, Activity, Pill, Stethoscope, X, ArrowUpDown, AlertTriangle, CheckCircle, Loader2 } from "lucide-react"
 import { apiFetchJson } from "../lib/api"
 
 interface ApiCodeDetail {
@@ -96,8 +86,8 @@ interface SelectedCodesBarProps {
   }
   onUpdateCodes: (codes: { codes: number; prevention: number; diagnoses: number; differentials: number }) => void
   selectedCodesList: any[]
-  onRemoveCode?: (code: any, action: 'clear' | 'return', reasoning?: string) => void
-  onChangeCategoryCode?: (code: any, newCategory: 'diagnoses' | 'differentials') => void
+  onRemoveCode?: (code: any, action: "clear" | "return", reasoning?: string) => void
+  onChangeCategoryCode?: (code: any, newCategory: "diagnoses" | "differentials") => void
 }
 
 export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesList, onRemoveCode, onChangeCategoryCode }: SelectedCodesBarProps) {
@@ -105,7 +95,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     codes: true,
     prevention: true,
     diagnoses: true,
-    differentials: true
+    differentials: true,
   })
 
   const [codeDetails, setCodeDetails] = useState<Record<string, ApiCodeDetail>>({})
@@ -122,7 +112,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     }
 
     const aggregated: Record<string, string> = {}
-    Object.values(categorizationRules.userOverrides).forEach(overrides => {
+    Object.values(categorizationRules.userOverrides).forEach((overrides) => {
       if (!overrides) {
         return
       }
@@ -184,7 +174,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     const loadCategorizationRules = async () => {
       try {
         const data = await apiFetchJson<CategorizationRules>("/api/codes/categorization/rules", {
-          unwrapData: true
+          unwrapData: true,
         })
         if (!isCancelled && data) {
           setCategorizationRules(data)
@@ -203,7 +193,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
   useEffect(() => {
     const entries = (Array.isArray(selectedCodesList) ? selectedCodesList : [])
-      .map(item => {
+      .map((item) => {
         const rawCode = typeof item?.code === "string" ? item.code.trim() : ""
         if (!rawCode) {
           return null
@@ -213,7 +203,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       })
       .filter((entry): entry is { code: string; type: string } => Boolean(entry && entry.code.length > 0))
 
-    const uniqueCodes = Array.from(new Set(entries.map(entry => entry.code)))
+    const uniqueCodes = Array.from(new Set(entries.map((entry) => entry.code)))
 
     if (uniqueCodes.length === 0) {
       setCodeDetails({})
@@ -225,13 +215,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       return
     }
 
-    const cptCodes = Array.from(
-      new Set(
-        entries
-          .filter(entry => entry.type === "CPT" || entry.type === "HCPCS" || /^[0-9]/.test(entry.code))
-          .map(entry => entry.code)
-      )
-    )
+    const cptCodes = Array.from(new Set(entries.filter((entry) => entry.type === "CPT" || entry.type === "HCPCS" || /^[0-9]/.test(entry.code)).map((entry) => entry.code)))
 
     let isCancelled = false
 
@@ -242,8 +226,8 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       const detailsPromise = apiFetchJson<ApiCodeDetail[]>("/api/codes/details/batch", {
         method: "POST",
         jsonBody: { codes: uniqueCodes },
-        unwrapData: true
-      }).catch(error => {
+        unwrapData: true,
+      }).catch((error) => {
         console.error("Failed to fetch code details", error)
         return [] as ApiCodeDetail[]
       })
@@ -252,8 +236,8 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
         ? apiFetchJson<BillingSummary>("/api/billing/calculate", {
             method: "POST",
             jsonBody: { codes: cptCodes },
-            unwrapData: true
-          }).catch(error => {
+            unwrapData: true,
+          }).catch((error) => {
             console.error("Failed to calculate billing summary", error)
             return null
           })
@@ -262,27 +246,23 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       const combinationPromise = apiFetchJson<CombinationValidationResult>("/api/codes/validate/combination", {
         method: "POST",
         jsonBody: { codes: uniqueCodes },
-        unwrapData: true
-      }).catch(error => {
+        unwrapData: true,
+      }).catch((error) => {
         console.error("Failed to validate code combination", error)
         return null
       })
 
       const documentationPromise = Promise.all(
-        uniqueCodes.map(async code => {
+        uniqueCodes.map(async (code) => {
           try {
-            const documentation =
-              (await apiFetchJson<DocumentationInfo>(
-                `/api/codes/documentation/${encodeURIComponent(code)}`,
-                {
-                  unwrapData: true
-                }
-              )) ?? {
-                code,
-                required: [],
-                recommended: [],
-                examples: []
-              }
+            const documentation = (await apiFetchJson<DocumentationInfo>(`/api/codes/documentation/${encodeURIComponent(code)}`, {
+              unwrapData: true,
+            })) ?? {
+              code,
+              required: [],
+              recommended: [],
+              examples: [],
+            }
             return [code, documentation] as const
           } catch (error) {
             console.error(`Failed to fetch documentation for code ${code}`, error)
@@ -292,31 +272,29 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                 code,
                 required: [],
                 recommended: [],
-                examples: []
-              }
+                examples: [],
+              },
             ] as const
           }
-        })
-      ).catch(error => {
+        }),
+      ).catch((error) => {
         console.error("Failed to load documentation requirements", error)
-        return uniqueCodes.map(code => [
-          code,
-          {
-            code,
-            required: [],
-            recommended: [],
-            examples: []
-          }
-        ] as const)
+        return uniqueCodes.map(
+          (code) =>
+            [
+              code,
+              {
+                code,
+                required: [],
+                recommended: [],
+                examples: [],
+              },
+            ] as const,
+        )
       })
 
       try {
-        const [detailsData, billingData, combinationData, documentationEntries] = await Promise.all([
-          detailsPromise,
-          billingPromise,
-          combinationPromise,
-          documentationPromise
-        ])
+        const [detailsData, billingData, combinationData, documentationEntries] = await Promise.all([detailsPromise, billingPromise, combinationPromise, documentationPromise])
 
         if (isCancelled) {
           return
@@ -324,7 +302,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
         const detailMap: Record<string, ApiCodeDetail> = {}
         if (Array.isArray(detailsData)) {
-          detailsData.forEach(detail => {
+          detailsData.forEach((detail) => {
             if (!detail || typeof detail.code !== "string") {
               return
             }
@@ -354,10 +332,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
           return
         }
         console.error("Failed to load selected code details", error)
-        const message =
-          error instanceof Error && error.message.length > 0
-            ? error.message
-            : "Unable to load code insights."
+        const message = error instanceof Error && error.message.length > 0 ? error.message : "Unable to load code insights."
         setFetchError(message)
         setCodeDetails({})
         setDocumentationMap({})
@@ -377,44 +352,36 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     }
   }, [selectedCodesList])
 
-  const doesRuleApply = useCallback(
-    (rule: CategorizationRule | undefined, code: string, type: string, description: string) => {
-      if (!rule) {
-        return false
-      }
-
-      const expectedType = typeof rule.type === "string" ? rule.type.trim().toUpperCase() : ""
-      if (expectedType && expectedType !== type) {
-        return false
-      }
-
-      const match = rule.match ?? {}
-      const normalizedCode = code.trim().toUpperCase()
-
-      if (Array.isArray(match.codes) && match.codes.some(candidate => typeof candidate === "string" && candidate.trim().toUpperCase() === normalizedCode)) {
-        return true
-      }
-
-      if (
-        Array.isArray(match.prefix) &&
-        match.prefix.some(prefix => typeof prefix === "string" && normalizedCode.startsWith(prefix.trim().toUpperCase()))
-      ) {
-        return true
-      }
-
-      if (Array.isArray(match.descriptionKeywords) && description) {
-        const descriptionLower = description.toLowerCase()
-        if (
-          match.descriptionKeywords.some(keyword => typeof keyword === "string" && descriptionLower.includes(keyword.toLowerCase()))
-        ) {
-          return true
-        }
-      }
-
+  const doesRuleApply = useCallback((rule: CategorizationRule | undefined, code: string, type: string, description: string) => {
+    if (!rule) {
       return false
-    },
-    []
-  )
+    }
+
+    const expectedType = typeof rule.type === "string" ? rule.type.trim().toUpperCase() : ""
+    if (expectedType && expectedType !== type) {
+      return false
+    }
+
+    const match = rule.match ?? {}
+    const normalizedCode = code.trim().toUpperCase()
+
+    if (Array.isArray(match.codes) && match.codes.some((candidate) => typeof candidate === "string" && candidate.trim().toUpperCase() === normalizedCode)) {
+      return true
+    }
+
+    if (Array.isArray(match.prefix) && match.prefix.some((prefix) => typeof prefix === "string" && normalizedCode.startsWith(prefix.trim().toUpperCase()))) {
+      return true
+    }
+
+    if (Array.isArray(match.descriptionKeywords) && description) {
+      const descriptionLower = description.toLowerCase()
+      if (match.descriptionKeywords.some((keyword) => typeof keyword === "string" && descriptionLower.includes(keyword.toLowerCase()))) {
+        return true
+      }
+    }
+
+    return false
+  }, [])
 
   const determineCategory = useCallback(
     (codeItem: any, detail?: ApiCodeDetail) => {
@@ -458,7 +425,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
       return fallbackCategory
     },
-    [autoCategoryMap, doesRuleApply, overrideMap, sortedCategorizationRules]
+    [autoCategoryMap, doesRuleApply, overrideMap, sortedCategorizationRules],
   )
 
   const sanitizeConfidence = useCallback((value: unknown): number => {
@@ -574,7 +541,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
       return "Standard billing requirements apply."
     },
-    [ensureCurrency]
+    [ensureCurrency],
   )
 
   const billingBreakdown = useMemo(() => billingSummary?.breakdown ?? {}, [billingSummary])
@@ -587,15 +554,12 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     }
 
     const conflicts = Array.isArray(combinationResult.conflicts) ? combinationResult.conflicts : []
-    conflicts.forEach(conflict => {
+    conflicts.forEach((conflict) => {
       if (!conflict) {
         return
       }
 
-      const reason =
-        typeof conflict.reason === "string" && conflict.reason.trim().length > 0
-          ? conflict.reason
-          : "Medical necessity conflict detected"
+      const reason = typeof conflict.reason === "string" && conflict.reason.trim().length > 0 ? conflict.reason : "Medical necessity conflict detected"
 
       const code1 = typeof conflict.code1 === "string" ? conflict.code1.trim().toUpperCase() : ""
       if (code1) {
@@ -604,7 +568,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       }
 
       if (typeof conflict.code2 === "string" && conflict.code2.trim().length > 0) {
-        conflict.code2.split(",").forEach(raw => {
+        conflict.code2.split(",").forEach((raw) => {
           const normalized = raw.trim().toUpperCase()
           if (!normalized) {
             return
@@ -616,7 +580,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     })
 
     const contextIssues = Array.isArray(combinationResult.contextIssues) ? combinationResult.contextIssues : []
-    contextIssues.forEach(issue => {
+    contextIssues.forEach((issue) => {
       if (!issue) {
         return
       }
@@ -641,33 +605,31 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
         icon: FileText,
         color: "bg-blue-500",
         lightColor: "bg-blue-50",
-        textColor: "text-blue-700"
+        textColor: "text-blue-700",
       },
       prevention: {
         icon: Stethoscope,
         color: "bg-red-500",
         lightColor: "bg-red-50",
-        textColor: "text-red-700"
+        textColor: "text-red-700",
       },
       diagnoses: {
         icon: Activity,
         color: "bg-purple-500",
         lightColor: "bg-purple-50",
-        textColor: "text-purple-700"
+        textColor: "text-purple-700",
       },
       differentials: {
         icon: Pill,
         color: "bg-green-500",
         lightColor: "bg-green-50",
-        textColor: "text-green-700"
-      }
+        textColor: "text-green-700",
+      },
     }
 
-    const globalWarnings = Array.isArray(combinationResult?.warnings)
-      ? combinationResult.warnings.filter(warning => typeof warning === "string" && warning.trim().length > 0)
-      : []
+    const globalWarnings = Array.isArray(combinationResult?.warnings) ? combinationResult.warnings.filter((warning) => typeof warning === "string" && warning.trim().length > 0) : []
 
-    return (Array.isArray(selectedCodesList) ? selectedCodesList : []).map(codeItem => {
+    return (Array.isArray(selectedCodesList) ? selectedCodesList : []).map((codeItem) => {
       const normalized = typeof codeItem?.code === "string" ? codeItem.code.trim().toUpperCase() : ""
       const detail = normalized ? codeDetails[normalized] : undefined
       const documentation = normalized ? documentationMap[normalized] : undefined
@@ -678,9 +640,9 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       const resolvedType = detail?.type || codeItem?.type
       const confidence = sanitizeConfidence(detail?.confidence ?? codeItem?.confidence)
       const reimbursement =
-        (breakdown?.amountFormatted && breakdown.amountFormatted.trim())
+        breakdown?.amountFormatted && breakdown.amountFormatted.trim()
           ? breakdown.amountFormatted
-          : ensureCurrency(detail?.reimbursement) ?? ensureCurrency(codeItem?.reimbursement) ?? (resolvedType === "ICD-10" ? "N/A (Diagnosis code)" : "N/A")
+          : (ensureCurrency(detail?.reimbursement) ?? ensureCurrency(codeItem?.reimbursement) ?? (resolvedType === "ICD-10" ? "N/A (Diagnosis code)" : "N/A"))
 
       const rvuValue = (() => {
         if (typeof breakdown?.rvu === "number" && Number.isFinite(breakdown.rvu)) {
@@ -694,7 +656,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
       const conflictInfo = {
         conflicts: conflicts?.conflicts ?? [],
-        contextIssues: conflicts?.contextIssues ?? []
+        contextIssues: conflicts?.contextIssues ?? [],
       }
 
       const hasConflict = conflictInfo.conflicts.length > 0 || conflictInfo.contextIssues.length > 0
@@ -722,7 +684,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
           required: Array.isArray(documentation?.required) ? documentation.required : [],
           recommended: Array.isArray(documentation?.recommended) ? documentation.recommended : [],
           examples: Array.isArray(documentation?.examples) ? documentation.examples : [],
-          summary: formatDocumentationSummary(documentation)
+          summary: formatDocumentationSummary(documentation),
         },
         hasConflict,
         conflictDetails: conflictInfo,
@@ -730,14 +692,14 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
         billingInfo: {
           reimbursement,
           rvu: rvuValue,
-          breakdown
+          breakdown,
         },
         validationFlags: {
           hasConflicts: hasConflict,
           conflicts: conflictInfo.conflicts,
           contextIssues: conflictInfo.contextIssues,
-          warnings: globalWarnings
-        }
+          warnings: globalWarnings,
+        },
       }
     })
   }, [
@@ -751,7 +713,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     formatDocumentationSummary,
     sanitizeConfidence,
     selectedCodesList,
-    combinationResult
+    combinationResult,
   ])
 
   const computedCounts = useMemo(() => {
@@ -759,10 +721,10 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       codes: 0,
       prevention: 0,
       diagnoses: 0,
-      differentials: 0
+      differentials: 0,
     }
 
-    selectedCodesDetails.forEach(detail => {
+    selectedCodesDetails.forEach((detail) => {
       const category = (detail?.category || "") as keyof typeof counts
       if (category && typeof counts[category] === "number") {
         counts[category] += 1
@@ -774,7 +736,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
   useEffect(() => {
     const categories: (keyof typeof computedCounts)[] = ["codes", "prevention", "diagnoses", "differentials"]
-    const hasDifference = categories.some(category => (selectedCodes?.[category] ?? 0) !== (computedCounts?.[category] ?? 0))
+    const hasDifference = categories.some((category) => (selectedCodes?.[category] ?? 0) !== (computedCounts?.[category] ?? 0))
 
     if (hasDifference) {
       onUpdateCodes(computedCounts)
@@ -795,7 +757,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
 
     const messages: string[] = []
 
-    conflicts.forEach(conflict => {
+    conflicts.forEach((conflict) => {
       if (!conflict) {
         return
       }
@@ -805,7 +767,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       messages.push(code2 ? `${code1} ↔ ${code2}: ${reason}` : `${code1}: ${reason}`)
     })
 
-    contextIssues.forEach(issue => {
+    contextIssues.forEach((issue) => {
       if (!issue) {
         return
       }
@@ -818,9 +780,9 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
   }, [combinationResult])
 
   const toggleCategory = (category: string) => {
-    setActiveCategories(prev => ({
+    setActiveCategories((prev) => ({
       ...prev,
-      [category]: !prev[category]
+      [category]: !prev[category],
     }))
   }
 
@@ -830,7 +792,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     setShowRemoveDialog(true)
   }
 
-  const confirmRemoval = (action: 'clear' | 'return') => {
+  const confirmRemoval = (action: "clear" | "return") => {
     if (selectedCodeToRemove && onRemoveCode) {
       onRemoveCode(selectedCodeToRemove, action, removeReasoning || undefined)
     }
@@ -840,46 +802,46 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
   }
 
   // Filter codes based on active categories
-  const filteredCodes = selectedCodesDetails.filter(code => activeCategories[code.category])
+  const filteredCodes = selectedCodesDetails.filter((code) => activeCategories[code.category])
 
   // Category configurations
   const categoryConfigs = [
     {
-      key: 'codes',
-      title: 'Codes',
+      key: "codes",
+      title: "Codes",
       icon: FileText,
-      color: 'text-blue-600',
-      bgColor: 'bg-blue-100',
-      borderColor: 'border-blue-200',
-      count: computedCounts.codes
+      color: "text-blue-600",
+      bgColor: "bg-blue-100",
+      borderColor: "border-blue-200",
+      count: computedCounts.codes,
     },
     {
-      key: 'prevention',
-      title: 'Prevention',
+      key: "prevention",
+      title: "Prevention",
       icon: Stethoscope,
-      color: 'text-red-600',
-      bgColor: 'bg-red-100',
-      borderColor: 'border-red-200',
-      count: computedCounts.prevention
+      color: "text-red-600",
+      bgColor: "bg-red-100",
+      borderColor: "border-red-200",
+      count: computedCounts.prevention,
     },
     {
-      key: 'diagnoses',
-      title: 'Diagnoses',
+      key: "diagnoses",
+      title: "Diagnoses",
       icon: Activity,
-      color: 'text-purple-600',
-      bgColor: 'bg-purple-100',
-      borderColor: 'border-purple-200',
-      count: computedCounts.diagnoses
+      color: "text-purple-600",
+      bgColor: "bg-purple-100",
+      borderColor: "border-purple-200",
+      count: computedCounts.diagnoses,
     },
     {
-      key: 'differentials',
-      title: 'Differentials',
+      key: "differentials",
+      title: "Differentials",
       icon: Pill,
-      color: 'text-green-600',
-      bgColor: 'bg-green-100',
-      borderColor: 'border-green-200',
-      count: computedCounts.differentials
-    }
+      color: "text-green-600",
+      bgColor: "bg-green-100",
+      borderColor: "border-green-200",
+      count: computedCounts.differentials,
+    },
   ]
 
   // Calculate total codes
@@ -891,29 +853,18 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     const radius = (size - 4) / 2
     const circumference = 2 * Math.PI * radius
     const strokeDashoffset = circumference - (confidence / 100) * circumference
-    
+
     const getColor = (conf: number) => {
-      if (conf >= 80) return '#10b981' // green-500
-      if (conf >= 60) return '#eab308' // yellow-500
-      return '#ef4444' // red-500
+      if (conf >= 80) return "#10b981" // green-500
+      if (conf >= 60) return "#eab308" // yellow-500
+      return "#ef4444" // red-500
     }
 
     return (
       <div className="relative" style={{ width: size, height: size }}>
-        <svg
-          width={size}
-          height={size}
-          className="transform -rotate-90"
-        >
+        <svg width={size} height={size} className="transform -rotate-90">
           {/* Background circle */}
-          <circle
-            cx={size / 2}
-            cy={size / 2}
-            r={radius}
-            stroke="#e5e7eb"
-            strokeWidth="2"
-            fill="none"
-          />
+          <circle cx={size / 2} cy={size / 2} r={radius} stroke="#e5e7eb" strokeWidth="2" fill="none" />
           {/* Progress circle */}
           <circle
             cx={size / 2}
@@ -930,9 +881,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
         </svg>
         {/* Confidence percentage text */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-xs font-medium text-muted-foreground">
-            {confidence}
-          </span>
+          <span className="text-xs font-medium text-muted-foreground">{confidence}</span>
         </div>
       </div>
     )
@@ -958,18 +907,12 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                       onClick={() => toggleCategory(category.key)}
                       className={`
                         h-8 px-3 gap-2 text-xs transition-all
-                        ${isActive 
-                          ? `${category.bgColor} ${category.color} ${category.borderColor} border` 
-                          : 'bg-muted/50 text-muted-foreground border border-transparent hover:bg-muted'
-                        }
+                        ${isActive ? `${category.bgColor} ${category.color} ${category.borderColor} border` : "bg-muted/50 text-muted-foreground border border-transparent hover:bg-muted"}
                       `}
                     >
                       <CategoryIcon className="h-3.5 w-3.5" />
                       <span className="font-medium">{category.title}</span>
-                      <Badge 
-                        variant="secondary" 
-                        className={`text-xs px-1.5 py-0 h-4 ${isActive ? 'bg-white/80' : 'bg-muted-foreground/20'}`}
-                      >
+                      <Badge variant="secondary" className={`text-xs px-1.5 py-0 h-4 ${isActive ? "bg-white/80" : "bg-muted-foreground/20"}`}>
                         {category.count}
                       </Badge>
                     </Button>
@@ -980,101 +923,82 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
             <div className="text-xs text-muted-foreground">
               {visibleCodes} of {totalCodes} codes
             </div>
-        </div>
-
-        {(isLoadingDetails || billingSummary || (conflictSummary && selectedCodesDetails.length > 0) || fetchError) && (
-          <div className="flex flex-col gap-2 text-xs">
-            {isLoadingDetails && (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                <span>Loading code insights...</span>
-              </div>
-            )}
-
-            {billingSummary && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
-                <span className="font-medium">Estimated reimbursement:</span>
-                <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
-                  {billingSummary.totalEstimatedFormatted ?? ensureCurrency(billingSummary.totalEstimated) ?? "Not available"}
-                </Badge>
-                <span className="font-medium">Total RVU:</span>
-                <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
-                  {typeof billingSummary.totalRvu === "number" && Number.isFinite(billingSummary.totalRvu)
-                    ? billingSummary.totalRvu.toFixed(2)
-                    : "N/A"}
-                </Badge>
-              </div>
-            )}
-
-            {billingSummary?.issues && billingSummary.issues.length > 0 && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
-                {billingSummary.issues.join(" ")}
-              </div>
-            )}
-
-            {conflictSummary && selectedCodesDetails.length > 0 && (
-              <div
-                className={`flex items-start gap-2 rounded-md border px-3 py-2 ${
-                  conflictSummary.hasConflicts
-                    ? 'border-red-200 bg-red-50 text-red-700'
-                    : 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                }`}
-              >
-                {conflictSummary.hasConflicts ? (
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-                ) : (
-                  <CheckCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-                )}
-                <div className="space-y-1">
-                  <div className="text-xs font-medium">
-                    {conflictSummary.hasConflicts ? 'Review code conflicts' : 'No conflicts detected'}
-                  </div>
-                  {conflictSummary.messages.length > 0 && (
-                    <ul className="space-y-0.5 text-xs">
-                      {conflictSummary.messages.slice(0, 3).map((message, index) => (
-                        <li key={`${message}-${index}`} className="leading-snug">
-                          {message}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {conflictSummary.hasConflicts && conflictSummary.messages.length > 3 && (
-                    <div className="text-[10px] text-muted-foreground">
-                      Showing {Math.min(3, conflictSummary.messages.length)} of {conflictSummary.messages.length} findings.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {fetchError && (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive">
-                {fetchError}
-              </div>
-            )}
           </div>
-        )}
 
-        {/* Horizontally Scrollable Code Boxes */}
-        <div className="relative">
-          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-muted-foreground/20">
-            {filteredCodes.map((codeDetail, index) => {
-              const IconComponent = codeDetail.icon
-              return (
+          {(isLoadingDetails || billingSummary || (conflictSummary && selectedCodesDetails.length > 0) || fetchError) && (
+            <div className="flex flex-col gap-2 text-xs">
+              {isLoadingDetails && (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Loading code insights...</span>
+                </div>
+              )}
+
+              {billingSummary && (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
+                  <span className="font-medium">Estimated reimbursement:</span>
+                  <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
+                    {billingSummary.totalEstimatedFormatted ?? ensureCurrency(billingSummary.totalEstimated) ?? "Not available"}
+                  </Badge>
+                  <span className="font-medium">Total RVU:</span>
+                  <Badge variant="secondary" className="h-5 rounded-sm border border-emerald-200 bg-white/80 px-2 text-emerald-700">
+                    {typeof billingSummary.totalRvu === "number" && Number.isFinite(billingSummary.totalRvu) ? billingSummary.totalRvu.toFixed(2) : "N/A"}
+                  </Badge>
+                </div>
+              )}
+
+              {billingSummary?.issues && billingSummary.issues.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">{billingSummary.issues.join(" ")}</div>
+              )}
+
+              {conflictSummary && selectedCodesDetails.length > 0 && (
                 <div
+                  className={`flex items-start gap-2 rounded-md border px-3 py-2 ${
+                    conflictSummary.hasConflicts ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  }`}
+                >
+                  {conflictSummary.hasConflicts ? <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" /> : <CheckCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium">{conflictSummary.hasConflicts ? "Review code conflicts" : "No conflicts detected"}</div>
+                    {conflictSummary.messages.length > 0 && (
+                      <ul className="space-y-0.5 text-xs">
+                        {conflictSummary.messages.slice(0, 3).map((message, index) => (
+                          <li key={`${message}-${index}`} className="leading-snug">
+                            {message}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {conflictSummary.hasConflicts && conflictSummary.messages.length > 3 && (
+                      <div className="text-[10px] text-muted-foreground">
+                        Showing {Math.min(3, conflictSummary.messages.length)} of {conflictSummary.messages.length} findings.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {fetchError && <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive">{fetchError}</div>}
+            </div>
+          )}
+
+          {/* Horizontally Scrollable Code Boxes */}
+          <div className="relative">
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-muted-foreground/20">
+              {filteredCodes.map((codeDetail, index) => {
+                const IconComponent = codeDetail.icon
+                return (
+                  <div
                     key={codeDetail.code ?? index}
                     className={`
                       relative p-3 rounded-lg border cursor-pointer flex-shrink-0 min-w-[160px] group
                       ${codeDetail.lightColor} hover:scale-105 transition-all duration-200
-                      ${codeDetail.hasConflict ? 'border-red-300 ring-1 ring-red-200/80' : 'border-current/20'}
+                      ${codeDetail.hasConflict ? "border-red-300 ring-1 ring-red-200/80" : "border-current/20"}
                       hover:shadow-md
                     `}
                   >
                     {codeDetail.hasConflict && (
-                      <Badge
-                        variant="destructive"
-                        className="absolute left-3 top-2 h-4 rounded-sm px-2 text-[10px]"
-                      >
+                      <Badge variant="destructive" className="absolute left-3 top-2 h-4 rounded-sm px-2 text-[10px]">
                         Review
                       </Badge>
                     )}
@@ -1092,17 +1016,17 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                     </Button>
 
                     {/* Category switch button for diagnoses/differentials - only visible on hover */}
-                    {(codeDetail.category === 'diagnoses' || codeDetail.category === 'differentials') && codeDetail.type === 'ICD-10' && onChangeCategoryCode && (
+                    {(codeDetail.category === "diagnoses" || codeDetail.category === "differentials") && codeDetail.type === "ICD-10" && onChangeCategoryCode && (
                       <Button
                         variant="ghost"
                         size="sm"
                         className="absolute top-1 right-6 h-5 w-5 p-0 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-blue-100 hover:text-blue-700"
                         onClick={(e) => {
                           e.stopPropagation()
-                          const newCategory = codeDetail.category === 'diagnoses' ? 'differentials' : 'diagnoses'
+                          const newCategory = codeDetail.category === "diagnoses" ? "differentials" : "diagnoses"
                           onChangeCategoryCode(codeDetail, newCategory)
                         }}
-                        title={`Change to ${codeDetail.category === 'diagnoses' ? 'Differential' : 'Diagnosis'}`}
+                        title={`Change to ${codeDetail.category === "diagnoses" ? "Differential" : "Diagnosis"}`}
                       >
                         <ArrowUpDown className="h-3 w-3" />
                       </Button>
@@ -1115,12 +1039,8 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                             <IconComponent className="h-4 w-4 text-white" />
                           </div>
                           <div className="flex flex-col min-w-0">
-                            <div className={`text-sm font-mono font-medium ${codeDetail.textColor}`}>
-                              {codeDetail.code}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {codeDetail.type}
-                            </div>
+                            <div className={`text-sm font-mono font-medium ${codeDetail.textColor}`}>{codeDetail.code}</div>
+                            <div className="text-xs text-muted-foreground">{codeDetail.type}</div>
                           </div>
                           {/* Circular Confidence Gauge */}
                           <div className="flex-shrink-0">
@@ -1131,40 +1051,48 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                       <TooltipContent className="max-w-sm p-4" side="top">
                         <div className="space-y-2 text-xs">
                           <div className="space-y-0.5">
-                            <div className="text-sm font-medium">{codeDetail.code} - {codeDetail.description}</div>
+                            <div className="text-sm font-medium">
+                              {codeDetail.code} - {codeDetail.description}
+                            </div>
                             <div className="text-[11px] text-muted-foreground">{codeDetail.type}</div>
                           </div>
                           {codeDetail.rationale && (
-                            <div><span className="font-medium">Reason:</span> {codeDetail.rationale}</div>
+                            <div>
+                              <span className="font-medium">Reason:</span> {codeDetail.rationale}
+                            </div>
                           )}
-                          <div><span className="font-medium">Estimated reimbursement:</span> {codeDetail.reimbursement}</div>
+                          <div>
+                            <span className="font-medium">Estimated reimbursement:</span> {codeDetail.reimbursement}
+                          </div>
                           {codeDetail.rvu && (
-                            <div><span className="font-medium">RVU:</span> {codeDetail.rvu}</div>
+                            <div>
+                              <span className="font-medium">RVU:</span> {codeDetail.rvu}
+                            </div>
                           )}
                           {codeDetail.billingConsiderations && (
-                            <div><span className="font-medium">Billing:</span> {codeDetail.billingConsiderations}</div>
+                            <div>
+                              <span className="font-medium">Billing:</span> {codeDetail.billingConsiderations}
+                            </div>
                           )}
                           {codeDetail.treatmentNotes && (
-                            <div><span className="font-medium">Treatment:</span> {codeDetail.treatmentNotes}</div>
+                            <div>
+                              <span className="font-medium">Treatment:</span> {codeDetail.treatmentNotes}
+                            </div>
                           )}
                           {codeDetail.documentation ? (
                             <div className="space-y-1">
                               <div className="font-medium">Documentation</div>
-                              {codeDetail.documentation.required?.length ? (
-                                <div>Required: {codeDetail.documentation.required.join(', ')}</div>
-                              ) : null}
-                              {codeDetail.documentation.recommended?.length ? (
-                                <div>Recommended: {codeDetail.documentation.recommended.join(', ')}</div>
-                              ) : null}
-                              {codeDetail.documentation.examples?.length ? (
-                                <div>Examples: {codeDetail.documentation.examples.join(', ')}</div>
-                              ) : null}
+                              {codeDetail.documentation.required?.length ? <div>Required: {codeDetail.documentation.required.join(", ")}</div> : null}
+                              {codeDetail.documentation.recommended?.length ? <div>Recommended: {codeDetail.documentation.recommended.join(", ")}</div> : null}
+                              {codeDetail.documentation.examples?.length ? <div>Examples: {codeDetail.documentation.examples.join(", ")}</div> : null}
                               {!codeDetail.documentation.required?.length && !codeDetail.documentation.recommended?.length && !codeDetail.documentation.examples?.length && (
                                 <div>{codeDetail.documentationRequirements}</div>
                               )}
                             </div>
                           ) : (
-                            <div><span className="font-medium">Documentation:</span> {codeDetail.documentationRequirements}</div>
+                            <div>
+                              <span className="font-medium">Documentation:</span> {codeDetail.documentationRequirements}
+                            </div>
                           )}
                           {codeDetail.hasConflict && (
                             <div className="space-y-1 rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-red-700">
@@ -1192,15 +1120,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                           )}
                           <div className="border-t pt-1">
                             <span className="font-medium">Confidence:</span>
-                            <span
-                              className={`ml-1 ${
-                                codeDetail.confidence >= 80
-                                  ? 'text-green-600'
-                                  : codeDetail.confidence >= 60
-                                    ? 'text-yellow-600'
-                                    : 'text-red-600'
-                              }`}
-                            >
+                            <span className={`ml-1 ${codeDetail.confidence >= 80 ? "text-green-600" : codeDetail.confidence >= 60 ? "text-yellow-600" : "text-red-600"}`}>
                               {codeDetail.confidence}%
                             </span>
                           </div>
@@ -1224,13 +1144,13 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
               What would you like to do with code <span className="font-mono font-medium">{selectedCodeToRemove?.code}</span>?
             </AlertDialogDescription>
           </AlertDialogHeader>
-          
+
           <div className="py-4">
             <div className="space-y-3">
               <div className="text-sm">
                 <span className="font-medium">Code:</span> {selectedCodeToRemove?.code} - {selectedCodeToRemove?.description}
               </div>
-              
+
               <div className="space-y-2">
                 <label htmlFor="reasoning" className="text-sm font-medium">
                   Reasoning (Optional)
@@ -1243,26 +1163,17 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                   rows={3}
                   className="text-sm"
                 />
-                <p className="text-xs text-muted-foreground">
-                  Your feedback helps improve future AI suggestions and clinical decision support.
-                </p>
+                <p className="text-xs text-muted-foreground">Your feedback helps improve future AI suggestions and clinical decision support.</p>
               </div>
             </div>
           </div>
 
           <AlertDialogFooter className="gap-2">
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => confirmRemoval('return')}
-              className="hover:bg-blue-50 hover:text-blue-700"
-            >
+            <Button variant="outline" onClick={() => confirmRemoval("return")} className="hover:bg-blue-50 hover:text-blue-700">
               Return to Suggestions
             </Button>
-            <AlertDialogAction
-              onClick={() => confirmRemoval('clear')}
-              className="bg-red-600 hover:bg-red-700"
-            >
+            <AlertDialogAction onClick={() => confirmRemoval("clear")} className="bg-red-600 hover:bg-red-700">
               Remove Completely
             </AlertDialogAction>
           </AlertDialogFooter>

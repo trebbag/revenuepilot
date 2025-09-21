@@ -74,10 +74,10 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
     async (targetEmail: string) => {
       await authApi.forgotPassword({
         email: targetEmail,
-        clinicCode: multiTenant ? normalizeString(clinicCode) : undefined
+        clinicCode: multiTenant ? normalizeString(clinicCode) : undefined,
       })
     },
-    [authApi, clinicCode, multiTenant]
+    [authApi, clinicCode, multiTenant],
   )
 
   const handleSubmit = useCallback(
@@ -103,7 +103,7 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
         setState("error")
       }
     },
-    [canSubmit, email, mapErrorToState, submitRequest]
+    [canSubmit, email, mapErrorToState, submitRequest],
   )
 
   const handleTryAgain = useCallback(() => {
@@ -146,19 +146,10 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
                 </div>
 
                 <div className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    Didn't receive the email? Check your spam folder or try again.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Didn't receive the email? Check your spam folder or try again.</p>
 
                   <div className="flex flex-col gap-3">
-                    <Button
-                      variant="secondary"
-                      size="lg"
-                      fullWidth
-                      onClick={handleResendEmail}
-                      disabled={state === "loading"}
-                      loading={state === "loading"}
-                    >
+                    <Button variant="secondary" size="lg" fullWidth onClick={handleResendEmail} disabled={state === "loading"} loading={state === "loading"}>
                       Resend email
                     </Button>
 
@@ -179,11 +170,7 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
     <div className="min-h-screen flex items-center justify-center p-4 relative z-10">
       <div className="w-full max-w-md">
         <Card size="lg">
-          <CardHeader
-            icon={<Mail className="w-10 h-10 text-primary" />}
-            title="Forgot password"
-            subtitle="We'll email you a reset link"
-          />
+          <CardHeader icon={<Mail className="w-10 h-10 text-primary" />} title="Forgot password" subtitle="We'll email you a reset link" />
 
           <CardContent>
             {state === "error" && errorType && (
@@ -193,17 +180,7 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              <TextField
-                type="email"
-                label="Work email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={setEmail}
-                iconLeft="mail"
-                required
-                disabled={state === "loading"}
-                id="reset-email"
-              />
+              <TextField type="email" label="Work email" placeholder="you@example.com" value={email} onChange={setEmail} iconLeft="mail" required disabled={state === "loading"} id="reset-email" />
 
               {multiTenant && (
                 <TextField
@@ -218,26 +195,11 @@ export function ForgotPasswordForm({ authApi, onBackToLogin, multiTenant = false
                 />
               )}
 
-              <Button
-                type="submit"
-                variant="primary"
-                size="lg"
-                fullWidth
-                loading={state === "loading"}
-                disabled={!canSubmit || state === "loading"}
-              >
+              <Button type="submit" variant="primary" size="lg" fullWidth loading={state === "loading"} disabled={!canSubmit || state === "loading"}>
                 Send reset link
               </Button>
 
-              <Button
-                type="button"
-                variant="secondary"
-                size="lg"
-                fullWidth
-                onClick={onBackToLogin}
-                iconLeft={<ArrowLeft className="w-4 h-4" />}
-                disabled={state === "loading"}
-              >
+              <Button type="button" variant="secondary" size="lg" fullWidth onClick={onBackToLogin} iconLeft={<ArrowLeft className="w-4 h-4" />} disabled={state === "loading"}>
                 Back to sign in
               </Button>
             </form>

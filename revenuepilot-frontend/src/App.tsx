@@ -32,12 +32,7 @@ function AppShell() {
   const { hydrated, actions } = useSession()
 
   if (checking) {
-    return (
-      <FullscreenMessage
-        title="Signing you in"
-        description="Checking your authentication status."
-      />
-    )
+    return <FullscreenMessage title="Signing you in" description="Checking your authentication status." />
   }
 
   if (status !== "authenticated") {
@@ -45,14 +40,7 @@ function AppShell() {
   }
 
   if (!hydrated) {
-    return (
-      <FullscreenMessage
-        title="Preparing your workspace"
-        description="Loading your session data and layout preferences."
-        actionLabel="Reload"
-        onAction={() => actions.refresh()}
-      />
-    )
+    return <FullscreenMessage title="Preparing your workspace" description="Loading your session data and layout preferences." actionLabel="Reload" onAction={() => actions.refresh()} />
   }
 
   return <ProtectedApp />

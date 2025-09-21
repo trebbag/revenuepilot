@@ -105,7 +105,7 @@ function normalizeSuggestedEdits(value: unknown): BeautifySuggestedEdit[] | null
     return null
   }
   const edits = value
-    .map(item => {
+    .map((item) => {
       if (!item || typeof item !== "object") {
         return null
       }
@@ -119,7 +119,7 @@ function normalizeSuggestedEdits(value: unknown): BeautifySuggestedEdit[] | null
         section: typeof raw.section === "string" ? raw.section : null,
         original,
         suggested,
-        reason: typeof raw.reason === "string" ? raw.reason : null
+        reason: typeof raw.reason === "string" ? raw.reason : null,
       }
     })
     .filter((item): item is BeautifySuggestedEdit => Boolean(item))
@@ -141,12 +141,7 @@ function normalizeBeautifyResponse(raw: unknown): BeautifyResultData {
   const assessment = typeof data.assessment === "string" ? data.assessment : null
   const plan = typeof data.plan === "string" ? data.plan : null
   const confidenceRaw = data.confidence
-  const confidence =
-    typeof confidenceRaw === "number"
-      ? confidenceRaw
-      : typeof confidenceRaw === "string"
-        ? Number.parseFloat(confidenceRaw)
-        : null
+  const confidence = typeof confidenceRaw === "number" ? confidenceRaw : typeof confidenceRaw === "string" ? Number.parseFloat(confidenceRaw) : null
 
   return {
     subjective,
@@ -156,7 +151,7 @@ function normalizeBeautifyResponse(raw: unknown): BeautifyResultData {
     beautified,
     confidence: Number.isFinite(confidence) ? confidence : null,
     suggestedEdits: normalizeSuggestedEdits(data.suggestedEdits),
-    error: typeof data.error === "string" ? data.error : null
+    error: typeof data.error === "string" ? data.error : null,
   }
 }
 
@@ -171,7 +166,7 @@ function deriveSections(data: BeautifyResultData | null): BeautifiedSection[] {
       key: "subjective",
       label: "SUBJECTIVE",
       toneClass: "text-blue-700",
-      content: data.subjective
+      content: data.subjective,
     })
   }
   if (data.objective) {
@@ -179,7 +174,7 @@ function deriveSections(data: BeautifyResultData | null): BeautifiedSection[] {
       key: "objective",
       label: "OBJECTIVE",
       toneClass: "text-green-700",
-      content: data.objective
+      content: data.objective,
     })
   }
   if (data.assessment) {
@@ -187,7 +182,7 @@ function deriveSections(data: BeautifyResultData | null): BeautifiedSection[] {
       key: "assessment",
       label: "ASSESSMENT",
       toneClass: "text-purple-700",
-      content: data.assessment
+      content: data.assessment,
     })
   }
   if (data.plan) {
@@ -195,7 +190,7 @@ function deriveSections(data: BeautifyResultData | null): BeautifiedSection[] {
       key: "plan",
       label: "PLAN",
       toneClass: "text-orange-700",
-      content: data.plan
+      content: data.plan,
     })
   }
 
@@ -204,7 +199,7 @@ function deriveSections(data: BeautifyResultData | null): BeautifiedSection[] {
       key: "beautified",
       label: "BEAUTIFIED NOTE",
       toneClass: "text-primary",
-      content: data.beautified
+      content: data.beautified,
     })
   }
 
@@ -219,17 +214,13 @@ function buildExportNote(data: BeautifyResultData | null, fallback: string): str
   }
 
   return sections
-    .map(section => `${section.label}:\n${section.content}`.trim())
+    .map((section) => `${section.label}:\n${section.content}`.trim())
     .filter(Boolean)
     .join("\n\n")
 }
 
-function normalizeExportState(
-  raw: EhrExportPostResponse | EhrExportGetResponse | null,
-  sourceNote: string,
-  previous?: EhrExportState | null
-): EhrExportState {
-  const backendStatus = typeof raw?.status === "string" ? raw.status : previous?.backendStatus ?? null
+function normalizeExportState(raw: EhrExportPostResponse | EhrExportGetResponse | null, sourceNote: string, previous?: EhrExportState | null): EhrExportState {
+  const backendStatus = typeof raw?.status === "string" ? raw.status : (previous?.backendStatus ?? null)
   const lowerStatus = backendStatus ? backendStatus.toLowerCase() : null
 
   let state: EhrExportState["state"] = previous?.state ?? "pending"
@@ -241,10 +232,7 @@ function normalizeExportState(
     state = "pending"
   }
 
-  const progress =
-    typeof raw?.progress === "number"
-      ? raw.progress
-      : previous?.progress ?? (state === "success" ? 1 : null)
+  const progress = typeof raw?.progress === "number" ? raw.progress : (previous?.progress ?? (state === "success" ? 1 : null))
 
   let errorMessage: string | null = previous?.error ?? null
   if (state === "error") {
@@ -270,26 +258,12 @@ function normalizeExportState(
     detail: raw?.detail ?? previous?.detail,
     ehrSystem: raw?.ehrSystem ?? previous?.ehrSystem ?? null,
     sourceNote,
-    lastCheckedAt: Date.now()
+    lastCheckedAt: Date.now(),
   }
 }
 
 export function BeautifiedView(props: BeautifiedViewProps) {
-  const {
-    noteContent,
-    specialty,
-    payer,
-    isActive,
-    existingResult,
-    onResultChange,
-    exportState,
-    onExportStateChange,
-    patientId,
-    encounterId,
-    noteId,
-    selectedCodes = [],
-    ehrSystem
-  } = props
+  const { noteContent, specialty, payer, isActive, existingResult, onResultChange, exportState, onExportStateChange, patientId, encounterId, noteId, selectedCodes = [], ehrSystem } = props
 
   const [internalResult, setInternalResult] = useState<BeautifyResultState | null>(existingResult ?? null)
   const [internalExportState, setInternalExportState] = useState<EhrExportState | null>(exportState ?? null)
@@ -335,7 +309,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
       setInternalResult(next)
       onResultChange?.(next ?? null)
     },
-    [onResultChange]
+    [onResultChange],
   )
 
   const updateExportState = useCallback(
@@ -344,7 +318,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
       setInternalExportState(next)
       onExportStateChange?.(next ?? null)
     },
-    [onExportStateChange]
+    [onExportStateChange],
   )
 
   const runBeautify = useCallback(async () => {
@@ -357,7 +331,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         error: null,
         fetchedAt: Date.now(),
         metadata: { specialty: specialty ?? null, payer: payer ?? null },
-        isStale: false
+        isStale: false,
       }
       updateResult(emptyState)
       setIsFetching(false)
@@ -379,7 +353,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
       error: null,
       fetchedAt: Date.now(),
       metadata: { specialty: specialty ?? null, payer: payer ?? null },
-      isStale: false
+      isStale: false,
     }
     updateResult(loadingState)
 
@@ -390,8 +364,8 @@ export function BeautifiedView(props: BeautifiedViewProps) {
           text: trimmed,
           specialty: specialty ?? undefined,
           payer: payer ?? undefined,
-          note_id: noteId ?? undefined
-        }
+          note_id: noteId ?? undefined,
+        },
       })
 
       const normalized = normalizeBeautifyResponse(response)
@@ -402,7 +376,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         error: normalized.error ?? null,
         fetchedAt: Date.now(),
         metadata: { specialty: specialty ?? null, payer: payer ?? null },
-        isStale: false
+        isStale: false,
       }
       updateResult(successState)
     } catch (error) {
@@ -414,7 +388,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         error: message,
         fetchedAt: Date.now(),
         metadata: { specialty: specialty ?? null, payer: payer ?? null },
-        isStale: false
+        isStale: false,
       }
       updateResult(errorState)
     } finally {
@@ -437,7 +411,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         error: null,
         fetchedAt: Date.now(),
         metadata: { specialty: specialty ?? null, payer: payer ?? null },
-        isStale: false
+        isStale: false,
       })
       return
     }
@@ -498,12 +472,12 @@ export function BeautifiedView(props: BeautifiedViewProps) {
             detail: exportStateRef.current?.detail,
             ehrSystem: exportStateRef.current?.ehrSystem ?? null,
             sourceNote,
-            lastCheckedAt: Date.now()
+            lastCheckedAt: Date.now(),
           })
         }
       }, 2000)
     },
-    [clearPollInterval, updateExportState]
+    [clearPollInterval, updateExportState],
   )
   const handleExport = useCallback(async () => {
     if (!exportNote.trim() || exporting) {
@@ -519,7 +493,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
       detail: exportStatus?.detail,
       ehrSystem: ehrSystem ?? exportStatus?.ehrSystem ?? null,
       sourceNote: exportNote,
-      lastCheckedAt: Date.now()
+      lastCheckedAt: Date.now(),
     }
     updateExportState(startingState)
 
@@ -528,19 +502,17 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         note: exportNote,
         patientID: patientId ?? undefined,
         encounterID: encounterId ?? undefined,
-        ehrSystem: ehrSystem ?? undefined
+        ehrSystem: ehrSystem ?? undefined,
       }
 
-      const codes = selectedCodes
-        .map(entry => (typeof entry?.code === "string" ? entry.code.trim() : ""))
-        .filter(code => code.length > 0)
+      const codes = selectedCodes.map((entry) => (typeof entry?.code === "string" ? entry.code.trim() : "")).filter((code) => code.length > 0)
       if (codes.length) {
         payload.codes = codes
       }
 
       const response = await apiFetchJson<EhrExportPostResponse>("/api/export/ehr", {
         method: "POST",
-        jsonBody: payload
+        jsonBody: payload,
       })
 
       const nextState = normalizeExportState(response, exportNote, {
@@ -548,7 +520,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         state: "pending",
         exportId: response?.exportId ?? startingState.exportId,
         progress: response?.progress ?? startingState.progress,
-        backendStatus: response?.status ?? null
+        backendStatus: response?.status ?? null,
       })
       updateExportState(nextState)
       if (nextState.state === "pending" && nextState.exportId != null) {
@@ -567,7 +539,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         detail: exportStatus?.detail,
         ehrSystem: ehrSystem ?? exportStatus?.ehrSystem ?? null,
         sourceNote: exportNote,
-        lastCheckedAt: Date.now()
+        lastCheckedAt: Date.now(),
       })
     }
   }, [
@@ -583,7 +555,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
     patientId,
     schedulePoll,
     selectedCodes,
-    updateExportState
+    updateExportState,
   ])
 
   const handleManualRefresh = useCallback(() => {
@@ -618,9 +590,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
   if (!trimmedContent) {
     mainContent = (
       <div className="flex h-full items-center justify-center">
-        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-          Add documentation to generate a beautified note preview.
-        </div>
+        <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">Add documentation to generate a beautified note preview.</div>
       </div>
     )
   } else if (!beautifyState || beautifyState.status === "idle") {
@@ -669,22 +639,18 @@ export function BeautifiedView(props: BeautifiedViewProps) {
         )}
 
         {sections.length ? (
-          sections.map(section => (
+          sections.map((section) => (
             <Card key={section.key}>
               <CardHeader className="pb-3">
                 <CardTitle className={`text-lg ${section.toneClass}`}>{section.label}</CardTitle>
               </CardHeader>
               <CardContent>
-                <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans">
-                  {section.content}
-                </pre>
+                <pre className="text-sm leading-relaxed whitespace-pre-wrap font-sans">{section.content}</pre>
               </CardContent>
             </Card>
           ))
         ) : (
-          <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-            Beautification completed, but no structured content was returned.
-          </div>
+          <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">Beautification completed, but no structured content was returned.</div>
         )}
       </div>
     )
@@ -694,8 +660,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
   if (exportStatus) {
     const baseBannerClasses = "flex items-center gap-2 px-4 py-3 text-sm border-t"
     if (exportStatus.state === "loading" || exportStatus.state === "pending") {
-      const progressPercent =
-        exportStatus.progress != null ? Math.round(exportStatus.progress * 100) : null
+      const progressPercent = exportStatus.progress != null ? Math.round(exportStatus.progress * 100) : null
       statusBanner = (
         <div className={baseBannerClasses + " bg-muted/50 text-muted-foreground border-border"}>
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -733,9 +698,7 @@ export function BeautifiedView(props: BeautifiedViewProps) {
             <Separator orientation="vertical" className="h-6" />
             <div className="flex flex-col text-xs text-muted-foreground">
               <span>{metadataLabel}</span>
-              {confidencePercent !== null && (
-                <span className="text-[11px] text-muted-foreground/80">Model confidence: {confidencePercent}%</span>
-              )}
+              {confidencePercent !== null && <span className="text-[11px] text-muted-foreground/80">Model confidence: {confidencePercent}%</span>}
             </div>
           </div>
 

@@ -4,22 +4,11 @@ import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
 
-const {
-  noteEditorPropsSpy,
-  sessionResetSpy,
-  apiFetchMock,
-  apiFetchJsonMock
-} = vi.hoisted(() => ({
+const { noteEditorPropsSpy, sessionResetSpy, apiFetchMock, apiFetchJsonMock } = vi.hoisted(() => ({
   noteEditorPropsSpy: vi.fn(),
   sessionResetSpy: vi.fn(),
-  apiFetchMock: vi.fn<[
-    RequestInfo | URL,
-    Record<string, any> | undefined
-  ], Promise<Response>>(),
-  apiFetchJsonMock: vi.fn<[
-    RequestInfo | URL,
-    Record<string, any> | undefined
-  ], Promise<any>>()
+  apiFetchMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<Response>>(),
+  apiFetchJsonMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<any>>(),
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({
@@ -27,8 +16,8 @@ vi.mock("../../contexts/AuthContext", () => ({
     user: { id: "user-1", name: "Test User", role: "user" },
     status: "authenticated",
     checking: false,
-    hasPermission: () => true
-  })
+    hasPermission: () => true,
+  }),
 }))
 
 vi.mock("../../contexts/SessionContext", () => ({
@@ -38,7 +27,7 @@ vi.mock("../../contexts/SessionContext", () => ({
       selectedCodesList: [],
       addedCodes: [],
       isSuggestionPanelOpen: false,
-      layout: { noteEditor: 70, suggestionPanel: 30 }
+      layout: { noteEditor: 70, suggestionPanel: 30 },
     },
     hydrated: true,
     syncing: false,
@@ -49,9 +38,9 @@ vi.mock("../../contexts/SessionContext", () => ({
       setSuggestionPanelOpen: vi.fn(),
       setLayout: vi.fn(),
       refresh: vi.fn(),
-      reset: sessionResetSpy
-    }
-  })
+      reset: sessionResetSpy,
+    },
+  }),
 }))
 
 vi.mock("../../lib/api", async () => {
@@ -59,72 +48,78 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     apiFetch: apiFetchMock,
-    apiFetchJson: apiFetchJsonMock
+    apiFetchJson: apiFetchJsonMock,
   }
 })
 
 vi.mock("../NavigationSidebar", () => ({
   NavigationSidebar: ({ onNavigate }: { onNavigate: (view: string) => void }) => (
     <div>
-      <button data-testid="nav-drafts" onClick={() => onNavigate("drafts")}>Drafts</button>
-      <button data-testid="nav-app" onClick={() => onNavigate("app")}>Editor</button>
+      <button data-testid="nav-drafts" onClick={() => onNavigate("drafts")}>
+        Drafts
+      </button>
+      <button data-testid="nav-app" onClick={() => onNavigate("app")}>
+        Editor
+      </button>
     </div>
-  )
+  ),
 }))
 
 vi.mock("../Drafts", () => ({
   Drafts: ({ onEditDraft }: { onEditDraft?: (id: string) => void }) => (
     <div>
-      <button data-testid="load-draft" onClick={() => onEditDraft?.("draft-42")}>Load Draft</button>
+      <button data-testid="load-draft" onClick={() => onEditDraft?.("draft-42")}>
+        Load Draft
+      </button>
     </div>
-  )
+  ),
 }))
 
 vi.mock("../NoteEditor", () => ({
   NoteEditor: (props: any) => {
     noteEditorPropsSpy(props)
     return <div data-testid="note-editor" data-note-id={props.initialNoteData?.noteId ?? "none"} />
-  }
+  },
 }))
 
 vi.mock("../SelectedCodesBar", () => ({
-  SelectedCodesBar: () => <div data-testid="selected-codes" />
+  SelectedCodesBar: () => <div data-testid="selected-codes" />,
 }))
 
 vi.mock("../SuggestionPanel", () => ({
-  SuggestionPanel: () => <div data-testid="suggestion-panel" />
+  SuggestionPanel: () => <div data-testid="suggestion-panel" />,
 }))
 
 vi.mock("../Dashboard", () => ({
-  Dashboard: () => <div data-testid="dashboard" />
+  Dashboard: () => <div data-testid="dashboard" />,
 }))
 
 vi.mock("../Analytics", () => ({
-  Analytics: () => <div data-testid="analytics" />
+  Analytics: () => <div data-testid="analytics" />,
 }))
 
 vi.mock("../Settings", () => ({
-  Settings: () => <div data-testid="settings" />
+  Settings: () => <div data-testid="settings" />,
 }))
 
 vi.mock("../ActivityLog", () => ({
-  ActivityLog: () => <div data-testid="activity-log" />
+  ActivityLog: () => <div data-testid="activity-log" />,
 }))
 
 vi.mock("../Schedule", () => ({
-  Schedule: () => <div data-testid="schedule" />
+  Schedule: () => <div data-testid="schedule" />,
 }))
 
 vi.mock("../Builder", () => ({
-  Builder: () => <div data-testid="builder" />
+  Builder: () => <div data-testid="builder" />,
 }))
 
 vi.mock("../StyleGuide", () => ({
-  StyleGuide: () => <div data-testid="style-guide" />
+  StyleGuide: () => <div data-testid="style-guide" />,
 }))
 
 vi.mock("../FigmaComponentLibrary", () => ({
-  FigmaComponentLibrary: () => <div data-testid="figma-library" />
+  FigmaComponentLibrary: () => <div data-testid="figma-library" />,
 }))
 
 vi.mock("../ui/sidebar", () => ({
@@ -132,18 +127,20 @@ vi.mock("../ui/sidebar", () => ({
   Sidebar: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SidebarContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SidebarTrigger: ({ onClick }: { onClick?: () => void }) => (
-    <button data-testid="sidebar-trigger" onClick={onClick}>Toggle</button>
-  )
+    <button data-testid="sidebar-trigger" onClick={onClick}>
+      Toggle
+    </button>
+  ),
 }))
 
 vi.mock("../ui/tooltip", () => ({
-  TooltipProvider: ({ children }: { children: ReactNode }) => <>{children}</>
+  TooltipProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
 vi.mock("../ui/resizable", () => ({
   ResizablePanelGroup: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   ResizablePanel: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  ResizableHandle: () => <div data-testid="resizable-handle" />
+  ResizableHandle: () => <div data-testid="resizable-handle" />,
 }))
 
 import { ProtectedApp } from "../../ProtectedApp"
@@ -165,8 +162,8 @@ describe("ProtectedApp draft editing", () => {
         removeEventListener: vi.fn(),
         addListener: vi.fn(),
         removeListener: vi.fn(),
-        dispatchEvent: vi.fn()
-      }))
+        dispatchEvent: vi.fn(),
+      })),
     })
   })
 
@@ -180,14 +177,12 @@ describe("ProtectedApp draft editing", () => {
         return [
           {
             content: "Patient ID: PT-42\nEncounter ID: ENC-42\nDraft body",
-            timestamp: "2024-01-01T00:00:00Z"
-          }
+            timestamp: "2024-01-01T00:00:00Z",
+          },
         ]
       }
       if (url === "/api/notes/drafts") {
-        return [
-          { id: 42, content: "Patient ID: PT-42\nEncounter ID: ENC-42\nDraft body" }
-        ]
+        return [{ id: 42, content: "Patient ID: PT-42\nEncounter ID: ENC-42\nDraft body" }]
       }
       if (url === "/api/analytics/drafts") {
         return { drafts: 1 }

@@ -33,14 +33,7 @@ function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
 }
 
-export function LoginForm({
-  authApi,
-  mode = "default",
-  multiTenant = false,
-  hasOfflineSession = false,
-  onSuccess,
-  onForgotPassword
-}: LoginFormProps) {
+export function LoginForm({ authApi, mode = "default", multiTenant = false, hasOfflineSession = false, onSuccess, onForgotPassword }: LoginFormProps) {
   const [loginState, setLoginState] = useState<LoginState>("default")
   const [errorType, setErrorType] = useState<ErrorType>(null)
   const [mfaState, setMfaState] = useState<MFADialogState>("codeEntry")
@@ -55,16 +48,13 @@ export function LoginForm({
   const [toast, setToast] = useState<{ type: ToastType; message: string; visible: boolean }>({
     type: "info",
     message: "",
-    visible: false
+    visible: false,
   })
 
   const isOfflineMode = mode === "offline"
   const isMaintenanceMode = mode === "maintenance"
 
-  const canSignIn = useMemo(
-    () => !isMaintenanceMode && (!isOfflineMode || hasOfflineSession),
-    [isMaintenanceMode, isOfflineMode, hasOfflineSession]
-  )
+  const canSignIn = useMemo(() => !isMaintenanceMode && (!isOfflineMode || hasOfflineSession), [isMaintenanceMode, isOfflineMode, hasOfflineSession])
 
   const validateForm = useCallback(() => {
     if (multiTenant && !normalizeString(clinicCode)) return false
@@ -78,7 +68,7 @@ export function LoginForm({
   }, [])
 
   const hideToast = useCallback(() => {
-    setToast(prev => ({ ...prev, visible: false }))
+    setToast((prev) => ({ ...prev, visible: false }))
   }, [])
 
   const handleAuthenticationSuccess = useCallback(
@@ -87,22 +77,18 @@ export function LoginForm({
       persistAuthTokens({
         accessToken: result.accessToken,
         refreshToken: result.refreshToken ?? undefined,
-        remember: rememberMe
+        remember: rememberMe,
       })
       showToast("success", "Welcome back!")
       setLoginState("success")
       setTimeout(() => onSuccess?.(), 50)
     },
-    [onSuccess, rememberMe, showToast]
+    [onSuccess, rememberMe, showToast],
   )
 
   const mapErrorToState = useCallback((error: unknown, fallback: ErrorType = "server_error"): ErrorType => {
     if (error instanceof DesignLoginSystemError) {
-      if (
-        error.code === "invalid_credentials" ||
-        error.code === "account_locked" ||
-        error.code === "mfa_error"
-      ) {
+      if (error.code === "invalid_credentials" || error.code === "account_locked" || error.code === "mfa_error") {
         return error.code
       }
       return fallback
@@ -127,7 +113,7 @@ export function LoginForm({
           username: normalizeString(emailOrUsername),
           password,
           rememberMe,
-          clinicCode: multiTenant ? normalizeString(clinicCode) : undefined
+          clinicCode: multiTenant ? normalizeString(clinicCode) : undefined,
         })
 
         if (result.type === "mfa") {
@@ -144,18 +130,7 @@ export function LoginForm({
         setLoginState("error")
       }
     },
-    [
-      authApi,
-      emailOrUsername,
-      password,
-      rememberMe,
-      multiTenant,
-      clinicCode,
-      validateForm,
-      canSignIn,
-      handleAuthenticationSuccess,
-      mapErrorToState
-    ]
+    [authApi, emailOrUsername, password, rememberMe, multiTenant, clinicCode, validateForm, canSignIn, handleAuthenticationSuccess, mapErrorToState],
   )
 
   const handleMFAVerify = useCallback(
@@ -172,7 +147,7 @@ export function LoginForm({
         const result = await authApi.verifyMfa({
           code,
           mfaSessionToken,
-          rememberMe
+          rememberMe,
         })
         handleAuthenticationSuccess(result)
       } catch (error) {
@@ -181,7 +156,7 @@ export function LoginForm({
         setMfaState("error")
       }
     },
-    [authApi, handleAuthenticationSuccess, mapErrorToState, mfaSessionToken, rememberMe]
+    [authApi, handleAuthenticationSuccess, mapErrorToState, mfaSessionToken, rememberMe],
   )
 
   const handleMFACancel = useCallback(() => {
@@ -232,9 +207,7 @@ export function LoginForm({
 
           {isMaintenanceMode && (
             <div className="mb-4">
-              <Alert tone="warning">
-                System maintenance in progress. Sign in may be temporarily unavailable.
-              </Alert>
+              <Alert tone="warning">System maintenance in progress. Sign in may be temporarily unavailable.</Alert>
             </div>
           )}
 
@@ -307,67 +280,30 @@ export function LoginForm({
                   id="password"
                 />
 
-                <Checkbox
-                  checked={rememberMe}
-                  onChange={setRememberMe}
-                  label="Remember me on this device"
-                  disabled={loginState === "loading"}
-                  id="remember-me"
-                />
+                <Checkbox checked={rememberMe} onChange={setRememberMe} label="Remember me on this device" disabled={loginState === "loading"} id="remember-me" />
 
                 {isOfflineMode && hasOfflineSession && (
                   <div className="p-4 bg-muted/50 rounded-lg">
-                    <Toggle
-                      checked={workOffline}
-                      onChange={setWorkOffline}
-                      label="Work offline (limited features)"
-                      disabled={loginState === "loading"}
-                      id="work-offline"
-                    />
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Access cached data and continue working without internet
-                    </p>
+                    <Toggle checked={workOffline} onChange={setWorkOffline} label="Work offline (limited features)" disabled={loginState === "loading"} id="work-offline" />
+                    <p className="text-xs text-muted-foreground mt-2">Access cached data and continue working without internet</p>
                   </div>
                 )}
 
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="lg"
-                  fullWidth
-                  loading={loginState === "loading"}
-                  disabled={!validateForm() || loginState === "loading" || !canSignIn}
-                >
+                <Button type="submit" variant="primary" size="lg" fullWidth loading={loginState === "loading"} disabled={!validateForm() || loginState === "loading" || !canSignIn}>
                   {isOfflineMode && workOffline ? "Continue offline" : "Sign in"}
                 </Button>
 
                 {isOfflineMode && hasOfflineSession && workOffline && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="lg"
-                    fullWidth
-                    onClick={handleOfflineWork}
-                    disabled={loginState === "loading"}
-                  >
+                  <Button type="button" variant="secondary" size="lg" fullWidth onClick={handleOfflineWork} disabled={loginState === "loading"}>
                     Continue offline
                   </Button>
                 )}
 
-                {isOfflineMode && !hasOfflineSession && (
-                  <p className="text-sm text-muted-foreground text-center">
-                    Please connect to the internet to sign in
-                  </p>
-                )}
+                {isOfflineMode && !hasOfflineSession && <p className="text-sm text-muted-foreground text-center">Please connect to the internet to sign in</p>}
               </form>
 
               <div className="mt-6 text-center">
-                <Button
-                  variant="link"
-                  className="text-sm"
-                  onClick={onForgotPassword}
-                  disabled={loginState === "loading"}
-                >
+                <Button variant="link" className="text-sm" onClick={onForgotPassword} disabled={loginState === "loading"}>
                   Forgot password?
                 </Button>
               </div>

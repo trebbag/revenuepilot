@@ -1,13 +1,6 @@
-import type {
-  PatientMetadata,
-  VisitTranscriptEntry,
-} from "./WorkflowWizard"
+import type { PatientMetadata, VisitTranscriptEntry } from "./WorkflowWizard"
 
-export type WorkflowStepStatus =
-  | "not_started"
-  | "in_progress"
-  | "completed"
-  | "blocked"
+export type WorkflowStepStatus = "not_started" | "in_progress" | "completed" | "blocked"
 
 export interface WorkflowStepState {
   step?: number | string | null
@@ -71,8 +64,7 @@ export interface FinalizeNoteResponse extends PreFinalizeCheckResponse {
   estimatedReimbursement?: number
 }
 
-export interface StoredFinalizationSession
-  extends WorkflowSessionResponsePayload {
+export interface StoredFinalizationSession extends WorkflowSessionResponsePayload {
   lastPreFinalize?: PreFinalizeCheckResponse
   lastFinalizeResult?: FinalizeNoteResponse
 }

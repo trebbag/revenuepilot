@@ -1,10 +1,10 @@
 import { useState } from "react"
 import { motion } from "motion/react"
-import { 
-  FileText, 
-  Stethoscope, 
-  Bell, 
-  Settings, 
+import {
+  FileText,
+  Stethoscope,
+  Bell,
+  Settings,
   ChevronRight,
   Calendar,
   Clock,
@@ -33,7 +33,7 @@ import {
   AlertCircle,
   Info,
   CheckCircle,
-  XCircle
+  XCircle,
 } from "lucide-react"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
@@ -50,14 +50,14 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collap
 
 export function FigmaComponentLibrary() {
   const [selectedTab, setSelectedTab] = useState("style-guide")
-  const [buttonStates, setButtonStates] = useState<{[key: string]: 'default' | 'hover' | 'active' | 'disabled'}>({
-    primary: 'default',
-    secondary: 'default',
-    ghost: 'default'
+  const [buttonStates, setButtonStates] = useState<{ [key: string]: "default" | "hover" | "active" | "disabled" }>({
+    primary: "default",
+    secondary: "default",
+    ghost: "default",
   })
-  const [inputStates, setInputStates] = useState<{[key: string]: 'default' | 'error' | 'focus'}>({
-    textField: 'default',
-    dropdown: 'default'
+  const [inputStates, setInputStates] = useState<{ [key: string]: "default" | "error" | "focus" }>({
+    textField: "default",
+    dropdown: "default",
   })
   const [isCollapsibleOpen, setIsCollapsibleOpen] = useState(true)
   const [isDictationActive, setIsDictationActive] = useState(false)
@@ -67,31 +67,31 @@ export function FigmaComponentLibrary() {
     primary: {
       name: "Primary",
       value: "#030213",
-      usage: "Main brand color, primary actions"
+      usage: "Main brand color, primary actions",
     },
     secondary: {
-      name: "Secondary", 
+      name: "Secondary",
       value: "#ececf0",
-      usage: "Supporting elements, subtle backgrounds"
+      usage: "Supporting elements, subtle backgrounds",
     },
     background: {
       light: { name: "Background Light", value: "#ffffff", usage: "Main background" },
-      dark: { name: "Background Dark", value: "oklch(0.145 0 0)", usage: "Dark mode background" }
+      dark: { name: "Background Dark", value: "oklch(0.145 0 0)", usage: "Dark mode background" },
     },
     text: {
       primary: { name: "Text Primary", value: "oklch(0.145 0 0)", usage: "Primary text content" },
-      secondary: { name: "Text Secondary", value: "#717182", usage: "Secondary text, captions" }
+      secondary: { name: "Text Secondary", value: "#717182", usage: "Secondary text, captions" },
     },
     error: {
       name: "Error",
-      value: "#d4183d", 
-      usage: "Error states, destructive actions"
+      value: "#d4183d",
+      usage: "Error states, destructive actions",
     },
     highlight: {
       name: "Accent",
       value: "#e9ebef",
-      usage: "Hover states, highlighted content"
-    }
+      usage: "Hover states, highlighted content",
+    },
   }
 
   const typography = {
@@ -99,7 +99,7 @@ export function FigmaComponentLibrary() {
     h2: { name: "H2", size: "20px", weight: "500", usage: "Section headers" },
     h3: { name: "H3", size: "18px", weight: "500", usage: "Subsection headers" },
     body: { name: "Body", size: "14px", weight: "400", usage: "Default text content" },
-    caption: { name: "Caption", size: "12px", weight: "400", usage: "Small text, metadata" }
+    caption: { name: "Caption", size: "12px", weight: "400", usage: "Small text, metadata" },
   }
 
   const spacingTokens = [
@@ -107,35 +107,30 @@ export function FigmaComponentLibrary() {
     { name: "8px", value: "8px", usage: "Small gaps, padding" },
     { name: "16px", value: "16px", usage: "Standard spacing" },
     { name: "24px", value: "24px", usage: "Section spacing" },
-    { name: "32px", value: "32px", usage: "Large spacing, margins" }
+    { name: "32px", value: "32px", usage: "Large spacing, margins" },
   ]
 
   // Component Examples
-  const ButtonExample = ({ variant, state, size = "default" }: { variant: string, state: string, size?: string }) => {
-    const isDisabled = state === 'disabled'
-    const isHover = state === 'hover'
-    
+  const ButtonExample = ({ variant, state, size = "default" }: { variant: string; state: string; size?: string }) => {
+    const isDisabled = state === "disabled"
+    const isHover = state === "hover"
+
     return (
-      <Button 
-        variant={variant as any}
-        size={size as any}
-        disabled={isDisabled}
-        className={`${isHover ? 'opacity-90' : ''} transition-all`}
-      >
-        {variant === 'ghost' ? <Settings className="w-4 h-4 mr-2" /> : null}
+      <Button variant={variant as any} size={size as any} disabled={isDisabled} className={`${isHover ? "opacity-90" : ""} transition-all`}>
+        {variant === "ghost" ? <Settings className="w-4 h-4 mr-2" /> : null}
         {variant.charAt(0).toUpperCase() + variant.slice(1)} Button
       </Button>
     )
   }
 
-  const InputExample = ({ type, state }: { type: string, state: string }) => {
-    const isError = state === 'error'
-    const isFocus = state === 'focus'
-    
-    if (type === 'dropdown') {
+  const InputExample = ({ type, state }: { type: string; state: string }) => {
+    const isError = state === "error"
+    const isFocus = state === "focus"
+
+    if (type === "dropdown") {
       return (
         <Select>
-          <SelectTrigger className={`${isError ? 'border-destructive' : ''} ${isFocus ? 'border-ring ring-2 ring-ring/50' : ''}`}>
+          <SelectTrigger className={`${isError ? "border-destructive" : ""} ${isFocus ? "border-ring ring-2 ring-ring/50" : ""}`}>
             <SelectValue placeholder="Select template..." />
           </SelectTrigger>
           <SelectContent>
@@ -146,16 +141,11 @@ export function FigmaComponentLibrary() {
         </Select>
       )
     }
-    
-    return (
-      <Input 
-        placeholder="Enter patient ID..."
-        className={`${isError ? 'border-destructive ring-destructive/20' : ''} ${isFocus ? 'border-ring ring-2 ring-ring/50' : ''}`}
-      />
-    )
+
+    return <Input placeholder="Enter patient ID..." className={`${isError ? "border-destructive ring-destructive/20" : ""} ${isFocus ? "border-ring ring-2 ring-ring/50" : ""}`} />
   }
 
-  const IconExample = ({ name, icon: Icon, category }: { name: string, icon: any, category: string }) => (
+  const IconExample = ({ name, icon: Icon, category }: { name: string; icon: any; category: string }) => (
     <div className="flex flex-col items-center p-3 border rounded-lg space-y-2">
       <Icon className="w-6 h-6" />
       <div className="text-center">
@@ -205,13 +195,11 @@ export function FigmaComponentLibrary() {
     <Collapsible open={isOpen}>
       <CollapsibleTrigger className="flex items-center justify-between w-full p-3 border rounded-lg hover:bg-accent">
         <span className="font-medium">Assessment & Plan</span>
-        <ChevronRight className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`w-4 h-4 transition-transform ${isOpen ? "rotate-90" : ""}`} />
       </CollapsibleTrigger>
       <CollapsibleContent className="mt-2">
         <div className="p-4 border rounded-lg bg-muted/50">
-          <p className="text-sm text-muted-foreground">
-            This section contains the clinical assessment and treatment plan details.
-          </p>
+          <p className="text-sm text-muted-foreground">This section contains the clinical assessment and treatment plan details.</p>
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -253,7 +241,7 @@ export function FigmaComponentLibrary() {
             style={{
               height: `${8 + (i % 4) * 3}px`,
               animation: `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite`,
-              animationDelay: `${i * 0.1}s`
+              animationDelay: `${i * 0.1}s`,
             }}
           />
         ))}
@@ -299,17 +287,13 @@ export function FigmaComponentLibrary() {
                     <div className="min-w-[100px]">
                       <div className="text-sm font-medium">{type.name}</div>
                       <div className="text-xs text-muted-foreground">
-                        {type.size} · {type.weight === '500' ? 'Medium' : 'Normal'}
+                        {type.size} · {type.weight === "500" ? "Medium" : "Normal"}
                       </div>
                     </div>
                     <div className="flex-1">
-                      <div style={{ fontSize: type.size, fontWeight: type.weight }}>
-                        The quick brown fox jumps over the lazy dog
-                      </div>
+                      <div style={{ fontSize: type.size, fontWeight: type.weight }}>The quick brown fox jumps over the lazy dog</div>
                     </div>
-                    <div className="text-xs text-muted-foreground min-w-[120px]">
-                      {type.usage}
-                    </div>
+                    <div className="text-xs text-muted-foreground min-w-[120px]">{type.usage}</div>
                   </div>
                 ))}
               </div>
@@ -388,10 +372,7 @@ export function FigmaComponentLibrary() {
                 {spacingTokens.map((token) => (
                   <div key={token.name} className="flex items-center gap-6 p-4 border rounded-lg">
                     <div className="min-w-[60px] font-medium">{token.name}</div>
-                    <div 
-                      className="bg-primary h-4 rounded"
-                      style={{ width: token.value }}
-                    ></div>
+                    <div className="bg-primary h-4 rounded" style={{ width: token.value }}></div>
                     <div className="text-sm text-muted-foreground">{token.usage}</div>
                   </div>
                 ))}
@@ -532,7 +513,9 @@ export function FigmaComponentLibrary() {
                     </div>
                     <div className="flex items-center gap-2">
                       <Checkbox id="disabled" disabled />
-                      <Label htmlFor="disabled" className="text-muted-foreground">Disabled</Label>
+                      <Label htmlFor="disabled" className="text-muted-foreground">
+                        Disabled
+                      </Label>
                     </div>
                   </div>
                 </div>
@@ -668,9 +651,7 @@ export function FigmaComponentLibrary() {
             <section>
               <h2 className="text-xl font-medium mb-6">Pattern / Editor / Toolbar</h2>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Complete editor toolbar with formatting controls and dictation functionality
-                </p>
+                <p className="text-sm text-muted-foreground">Complete editor toolbar with formatting controls and dictation functionality</p>
                 <EditorToolbar />
               </div>
             </section>
@@ -679,9 +660,7 @@ export function FigmaComponentLibrary() {
             <section>
               <h2 className="text-xl font-medium mb-6">Pattern / Editor / Smart Phrase Dropdown</h2>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Contextual dropdown with medical phrase suggestions
-                </p>
+                <p className="text-sm text-muted-foreground">Contextual dropdown with medical phrase suggestions</p>
                 <SmartPhraseDropdown />
               </div>
             </section>
@@ -690,9 +669,7 @@ export function FigmaComponentLibrary() {
             <section>
               <h2 className="text-xl font-medium mb-6">Pattern / Note Section / Collapsible</h2>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Expandable/collapsible sections for organizing note content
-                </p>
+                <p className="text-sm text-muted-foreground">Expandable/collapsible sections for organizing note content</p>
                 <div className="space-y-4">
                   <div>
                     <h4 className="font-medium mb-2">Expanded State</h4>
@@ -710,9 +687,7 @@ export function FigmaComponentLibrary() {
             <section>
               <h2 className="text-xl font-medium mb-6">Pattern / Vitals Table / Compact</h2>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Compact display of patient vital signs
-                </p>
+                <p className="text-sm text-muted-foreground">Compact display of patient vital signs</p>
                 <VitalsTable />
               </div>
             </section>
@@ -721,9 +696,7 @@ export function FigmaComponentLibrary() {
             <section>
               <h2 className="text-xl font-medium mb-6">Pattern / Dictation / Active State</h2>
               <div className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  Active dictation interface with waveform visualization and controls
-                </p>
+                <p className="text-sm text-muted-foreground">Active dictation interface with waveform visualization and controls</p>
                 <DictationActive />
               </div>
             </section>

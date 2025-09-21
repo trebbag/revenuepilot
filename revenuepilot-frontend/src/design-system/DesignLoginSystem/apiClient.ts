@@ -1,14 +1,5 @@
 import { apiFetch, extractAuthTokens } from "../../lib/api"
-import {
-  DesignLoginSystemApi,
-  DesignLoginSystemError,
-  ForgotPasswordRequest,
-  LoginRequest,
-  LoginResponse,
-  LoginSuccessResult,
-  ResendMfaRequest,
-  VerifyMfaRequest
-} from "./types"
+import { DesignLoginSystemApi, DesignLoginSystemError, ForgotPasswordRequest, LoginRequest, LoginResponse, LoginSuccessResult, ResendMfaRequest, VerifyMfaRequest } from "./types"
 
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -20,11 +11,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function mapLoginError(status: number, payload: unknown): DesignLoginSystemError {
   const details = isRecord(payload) ? payload : undefined
-  const rawMessage = normalizeString(
-    (details?.error as string | undefined) ??
-      (details?.detail as string | undefined) ??
-      (details?.message as string | undefined)
-  )
+  const rawMessage = normalizeString((details?.error as string | undefined) ?? (details?.detail as string | undefined) ?? (details?.message as string | undefined))
   const message = rawMessage || "Unable to sign in"
 
   if (status === 401) {
@@ -57,11 +44,7 @@ function mapLoginError(status: number, payload: unknown): DesignLoginSystemError
 
 function mapForgotPasswordError(status: number, payload: unknown): DesignLoginSystemError {
   const details = isRecord(payload) ? payload : undefined
-  const rawMessage = normalizeString(
-    (details?.error as string | undefined) ??
-      (details?.detail as string | undefined) ??
-      (details?.message as string | undefined)
-  )
+  const rawMessage = normalizeString((details?.error as string | undefined) ?? (details?.detail as string | undefined) ?? (details?.message as string | undefined))
   const message = rawMessage || "Unable to submit password reset request"
 
   if (status === 404) {
@@ -86,7 +69,7 @@ function mapForgotPasswordError(status: number, payload: unknown): DesignLoginSy
 function assertAccessToken(result: LoginSuccessResult, context: string): LoginSuccessResult {
   if (!result.accessToken) {
     throw new DesignLoginSystemError("server_error", `${context} missing access token`, {
-      details: result.metadata ?? undefined
+      details: result.metadata ?? undefined,
     })
   }
   return result
@@ -101,9 +84,9 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
           username: normalizeString(request.username),
           password: request.password,
           rememberMe: Boolean(request.rememberMe),
-          ...(request.clinicCode ? { clinicCode: normalizeString(request.clinicCode) } : {})
+          ...(request.clinicCode ? { clinicCode: normalizeString(request.clinicCode) } : {}),
         },
-        skipAuth: true
+        skipAuth: true,
       })
 
       const data = await response.json().catch(() => null)
@@ -113,15 +96,14 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
       }
 
       if (isRecord(data) && (data.requiresMFA || data.requires_mfa)) {
-        const sessionToken =
-          normalizeString(data.mfaSessionToken) || normalizeString(data.mfa_session_token)
+        const sessionToken = normalizeString(data.mfaSessionToken) || normalizeString(data.mfa_session_token)
         if (!sessionToken) {
           throw new DesignLoginSystemError("mfa_error", "Missing MFA session token", { details: data })
         }
         return {
           type: "mfa",
           mfaSessionToken: sessionToken,
-          metadata: data
+          metadata: data,
         }
       }
 
@@ -130,7 +112,7 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         type: "success",
         accessToken: tokens.accessToken ?? "",
         refreshToken: tokens.refreshToken,
-        metadata: isRecord(data) ? data : null
+        metadata: isRecord(data) ? data : null,
       }
 
       return assertAccessToken(result, "Authentication response")
@@ -142,9 +124,9 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         jsonBody: {
           code: normalizeString(request.code),
           mfaSessionToken: normalizeString(request.mfaSessionToken),
-          rememberMe: Boolean(request.rememberMe)
+          rememberMe: Boolean(request.rememberMe),
         },
-        skipAuth: true
+        skipAuth: true,
       })
 
       const data = await response.json().catch(() => null)
@@ -158,7 +140,7 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         type: "success",
         accessToken: tokens.accessToken ?? "",
         refreshToken: tokens.refreshToken,
-        metadata: isRecord(data) ? data : null
+        metadata: isRecord(data) ? data : null,
       }
 
       return assertAccessToken(result, "MFA verification response")
@@ -168,12 +150,12 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
       const response = await apiFetch("/api/auth/resend-mfa", {
         method: "POST",
         jsonBody: { mfaSessionToken: normalizeString(request.mfaSessionToken) },
-        skipAuth: true
+        skipAuth: true,
       })
 
       if (!response.ok) {
         throw new DesignLoginSystemError("mfa_error", "Unable to resend MFA code", {
-          status: response.status
+          status: response.status,
         })
       }
     },
@@ -183,9 +165,9 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         method: "POST",
         jsonBody: {
           email: normalizeString(request.email),
-          ...(request.clinicCode ? { clinicCode: normalizeString(request.clinicCode) } : {})
+          ...(request.clinicCode ? { clinicCode: normalizeString(request.clinicCode) } : {}),
         },
-        skipAuth: true
+        skipAuth: true,
       })
 
       if (response.status === 204) {
@@ -203,7 +185,7 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
       try {
         await apiFetch("/api/auth/logout", {
           method: "POST",
-          json: false
+          json: false,
         })
       } catch (error) {
         if ((error as DOMException)?.name === "AbortError") {
@@ -211,6 +193,6 @@ export function createDesignLoginSystemApiClient(): DesignLoginSystemApi {
         }
         throw error
       }
-    }
+    },
   }
 }
