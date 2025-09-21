@@ -246,9 +246,11 @@ def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[s
         return _DB_CONN
     try:  # Late import avoids circular dependency during module import.
         from backend import main  # type: ignore
-
+    except ImportError:
+        return None
+    try:
         return getattr(main, "db_conn", None)
-    except Exception:
+    except AttributeError:
         return None
 
 _DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
