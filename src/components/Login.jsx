@@ -8,20 +8,7 @@ import {
   getLastBackendError,
 } from '../api.js';
 
-// Detect Electron renderer context (simplistic)
-const isElectron =
-  typeof window !== 'undefined' &&
-  !!window.require &&
-  !!window.process &&
-  window.process.type === 'renderer';
-let ipcRenderer = null;
-try {
-  if (isElectron) {
-    ipcRenderer = window.require('electron').ipcRenderer;
-  }
-} catch {
-  /* ignore */
-}
+const getElectronAPI = () => (typeof window !== 'undefined' ? window.electronAPI : null);
 
 /**
  * Unified authentication form for RevenuePilot with improved UX, styling and
@@ -68,23 +55,24 @@ function Login({ onLoggedIn }) {
   }, [checkBackend]);
 
   useEffect(() => {
-    if (!ipcRenderer) return;
-    const handleReady = () => {
+    const electronAPI = getElectronAPI();
+    if (!electronAPI?.on) return undefined;
+    const removeReady = electronAPI.on('backend-ready', () => {
       checkBackend();
-    };
-    const handleFailed = () => {
+    });
+    const removeFailed = electronAPI.on('backend-failed', () => {
       setBackendUp(false);
-    };
-    const handleDiagnostics = (_event, payload) => {
-      setDiag(payload);
-    };
-    ipcRenderer.on('backend-ready', handleReady);
-    ipcRenderer.on('backend-failed', handleFailed);
-    ipcRenderer.on('backend-diagnostics', handleDiagnostics);
+    });
+    const removeDiagnostics = electronAPI.on(
+      'backend-diagnostics',
+      (_event, payload) => {
+        setDiag(payload);
+      },
+    );
     return () => {
-      ipcRenderer.removeListener('backend-ready', handleReady);
-      ipcRenderer.removeListener('backend-failed', handleFailed);
-      ipcRenderer.removeListener('backend-diagnostics', handleDiagnostics);
+      removeReady?.();
+      removeFailed?.();
+      removeDiagnostics?.();
     };
   }, [checkBackend]);
 

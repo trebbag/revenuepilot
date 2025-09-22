@@ -20,11 +20,12 @@ import ClipboardExportButtons from '../ClipboardExportButtons.jsx';
 describe('ClipboardExportButtons', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete window.electronAPI;
   });
 
   afterEach(() => {
     cleanup();
-    delete window.require;
+    delete window.electronAPI;
   });
 
   test('copies beautified text to clipboard and logs event', async () => {
@@ -63,7 +64,7 @@ describe('ClipboardExportButtons', () => {
 
   test('exports note via ipc and logs event', async () => {
     const invoke = vi.fn().mockResolvedValue();
-    window.require = vi.fn().mockReturnValue({ ipcRenderer: { invoke } });
+    window.electronAPI = { invoke };
     const logSpy = vi.spyOn(api, 'logEvent').mockResolvedValue();
     const { getByText } = render(
       <ClipboardExportButtons beautified="b" summary="s" patientID="p3" />
@@ -80,7 +81,7 @@ describe('ClipboardExportButtons', () => {
 
   test('exports RTF via ipc and logs event', async () => {
     const invoke = vi.fn().mockResolvedValue();
-    window.require = vi.fn().mockReturnValue({ ipcRenderer: { invoke } });
+    window.electronAPI = { invoke };
     const logSpy = vi.spyOn(api, 'logEvent').mockResolvedValue();
     const { getByText } = render(
       <ClipboardExportButtons beautified="b" summary="s" patientID="p4" />
