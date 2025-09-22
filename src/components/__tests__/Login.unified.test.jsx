@@ -14,13 +14,12 @@ vi.mock('../../api.js', () => ({
   resetPassword: vi.fn(async () => ({})),
 }));
 
-vi.mock('electron', () => ({ ipcRenderer: { on: vi.fn(), removeListener: vi.fn(), send: vi.fn() } }), { virtual: true });
-
 import Login from '../Login.jsx';
 
 beforeEach(() => {
   Object.defineProperty(window, 'localStorage', { value: { store: {}, setItem(k,v){this.store[k]=v;}, getItem(k){return this.store[k];}, removeItem(k){delete this.store[k];}, clear(){this.store={};}}, configurable: true });
   localStorage.clear();
+  delete window.electronAPI;
 });
 
 afterEach(() => cleanup());

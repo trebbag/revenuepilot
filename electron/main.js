@@ -288,7 +288,11 @@ function createWindow() {
     height: 750,
     show: false,
     backgroundColor: '#111111',
-    webPreferences: { nodeIntegration: true, contextIsolation: false },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
   });
 
   const indexPath = resolveIndexHtml();

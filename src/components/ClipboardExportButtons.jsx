@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { logEvent } from '../api.js';
 import html2pdf from 'html2pdf.js';
 
+const getElectronAPI = () => (typeof window !== 'undefined' ? window.electronAPI : null);
+
 function ClipboardExportButtons({
   beautified,
   summary,
@@ -39,11 +41,9 @@ function ClipboardExportButtons({
 
   const exportNote = async () => {
     try {
-      const ipcRenderer = window.require
-        ? window.require('electron').ipcRenderer
-        : null;
-      if (!ipcRenderer) return;
-      await ipcRenderer.invoke('export-note', { beautified, summary });
+      const electronAPI = getElectronAPI();
+      if (!electronAPI?.invoke) return;
+      await electronAPI.invoke('export-note', { beautified, summary });
       setFeedback(t('clipboard.exported'));
       if (patientID) {
         logEvent('export', {
@@ -69,11 +69,9 @@ function ClipboardExportButtons({
 
   const exportRtf = async () => {
     try {
-      const ipcRenderer = window.require
-        ? window.require('electron').ipcRenderer
-        : null;
-      if (!ipcRenderer) return;
-      await ipcRenderer.invoke('export-rtf', { beautified, summary });
+      const electronAPI = getElectronAPI();
+      if (!electronAPI?.invoke) return;
+      await electronAPI.invoke('export-rtf', { beautified, summary });
       setFeedback(t('clipboard.exported'));
       if (patientID) {
         logEvent('export-rtf', {
