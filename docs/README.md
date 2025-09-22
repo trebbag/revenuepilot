@@ -72,6 +72,27 @@ runs in CI and production deployments):
 backend/venv/bin/python -m alembic -c backend/alembic/alembic.ini upgrade head
 ```
 
+### Migrate SQLite data to PostgreSQL
+
+Use the dedicated helper when moving existing installations from SQLite to
+PostgreSQL. The script copies tables in dependency order, batches rows to avoid
+long-lived transactions, normalises epoch timestamps into timezone-aware
+datetimes and skips duplicates via ``ON CONFLICT DO NOTHING`` so it is safe to
+resume.
+
+```bash
+python backend/scripts/migrate_sqlite_to_postgres.py \
+  --sqlite sqlite:////path/to/legacy.db \
+  --postgres postgresql://user:pass@host:5432/revenuepilot \
+  --chunk-size 5000 \
+  --resume users:1200
+```
+
+The command streams progress to stdout and writes ``migration_report.csv`` plus
+``migration_report.json`` summarising attempted rows, insert counts, skips and
+errors per table. Freeze writes, take verifiable backups of both databases and
+manually compare row counts before letting clients reconnect.
+
 ### Start the full stack
 
 Use the helper script to launch FastAPI and the Vite frontend together.
