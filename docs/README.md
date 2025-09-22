@@ -72,6 +72,7 @@ runs in CI and production deployments):
 backend/venv/bin/python -m alembic -c backend/alembic/alembic.ini upgrade head
 ```
 
+
 ### Database migration preflight checklist
 
 Run the automated checklist before promoting the managed Postgres
@@ -98,6 +99,7 @@ maintenance window and alerting/on-call integrations are all ready.
 Wire the command into the deployment pipeline immediately before the
 cutover step so failures halt the release while there is still time to
 correct course.【F:scripts/preflight_db_migration.py†L1-L202】
+
 
 ### Start the full stack
 
@@ -364,6 +366,7 @@ platform-provided variables) and leave `SECRETS_FALLBACK=never`; the
 development scripts only provision local fallbacks when `ENVIRONMENT` is
 a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】
 
+
 ### Post-migration monitoring and audit trails
 
 After the switchover, monitor `pg_stat_activity` to verify connection
@@ -381,6 +384,33 @@ metadata captured by the backend whenever a privileged action occurs.
 Admins can also retrieve the audit history through the `/audit`
 endpoint exposed by the FastAPI service.【F:backend/main.py†L1849-L1950】【F:backend/main.py†L4492-L4519】
 
+### Production database expectations
+
+RevenuePilot runs on Amazon RDS for PostgreSQL in production. Follow the
+[`Production Database & RDS Operations`](RDS_OPERATIONS.md) guide for full
+details and enforce the following controls:
+
+- **Provisioning & backups** – Enable storage encryption with a KMS CMK,
+  require TLS (`rds.force_ssl = 1`) using the `rds-ca-rsa2048-g1` bundle,
+  and keep automated backups for at least 7 days alongside manual snapshots
+  before migrations.
+- **Networking & logging** – Deploy the cluster in private subnets, narrow
+  security group ingress to application hosts, emit PostgreSQL logs to
+  CloudWatch, and monitor RDS and CloudTrail events for configuration
+  changes.
+- **Database roles** – Use a privileged `migration` role for Alembic DDL and
+  a constrained `app_user` role for application traffic. Rotate both via AWS
+  Secrets Manager or Parameter Store and retrieve them at runtime without
+  printing credentials.
+- **Runtime configuration** – Configure TLS and pooling via environment
+  variables such as `PGSSLROOTCERT`, `PGSSLMODE=verify-full`,
+  `PGCONNECT_TIMEOUT`, `DB_POOL_SIZE`, and `DB_STATEMENT_TIMEOUT_MS` tuned
+  for RDS.
+- **Migration runbook** – Snapshot before changes, run the Alembic upgrade
+  with the `migration` user, validate row counts, execute smoke tests, and
+  be ready to downgrade or restore if anomalies appear.
+
+
 
 ## Additional references
 
@@ -392,6 +422,8 @@ endpoint exposed by the FastAPI service.【F:backend/main.py†L1849-L1950】【
 - [finalization_workflow_regression.md](finalization_workflow_regression.md) –
   Step-by-step API regression guide.
 - [SOP.md](SOP.md) – Day-to-day development process and CI expectations.
+- [RDS_OPERATIONS.md](RDS_OPERATIONS.md) – Production database provisioning,
+  credential rotation, and migration runbook.
 - [`docs/archive/`](archive/README.md) – Historical planning documents kept
   for context.
 
