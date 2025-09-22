@@ -15,6 +15,8 @@ import json
 import os
 import sqlite3
 
+from backend import db
+
 
 # Default intervals for broad condition categories.  These are defined as
 # constants so they can be reused when configuring or overriding mappings.
@@ -244,14 +246,11 @@ def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[s
         return conn
     if _DB_CONN is not None:
         return _DB_CONN
-    try:  # Late import avoids circular dependency during module import.
-        from backend import main  # type: ignore
-    except ImportError:
-        return None
     try:
-        return getattr(main, "db_conn", None)
-    except AttributeError:
+        candidate = db.get_sync_connection()
+    except Exception:
         return None
+    return candidate if isinstance(candidate, sqlite3.Connection) else None
 
 _DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
 
