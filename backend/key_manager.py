@@ -146,7 +146,12 @@ def _allow_fallback() -> bool:
         return True
     if fallback_env == "never":
         return False
-    return _is_dev_env()
+    if _is_dev_env():
+        return True
+    backend_name = _backend_name()
+    if backend_name in {"env", "environment", "file", "local", "none"}:
+        return True
+    return False
 
 
 def _max_age_days(default: int) -> Optional[int]:

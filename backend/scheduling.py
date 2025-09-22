@@ -237,6 +237,15 @@ def configure_database(conn: sqlite3.Connection) -> None:
     _DB_CONN = conn
 
 
+def reset_state() -> None:
+    """Reset in-memory appointment caches (primarily for tests)."""
+
+    global _NEXT_ID
+    with _APPT_LOCK:
+        _APPOINTMENTS.clear()
+        _NEXT_ID = 1000
+
+
 def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[sqlite3.Connection]:
     """Return an active SQLite connection if available."""
 

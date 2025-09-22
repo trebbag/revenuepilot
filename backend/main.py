@@ -14,7 +14,6 @@ import copy
 import logging
 import os
 import re
-import shutil
 import time
 import asyncio
 import sys
@@ -38,6 +37,7 @@ from typing import (
     Iterable,
     Awaitable,
 )
+from sqlalchemy.orm import Session
 from fastapi import (
     FastAPI,
     Depends,
@@ -128,6 +128,14 @@ from backend.key_manager import (
 )  # type: ignore
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
+import backend.scheduling as scheduling_module  # type: ignore
+from backend.db import (
+    DATABASE_PATH,
+    get_connection,
+    get_session,
+    initialise_schema,
+    resolve_session_connection,
+)
 from backend.migrations import (  # type: ignore
     ensure_users_table,
     ensure_clinics_table,
@@ -187,7 +195,6 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
     apply_bulk_operations,
-    configure_database as configure_schedule_database,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -784,6 +791,21 @@ START_TIME = time.time()
 _DASHBOARD_CACHE: Dict[str, tuple[float, Any]] = {}
 DASHBOARD_CACHE_TTL = float(os.getenv("DASHBOARD_CACHE_TTL", "10"))
 
+
+def _invalidate_dashboard_cache(*keys: str) -> None:
+    """Remove cached dashboard payloads for ``keys``.
+
+    When ``keys`` is empty the function is a no-op; callers are expected to
+    explicitly list cache buckets they mutate.  This keeps invalidation logic
+    precise and avoids nuking unrelated cached responses unnecessarily.
+    """
+
+    if not keys:
+        return
+    for key in keys:
+        _DASHBOARD_CACHE.pop(key, None)
+
+
 def _cached_response(key: str, builder: Callable[[], Any]):
     """Return cached data for ``key`` rebuilding via ``builder`` when stale."""
     now = time.time()
@@ -1337,44 +1359,14 @@ async def _broadcast_notification_count(username: str) -> None:
                 pass
 
 
-# Set up a SQLite database for persistent analytics storage.  The database
-# now lives in the user's data directory (platform-specific) so analytics
-# persist outside the project folder.  A migration step moves any existing
-# database from the old location if found.
-data_dir = user_data_dir(APP_NAME, APP_NAME)
-os.makedirs(data_dir, exist_ok=True)
-DB_PATH = os.path.join(data_dir, "analytics.db")
-UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
+# Set up a SQLite database for persistent analytics storage.  Connection
+# creation and schema initialisation live in ``backend.db`` so the dependency
+# can be shared across the application and tests.
+data_dir = DATABASE_PATH.parent
+data_dir.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", str(data_dir / "uploaded_charts")))
 
-# Migrate previous database file from the repository directory if it exists
-old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
-if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
-    try:  # best-effort migration
-        shutil.move(old_db_path, DB_PATH)
-    except Exception:
-        pass
-
-db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-# Ensure the events table exists with the latest schema.
-ensure_events_table(db_conn)
-ensure_exports_table(db_conn)
-ensure_patients_table(db_conn)
-ensure_encounters_table(db_conn)
-ensure_visit_sessions_table(db_conn)
-ensure_note_auto_saves_table(db_conn)
-ensure_note_versions_table(db_conn)
-ensure_notifications_table(db_conn)
-ensure_event_aggregates_table(db_conn)
-ensure_compliance_issues_table(db_conn)
-ensure_compliance_rules_table(db_conn)
-ensure_confidence_scores_table(db_conn)
-ensure_notification_counters_table(db_conn)
-ensure_notification_events_table(db_conn)
-patients.configure_database(db_conn)
-configure_schedule_database(db_conn)
-
-# Keep the compliance ORM bound to the active database connection.
-compliance_engine.configure_engine(db_conn)
+db_conn = get_connection()
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -1392,7 +1384,7 @@ ANALYTICS_DB_PRUNE_FRACTION = float(os.getenv("ANALYTICS_DB_PRUNE_FRACTION", "0.
 
 def _prune_analytics_if_needed():  # pragma: no cover - size dependent
     try:
-        db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
+        db_size = os.path.getsize(DATABASE_PATH) / (1024 * 1024)
         if db_size <= ANALYTICS_DB_MAX_MB:
             return
         cursor = db_conn.cursor()
@@ -1420,126 +1412,15 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
 _prune_analytics_if_needed()
 
 
-# Reference data seeding helpers ensure consistent test fixtures and sensible
-# defaults when the application starts with an empty database.
-def _seed_reference_data(conn: sqlite3.Connection) -> None:
-    try:
-        existing_rules = conn.execute(
-            "SELECT COUNT(*) FROM compliance_rule_catalog"
-        ).fetchone()[0]
-    except sqlite3.Error as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "compliance_rules_table_inspect_failed", error=str(exc)
-        )
-        return
-
-    try:
-        if existing_rules == 0:
-            seed_compliance_rules(conn, compliance_engine.get_rules())
-
-        metadata = load_code_metadata()
-        cpt_metadata = {
-            code: info
-            for code, info in metadata.items()
-            if (info.get("type") or "").upper() == "CPT"
-        }
-
-        existing_cpt_codes = conn.execute("SELECT COUNT(*) FROM cpt_codes").fetchone()[0]
-        if existing_cpt_codes == 0:
-            seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items())
-
-        existing_icd_codes = conn.execute("SELECT COUNT(*) FROM icd10_codes").fetchone()[0]
-        if existing_icd_codes == 0:
-            seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items())
-
-        existing_hcpcs_codes = conn.execute("SELECT COUNT(*) FROM hcpcs_codes").fetchone()[0]
-        if existing_hcpcs_codes == 0:
-            seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items())
-
-        existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
-        if existing_cpt == 0:
-            seed_cpt_reference(conn, cpt_metadata.items())
-
-        existing_schedules = conn.execute(
-            "SELECT COUNT(*) FROM payer_schedules"
-        ).fetchone()[0]
-        if existing_schedules == 0:
-            schedules = []
-            for code, info in cpt_metadata.items():
-                reimbursement = info.get("reimbursement")
-                if reimbursement in (None, ""):
-                    continue
-                rvu_value = info.get("rvu")
-                base_amount = float(reimbursement)
-                schedules.append(
-                    {
-                        "payer_type": "commercial",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": base_amount,
-                        "rvu": rvu_value,
-                    }
-                )
-                schedules.append(
-                    {
-                        "payer_type": "medicare",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": round(base_amount * 0.8, 2),
-                        "rvu": rvu_value,
-                    }
-                )
-            seed_payer_schedules(conn, schedules)
-
-        conn.commit()
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.warning("reference_data_seed_failed", error=str(exc))
-
-
-def get_db() -> sqlite3.Connection:
-    """FastAPI dependency returning the primary SQLite connection."""
-
-    return db_conn
-
-
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
-    ensure_users_table(conn)
-    ensure_clinics_table(conn)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
-    )
+    initialise_schema(conn)
+    from backend import db as db_helpers
 
-    ensure_audit_log_table(conn)
-    ensure_settings_table(conn)
-    ensure_templates_table(conn)
-    ensure_user_profile_table(conn)
-    ensure_events_table(conn)
-    ensure_refresh_table(conn)
-    ensure_session_table(conn)
-    ensure_password_reset_tokens_table(conn)
-    ensure_mfa_challenges_table(conn)
-    ensure_notes_table(conn)
-    ensure_error_log_table(conn)
-    ensure_exports_table(conn)
-    ensure_patients_table(conn)
-    ensure_encounters_table(conn)
-    ensure_visit_sessions_table(conn)
-    ensure_note_auto_saves_table(conn)
-    ensure_session_state_table(conn)
-    ensure_shared_workflow_sessions_table(conn)
-    ensure_compliance_issues_table(conn)
-    ensure_compliance_issue_history_table(conn)
-    ensure_compliance_rules_table(conn)
-    ensure_confidence_scores_table(conn)
-    ensure_notification_counters_table(conn)
-    ensure_compliance_rule_catalog_table(conn)
-    ensure_cpt_codes_table(conn)
-    ensure_icd10_codes_table(conn)
-    ensure_hcpcs_codes_table(conn)
-    ensure_cpt_reference_table(conn)
-    ensure_payer_schedule_table(conn)
-    ensure_billing_audits_table(conn)
+    db_helpers.use_connection(conn)
+    conn.row_factory = sqlite3.Row
+    scheduling_module.reset_state()
+
     existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     if existing_patients == 0:
         now = datetime.utcnow().replace(microsecond=0)
@@ -1594,78 +1475,8 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
                 time.time(),
             ),
         )
-    _seed_reference_data(conn)
-    conn.commit()
-    patients.configure_database(conn)
-    configure_schedule_database(conn)
-    compliance_engine.configure_engine(conn)
+        conn.commit()
 
-
-# Proper users table creation (replacing previously malformed snippet)
-ensure_users_table(db_conn)
-ensure_clinics_table(db_conn)
-ensure_audit_log_table(db_conn)
-
-# Table recording failed logins and administrative actions for auditing.
-db_conn.execute(
-    "CREATE TABLE IF NOT EXISTS audit_log ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-    "timestamp REAL NOT NULL,"
-    "username TEXT,"
-    "action TEXT NOT NULL,"
-    "details TEXT"
-    ")"
-)
-db_conn.commit()
-
-
-# Persisted user preferences for theme, enabled categories and custom rules.
-# Ensure the table exists and contains the latest schema (including ``lang``).
-
-ensure_settings_table(db_conn)
-
-# Table storing user and clinic specific note templates.
-ensure_templates_table(db_conn)
-ensure_patients_table(db_conn)
-ensure_encounters_table(db_conn)
-ensure_visit_sessions_table(db_conn)
-ensure_note_auto_saves_table(db_conn)
-ensure_session_state_table(db_conn)
-ensure_shared_workflow_sessions_table(db_conn)
-ensure_compliance_issues_table(db_conn)
-ensure_compliance_issue_history_table(db_conn)
-ensure_compliance_rules_table(db_conn)
-ensure_confidence_scores_table(db_conn)
-ensure_compliance_rule_catalog_table(db_conn)
-ensure_cpt_codes_table(db_conn)
-ensure_icd10_codes_table(db_conn)
-ensure_hcpcs_codes_table(db_conn)
-ensure_cpt_reference_table(db_conn)
-ensure_payer_schedule_table(db_conn)
-ensure_billing_audits_table(db_conn)
-
-# User profile details including current view and UI preferences.
-ensure_user_profile_table(db_conn)
-
-# Centralized error logging table.
-ensure_error_log_table(db_conn)
-
-# Table storing notes and drafts with status metadata.
-ensure_notes_table(db_conn)
-
-# Tables for refresh tokens and user session state
-ensure_refresh_table(db_conn)
-ensure_session_table(db_conn)
-ensure_password_reset_tokens_table(db_conn)
-ensure_mfa_challenges_table(db_conn)
-
-
-# Core clinical data tables.
-ensure_patients_table(db_conn)
-ensure_encounters_table(db_conn)
-ensure_visit_sessions_table(db_conn)
-
-_seed_reference_data(db_conn)
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -7858,17 +7669,31 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
         closed = row["closed"] or 0
         urgent = row["urgent"] or 0
         now_dt = datetime.utcnow()
-        upper_bound = now_dt + timedelta(days=1)
+        start_of_today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_tomorrow = start_of_today + timedelta(days=1)
+        morning_cutoff = start_of_tomorrow + timedelta(hours=1)
+        today_date = start_of_today.date()
         upcoming = 0
         try:
             for appt in list_appointments():
+                start_raw = appt.get("start") if isinstance(appt, dict) else None
+                if not start_raw:
+                    continue
                 try:
-                    start_dt = datetime.fromisoformat(appt["start"])
+                    start_dt = datetime.fromisoformat(start_raw)
                 except Exception:
                     continue
-                if start_dt.date() != now_dt.date():
+                if start_dt.tzinfo is not None:
+                    start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                if start_dt < now_dt:
                     continue
-                if start_dt >= now_dt:
+                summary = appt.get("visitSummary") if isinstance(appt, dict) else None
+                if isinstance(summary, dict) and "sessionUpdatedAt" in summary and start_dt.date() != today_date:
+                    continue
+                if start_of_today <= start_dt < start_of_tomorrow:
+                    upcoming += 1
+                    continue
+                if start_of_tomorrow <= start_dt < morning_cutoff:
                     upcoming += 1
         except Exception:
             upcoming = 0
@@ -12004,8 +11829,9 @@ async def _compliance_check(
 async def compliance_check(
     req: ComplianceCheckRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(get_session),
 ) -> ComplianceCheckResponse:
+    conn = resolve_session_connection(session)
     return await _compliance_check(req, conn)
 
 
@@ -12190,8 +12016,9 @@ async def compliance_issue_history(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
+    conn = resolve_session_connection(session)
     query = (
         "SELECT issue_id, code, payer, findings, created_at, user_id "
         "FROM compliance_issue_history"
@@ -12597,6 +12424,7 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
         encounter_id=appt.encounterId,
         location=appt.location,
     )
+    _invalidate_dashboard_cache("quick_actions")
     return Appointment(
         **{
             **rec,
@@ -12662,6 +12490,8 @@ async def schedule_bulk_operations(
         [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
         req.provider,
     )
+    if succeeded:
+        _invalidate_dashboard_cache("quick_actions")
     return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
 
@@ -12878,9 +12708,10 @@ class BillingRequest(BaseModel):
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(get_session),
 ):
     """Return estimated reimbursement for CPT codes."""
+    conn = resolve_session_connection(session)
     cpt_codes = [c.upper() for c in req.cpt]
     result = code_tables.calculate_billing(
         cpt_codes,
@@ -14075,10 +13906,11 @@ async def code_details_batch(
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Calculate total reimbursement and RVUs for provided codes."""
 
+    conn = resolve_session_connection(session)
     codes_upper = [code.upper() for code in req.codes]
     payer_type = req.payerType or "commercial"
 
@@ -14111,8 +13943,9 @@ async def list_billing_audits(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
+    conn = resolve_session_connection(session)
     query = (
         "SELECT audit_id, code, payer, findings, created_at, user_id "
         "FROM billing_audits"
