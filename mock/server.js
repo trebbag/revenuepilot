@@ -63,6 +63,10 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), db: true });
 });
 
+app.get('/auth/policy', (req, res) => {
+  res.json({ lockoutThreshold: 5, lockoutDurationSeconds: 15 * 60 });
+});
+
 app.post('/login', (req, res) => {
   const { username, password, lang } = req.body || {};
   if (!username || !password)

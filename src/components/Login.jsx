@@ -6,6 +6,7 @@ import {
   register,
   pingBackend,
   getLastBackendError,
+  fetchAuthPolicy,
 } from '../api.js';
 
 const getElectronAPI = () => (typeof window !== 'undefined' ? window.electronAPI : null);
@@ -33,6 +34,8 @@ function Login({ onLoggedIn }) {
   const [showPassword, setShowPassword] = useState(false);
   const [rememberUsername, setRememberUsername] = useState(true);
   const [offlineMode, setOfflineMode] = useState(false);
+  const [authPolicy, setAuthPolicy] = useState(null);
+  const [securityWarning, setSecurityWarning] = useState(null);
 
   useEffect(() => {
     // restore remembered username
@@ -76,6 +79,20 @@ function Login({ onLoggedIn }) {
     };
   }, [checkBackend]);
 
+  useEffect(() => {
+    let mounted = true;
+    fetchAuthPolicy()
+      .then((policy) => {
+        if (mounted && policy) setAuthPolicy(policy);
+      })
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const passwordScore = useCallback((pwd) => {
     let score = 0;
     if (!pwd) return 0;
@@ -107,6 +124,7 @@ function Login({ onLoggedIn }) {
     e.preventDefault();
     setError(null);
     setInfo(null);
+    setSecurityWarning(null);
 
     if (!validUsername(username)) {
       setError('Please enter a valid username (at least 3 characters).');
@@ -176,11 +194,11 @@ function Login({ onLoggedIn }) {
         return;
       }
 
-      if (mode === 'login') {
-        const { token, refreshToken, settings } = await login(
-          username,
-          password,
-          lang,
+        if (mode === 'login') {
+          const { token, refreshToken, settings } = await login(
+            username,
+            password,
+            lang,
         );
         if (typeof window !== 'undefined') {
           localStorage.setItem('token', token);
@@ -220,6 +238,45 @@ function Login({ onLoggedIn }) {
       }
     } catch (err) {
       setError(err && err.message ? err.message : 'Operation failed');
+      const remaining =
+        err && typeof err.remainingAttempts === 'number'
+          ? err.remainingAttempts
+          : null;
+      const durationSeconds =
+        (err && typeof err.lockoutDurationSeconds === 'number'
+          ? err.lockoutDurationSeconds
+          : null) ||
+        (authPolicy && authPolicy.lockoutDurationSeconds) ||
+        null;
+      const minutes = durationSeconds ? Math.ceil(durationSeconds / 60) : null;
+      if (remaining != null) {
+        setSecurityWarning(
+          `${
+            t('login.remainingAttemptsWarning', {
+              count: remaining,
+              minutes: minutes ?? 15,
+            }) ||
+            `Warning: ${remaining} attempts remaining before lockout.`
+          } ${
+            t('login.repeatedFailuresAlert') ||
+            'Repeated failures trigger security alerts.'
+          }`
+        );
+      } else if (err && err.code === 'ACCOUNT_LOCKED') {
+        setSecurityWarning(
+          t('login.accountLocked', {
+            minutes: minutes ?? 15,
+          }) ||
+            'This account is locked temporarily. Try again later or contact support.'
+        );
+      } else if (err && err.code === 'RATE_LIMITED') {
+        setSecurityWarning(
+          t('login.rateLimited', {
+            minutes: minutes ?? 15,
+          }) ||
+            'Too many attempts. Please wait and try again.'
+        );
+      }
       if (typeof window !== 'undefined') {
         localStorage.removeItem('token');
         localStorage.removeItem('refreshToken');
@@ -303,6 +360,20 @@ function Login({ onLoggedIn }) {
               <div className="auth-info" role="status">
                 Running in offline simulation mode — authentication is simulated
                 locally for development.
+              </div>
+            )}
+
+            {authPolicy && (
+              <div className="auth-policy-note" role="note">
+                {t('login.lockoutNotice', {
+                  threshold: authPolicy.lockoutThreshold,
+                  minutes: Math.ceil(
+                    authPolicy.lockoutDurationSeconds / 60,
+                  ),
+                }) ||
+                  `Accounts lock after ${authPolicy.lockoutThreshold} failed attempts for ${Math.ceil(
+                    authPolicy.lockoutDurationSeconds / 60,
+                  )} minutes.`}
               </div>
             )}
 
@@ -471,12 +542,19 @@ function Login({ onLoggedIn }) {
                       setMode('reset');
                       setError(null);
                       setInfo(null);
+                      setSecurityWarning(null);
                     }}
                   >
                     Forgot?
                   </button>
                 )}
               </div>
+
+              {securityWarning && (
+                <div className="auth-warning" role="alert">
+                  {securityWarning}
+                </div>
+              )}
 
               {error && (
                 <div
@@ -525,6 +603,7 @@ function Login({ onLoggedIn }) {
                   setMode('login');
                   setError(null);
                   setInfo(null);
+                  setSecurityWarning(null);
                 }}
               >
                 Back to sign in
@@ -538,6 +617,7 @@ function Login({ onLoggedIn }) {
                     setMode('register');
                     setError(null);
                     setInfo(null);
+                    setSecurityWarning(null);
                   }}
                 >
                   Create account
@@ -549,6 +629,7 @@ function Login({ onLoggedIn }) {
                     setMode('reset');
                     setError(null);
                     setInfo(null);
+                    setSecurityWarning(null);
                   }}
                 >
                   Reset password

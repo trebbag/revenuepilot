@@ -210,7 +210,12 @@
     "currentPassword": "Current Password",
     "pleaseWait": "Please wait…",
     "checking": "Checking…",
-    "retry": "Retry"
+    "retry": "Retry",
+    "lockoutNotice": "Accounts lock after {{threshold}} failed attempts for {{minutes}} minutes.",
+    "remainingAttemptsWarning": "Warning: {{count}} attempts remaining before a {{minutes}} minute lockout.",
+    "repeatedFailuresAlert": "Repeated failures trigger security alerts. Please verify your credentials.",
+    "accountLocked": "This account is locked. Try again in about {{minutes}} minutes or contact support.",
+    "rateLimited": "Too many attempts. Wait a moment before trying again."
   },
   "logs": {
     "title": "Event Log",

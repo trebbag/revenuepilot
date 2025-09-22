@@ -292,6 +292,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
+      enableRemoteModule: false,
+      webviewTag: false,
     },
   });
 
@@ -312,6 +315,11 @@ function createWindow() {
   mainWindow.webContents.on('dom-ready', () => {
     const injected = `window.__BACKEND_URL__ = ${JSON.stringify(`http://127.0.0.1:${chosenPort}`)};`;
     mainWindow.webContents.executeJavaScript(injected).catch(err => console.error('Inject URL failed:', err));
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-attach-webview', event => {
+    event.preventDefault();
   });
 }
 

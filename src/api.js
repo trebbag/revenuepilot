@@ -226,6 +226,32 @@ export async function pingBackend(opts = {}) {
   return false;
 }
 
+export async function fetchAuthPolicy() {
+  const baseUrl = resolveBaseUrl();
+  try {
+    const res = await rawFetch(`${baseUrl}/auth/policy`, { method: 'GET' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || typeof data !== 'object') return null;
+    const threshold =
+      typeof data.lockoutThreshold === 'number'
+        ? data.lockoutThreshold
+        : typeof data.lockout_threshold === 'number'
+          ? data.lockout_threshold
+          : null;
+    const duration =
+      typeof data.lockoutDurationSeconds === 'number'
+        ? data.lockoutDurationSeconds
+        : typeof data.lockout_duration_seconds === 'number'
+          ? data.lockout_duration_seconds
+          : null;
+    if (threshold == null || duration == null) return null;
+    return { lockoutThreshold: threshold, lockoutDurationSeconds: duration };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Authenticate a user and retrieve JWT access and refresh tokens from the backend. After a
  * successful login the user's persisted settings are also fetched.
@@ -253,7 +279,53 @@ export async function login(username, password, lang = 'en') {
   }
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
-    throw new Error(err.detail || err.message || 'Login failed');
+    const detail = err && typeof err.detail !== 'undefined' ? err.detail : err;
+    let message = 'Login failed';
+    let meta = {};
+    if (typeof detail === 'string') {
+      message = detail;
+    } else if (detail && typeof detail === 'object') {
+      message = detail.error || detail.message || message;
+      meta = detail;
+    } else if (err && typeof err.message === 'string') {
+      message = err.message;
+    }
+    const error = new Error(message);
+    if (meta && typeof meta === 'object') {
+      if (meta.code) error.code = meta.code;
+      if (typeof meta.attempts === 'number') error.attempts = meta.attempts;
+      const remaining =
+        typeof meta.remainingAttempts === 'number'
+          ? meta.remainingAttempts
+          : typeof meta.remaining_attempts === 'number'
+            ? meta.remaining_attempts
+            : null;
+      if (remaining != null) error.remainingAttempts = remaining;
+      const threshold =
+        typeof meta.lockoutThreshold === 'number'
+          ? meta.lockoutThreshold
+          : typeof meta.lockout_threshold === 'number'
+            ? meta.lockout_threshold
+            : null;
+      if (threshold != null) error.lockoutThreshold = threshold;
+      const duration =
+        typeof meta.lockoutDurationSeconds === 'number'
+          ? meta.lockoutDurationSeconds
+          : typeof meta.lockout_duration_seconds === 'number'
+            ? meta.lockout_duration_seconds
+            : null;
+      if (duration != null) error.lockoutDurationSeconds = duration;
+      const lockedUntil =
+        typeof meta.lockedUntil === 'number'
+          ? meta.lockedUntil
+          : typeof meta.lockoutExpiresAt === 'number'
+            ? meta.lockoutExpiresAt
+            : typeof meta.lockout_expires_at === 'number'
+              ? meta.lockout_expires_at
+              : null;
+      if (lockedUntil != null) error.lockedUntil = lockedUntil;
+    }
+    throw error;
   }
   const data = await resp.json();
   const token = data.access_token;

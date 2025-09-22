@@ -235,6 +235,8 @@ from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
+    LOCKOUT_DURATION_SECONDS,
+    LOCKOUT_THRESHOLD,
     hash_password,
     register_user,
     verify_password,
@@ -3859,23 +3861,33 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
         )
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
-            detail={"error": "Account locked", "code": "ACCOUNT_LOCKED"},
+            detail={
+                "error": "Account locked",
+                "code": "ACCOUNT_LOCKED",
+                "lockoutDurationSeconds": LOCKOUT_DURATION_SECONDS,
+                "lockoutThreshold": LOCKOUT_THRESHOLD,
+                "lockedUntil": locked_until,
+            },
         )
 
     if not verify_password(model.password, user_row["password_hash"]):
         attempts = int(_row_get(user_row, "failed_login_attempts", 0) or 0) + 1
         lock_until: float | None = None
-        if attempts >= 5:
-            lock_until = now_ts + 15 * 60
+        if attempts >= LOCKOUT_THRESHOLD:
+            lock_until = now_ts + LOCKOUT_DURATION_SECONDS
         db_conn.execute(
             "UPDATE users SET failed_login_attempts=?, account_locked_until=?, updated_at=? WHERE id=?",
             (attempts, lock_until, now_ts, user_row["id"]),
         )
         db_conn.commit()
         await asyncio.sleep(min(0.25 * attempts, 2.0))
+        remaining_attempts = max(LOCKOUT_THRESHOLD - attempts, 0)
         detail_payload = {
             "reason": "invalid_credentials",
             "attempts": attempts,
+            "remainingAttempts": remaining_attempts,
+            "lockoutThreshold": LOCKOUT_THRESHOLD,
+            "lockoutDurationSeconds": LOCKOUT_DURATION_SECONDS,
             "client": ip_address,
             "clinicCode": model.clinicCode,
         }
@@ -3892,7 +3904,15 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
         _enforce_login_rate_limit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "Invalid credentials", "code": "INVALID_CREDENTIALS"},
+            detail={
+                "error": "Invalid credentials",
+                "code": "INVALID_CREDENTIALS",
+                "attempts": attempts,
+                "remainingAttempts": remaining_attempts,
+                "lockoutThreshold": LOCKOUT_THRESHOLD,
+                "lockoutDurationSeconds": LOCKOUT_DURATION_SECONDS,
+                "lockedUntil": lock_until,
+            },
         )
 
     db_conn.execute(
@@ -3942,6 +3962,16 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
 @app.post("/api/auth/login")
 async def auth_login(model: LoginModel, request: Request):
     return await login(model, request)
+
+
+@app.get("/auth/policy", tags=["auth"])
+async def auth_policy() -> Dict[str, Any]:
+    """Expose authentication guardrails to the frontend."""
+
+    return {
+        "lockoutThreshold": LOCKOUT_THRESHOLD,
+        "lockoutDurationSeconds": LOCKOUT_DURATION_SECONDS,
+    }
 
 
 @app.post("/api/auth/verify-mfa")
