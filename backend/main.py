@@ -21,7 +21,9 @@ import threading
 import uuid
 import secrets
 import math
+import sqlalchemy as sa
 from contextvars import ContextVar
+from contextlib import contextmanager
 from pathlib import Path
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
@@ -35,7 +37,9 @@ from typing import (
     Tuple,
     Callable,
     Iterable,
+    Iterator,
     Awaitable,
+    Iterator,
 )
 from sqlalchemy.orm import Session
 from fastapi import (
@@ -76,8 +80,16 @@ from pydantic import (
     ValidationError,
 
 )
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 import json, sqlite3
 from uuid import uuid4
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session as SQLAlchemySession, sessionmaker
+from sqlalchemy.pool import StaticPool
 try:  # prefer appdirs
     from appdirs import user_data_dir  # type: ignore
 except Exception:  # fallback to platformdirs if available
@@ -88,10 +100,10 @@ except Exception:  # fallback to platformdirs if available
             # Last-resort fallback to home directory subfolder
             return os.path.join(os.path.expanduser('~'), f'.{appname}')
 
-
 import jwt
 import structlog
 from structlog.contextvars import bind_contextvars, unbind_contextvars
+from sqlalchemy.orm import Session
 
 try:  # Load environment variables from a .env file if present
     from dotenv import load_dotenv
@@ -126,6 +138,14 @@ from backend.key_manager import (
     store_key,
     store_secret,
 )  # type: ignore
+from backend.db.models import (
+    CPTCode,
+    CPTReference,
+    ComplianceRuleCatalogEntry,
+    HCPCSCode,
+    ICD10Code,
+    PayerSchedule,
+)
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
@@ -137,6 +157,7 @@ from backend.db import (
     resolve_session_connection,
 )
 from backend.migrations import (  # type: ignore
+    create_all_tables,
     ensure_users_table,
     ensure_clinics_table,
     ensure_settings_table,
@@ -179,6 +200,7 @@ from backend.migrations import (  # type: ignore
     seed_hcpcs_codes,
     seed_cpt_reference,
     seed_payer_schedules,
+    session_scope,
 )
 from backend.templates import (
     TemplateModel,
@@ -188,6 +210,7 @@ from backend.templates import (
     update_user_template,
     delete_user_template,
 )  # type: ignore
+from backend import db
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -195,6 +218,8 @@ from backend.scheduling import (  # type: ignore
     export_appointment_ics,
     get_appointment,
     apply_bulk_operations,
+    configure_database as configure_schedule_database,
+    schedule_session_scope,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -602,7 +627,7 @@ async def _collect_body_bytes(response: Response) -> bytes:
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 
 # Graceful shutdown via FastAPI lifespan (uvicorn will call this on SIGINT/SIGTERM)
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 _SHUTTING_DOWN = False  # exported for potential test assertions
 
@@ -1359,6 +1384,7 @@ async def _broadcast_notification_count(username: str) -> None:
                 pass
 
 
+
 # Set up a SQLite database for persistent analytics storage.  Connection
 # creation and schema initialisation live in ``backend.db`` so the dependency
 # can be shared across the application and tests.
@@ -1367,6 +1393,141 @@ data_dir.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", str(data_dir / "uploaded_charts")))
 
 db_conn = get_connection()
+
+# Set up a SQLite database for persistent analytics storage.  The database
+# location and connection management are centralised in ``backend.db`` so the
+# same configuration is reused across modules.
+data_dir = str(db.DATA_DIR)
+DB_PATH = str(db.SQLITE_PATH)
+UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
+
+
+db_conn = db.get_sync_connection()
+# Ensure the events table exists with the latest schema.
+ensure_events_table(db_conn)
+ensure_exports_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
+ensure_note_versions_table(db_conn)
+ensure_notifications_table(db_conn)
+ensure_event_aggregates_table(db_conn)
+ensure_compliance_issues_table(db_conn)
+ensure_compliance_rules_table(db_conn)
+ensure_confidence_scores_table(db_conn)
+ensure_notification_counters_table(db_conn)
+ensure_notification_events_table(db_conn)
+patients.configure_database(db_conn)
+
+# Migrate previous database file from the repository directory if it exists
+old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
+if os.path.exists(old_db_path) and not os.path.exists(DB_PATH):
+    try:  # best-effort migration
+        shutil.move(old_db_path, DB_PATH)
+    except Exception:
+        pass
+
+_auth_engine: Optional[Engine] = None
+_auth_sessionmaker: Optional[sessionmaker] = None
+_auth_connection_id: Optional[int] = None
+
+
+def configure_auth_session_factory(connection: sqlite3.Connection) -> None:
+    """Configure the SQLAlchemy session factory for authentication helpers."""
+
+    global _auth_engine, _auth_sessionmaker, _auth_connection_id
+
+    if _auth_engine is not None:
+        _auth_engine.dispose()
+
+    def _creator() -> sqlite3.Connection:
+        return connection
+
+    _auth_engine = create_engine(
+        "sqlite://",
+        creator=_creator,
+        poolclass=StaticPool,
+        future=True,
+    )
+    _auth_sessionmaker = sessionmaker(
+        bind=_auth_engine,
+        expire_on_commit=False,
+        autoflush=False,
+        future=True,
+    )
+    _auth_connection_id = id(connection)
+
+
+@contextmanager
+def auth_session_scope() -> Iterator[SQLAlchemySession]:
+    """Yield a SQLAlchemy session bound to the primary application database."""
+
+    if _auth_sessionmaker is None or _auth_connection_id != id(db_conn):
+        configure_auth_session_factory(db_conn)
+    assert _auth_sessionmaker is not None
+    session: SQLAlchemySession = _auth_sessionmaker()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+create_all_tables(db_conn)
+
+configure_schedule_database(db_conn)
+
+
+_template_sessionmakers: Dict[int, sessionmaker[Session]] = {}
+
+
+def _get_template_session_factory(conn: sqlite3.Connection) -> sessionmaker[Session]:
+    """Return a session factory bound to the given SQLite connection."""
+
+    key = id(conn)
+    factory = _template_sessionmakers.get(key)
+    if factory is None:
+        engine = create_engine(
+            "sqlite://",
+            creator=lambda conn=conn: conn,
+            poolclass=StaticPool,
+            future=True,
+        )
+        factory = sessionmaker(
+            bind=engine,
+            autoflush=False,
+            expire_on_commit=False,
+            future=True,
+        )
+        _template_sessionmakers[key] = factory
+    return factory
+
+
+@contextmanager
+def _template_session(conn: sqlite3.Connection) -> Iterator[Session]:
+    """Context manager yielding a Session bound to the provided connection."""
+
+    session_factory = _get_template_session_factory(conn)
+    session = session_factory()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+# Keep the compliance ORM bound to the active database connection.
+compliance_engine.configure_engine(engine=db.engine)
+
+configure_auth_session_factory(db_conn)
+
 
 
 # Create helpful indexes for metrics queries (idempotent)
@@ -1412,6 +1573,7 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
 _prune_analytics_if_needed()
 
 
+
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     initialise_schema(conn)
@@ -1420,6 +1582,129 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     db_helpers.use_connection(conn)
     conn.row_factory = sqlite3.Row
     scheduling_module.reset_state()
+
+# Reference data seeding helpers ensure consistent test fixtures and sensible
+# defaults when the application starts with an empty database.
+def _seed_reference_data(conn: sqlite3.Connection) -> None:
+    try:
+        with session_scope(conn) as session:
+            existing_rules = session.scalar(
+                sa.select(sa.func.count()).select_from(ComplianceRuleCatalogEntry)
+            )
+            if not existing_rules:
+                seed_compliance_rules(session, compliance_engine.get_rules())
+
+            metadata = load_code_metadata()
+            cpt_metadata = {
+                code: info
+                for code, info in metadata.items()
+                if (info.get("type") or "").upper() == "CPT"
+            }
+
+            existing_cpt_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(CPTCode)
+            )
+            if not existing_cpt_codes:
+                seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items())
+
+            existing_icd_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(ICD10Code)
+            )
+            if not existing_icd_codes:
+                seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items())
+
+            existing_hcpcs_codes = session.scalar(
+                sa.select(sa.func.count()).select_from(HCPCSCode)
+            )
+            if not existing_hcpcs_codes:
+                seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items())
+
+            existing_cpt = session.scalar(
+                sa.select(sa.func.count()).select_from(CPTReference)
+            )
+            if not existing_cpt:
+                seed_cpt_reference(session, cpt_metadata.items())
+
+            existing_schedules = session.scalar(
+                sa.select(sa.func.count()).select_from(PayerSchedule)
+            )
+            if not existing_schedules:
+                schedules = []
+                for code, info in cpt_metadata.items():
+                    reimbursement = info.get("reimbursement")
+                    if reimbursement in (None, ""):
+                        continue
+                    try:
+                        base_amount = float(reimbursement)
+                    except (TypeError, ValueError):
+                        continue
+                    rvu_value = info.get("rvu")
+                    schedules.append(
+                        {
+                            "payer_type": "commercial",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": base_amount,
+                            "rvu": rvu_value,
+                        }
+                    )
+                    schedules.append(
+                        {
+                            "payer_type": "medicare",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": round(base_amount * 0.8, 2),
+                            "rvu": rvu_value,
+                        }
+                    )
+                if schedules:
+                    seed_payer_schedules(session, schedules)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("reference_data_seed_failed", error=str(exc))
+
+# Helper to (re)initialise core tables when db_conn is swapped in tests.
+def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
+
+    db.set_sync_connection(conn)
+    ensure_users_table(conn)
+    ensure_clinics_table(conn)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+    )
+
+    ensure_audit_log_table(conn)
+    ensure_settings_table(conn)
+    ensure_templates_table(conn)
+    ensure_user_profile_table(conn)
+    ensure_events_table(conn)
+    ensure_refresh_table(conn)
+    ensure_session_table(conn)
+    ensure_password_reset_tokens_table(conn)
+    ensure_mfa_challenges_table(conn)
+    ensure_notes_table(conn)
+    ensure_error_log_table(conn)
+    ensure_exports_table(conn)
+    ensure_patients_table(conn)
+    ensure_encounters_table(conn)
+    ensure_visit_sessions_table(conn)
+    ensure_note_auto_saves_table(conn)
+    ensure_session_state_table(conn)
+    ensure_shared_workflow_sessions_table(conn)
+    ensure_compliance_issues_table(conn)
+    ensure_compliance_issue_history_table(conn)
+    ensure_compliance_rules_table(conn)
+    ensure_confidence_scores_table(conn)
+    ensure_notification_counters_table(conn)
+    ensure_compliance_rule_catalog_table(conn)
+    ensure_cpt_codes_table(conn)
+    ensure_icd10_codes_table(conn)
+    ensure_hcpcs_codes_table(conn)
+    ensure_cpt_reference_table(conn)
+    ensure_payer_schedule_table(conn)
+    ensure_billing_audits_table(conn)
+
+    create_all_tables(conn)
+
 
     existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     if existing_patients == 0:
@@ -1475,7 +1760,65 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
                 time.time(),
             ),
         )
-        conn.commit()
+
+    _seed_reference_data(conn)
+    conn.commit()
+    configure_schedule_database(conn)
+    compliance_engine.configure_engine(conn)
+
+
+# Proper users table creation (replacing previously malformed snippet)
+ensure_users_table(db_conn)
+ensure_clinics_table(db_conn)
+ensure_audit_log_table(db_conn)
+
+
+# Persisted user preferences for theme, enabled categories and custom rules.
+# Ensure the table exists and contains the latest schema (including ``lang``).
+
+ensure_settings_table(db_conn)
+
+# Table storing user and clinic specific note templates.
+ensure_templates_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
+ensure_session_state_table(db_conn)
+ensure_shared_workflow_sessions_table(db_conn)
+ensure_compliance_issues_table(db_conn)
+ensure_compliance_issue_history_table(db_conn)
+ensure_compliance_rules_table(db_conn)
+ensure_confidence_scores_table(db_conn)
+ensure_compliance_rule_catalog_table(db_conn)
+ensure_cpt_codes_table(db_conn)
+ensure_icd10_codes_table(db_conn)
+ensure_hcpcs_codes_table(db_conn)
+ensure_cpt_reference_table(db_conn)
+ensure_payer_schedule_table(db_conn)
+ensure_billing_audits_table(db_conn)
+
+# User profile details including current view and UI preferences.
+ensure_user_profile_table(db_conn)
+
+# Centralized error logging table.
+ensure_error_log_table(db_conn)
+
+# Table storing notes and drafts with status metadata.
+ensure_notes_table(db_conn)
+
+# Tables for refresh tokens and user session state
+ensure_refresh_table(db_conn)
+ensure_session_table(db_conn)
+ensure_password_reset_tokens_table(db_conn)
+ensure_mfa_challenges_table(db_conn)
+
+
+# Core clinical data tables.
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+
 
 
 # Configure the database connection to return rows as dictionaries.  This
@@ -3249,8 +3592,9 @@ async def register(model: RegisterModel, request: Request) -> Dict[str, Any]:
     client_host = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     try:
-        _user_id = register_user(db_conn, model.username, model.password)
-    except sqlite3.IntegrityError:
+        with auth_session_scope() as session:
+            _user_id = register_user(session, model.username, model.password)
+    except IntegrityError:
         _insert_audit_log(
             model.username,
             "register_failed",
@@ -3299,7 +3643,8 @@ async def auth_register(model: RegisterModel, request: Request):
     client_host = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     try:
-        _user_id = register_user(db_conn, model.username, model.password)
+        with auth_session_scope() as session:
+            _user_id = register_user(session, model.username, model.password)
         _insert_audit_log(
             model.username,
             "register",
@@ -3308,7 +3653,7 @@ async def auth_register(model: RegisterModel, request: Request):
             ip_address=client_host,
             user_agent=user_agent,
         )
-    except sqlite3.IntegrityError:
+    except IntegrityError:
         row = db_conn.execute(
             "SELECT id, role FROM users WHERE username=?", (model.username,)
         ).fetchone()
@@ -6095,12 +6440,27 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
     visit_summary: Dict[str, Any] = {}
 
     encounter_record: Optional[Dict[str, Any]] = None
+    patient_record: Optional[Dict[str, Any]] = None
     encounter_lookup = _coerce_int(encounter_id)
-    if encounter_lookup is not None:
+
+    need_patient_lookup = bool(patient_id)
+    need_encounter_lookup = encounter_lookup is not None
+    if need_patient_lookup or need_encounter_lookup:
         try:
-            encounter_record = patients.get_encounter(encounter_lookup)
+            with _template_session(db_conn) as sa_session:
+                if need_encounter_lookup and encounter_lookup is not None:
+                    try:
+                        encounter_record = patients.get_encounter(sa_session, encounter_lookup)
+                    except Exception:
+                        encounter_record = None
+                if need_patient_lookup:
+                    try:
+                        patient_record = patients.get_patient(sa_session, patient_id)  # type: ignore[arg-type]
+                    except Exception:
+                        patient_record = None
         except Exception:
-            encounter_record = None
+            pass
+
     if encounter_record:
         encounter_summary = {
             "encounterId": encounter_record.get("encounterId") or encounter_id,
@@ -6112,13 +6472,6 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
         }
         if isinstance(encounter_record.get("patient"), dict):
             context.setdefault("patientSnapshot", encounter_record["patient"])
-
-    patient_record: Optional[Dict[str, Any]] = None
-    if patient_id:
-        try:
-            patient_record = patients.get_patient(patient_id)
-        except Exception:
-            patient_record = None
     if not patient_record and encounter_record and isinstance(encounter_record.get("patient"), dict):
         patient_record = encounter_record.get("patient")
 
@@ -7675,10 +8028,12 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
         today_date = start_of_today.date()
         upcoming = 0
         try:
+
             for appt in list_appointments():
                 start_raw = appt.get("start") if isinstance(appt, dict) else None
                 if not start_raw:
                     continue
+
                 try:
                     start_dt = datetime.fromisoformat(start_raw)
                 except Exception:
@@ -7978,9 +8333,10 @@ def get_templates(
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    return list_user_templates(
-        db_conn, user["sub"], user.get("clinic"), specialty, payer
-    )
+    with _template_session(db_conn) as session:
+        return list_user_templates(
+            session, user["sub"], user.get("clinic"), specialty, payer
+        )
 
 
 @app.post("/templates", response_model=TemplateModel)
@@ -7990,13 +8346,14 @@ def create_template(
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    return create_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        tpl,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        return create_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            tpl,
+            user.get("role") == "admin",
+        )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
@@ -8006,14 +8363,15 @@ def update_template(
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    return update_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        template_id,
-        tpl,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        return update_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            template_id,
+            tpl,
+            user.get("role") == "admin",
+        )
 
 
 @app.delete("/templates/{template_id}")
@@ -8023,13 +8381,14 @@ def delete_template(
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    delete_user_template(
-        db_conn,
-        user["sub"],
-        user.get("clinic"),
-        template_id,
-        user.get("role") == "admin",
-    )
+    with _template_session(db_conn) as session:
+        delete_user_template(
+            session,
+            user["sub"],
+            user.get("clinic"),
+            template_id,
+            user.get("role") == "admin",
+        )
     return {"status": "deleted"}
 
 
@@ -12019,6 +12378,7 @@ async def compliance_issue_history(
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     conn = resolve_session_connection(session)
+
     query = (
         "SELECT issue_id, code, payer, findings, created_at, user_id "
         "FROM compliance_issue_history"
@@ -12435,7 +12795,8 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
 
 @app.get("/schedule", response_model=AppointmentList)
 async def list_schedule_appointments(user=Depends(require_role("user"))):
-    items = list_appointments()
+    with schedule_session_scope() as session:
+        items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
     for item in items:
@@ -12492,13 +12853,15 @@ async def schedule_bulk_operations(
     )
     if succeeded:
         _invalidate_dashboard_cache("quick_actions")
+
     return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
 
 
 @app.get("/api/schedule/appointments", response_model=AppointmentList)
 async def api_list_appointments(user=Depends(require_role("user"))):
-    items = list_appointments()
+    with schedule_session_scope() as session:
+        items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
     for item in items:
@@ -13127,11 +13490,11 @@ class VisitSessionUpdate(BaseModel):
 
 
 def _build_encounter_validation_response(
-    encounter_id: int, patient_id: Optional[str] = None
+    sa_session: Session, encounter_id: int, patient_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Return a normalized validation payload for *encounter_id*."""
 
-    encounter = patients.get_encounter(encounter_id)
+    encounter = patients.get_encounter(sa_session, encounter_id)
     if encounter is None:
         return {
             "valid": False,
@@ -13180,12 +13543,14 @@ async def search_patients_v2(
     offset: int = Query(0, ge=0),
     user=Depends(require_role("user")),
 ):
-    return patients.search_patients(q, limit=limit, offset=offset)
+    with _template_session(db_conn) as sa_session:
+        return patients.search_patients(sa_session, q, limit=limit, offset=offset)
 
 
 @app.get("/api/patients/{patient_id}")
 async def get_patient(patient_id: int, user=Depends(require_role("user"))):
-    record = patients.get_patient(patient_id)
+    with _template_session(db_conn) as sa_session:
+        record = patients.get_patient(sa_session, patient_id)
     if not record:
         raise HTTPException(status_code=404, detail="patient not found")
     demographics = {
@@ -13228,16 +13593,18 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
 async def validate_encounter_v2(
     encounter_id: int, user=Depends(require_role("user"))
 ):
-    return _build_encounter_validation_response(encounter_id)
+    with _template_session(db_conn) as sa_session:
+        return _build_encounter_validation_response(sa_session, encounter_id)
 
 
 @app.post("/api/encounters/validate")
 async def validate_encounter_post(
     payload: EncounterValidationRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
-    return _build_encounter_validation_response(
-        payload.encounter_id, patient_id=payload.patient_id
-    )
+    with _template_session(db_conn) as sa_session:
+        return _build_encounter_validation_response(
+            sa_session, payload.encounter_id, patient_id=payload.patient_id
+        )
 
 
 @app.post("/api/visits/session")

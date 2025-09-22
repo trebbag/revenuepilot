@@ -62,6 +62,45 @@ Python virtual environment for the FastAPI backend.
 The script installs frontend packages, creates `backend/venv`, and
 installs backend requirements including spaCy’s English model.【F:install.sh†L1-L55】
 
+### Apply database migrations
+
+Run Alembic migrations before starting services to ensure the SQLite
+schema matches the current application expectations (the same command
+runs in CI and production deployments):
+
+```bash
+backend/venv/bin/python -m alembic -c backend/alembic/alembic.ini upgrade head
+```
+
+
+### Database migration preflight checklist
+
+Run the automated checklist before promoting the managed Postgres
+cluster. It validates both databases, ensures migrations are applied and
+forces an explicit acknowledgement that operational guardrails are in
+place:
+
+```bash
+backend/venv/bin/python scripts/preflight_db_migration.py \
+  --sqlite-path /var/backups/revenuepilot.sqlite \
+  --postgres-url "$DATABASE_URL" \
+  --aws-rds-ca-path /etc/ssl/certs/rds-combined-ca-bundle.pem \
+  --confirm-backups \
+  --confirm-maintenance-window \
+  --confirm-alerting
+```
+
+The script opens the SQLite database read-only, executes `SELECT 1`
+against Postgres (injecting the AWS RDS CA bundle when provided) and
+reports any Alembic revisions missing from the target database before
+exiting. Passing the confirmation flags tells CI/CD that RDS backups
+(automated snapshots plus a manual pre-cutover snapshot), the migration
+maintenance window and alerting/on-call integrations are all ready.
+Wire the command into the deployment pipeline immediately before the
+cutover step so failures halt the release while there is still time to
+correct course.【F:scripts/preflight_db_migration.py†L1-L202】
+
+
 ### Start the full stack
 
 Use the helper script to launch FastAPI and the Vite frontend together.
@@ -328,6 +367,51 @@ development scripts only provision local fallbacks when `ENVIRONMENT` is
 a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】
 
 
+### Post-migration monitoring and audit trails
+
+After the switchover, monitor `pg_stat_activity` to verify connection
+patterns and spot idle-in-transaction sessions that would hold locks.
+Pair it with the provider’s connection pool metrics (e.g. RDS
+`DatabaseConnections`, `MaximumUsedTransactionIDs`) and alerts when
+either approaches configured `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` ceilings.
+Collect statement timeout events by enabling Postgres `log_min_duration_statement`
+or CloudWatch/RDS performance insights so slow queries and cancelled
+statements triggered by `STATEMENT_TIMEOUT_MS` are visible to operators.
+
+For HIPAA-aligned auditing, stream the `audit_log` table to a write-once
+store or SIEM, retaining username, IP address, user agent and success
+metadata captured by the backend whenever a privileged action occurs.
+Admins can also retrieve the audit history through the `/audit`
+endpoint exposed by the FastAPI service.【F:backend/main.py†L1849-L1950】【F:backend/main.py†L4492-L4519】
+
+### Production database expectations
+
+RevenuePilot runs on Amazon RDS for PostgreSQL in production. Follow the
+[`Production Database & RDS Operations`](RDS_OPERATIONS.md) guide for full
+details and enforce the following controls:
+
+- **Provisioning & backups** – Enable storage encryption with a KMS CMK,
+  require TLS (`rds.force_ssl = 1`) using the `rds-ca-rsa2048-g1` bundle,
+  and keep automated backups for at least 7 days alongside manual snapshots
+  before migrations.
+- **Networking & logging** – Deploy the cluster in private subnets, narrow
+  security group ingress to application hosts, emit PostgreSQL logs to
+  CloudWatch, and monitor RDS and CloudTrail events for configuration
+  changes.
+- **Database roles** – Use a privileged `migration` role for Alembic DDL and
+  a constrained `app_user` role for application traffic. Rotate both via AWS
+  Secrets Manager or Parameter Store and retrieve them at runtime without
+  printing credentials.
+- **Runtime configuration** – Configure TLS and pooling via environment
+  variables such as `PGSSLROOTCERT`, `PGSSLMODE=verify-full`,
+  `PGCONNECT_TIMEOUT`, `DB_POOL_SIZE`, and `DB_STATEMENT_TIMEOUT_MS` tuned
+  for RDS.
+- **Migration runbook** – Snapshot before changes, run the Alembic upgrade
+  with the `migration` user, validate row counts, execute smoke tests, and
+  be ready to downgrade or restore if anomalies appear.
+
+
+
 ## Additional references
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) – Deep dive into module
@@ -338,6 +422,8 @@ a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-
 - [finalization_workflow_regression.md](finalization_workflow_regression.md) –
   Step-by-step API regression guide.
 - [SOP.md](SOP.md) – Day-to-day development process and CI expectations.
+- [RDS_OPERATIONS.md](RDS_OPERATIONS.md) – Production database provisioning,
+  credential rotation, and migration runbook.
 - [`docs/archive/`](archive/README.md) – Historical planning documents kept
   for context.
 

@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Iterable, Iterator, Optional, Tuple
 import requests
 
 from backend import migrations
+from sqlalchemy.orm import Session
 
 DATA_API_BASE = "https://data.cms.gov/provider-data/api/1/datastore/query"
 DEFAULT_PAGE_SIZE = 5000
@@ -189,7 +190,7 @@ def fetch_cms_dataset(
 
 
 Transformer = Callable[[Dict[str, Any]], Optional[Tuple[str, Dict[str, Any]]]]
-Seeder = Callable[[sqlite3.Connection, Iterable[Tuple[str, Dict[str, Any]]], bool], None]
+Seeder = Callable[[Session, Iterable[Tuple[str, Dict[str, Any]]], bool], None]
 
 
 def ingest_dataset(
@@ -228,7 +229,8 @@ def ingest_dataset(
         if not rows:
             LOGGER.warning("No %s records were ingested from dataset %s", label, dataset_id)
             return 0
-        seeder(conn, rows, overwrite)
+        with migrations.session_scope(conn) as orm_session:
+            seeder(orm_session, rows, overwrite)
         LOGGER.info("Upserted %d %s rows", len(rows), label)
         return len(rows)
     except Exception as exc:  # pragma: no cover - network failure
@@ -245,7 +247,7 @@ def run_ingestion(conn: sqlite3.Connection, args: argparse.Namespace) -> Dict[st
         conn,
         dataset_id=args.cpt_dataset,
         transformer=_transform_cpt,
-        seeder=lambda c, data, flag: migrations.seed_cpt_codes(c, data, overwrite=flag),
+        seeder=lambda s, data, flag: migrations.seed_cpt_codes(s, data, overwrite=flag),
         label="CPT/HCPCS",
         app_token=args.app_token,
         limit=args.limit,
@@ -258,7 +260,7 @@ def run_ingestion(conn: sqlite3.Connection, args: argparse.Namespace) -> Dict[st
         conn,
         dataset_id=args.icd_dataset,
         transformer=_transform_icd,
-        seeder=lambda c, data, flag: migrations.seed_icd10_codes(c, data, overwrite=flag),
+        seeder=lambda s, data, flag: migrations.seed_icd10_codes(s, data, overwrite=flag),
         label="ICD-10",
         app_token=args.app_token,
         limit=args.limit,
@@ -271,7 +273,7 @@ def run_ingestion(conn: sqlite3.Connection, args: argparse.Namespace) -> Dict[st
         conn,
         dataset_id=args.hcpcs_dataset,
         transformer=_transform_hcpcs,
-        seeder=lambda c, data, flag: migrations.seed_hcpcs_codes(c, data, overwrite=flag),
+        seeder=lambda s, data, flag: migrations.seed_hcpcs_codes(s, data, overwrite=flag),
         label="HCPCS",
         app_token=args.app_token,
         limit=args.limit,
@@ -284,9 +286,7 @@ def run_ingestion(conn: sqlite3.Connection, args: argparse.Namespace) -> Dict[st
 
 
 def ensure_tables(conn: sqlite3.Connection) -> None:
-    migrations.ensure_cpt_codes_table(conn)
-    migrations.ensure_icd10_codes_table(conn)
-    migrations.ensure_hcpcs_codes_table(conn)
+    migrations.create_all_tables(conn)
     conn.commit()
 
 

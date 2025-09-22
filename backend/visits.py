@@ -12,6 +12,8 @@ from datetime import datetime
 from threading import Lock
 from typing import Dict, Optional
 
+from backend.time_utils import ensure_utc, utc_now
+
 _DEFAULT_STATE = {
     "visitStatus": "pending",
     "startTime": None,
@@ -23,9 +25,17 @@ _VISITS: Dict[str, Dict[str, object]] = {}
 _LOCK = Lock()
 
 
+def _isoformat_utc(dt: datetime) -> str:
+    dt_utc = ensure_utc(dt).replace(microsecond=0)
+    text = dt_utc.isoformat()
+    if text.endswith("+00:00"):
+        return text[:-6] + "Z"
+    return text
+
+
 def _apply(state: Dict[str, object], action: str) -> Dict[str, object]:
     state = dict(state)
-    now = datetime.utcnow().isoformat()
+    now = _isoformat_utc(utc_now())
     if action == "start":
         state.update(
             {
@@ -39,8 +49,9 @@ def _apply(state: Dict[str, object], action: str) -> Dict[str, object]:
         duration = 0
         if isinstance(start, str):
             try:
-                start_dt = datetime.fromisoformat(start)
-                duration = int((datetime.utcnow() - start_dt).total_seconds())
+                normalised = start[:-1] + "+00:00" if start.endswith("Z") else start
+                start_dt = ensure_utc(datetime.fromisoformat(normalised))
+                duration = int((utc_now() - start_dt).total_seconds())
             except Exception:
                 duration = 0
         state.update(

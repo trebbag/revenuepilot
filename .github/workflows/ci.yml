@@ -9,6 +9,26 @@ jobs:
     runs-on: ubuntu-latest
     env:
       REVENUEPILOT_SKIP_PACKAGED: 1
+      DB_POOL_SIZE: 5
+      DB_MAX_OVERFLOW: 10
+      STATEMENT_TIMEOUT_MS: 30000
+      PGCONNECT_TIMEOUT: 10
+      REVENUEPILOT_DB_PATH: ${{ github.workspace }}/.tmp/ci.db
+      RUN_PG_TESTS: ${{ vars.RUN_PG_TESTS || '0' }}
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: revenuepilot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -46,8 +66,22 @@ jobs:
       - name: "Python lint & test with coverage"
         if: hashFiles('requirements.txt') != ''
         run: |
+          mkdir -p .tmp
+          python -m alembic -c backend/alembic/alembic.ini upgrade head
+          python -m alembic -c backend/alembic/alembic.ini check
           pytest --maxfail=1 --disable-warnings -q --cov=backend --cov-report=term --cov-report=json:coverage/python-coverage-raw.json
           if command -v flake8; then flake8 backend; fi
+      - name: "PostgreSQL migrations & smoke tests"
+        if: env.RUN_PG_TESTS == '1'
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/revenuepilot
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/revenuepilot
+          REVENUEPILOT_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/revenuepilot
+          RUN_PG_TESTS: 1
+        run: |
+          python -m alembic -c backend/alembic/alembic.ini upgrade head
+          python -m alembic -c backend/alembic/alembic.ini check
+          pytest -m postgres --maxfail=1 --disable-warnings -q
       - name: "Build Python coverage badge + enforce threshold"
         if: hashFiles('requirements.txt') != ''
         run: |

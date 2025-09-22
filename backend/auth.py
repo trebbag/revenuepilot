@@ -2,24 +2,76 @@
 
 from __future__ import annotations
 
-import sqlite3
-import time
 import uuid
+from datetime import timedelta
 from typing import Optional, Tuple
 
 from passlib.context import CryptContext
+from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text, insert, select, update
+from sqlalchemy.orm import Session
 
 from backend.migrations import (  # type: ignore
     ensure_users_table,
     ensure_settings_table,
     ensure_clinics_table,
 )
+from backend.time_utils import from_epoch_seconds, to_epoch_seconds, utc_now
 
 # Password hashing context using bcrypt
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 LOCKOUT_THRESHOLD = 5
 LOCKOUT_DURATION_SECONDS = 15 * 60
+
+
+_metadata = MetaData()
+
+clinics_table = Table(
+    "clinics",
+    _metadata,
+    Column("id", String, primary_key=True),
+    Column("code", String),
+    Column("name", String),
+    Column("settings", Text),
+    Column("active", Integer),
+    Column("created_at", Float),
+    extend_existing=True,
+)
+
+users_table = Table(
+    "users",
+    _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("username", String),
+    Column("email", String),
+    Column("password_hash", String),
+    Column("name", String),
+    Column("role", String),
+    Column("clinic_id", String),
+    Column("mfa_enabled", Integer),
+    Column("mfa_secret", String),
+    Column("account_locked_until", Float),
+    Column("failed_login_attempts", Integer),
+    Column("last_login", Float),
+    Column("created_at", Float),
+    Column("updated_at", Float),
+    extend_existing=True,
+)
+
+settings_table = Table(
+    "settings",
+    _metadata,
+    Column("user_id", Integer, primary_key=True),
+    Column("theme", String),
+    Column("categories", Text),
+    Column("rules", Text),
+    Column("lang", String),
+    Column("specialty", String),
+    Column("payer", String),
+    Column("region", String),
+    Column("use_local_models", Integer),
+    extend_existing=True,
+)
 
 
 def hash_password(password: str) -> str:
@@ -37,8 +89,18 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
+def _ensure_core_tables(session: Session) -> None:
+    """Ensure dependent tables exist using the session's connection."""
+
+    connection = session.connection()
+    raw_connection = connection.connection
+    ensure_clinics_table(raw_connection)
+    ensure_users_table(raw_connection)
+    ensure_settings_table(raw_connection)
+
+
 def register_user(
-    conn: sqlite3.Connection,
+    session: Session,
     username: str,
     password: str,
     role: str = "user",
@@ -54,13 +116,12 @@ def register_user(
     Returns the new user's ID.
     """
 
-    ensure_clinics_table(conn)
-    ensure_users_table(conn)
-    ensure_settings_table(conn)
+    _ensure_core_tables(session)
 
     pwd_hash = hash_password(password)
 
-    now = time.time()
+    now_dt = utc_now()
+    now_ts = to_epoch_seconds(now_dt)
     resolved_email = email or f"{username}@example.test"
     resolved_name = name or username
 
@@ -68,80 +129,67 @@ def register_user(
     if clinic_code:
         code = clinic_code.strip().upper()
         if code:
-            row = conn.execute(
-                "SELECT id FROM clinics WHERE code=?",
-                (code,),
-            ).fetchone()
-            if row:
-                clinic_id = row["id"]
+            clinic_row = session.execute(
+                select(clinics_table.c.id).where(clinics_table.c.code == code)
+            ).mappings().first()
+            if clinic_row:
+                clinic_id = clinic_row["id"]
             else:
                 clinic_id = str(uuid.uuid4())
-                conn.execute(
-                    """
-                    INSERT INTO clinics (id, code, name, settings, active, created_at)
-                    VALUES (?, ?, ?, ?, 1, ?)
-                    """,
-                    (clinic_id, code, code, "{}", now),
+                session.execute(
+                    insert(clinics_table).values(
+                        id=clinic_id,
+                        code=code,
+                        name=code,
+                        settings="{}",
+                        active=1,
+                        created_at=now_ts,
+                    )
                 )
 
-    cur = conn.execute(
-        """
-        INSERT INTO users (
-            username,
-            email,
-            password_hash,
-            name,
-            role,
-            clinic_id,
-            mfa_enabled,
-            mfa_secret,
-            failed_login_attempts,
-            created_at,
-            updated_at
+    result = session.execute(
+        insert(users_table).values(
+            username=username,
+            email=resolved_email,
+            password_hash=pwd_hash,
+            name=resolved_name,
+            role=role,
+            clinic_id=clinic_id,
+            mfa_enabled=1 if mfa_enabled else 0,
+            mfa_secret=mfa_secret,
+            failed_login_attempts=0,
+            created_at=now_ts,
+            updated_at=now_ts,
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-        """,
-        (
-            username,
-            resolved_email,
-            pwd_hash,
-            resolved_name,
-            role,
-            clinic_id,
-            1 if mfa_enabled else 0,
-            mfa_secret,
-            now,
-            now,
-        ),
     )
+    user_id = int(result.inserted_primary_key[0])
 
-    user_id = cur.lastrowid
-
-    conn.execute(
-        "INSERT OR IGNORE INTO settings (user_id, theme, categories, rules, lang, specialty, payer, region, use_local_models) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            user_id,
-            "modern",
-            "{}",
-            "[]",
-            "en",
-            None,
-            None,
-            "",
-            0,
-        ),
+    session.execute(
+        insert(settings_table)
+        .prefix_with("OR IGNORE")
+        .values(
+            user_id=user_id,
+            theme="modern",
+            categories="{}",
+            rules="[]",
+            lang="en",
+            specialty=None,
+            payer=None,
+            region="",
+            use_local_models=0,
+        )
     )
-    conn.execute(
-        "UPDATE users SET updated_at=? WHERE id=?",
-        (now, user_id),
+    session.execute(
+        update(users_table)
+        .where(users_table.c.id == user_id)
+        .values(updated_at=now_ts)
     )
-    conn.commit()
+    session.flush()
     return user_id
 
 
 def authenticate_user(
-    conn: sqlite3.Connection, username: str, password: str
+    session: Session, username: str, password: str
 ) -> Optional[Tuple[int, str]]:
     """Validate user credentials.
 
@@ -149,52 +197,60 @@ def authenticate_user(
     ``None``.
     """
 
-    ensure_users_table(conn)
-    row = conn.execute(
-        """
-        SELECT id, password_hash, role, failed_login_attempts, account_locked_until
-          FROM users
-         WHERE username=?
-        """,
-        (username,),
-    ).fetchone()
+    _ensure_core_tables(session)
+    row = (
+        session.execute(
+            select(
+                users_table.c.id,
+                users_table.c.password_hash,
+                users_table.c.role,
+                users_table.c.failed_login_attempts,
+                users_table.c.account_locked_until,
+            ).where(users_table.c.username == username)
+        )
+        .mappings()
+        .first()
+    )
     if not row:
         return None
 
     user_id = row["id"]
-    locked_until = row["account_locked_until"]
-    if locked_until and float(locked_until) > time.time():
+    locked_until_dt = from_epoch_seconds(row["account_locked_until"])
+    now_dt = utc_now()
+    if locked_until_dt and locked_until_dt > now_dt:
         return None
 
     if verify_password(password, row["password_hash"]):
-        now = time.time()
-        conn.execute(
-            """
-            UPDATE users
-               SET failed_login_attempts=0,
-                   account_locked_until=NULL,
-                   last_login=?,
-                   updated_at=?
-             WHERE id=?
-            """,
-            (now, now, user_id),
+        now_dt = utc_now()
+        now_ts = to_epoch_seconds(now_dt)
+        session.execute(
+            update(users_table)
+            .where(users_table.c.id == user_id)
+            .values(
+                failed_login_attempts=0,
+                account_locked_until=None,
+                last_login=now_ts,
+                updated_at=now_ts,
+            )
         )
-        conn.commit()
-        return user_id, row["role"]
+        session.flush()
+        return int(user_id), row["role"]
 
     attempts = (row["failed_login_attempts"] or 0) + 1
-    lock_until: Optional[float] = None
+    now_dt = utc_now()
+    now_ts = to_epoch_seconds(now_dt)
+    lock_until_ts: Optional[float] = None
     if attempts >= LOCKOUT_THRESHOLD:
-        lock_until = time.time() + LOCKOUT_DURATION_SECONDS
-    conn.execute(
-        """
-        UPDATE users
-           SET failed_login_attempts=?,
-               account_locked_until=?,
-               updated_at=?
-         WHERE id=?
-        """,
-        (attempts, lock_until, time.time(), user_id),
+        lock_until_dt = now_dt + timedelta(seconds=LOCKOUT_DURATION_SECONDS)
+        lock_until_ts = to_epoch_seconds(lock_until_dt)
+    session.execute(
+        update(users_table)
+        .where(users_table.c.id == user_id)
+        .values(
+            failed_login_attempts=attempts,
+            account_locked_until=lock_until_ts,
+            updated_at=now_ts,
+        )
     )
-    conn.commit()
+    session.flush()
     return None

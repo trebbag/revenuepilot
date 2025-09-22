@@ -23,7 +23,9 @@ def setup_module(module):
     main.ensure_error_log_table(main.db_conn)
     main.ensure_refresh_table(main.db_conn)
     main.ensure_session_state_table(main.db_conn)
-    auth.register_user(main.db_conn, "alice", "pw")
+    main.configure_auth_session_factory(main.db_conn)
+    with main.auth_session_scope() as session:
+        auth.register_user(session, "alice", "pw")
 
 
 def _token():
