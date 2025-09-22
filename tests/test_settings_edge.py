@@ -1,49 +1,40 @@
-import sqlite3
-from fastapi.testclient import TestClient
-import backend.main as main
-from backend import migrations
-from backend.main import _init_core_tables
+import pytest
+
+from backend import main
+from backend.db.models import User
 
 
-def setup_module(module):
-    main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
-    main.db_conn.row_factory = sqlite3.Row
-    _init_core_tables(main.db_conn)
-    # ensure test user
-    pwd = main.hash_password('pw')
-    main.db_conn.execute('INSERT INTO users (username, password_hash, role) VALUES (?,?,?)', ('alice', pwd, 'user'))
-    main.db_conn.commit()
+@pytest.fixture
+def user_token(db_session):
+    user = User(username='alice', password_hash=main.hash_password('pw'), role='user')
+    db_session.add(user)
+    db_session.commit()
+    return main.create_token('alice', 'user')
 
 
-def _auth(token):
+def _auth(token: str) -> dict[str, str]:
     return {'Authorization': f'Bearer {token}'}
 
 
-def test_get_defaults_reflect_env(monkeypatch):
+def test_get_defaults_reflect_env(api_client, user_token, monkeypatch):
     monkeypatch.setenv('DEID_ENGINE', 'regex')
-    client = TestClient(main.app)
-    token = main.create_token('alice', 'user')
-    resp = client.get('/settings', headers=_auth(token))
+    resp = api_client.get('/settings', headers=_auth(user_token))
     assert resp.status_code == 200
     assert resp.json()['deidEngine'] == 'regex'
 
 
-def test_save_invalid_deid_engine():
-    client = TestClient(main.app)
-    token = main.create_token('alice', 'user')
+def test_save_invalid_deid_engine(api_client, user_token):
     bad = {
         'theme': 'modern',
         'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
         'rules': [],
         'deidEngine': 'invalid'
     }
-    resp = client.post('/settings', json=bad, headers=_auth(token))
+    resp = api_client.post('/settings', json=bad, headers=_auth(user_token))
     assert resp.status_code == 422
 
 
-def test_rules_cleaning_and_flags_persist():
-    client = TestClient(main.app)
-    token = main.create_token('alice', 'user')
+def test_rules_cleaning_and_flags_persist(api_client, user_token):
     prefs = {
         'theme': 'modern',
         'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
@@ -52,13 +43,13 @@ def test_rules_cleaning_and_flags_persist():
         'useOfflineMode': True,
         'deidEngine': 'regex'
     }
-    resp = client.post('/settings', json=prefs, headers=_auth(token))
+    resp = api_client.post('/settings', json=prefs, headers=_auth(user_token))
     assert resp.status_code == 200
     data = resp.json()
     assert data['rules'] == ['first', 'second']
     assert data['useLocalModels'] is True
     assert data['useOfflineMode'] is True
-    resp = client.get('/settings', headers=_auth(token))
+    resp = api_client.get('/settings', headers=_auth(user_token))
     roundtrip = resp.json()
     assert roundtrip['rules'] == ['first', 'second']
     assert roundtrip['useOfflineMode'] is True

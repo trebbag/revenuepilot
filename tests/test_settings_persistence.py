@@ -1,33 +1,20 @@
-import sqlite3
+import pytest
 
-from fastapi.testclient import TestClient
-
-from backend import main, migrations
-
-
-def _setup_db(monkeypatch):
-    """Create an in-memory database with users and settings tables."""
-    db = sqlite3.connect(":memory:", check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
-    )
-    migrations.ensure_settings_table(db)
-    pwd = main.hash_password("pw")
-    db.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-        ("alice", pwd, "user"),
-    )
-    db.commit()
-    monkeypatch.setattr(main, "db_conn", db)
-    return db
+from backend import main
+from backend.db.models import User
 
 
-def test_settings_roundtrip(monkeypatch):
+@pytest.fixture
+def user_token(db_session):
+    user = User(username="alice", password_hash=main.hash_password("pw"), role="user")
+    db_session.add(user)
+    db_session.commit()
+    return main.create_token("alice", "user")
+
+
+def test_settings_roundtrip(api_client, user_token):
     """Saving settings should persist and be returned on subsequent fetches."""
-    _setup_db(monkeypatch)
-    client = TestClient(main.app)
-    token = main.create_token("alice", "user")
+    token = user_token
 
     prefs = {
         "theme": "dark",
@@ -47,12 +34,12 @@ def test_settings_roundtrip(monkeypatch):
 
     }
 
-    resp = client.post(
+    resp = api_client.post(
         "/settings", json=prefs, headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 200
 
-    resp = client.get("/settings", headers={"Authorization": f"Bearer {token}"})
+    resp = api_client.get("/settings", headers={"Authorization": f"Bearer {token}"})
     data = resp.json()
     assert data["theme"] == "dark"
     assert data["categories"]["compliance"] is False
