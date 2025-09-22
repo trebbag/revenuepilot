@@ -41,6 +41,7 @@ from typing import (
     Awaitable,
     Iterator,
 )
+from sqlalchemy.orm import Session
 from fastapi import (
     FastAPI,
     Depends,
@@ -147,6 +148,14 @@ from backend.db.models import (
 )
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
+import backend.scheduling as scheduling_module  # type: ignore
+from backend.db import (
+    DATABASE_PATH,
+    get_connection,
+    get_session,
+    initialise_schema,
+    resolve_session_connection,
+)
 from backend.migrations import (  # type: ignore
     create_all_tables,
     ensure_users_table,
@@ -807,6 +816,21 @@ START_TIME = time.time()
 _DASHBOARD_CACHE: Dict[str, tuple[float, Any]] = {}
 DASHBOARD_CACHE_TTL = float(os.getenv("DASHBOARD_CACHE_TTL", "10"))
 
+
+def _invalidate_dashboard_cache(*keys: str) -> None:
+    """Remove cached dashboard payloads for ``keys``.
+
+    When ``keys`` is empty the function is a no-op; callers are expected to
+    explicitly list cache buckets they mutate.  This keeps invalidation logic
+    precise and avoids nuking unrelated cached responses unnecessarily.
+    """
+
+    if not keys:
+        return
+    for key in keys:
+        _DASHBOARD_CACHE.pop(key, None)
+
+
 def _cached_response(key: str, builder: Callable[[], Any]):
     """Return cached data for ``key`` rebuilding via ``builder`` when stale."""
     now = time.time()
@@ -1360,6 +1384,16 @@ async def _broadcast_notification_count(username: str) -> None:
                 pass
 
 
+
+# Set up a SQLite database for persistent analytics storage.  Connection
+# creation and schema initialisation live in ``backend.db`` so the dependency
+# can be shared across the application and tests.
+data_dir = DATABASE_PATH.parent
+data_dir.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", str(data_dir / "uploaded_charts")))
+
+db_conn = get_connection()
+
 # Set up a SQLite database for persistent analytics storage.  The database
 # location and connection management are centralised in ``backend.db`` so the
 # same configuration is reused across modules.
@@ -1495,6 +1529,7 @@ compliance_engine.configure_engine(engine=db.engine)
 configure_auth_session_factory(db_conn)
 
 
+
 # Create helpful indexes for metrics queries (idempotent)
 try:  # pragma: no cover - sqlite create index if not exists
     db_conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
@@ -1510,7 +1545,7 @@ ANALYTICS_DB_PRUNE_FRACTION = float(os.getenv("ANALYTICS_DB_PRUNE_FRACTION", "0.
 
 def _prune_analytics_if_needed():  # pragma: no cover - size dependent
     try:
-        db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
+        db_size = os.path.getsize(DATABASE_PATH) / (1024 * 1024)
         if db_size <= ANALYTICS_DB_MAX_MB:
             return
         cursor = db_conn.cursor()
@@ -1537,6 +1572,16 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
 
 _prune_analytics_if_needed()
 
+
+
+# Helper to (re)initialise core tables when db_conn is swapped in tests.
+def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
+    initialise_schema(conn)
+    from backend import db as db_helpers
+
+    db_helpers.use_connection(conn)
+    conn.row_factory = sqlite3.Row
+    scheduling_module.reset_state()
 
 # Reference data seeding helpers ensure consistent test fixtures and sensible
 # defaults when the application starts with an empty database.
@@ -1660,6 +1705,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
 
     create_all_tables(conn)
 
+
     existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     if existing_patients == 0:
         now = datetime.utcnow().replace(microsecond=0)
@@ -1714,6 +1760,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
                 time.time(),
             ),
         )
+
     _seed_reference_data(conn)
     conn.commit()
     configure_schedule_database(conn)
@@ -1772,7 +1819,7 @@ ensure_patients_table(db_conn)
 ensure_encounters_table(db_conn)
 ensure_visit_sessions_table(db_conn)
 
-_seed_reference_data(db_conn)
+
 
 # Configure the database connection to return rows as dictionaries.  This
 # makes it easier to access columns by name when querying events for
@@ -7975,25 +8022,34 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
         closed = row["closed"] or 0
         urgent = row["urgent"] or 0
         now_dt = datetime.utcnow()
-        upper_bound = now_dt + timedelta(days=1)
+        start_of_today = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_of_tomorrow = start_of_today + timedelta(days=1)
+        morning_cutoff = start_of_tomorrow + timedelta(hours=1)
+        today_date = start_of_today.date()
         upcoming = 0
         try:
-            with schedule_session_scope() as session:
-                appointments = list_appointments(session=session)
-            for appt in appointments:
+
+            for appt in list_appointments():
+                start_raw = appt.get("start") if isinstance(appt, dict) else None
+                if not start_raw:
+                    continue
+
                 try:
-                    start_dt = datetime.fromisoformat(appt["start"])
+                    start_dt = datetime.fromisoformat(start_raw)
                 except Exception:
                     continue
-                if start_dt < now_dt or start_dt >= upper_bound:
+                if start_dt.tzinfo is not None:
+                    start_dt = start_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                if start_dt < now_dt:
                     continue
-                diff = start_dt - now_dt
-                if (
-                    start_dt.date() != now_dt.date()
-                    and diff > timedelta(hours=12)
-                ):
+                summary = appt.get("visitSummary") if isinstance(appt, dict) else None
+                if isinstance(summary, dict) and "sessionUpdatedAt" in summary and start_dt.date() != today_date:
                     continue
-                upcoming += 1
+                if start_of_today <= start_dt < start_of_tomorrow:
+                    upcoming += 1
+                    continue
+                if start_of_tomorrow <= start_dt < morning_cutoff:
+                    upcoming += 1
         except Exception:
             upcoming = 0
         return {
@@ -12132,9 +12188,9 @@ async def _compliance_check(
 async def compliance_check(
     req: ComplianceCheckRequest,
     user=Depends(require_role("user")),
-    session: Session = Depends(db.get_db),
+    session: Session = Depends(get_session),
 ) -> ComplianceCheckResponse:
-    conn = db.session_connection(session)
+    conn = resolve_session_connection(session)
     return await _compliance_check(req, conn)
 
 
@@ -12319,9 +12375,10 @@ async def compliance_issue_history(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    session: Session = Depends(db.get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    conn = db.session_connection(session)
+    conn = resolve_session_connection(session)
+
     query = (
         "SELECT issue_id, code, payer, findings, created_at, user_id "
         "FROM compliance_issue_history"
@@ -12727,6 +12784,7 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
         encounter_id=appt.encounterId,
         location=appt.location,
     )
+    _invalidate_dashboard_cache("quick_actions")
     return Appointment(
         **{
             **rec,
@@ -12789,12 +12847,13 @@ async def schedule_bulk_operations(
 ) -> ScheduleBulkSummary:
     if not req.updates:
         return ScheduleBulkSummary(succeeded=0, failed=0)
-    with schedule_session_scope() as session:
-        succeeded, failed = apply_bulk_operations(
-            [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
-            req.provider,
-            session=session,
-        )
+    succeeded, failed = apply_bulk_operations(
+        [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
+        req.provider,
+    )
+    if succeeded:
+        _invalidate_dashboard_cache("quick_actions")
+
     return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
 
@@ -13012,10 +13071,10 @@ class BillingRequest(BaseModel):
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    session: Session = Depends(db.get_db),
+    session: Session = Depends(get_session),
 ):
     """Return estimated reimbursement for CPT codes."""
-    conn = db.session_connection(session)
+    conn = resolve_session_connection(session)
     cpt_codes = [c.upper() for c in req.cpt]
     result = code_tables.calculate_billing(
         cpt_codes,
@@ -14214,11 +14273,11 @@ async def code_details_batch(
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    session: Session = Depends(db.get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Calculate total reimbursement and RVUs for provided codes."""
 
-    conn = db.session_connection(session)
+    conn = resolve_session_connection(session)
     codes_upper = [code.upper() for code in req.codes]
     payer_type = req.payerType or "commercial"
 
@@ -14251,9 +14310,9 @@ async def list_billing_audits(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    session: Session = Depends(db.get_db),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    conn = db.session_connection(session)
+    conn = resolve_session_connection(session)
     query = (
         "SELECT audit_id, code, payer, findings, created_at, user_id "
         "FROM billing_audits"
