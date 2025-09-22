@@ -43,6 +43,12 @@ jobs:
           npm ci
           npm run lint --if-present
           npm run test:coverage --if-present -- --ci
+      - name: "Install Playwright browsers"
+        if: hashFiles('playwright.config.ts') != ''
+        run: npx playwright install --with-deps chromium
+      - name: "Run accessibility regression tests"
+        if: hashFiles('playwright.config.ts') != ''
+        run: npm run test:e2e -- tests/e2e/accessibility.spec.ts
       - name: "Store JS coverage summary"
         if: hashFiles('package.json') != ''
         run: |

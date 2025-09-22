@@ -1,0 +1,64 @@
+{
+  "alerts": [
+    {
+      "text": "Document total visit time for time-based billing.",
+      "category": "documentation",
+      "priority": "medium",
+      "confidence": 0.72,
+      "reasoning": "Time-based billing noted but minutes were not recorded.",
+      "ruleReferences": [
+        {
+          "ruleId": "rule-1",
+          "citations": [
+            {
+              "title": "CMS 2024 E/M",
+              "url": "https://example.com/cms-e-m",
+              "citation": "Section 2"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "text": "Add an explicit follow-up plan for diabetes management.",
+      "category": "planning",
+      "priority": "high",
+      "confidence": 0.66,
+      "reasoning": "No follow-up appointment or monitoring schedule documented.",
+      "ruleReferences": [
+        {
+          "ruleId": "rule-2",
+          "citations": [
+            {
+              "title": "Joint Commission",
+              "url": "https://example.com/jc",
+              "citation": "Standard FP-01"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "ruleReferences": [
+    {
+      "ruleId": "rule-1",
+      "citations": [
+        {
+          "title": "CMS 2024 E/M",
+          "url": "https://example.com/cms-e-m",
+          "citation": "Section 2"
+        }
+      ]
+    },
+    {
+      "ruleId": "rule-2",
+      "citations": [
+        {
+          "title": "Joint Commission",
+          "url": "https://example.com/jc",
+          "citation": "Standard FP-01"
+        }
+      ]
+    }
+  ]
+}

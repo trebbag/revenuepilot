@@ -30,7 +30,8 @@ function Login({ onLoggedIn }) {
   const [backendUp, setBackendUp] = useState(true);
   const [checking, setChecking] = useState(true);
   const [lang, setLang] = useState('en');
-  const [diag, setDiag] = useState(null);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [backendStatus, setBackendStatus] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberUsername, setRememberUsername] = useState(true);
   const [offlineMode, setOfflineMode] = useState(false);
@@ -47,10 +48,25 @@ function Login({ onLoggedIn }) {
 
   const checkBackend = useCallback(async () => {
     setChecking(true);
+    setBackendStatus('Checking backend health…');
     const ok = await pingBackend();
     setBackendUp(ok);
     setChecking(false);
-    if (!ok) setDiag(getLastBackendError && getLastBackendError());
+    if (ok) {
+      setBackendStatus('Backend reachable');
+      setDiagnostics((prev) => {
+        if (!prev) return prev;
+        return { ...prev, message: prev.message || 'Backend reachable' };
+      });
+    } else {
+      const lastErr = getLastBackendError && getLastBackendError();
+      const message = lastErr || 'Backend not reachable.';
+      setBackendStatus(message);
+      setDiagnostics((prev) => ({
+        ...(prev || { logTail: [], logFile: null, fatal: false }),
+        message,
+      }));
+    }
   }, []);
 
   useEffect(() => {
@@ -61,15 +77,39 @@ function Login({ onLoggedIn }) {
     const electronAPI = getElectronAPI();
     if (!electronAPI?.on) return undefined;
     const removeReady = electronAPI.on('backend-ready', () => {
+      setBackendUp(true);
+      setBackendStatus('Backend ready');
+      setDiagnostics((prev) => ({
+        ...(prev || { logTail: [], logFile: null, fatal: false }),
+        message: 'Backend ready',
+      }));
       checkBackend();
     });
     const removeFailed = electronAPI.on('backend-failed', () => {
       setBackendUp(false);
+      const message =
+        'Backend process unavailable. Continuing offline until it restarts.';
+      setBackendStatus(message);
+      setDiagnostics((prev) => ({
+        ...(prev || { logTail: [], logFile: null, fatal: true }),
+        message,
+        fatal: true,
+      }));
     });
     const removeDiagnostics = electronAPI.on(
       'backend-diagnostics',
       (_event, payload) => {
-        setDiag(payload);
+        if (!payload || typeof payload !== 'object') return;
+        setDiagnostics({
+          message: payload.message || null,
+          logTail: Array.isArray(payload.logTail) ? payload.logTail : [],
+          logFile: payload.logFile || null,
+          fatal: Boolean(payload.fatal),
+          port: payload.port ?? null,
+        });
+        if (payload.message) {
+          setBackendStatus(payload.message);
+        }
       },
     );
     return () => {
@@ -92,6 +132,30 @@ function Login({ onLoggedIn }) {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!offlineMode || backendUp) return undefined;
+    const timer = setInterval(() => {
+      checkBackend();
+    }, 5000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [offlineMode, backendUp, checkBackend]);
+
+  useEffect(() => {
+    if (backendUp && !offlineMode) {
+      setDiagnostics(null);
+    }
+  }, [backendUp, offlineMode]);
+
+  useEffect(() => {
+    if (offlineMode && backendUp) {
+      setInfo((prev) =>
+        prev || 'Backend connection restored. Disable offline mode to resume live requests.',
+      );
+    }
+  }, [offlineMode, backendUp]);
 
   const passwordScore = useCallback((pwd) => {
     let score = 0;
@@ -119,6 +183,21 @@ function Login({ onLoggedIn }) {
   function validNewPassword(p) {
     return typeof p === 'string' && p.length >= 8;
   }
+
+  const handleOfflineToggle = useCallback(
+    (nextMode) => {
+      setError(null);
+      setSecurityWarning(null);
+      setOfflineMode(nextMode);
+      if (nextMode) {
+        setInfo('Offline simulation enabled. We will retry the backend in the background.');
+      } else {
+        setInfo('Attempting to resume live backend…');
+        checkBackend();
+      }
+    },
+    [checkBackend],
+  );
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -151,7 +230,7 @@ function Login({ onLoggedIn }) {
 
     if (!backendUp && !offlineMode) {
       setError(
-        'Backend not reachable. Retry or use "Proceed offline" to simulate authentication for development.',
+        'Backend not reachable. Retry or use "Work offline" to simulate authentication for development.',
       );
       return;
     }
@@ -286,6 +365,14 @@ function Login({ onLoggedIn }) {
     }
   }
 
+  const showBackendPanel = (!backendUp && !checking) || offlineMode || Boolean(diagnostics);
+  const diagnosticMessage =
+    (diagnostics && diagnostics.message) ||
+    backendStatus ||
+    (getLastBackendError && getLastBackendError());
+  const diagnosticLog = (diagnostics && diagnostics.logTail) || [];
+  const diagnosticLogFile = diagnostics && diagnostics.logFile ? diagnostics.logFile : null;
+
   return (
     <div className="auth-root">
       <div className="auth-viewport">
@@ -320,20 +407,31 @@ function Login({ onLoggedIn }) {
           </div>
 
           <div className="auth-card-body">
-            {!backendUp && !checking && !offlineMode && (
-              <div className="backend-warning" role="alert">
+            {showBackendPanel && (
+              <div
+                className="backend-warning"
+                role={backendUp ? 'status' : 'alert'}
+                aria-live={backendUp ? 'polite' : 'assertive'}
+              >
                 <strong>
-                  {t('login.backendUnavailable') || 'Backend not reachable.'}
+                  {backendUp
+                    ? 'Offline simulation mode active.'
+                    : t('login.backendUnavailable') || 'Backend not reachable.'}
                 </strong>
-                <div className="backend-details">
-                  {diag || (getLastBackendError && getLastBackendError())}
+                <div className="backend-details" aria-live="polite">
+                  {diagnosticMessage || 'Retrying backend connection…'}
                 </div>
-                <details className="backend-log">
-                  <summary>Startup log (tail)</summary>
-                  <pre className="backend-log-pre">
-                    {diag && diag.logTail ? diag.logTail.join('\n') : ''}
-                  </pre>
-                </details>
+                {diagnosticLogFile && (
+                  <div className="backend-details">
+                    Startup log saved to: <code>{diagnosticLogFile}</code>
+                  </div>
+                )}
+                {diagnosticLog.length > 0 && (
+                  <details className="backend-log">
+                    <summary>Startup log (tail)</summary>
+                    <pre className="backend-log-pre">{diagnosticLog.join('\n')}</pre>
+                  </details>
+                )}
                 <div className="backend-actions">
                   <button
                     type="button"
@@ -345,21 +443,31 @@ function Login({ onLoggedIn }) {
                       ? t('login.checking') || 'Checking...'
                       : t('login.retry') || 'Retry'}
                   </button>
-                  <button
-                    type="button"
-                    className="auth-link-button"
-                    onClick={() => setOfflineMode(true)}
-                  >
-                    Proceed offline (simulate)
-                  </button>
+                  {offlineMode ? (
+                    <button
+                      type="button"
+                      className="auth-link-button"
+                      onClick={() => handleOfflineToggle(false)}
+                    >
+                      Use live backend
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="auth-link-button"
+                      onClick={() => handleOfflineToggle(true)}
+                    >
+                      Work offline (simulate)
+                    </button>
+                  )}
                 </div>
               </div>
             )}
 
             {offlineMode && (
-              <div className="auth-info" role="status">
-                Running in offline simulation mode — authentication is simulated
-                locally for development.
+              <div className="auth-info" role="status" aria-live="polite">
+                Offline simulation mode active — authentication is simulated
+                locally while we retry the backend in the background.
               </div>
             )}
 

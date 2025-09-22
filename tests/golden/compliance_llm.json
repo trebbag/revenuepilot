@@ -1,0 +1,18 @@
+{
+  "alerts": [
+    {
+      "text": "Document total visit time for time-based billing.",
+      "category": "documentation",
+      "priority": "medium",
+      "confidence": 0.72,
+      "reasoning": "Time-based billing noted but minutes were not recorded."
+    },
+    {
+      "text": "Add an explicit follow-up plan for diabetes management.",
+      "category": "planning",
+      "priority": "high",
+      "confidence": 0.66,
+      "reasoning": "No follow-up appointment or monitoring schedule documented."
+    }
+  ]
+}

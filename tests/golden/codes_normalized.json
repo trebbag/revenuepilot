@@ -1,0 +1,46 @@
+{
+  "codes": [
+    {
+      "code": "99213",
+      "rationale": "Established patient visit with moderate complexity."
+    },
+    {
+      "code": "E11.9",
+      "rationale": "Type 2 diabetes mellitus without complications.",
+      "upgrade_to": "E11.65"
+    }
+  ],
+  "compliance": [
+    "Document total time spent with patient",
+    "123"
+  ],
+  "publicHealth": [
+    {
+      "recommendation": "Offer influenza vaccine",
+      "reason": "Chronic illness increases risk",
+      "source": "CDC",
+      "evidenceLevel": "B"
+    },
+    {
+      "recommendation": "Encourage regular exercise"
+    }
+  ],
+  "differentials": [
+    {
+      "diagnosis": "Influenza",
+      "score": 0.45
+    },
+    {
+      "diagnosis": "Pneumonia",
+      "score": 0.22
+    },
+    {
+      "diagnosis": "Common cold"
+    }
+  ],
+  "followUp": {
+    "interval": "6 weeks",
+    "ics": "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:Follow-up appointment\nDTSTART:20240212T000000Z\nDTEND:20240212T000000Z\nEND:VEVENT\nEND:VCALENDAR",
+    "reason": "specialty cardiology payer medicare override"
+  }
+}
