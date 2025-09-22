@@ -84,8 +84,6 @@ from backend import code_tables
 from backend import patients
 from backend import visits
 from backend import scheduling
-from backend import compliance as compliance_engine
-from backend.compliance import configure_engine as configure_compliance_engine
 from backend.codes_data import load_code_metadata
 
 logger = logging.getLogger(__name__)
@@ -157,6 +155,8 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
 
     try:
         if existing_rules == 0:
+            from backend import compliance as compliance_engine
+
             seed_compliance_rules(conn, compliance_engine.get_rules())
 
         metadata = load_code_metadata()
@@ -261,6 +261,8 @@ def _initialise_schema(conn: sqlite3.Connection) -> None:
 
     patients.configure_database(conn)
     scheduling.configure_database(conn)
+    from backend.compliance import configure_engine as configure_compliance_engine
+
     configure_compliance_engine(conn)
     _seed_reference_data(conn)
     conn.commit()
