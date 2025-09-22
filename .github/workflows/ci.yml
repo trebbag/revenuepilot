@@ -55,16 +55,16 @@ jobs:
           fi
 
       - name: "Setup Python"
-        if: hashFiles('requirements.txt') != ''
+        if: hashFiles('backend/requirements.txt') != ''
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: "Python install deps"
-        if: hashFiles('requirements.txt') != ''
+        if: hashFiles('backend/requirements.txt') != ''
         run: |
           pip install -r backend/requirements_dev.txt
       - name: "Python lint & test with coverage"
-        if: hashFiles('requirements.txt') != ''
+        if: hashFiles('backend/requirements.txt') != ''
         run: |
           mkdir -p .tmp
           python -m alembic -c backend/alembic/alembic.ini upgrade head
@@ -83,7 +83,7 @@ jobs:
           python -m alembic -c backend/alembic/alembic.ini check
           pytest -m postgres --maxfail=1 --disable-warnings -q
       - name: "Build Python coverage badge + enforce threshold"
-        if: hashFiles('requirements.txt') != ''
+        if: hashFiles('backend/requirements.txt') != ''
         run: |
           mkdir -p coverage
           TOTAL=$(python -c "import json;d=json.load(open('coverage/python-coverage-raw.json'));print(d.get('totals',{}).get('percent_covered', (d['meta']['covered_lines']/d['meta']['num_statements']*100 if d['meta']['num_statements'] else 0)) if 'meta' in d else 0)")
