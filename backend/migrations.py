@@ -1,9 +1,36 @@
+"""Schema management helpers built on SQLAlchemy metadata."""
+
+from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Iterable, Optional, Tuple
+from contextlib import contextmanager
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
+
+import sqlalchemy as sa
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from backend import models as db_models
+from backend.db.models import (
+    Base,
+    CPTCode,
+    CPTReference,
+    ComplianceRuleCatalogEntry,
+    HCPCSCode,
+    ICD10Code,
+    PayerSchedule,
+)
 
 
 
@@ -487,11 +514,6 @@ def ensure_refresh_table(conn: sqlite3.Connection) -> None:  # pragma: no cover 
     )
     conn.commit()
 
-"""Schema management helpers built on SQLAlchemy metadata."""
-
-from __future__ import annotations
-
-
 def ensure_notes_table(conn: sqlite3.Connection) -> None:
     """Ensure the notes table exists for storing draft and finalized notes.
 
@@ -916,25 +938,12 @@ def ensure_hcpcs_codes_table(conn: sqlite3.Connection) -> None:
 def _serialize_json(value: Any, default: Any | None = None) -> Optional[str]:
     if value is None:
         if default is None:
-=======
-import sqlite3
-from contextlib import contextmanager
-from typing import Any, Dict, Iterable, Iterator, Mapping, Optional, Sequence, Tuple
-
-import sqlalchemy as sa
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from backend.db.models import (
-    Base,
-    CPTCode,
-    CPTReference,
-    ComplianceRuleCatalogEntry,
-    HCPCSCode,
-    ICD10Code,
-    PayerSchedule,
-)
+            return None
+        value = default
+    try:
+        return json.dumps(value)
+    except TypeError:
+        return None
 
 
 _ENGINE_CACHE: Dict[int, Engine] = {}
@@ -997,7 +1006,19 @@ def _ensure_all(conn: sqlite3.Connection) -> None:
     create_all_tables(conn)
 
 
-# Generate compatibility wrappers for legacy ensure_* helpers.
+def _register_default_ensure(name: str) -> None:
+    if name in globals():
+        return
+
+    def _ensure(conn: sqlite3.Connection) -> None:
+        _ensure_all(conn)
+
+    _ensure.__name__ = name
+    _ensure.__qualname__ = name
+    _ensure.__doc__ = f"Ensure tables required by `{name}` exist."
+    globals()[name] = _ensure
+
+
 for _func_name in [
     "ensure_clinics_table",
     "ensure_users_table",
@@ -1036,18 +1057,10 @@ for _func_name in [
     "ensure_session_state_table",
     "ensure_shared_workflow_sessions_table",
 ]:
-    def _factory(name: str) -> None:
-        def _ensure(conn: sqlite3.Connection) -> None:
-            _ensure_all(conn)
+    _register_default_ensure(_func_name)
 
-        _ensure.__name__ = name
-        _ensure.__qualname__ = name
-        _ensure.__doc__ = f"Ensure tables required by `{name}` exist."
-        globals()[name] = _ensure
 
-    _factory(_func_name)
-
-del _func_name, _factory
+del _func_name, _register_default_ensure
 
 
 def _as_float(value: Any) -> Optional[float]:

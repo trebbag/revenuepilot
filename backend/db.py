@@ -84,9 +84,8 @@ from backend import code_tables
 from backend import patients
 from backend import visits
 from backend import scheduling
-from backend import compliance as compliance_engine
-from backend.compliance import configure_engine as configure_compliance_engine
 from backend.codes_data import load_code_metadata
+from backend.migrations import session_scope
 
 logger = logging.getLogger(__name__)
 
@@ -149,16 +148,15 @@ def get_engine() -> Engine:
 
 
 def _seed_reference_data(conn: sqlite3.Connection) -> None:
+    from backend import compliance as compliance_engine
+
     try:
         existing_rules = conn.execute("SELECT COUNT(*) FROM compliance_rule_catalog").fetchone()[0]
     except sqlite3.Error as exc:  # pragma: no cover - defensive
-        logger.warning("compliance_rules_table_inspect_failed", error=str(exc))
+        logger.warning("compliance_rules_table_inspect_failed: %s", exc)
         return
 
     try:
-        if existing_rules == 0:
-            seed_compliance_rules(conn, compliance_engine.get_rules())
-
         metadata = load_code_metadata()
         cpt_metadata = {
             code: info
@@ -167,53 +165,58 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
         }
 
         existing_cpt_codes = conn.execute("SELECT COUNT(*) FROM cpt_codes").fetchone()[0]
-        if existing_cpt_codes == 0:
-            seed_cpt_codes(conn, code_tables.DEFAULT_CPT_CODES.items())
-
         existing_icd_codes = conn.execute("SELECT COUNT(*) FROM icd10_codes").fetchone()[0]
-        if existing_icd_codes == 0:
-            seed_icd10_codes(conn, code_tables.DEFAULT_ICD10_CODES.items())
-
         existing_hcpcs_codes = conn.execute("SELECT COUNT(*) FROM hcpcs_codes").fetchone()[0]
-        if existing_hcpcs_codes == 0:
-            seed_hcpcs_codes(conn, code_tables.DEFAULT_HCPCS_CODES.items())
-
         existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
-        if existing_cpt == 0:
-            seed_cpt_reference(conn, cpt_metadata.items())
-
         existing_schedules = conn.execute("SELECT COUNT(*) FROM payer_schedules").fetchone()[0]
-        if existing_schedules == 0:
-            schedules = []
-            for code, info in cpt_metadata.items():
-                reimbursement = info.get("reimbursement")
-                if reimbursement in (None, ""):
-                    continue
-                rvu_value = info.get("rvu")
-                base_amount = float(reimbursement)
-                schedules.append(
-                    {
-                        "payer_type": "commercial",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": base_amount,
-                        "rvu": rvu_value,
-                    }
-                )
-                schedules.append(
-                    {
-                        "payer_type": "medicare",
-                        "location": "",
-                        "code": code,
-                        "reimbursement": round(base_amount * 0.8, 2),
-                        "rvu": rvu_value,
-                    }
-                )
-            seed_payer_schedules(conn, schedules)
+
+        with session_scope(conn) as session:
+            if existing_rules == 0:
+                seed_compliance_rules(session, compliance_engine.get_rules())
+
+            if existing_cpt_codes == 0:
+                seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items())
+
+            if existing_icd_codes == 0:
+                seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items())
+
+            if existing_hcpcs_codes == 0:
+                seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items())
+
+            if existing_cpt == 0:
+                seed_cpt_reference(session, cpt_metadata.items())
+
+            if existing_schedules == 0:
+                schedules = []
+                for code, info in cpt_metadata.items():
+                    reimbursement = info.get("reimbursement")
+                    if reimbursement in (None, ""):
+                        continue
+                    rvu_value = info.get("rvu")
+                    base_amount = float(reimbursement)
+                    schedules.append(
+                        {
+                            "payer_type": "commercial",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": base_amount,
+                            "rvu": rvu_value,
+                        }
+                    )
+                    schedules.append(
+                        {
+                            "payer_type": "medicare",
+                            "location": "",
+                            "code": code,
+                            "reimbursement": round(base_amount * 0.8, 2),
+                            "rvu": rvu_value,
+                        }
+                    )
+                seed_payer_schedules(session, schedules)
 
         conn.commit()
     except Exception as exc:  # pragma: no cover - best effort
-        logger.warning("reference_data_seed_failed", error=str(exc))
+        logger.warning("reference_data_seed_failed: %s", exc)
 
 
 def _initialise_schema(conn: sqlite3.Connection) -> None:
@@ -259,8 +262,13 @@ def _initialise_schema(conn: sqlite3.Connection) -> None:
     ensure_payer_schedule_table(conn)
     ensure_billing_audits_table(conn)
 
-    patients.configure_database(conn)
-    scheduling.configure_database(conn)
+    if hasattr(patients, "configure_database"):
+        patients.configure_database(conn)
+    if hasattr(scheduling, "configure_database"):
+        scheduling.configure_database(conn)
+
+    from backend.compliance import configure_engine as configure_compliance_engine
+
     configure_compliance_engine(conn)
     _seed_reference_data(conn)
     conn.commit()

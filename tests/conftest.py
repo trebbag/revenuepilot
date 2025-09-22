@@ -95,6 +95,7 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     """Provide an isolated in-memory SQLite database for each test."""
 
     from backend import main
+    from backend import db as db_module
 
     engine = sa.create_engine(
         'sqlite+pysqlite:///:memory:',
@@ -103,9 +104,13 @@ def in_memory_db() -> Iterator[DatabaseContext]:
         poolclass=StaticPool,
     )
     connection = engine.connect()
-    raw_connection = connection.connection
-    assert isinstance(raw_connection, sqlite3.Connection)
-    raw_connection.row_factory = sqlite3.Row
+    raw_wrapper = connection.connection
+    dbapi_connection = getattr(raw_wrapper, "driver_connection", raw_wrapper)
+    if hasattr(dbapi_connection, "connection"):
+        dbapi_connection = dbapi_connection.connection
+    assert isinstance(dbapi_connection, sqlite3.Connection)
+    dbapi_connection.row_factory = sqlite3.Row
+    raw_connection = dbapi_connection
 
     previous = getattr(main, 'db_conn', None)
     if isinstance(previous, sqlite3.Connection):
@@ -117,7 +122,7 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     main.db_conn = raw_connection
     main.configure_auth_session_factory(raw_connection)
     main._init_core_tables(raw_connection)
-    main.notification_counts = main.NotificationStore()
+    main.notification_counts.clear()
     main.events = []
     main.transcript_history = defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT))
     main.app.dependency_overrides[main.get_db] = lambda: raw_connection
@@ -128,6 +133,22 @@ def in_memory_db() -> Iterator[DatabaseContext]:
         expire_on_commit=False,
         future=True,
     )
+
+    previous_session_local = getattr(db_module, "SessionLocal", None)
+    db_module.SessionLocal = session_factory
+
+    def _override_get_session() -> Iterator[Session]:
+        session = session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    main.app.dependency_overrides[main.get_session] = _override_get_session
 
     context = DatabaseContext(
         engine=engine,
@@ -140,7 +161,9 @@ def in_memory_db() -> Iterator[DatabaseContext]:
         yield context
     finally:
         session_factory.close_all()
+        db_module.SessionLocal = previous_session_local
         main.app.dependency_overrides.pop(main.get_db, None)
+        main.app.dependency_overrides.pop(main.get_session, None)
         try:
             raw_connection.close()
         except Exception:

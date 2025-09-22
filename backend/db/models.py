@@ -16,6 +16,42 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 legacy_metadata = sa.MetaData()
 
+
+class EpochTimestamp(sa.types.TypeDecorator):
+    """Persist timezone-aware datetimes as floating point epoch seconds."""
+
+    impl = sa.Float
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):  # type: ignore[override]
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc).timestamp()
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                raise TypeError("EpochTimestamp columns expect datetime or epoch values") from None
+        raise TypeError("EpochTimestamp columns expect datetime or epoch values")
+
+    def process_result_value(self, value, dialect):  # type: ignore[override]
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value
+        try:
+            epoch_value = float(value)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise TypeError("EpochTimestamp columns must be numeric") from exc
+        return datetime.fromtimestamp(epoch_value, tz=timezone.utc)
+
 clinics = sa.Table(
     "clinics",
     legacy_metadata,
@@ -1029,7 +1065,7 @@ class NotificationCounter(Base):
 
     user_id = sa.Column(Integer, ForeignKey("users.id"), primary_key=True)
     count = sa.Column(Integer, nullable=False, server_default=sa.text("0"))
-    updated_at = sa.Column(DateTime(timezone=True), nullable=False, server_default=sa.func.now(), default=_utcnow)
+    updated_at = sa.Column(EpochTimestamp(), nullable=False, default=_utcnow, onupdate=_utcnow)
 
 
 class NotificationEvent(Base):
@@ -1041,10 +1077,10 @@ class NotificationEvent(Base):
     title = sa.Column(String, nullable=False)
     message = sa.Column(Text, nullable=False)
     severity = sa.Column(String, nullable=False)
-    created_at = sa.Column(DateTime(timezone=True), nullable=False, server_default=sa.func.now(), default=_utcnow)
-    updated_at = sa.Column(DateTime(timezone=True), nullable=False, server_default=sa.func.now(), default=_utcnow, onupdate=_utcnow)
+    created_at = sa.Column(EpochTimestamp(), nullable=False, default=_utcnow)
+    updated_at = sa.Column(EpochTimestamp(), nullable=False, default=_utcnow, onupdate=_utcnow)
     is_read = sa.Column(Boolean, nullable=False, server_default=sa.false())
-    read_at = sa.Column(DateTime(timezone=True), nullable=True)
+    read_at = sa.Column(EpochTimestamp(), nullable=True)
 
     __table_args__ = (
         sa.Index("idx_notification_events_user", "user_id", "created_at"),
@@ -1141,7 +1177,7 @@ class Notification(Base):
 
     username = sa.Column(String, primary_key=True)
     count = sa.Column(Integer, nullable=False, server_default=sa.text("0"))
-    updated_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow, onupdate=_utcnow)
+    updated_at = sa.Column(EpochTimestamp(), nullable=True, default=_utcnow, onupdate=_utcnow)
 
 
 class SessionState(Base):
@@ -1149,7 +1185,7 @@ class SessionState(Base):
 
     user_id = sa.Column(Integer, ForeignKey("users.id"), primary_key=True)
     data = sa.Column(sa.JSON, nullable=True)
-    updated_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow, onupdate=_utcnow)
+    updated_at = sa.Column(EpochTimestamp(), nullable=True, default=_utcnow, onupdate=_utcnow)
 
 
 class SharedWorkflowSession(Base):

@@ -1,11 +1,11 @@
 import asyncio
-import sqlite3
+from datetime import datetime, timezone
 from typing import Tuple
 
 import pytest
-from fastapi.testclient import TestClient
 
-from backend import main, migrations
+from backend import main
+from backend.db import models
 
 
 class DummyNotificationsManager:
@@ -23,36 +23,21 @@ class DummyNotificationsManager:
 
 
 @pytest.fixture
-def notification_client(monkeypatch):
-    db = sqlite3.connect(":memory:", check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    db.execute(
-        "CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)"
-    )
-    migrations.ensure_notification_counters_table(db)
-    migrations.ensure_notification_events_table(db)
-    pwd = main.hash_password("pw")
-    db.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?,?,?)",
-        ("alice", pwd, "user"),
-    )
-    db.commit()
-    monkeypatch.setattr(main, "db_conn", db)
-    main.notification_counts = main.NotificationStore()
+def notification_env(api_client, db_session, monkeypatch):
     manager = DummyNotificationsManager()
     monkeypatch.setattr(main, "notifications_manager", manager)
-    client = TestClient(main.app)
-    token = main.create_token("alice", "user")
-    yield client, token, manager
-    client.close()
+    response = api_client.post("/register", json={"username": "alice", "password": "pw"})
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
+    yield api_client, token, manager, db_session
 
 
 def _auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_notifications_lifecycle(notification_client):
-    client, token, manager = notification_client
+def test_notifications_lifecycle(notification_env):
+    client, token, manager, db_session = notification_env
 
     resp = client.get("/api/notifications", headers=_auth_headers(token))
     assert resp.status_code == 200
@@ -65,8 +50,10 @@ def test_notifications_lifecycle(notification_client):
             "alice",
             {"title": "Compliance alert", "message": "Review required", "severity": "high"},
             increment=True,
+            session=db_session,
         )
     )
+    db_session.commit()
     assert manager.sent
     event_payload = manager.sent[-1][1]
     assert event_payload["unreadCount"] == 1
@@ -105,15 +92,19 @@ def test_notifications_lifecycle(notification_client):
             "alice",
             {"title": "Reminder", "message": "Second item", "severity": "info"},
             increment=True,
+            session=db_session,
         )
     )
+    db_session.commit()
     asyncio.run(
         main._push_notification_event(
             "alice",
             {"title": "Follow up", "message": "Third item", "severity": "warning"},
             increment=True,
+            session=db_session,
         )
     )
+    db_session.commit()
 
     resp = client.get("/api/notifications", headers=_auth_headers(token))
     data = resp.json()
@@ -131,3 +122,67 @@ def test_notifications_lifecycle(notification_client):
 
     resp = client.get("/api/notifications/count", headers=_auth_headers(token))
     assert resp.json()["notifications"] == 0
+
+
+def test_navigation_badges_sqlite(db_session):
+    main.notification_counts.clear()
+
+    user = models.User(
+        username="badge-user",
+        password_hash=main.hash_password("pw"),
+        role="user",
+    )
+    db_session.add(user)
+    db_session.flush()
+
+    db_session.add(models.Note(status="draft"))
+    event = models.NotificationEvent(
+        event_id="evt-1",
+        user_id=user.id,
+        title="Test",
+        message="Body",
+        severity="info",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        is_read=False,
+    )
+    db_session.add(event)
+    db_session.flush()
+
+    count = main._sync_unread_notification_count("badge-user", session=db_session)
+    badges = main._navigation_badges("badge-user", session=db_session)
+    assert badges["notifications"] == count == 1
+    assert badges["drafts"] >= 1
+    assert badges["count"] == badges["notifications"]
+
+
+@pytest.mark.postgres
+def test_navigation_badges_postgres(orm_session):
+    main.notification_counts.clear()
+
+    user = models.User(
+        username="pg-badge",
+        password_hash=main.hash_password("pw"),
+        role="user",
+    )
+    orm_session.add(user)
+    orm_session.flush()
+
+    orm_session.add(models.Note(status="draft"))
+    event = models.NotificationEvent(
+        event_id="pg-evt-1",
+        user_id=user.id,
+        title="Postgres",
+        message="Badge",
+        severity="info",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        is_read=False,
+    )
+    orm_session.add(event)
+    orm_session.flush()
+
+    count = main._sync_unread_notification_count("pg-badge", session=orm_session)
+    badges = main._navigation_badges("pg-badge", session=orm_session)
+    assert badges["notifications"] == count == 1
+    assert badges["drafts"] >= 1

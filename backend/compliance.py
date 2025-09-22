@@ -279,8 +279,13 @@ def _seed_rules_if_empty() -> None:
             session.add(rule)
 
 
-# Initialise the engine on import for default usage. Tests may reconfigure it.
-configure_engine(engine=db.engine)
+# Initialise the engine on import for default usage when the database module is ready.
+try:  # pragma: no cover - depends on import order during startup
+    configure_engine(engine=db.engine)
+except AttributeError:
+    # ``backend.db`` may still be initialising (e.g. during pytest collection).
+    # Callers should invoke :func:`configure_engine` explicitly once the engine is available.
+    pass
 
 
 def _split_rule_payload(

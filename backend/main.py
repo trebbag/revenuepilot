@@ -144,18 +144,29 @@ from backend.db.models import (
     ComplianceRuleCatalogEntry,
     HCPCSCode,
     ICD10Code,
+    Notification,
+    NotificationCounter,
+    NotificationEvent,
+    Note,
     PayerSchedule,
+    SessionState,
+    User,
 )
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
-import backend.scheduling as scheduling_module  # type: ignore
-from backend.db import (
-    DATABASE_PATH,
-    get_connection,
-    get_session,
-    initialise_schema,
-    resolve_session_connection,
-)
+try:  # scheduling module may be unavailable in minimal test environments
+    import backend.scheduling as scheduling_module  # type: ignore
+except SyntaxError:  # pragma: no cover - fallback when optional module is invalid
+    scheduling_module = None
+from backend import db as db_module
+
+DATABASE_PATH = db_module.DATABASE_PATH
+SessionLocal = db_module.SessionLocal
+get_connection = db_module.get_connection
+get_db = db_module.get_connection
+get_session = db_module.get_session
+initialise_schema = db_module.initialise_schema
+resolve_session_connection = db_module.resolve_session_connection
 from backend.migrations import (  # type: ignore
     create_all_tables,
     ensure_users_table,
@@ -985,61 +996,30 @@ notification_counts: Dict[str, int] = {}
 notification_subscribers: Dict[str, List[WebSocket]] = defaultdict(list)
 
 
+def _acquire_session(session: Session | None = None) -> tuple[Session, bool]:
+    """Return ``(session, owns_session)`` ensuring a usable SQLAlchemy session."""
 
-class NotificationStore:
-    """SQLite-backed mapping interface for notification counters."""
-
-    def __contains__(self, username: object) -> bool:  # pragma: no cover - trivial lookup
-        if not isinstance(username, str):
-            return False
-        ensure_notifications_table(db_conn)
-        try:
-            row = db_conn.execute(
-                "SELECT 1 FROM notifications WHERE username=?",
-                (username,),
-            ).fetchone()
-        except sqlite3.Error:
-            return False
-        return bool(row)
-
-    def __getitem__(self, username: str) -> int:
-        return self.get(username, 0)
-
-    def __setitem__(self, username: str, value: int) -> None:
-        ensure_notifications_table(db_conn)
-        db_conn.execute(
-            """
-            INSERT INTO notifications (username, count, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET
-                count=excluded.count,
-                updated_at=excluded.updated_at
-            """,
-            (username, int(value), time.time()),
-        )
-        db_conn.commit()
-
-    def get(self, username: str, default: int = 0) -> int:
-        ensure_notifications_table(db_conn)
-        try:
-            row = db_conn.execute(
-                "SELECT count FROM notifications WHERE username=?",
-                (username,),
-            ).fetchone()
-        except sqlite3.Error:
-            return default
-        if not row:
-            return default
-        try:
-            return int(row["count"])
-        except (KeyError, TypeError, ValueError):
-            try:
-                return int(row[0])
-            except (TypeError, ValueError, IndexError):
-                return default
+    if session is not None:
+        return session, False
+    if SessionLocal is None:  # pragma: no cover - defensive guard
+        raise RuntimeError("Session factory is not initialised")
+    return SessionLocal(), True
 
 
-notification_counts = NotificationStore()
+def _commit_or_flush(db_session: Session, owns_session: bool) -> None:
+    """Persist pending changes either by committing or flushing."""
+
+    if owns_session:
+        db_session.commit()
+    else:
+        db_session.flush()
+
+
+def _rollback_if_needed(db_session: Session, owns_session: bool) -> None:
+    """Roll back the session if this helper created it."""
+
+    if owns_session:
+        db_session.rollback()
 
 
 def _timestamp_to_iso(value: Any) -> str | None:
@@ -1126,21 +1106,31 @@ def _normalise_notification_event_payload(payload: Dict[str, Any]) -> Dict[str, 
 
 
 def _sync_unread_notification_count(
-    username: str, *, user_id: int | None = None
+    username: str, *, user_id: int | None = None, session: Session | None = None
 ) -> int:
     """Recompute unread notification count for *username* from stored events."""
 
-    ensure_notification_events_table(db_conn)
-    if user_id is None:
-        user_id = _get_user_db_id(username)
-    if user_id is None:
-        return set_notification_count(username, 0)
-    row = db_conn.execute(
-        "SELECT COUNT(*) AS unread FROM notification_events WHERE user_id=? AND is_read=0",
-        (user_id,),
-    ).fetchone()
-    unread = int(row["unread"]) if row and row["unread"] is not None else 0
-    return set_notification_count(username, unread)
+    db_session, owns_session = _acquire_session(session)
+    try:
+        effective_user_id = user_id
+        if effective_user_id is None:
+            effective_user_id = _get_user_db_id(username, session=db_session)
+        if effective_user_id is None:
+            return set_notification_count(username, 0, session=db_session)
+
+        unread_stmt = sa.select(sa.func.count(NotificationEvent.id)).where(
+            NotificationEvent.user_id == effective_user_id,
+            NotificationEvent.is_read.is_(False),
+        )
+        unread = db_session.execute(unread_stmt).scalar_one()
+        return set_notification_count(
+            username,
+            int(unread or 0),
+            session=db_session,
+        )
+    finally:
+        if owns_session:
+            db_session.close()
 
 
 def _persist_notification_event(
@@ -1148,162 +1138,109 @@ def _persist_notification_event(
     payload: Dict[str, Any],
     *,
     mark_unread: bool,
+    session: Session | None = None,
 ) -> tuple[Dict[str, Any], int]:
     """Insert or update a notification event for *username*."""
 
-    ensure_notification_events_table(db_conn)
     record = _normalise_notification_event_payload(payload)
-    user_id = _get_user_db_id(username)
-    if user_id is None:
-        enriched = {
-            "id": record["id"],
-            "title": record["title"],
-            "message": record["message"],
-            "severity": record["severity"],
-            "timestamp": _iso_timestamp(record["created_at"]),
-            "isRead": not mark_unread,
-        }
-        return enriched, current_notification_count(username)
+    db_session, owns_session = _acquire_session(session)
+    try:
+        user_id = _get_user_db_id(username, session=db_session)
+        if user_id is None:
+            enriched = {
+                "id": record["id"],
+                "title": record["title"],
+                "message": record["message"],
+                "severity": record["severity"],
+                "timestamp": _iso_timestamp(record["created_at"]),
+                "isRead": not mark_unread,
+            }
+            count = current_notification_count(username, session=db_session)
+            return enriched, count
 
-    now = time.time()
-    existing = db_conn.execute(
-        """
-        SELECT created_at, is_read, read_at
-          FROM notification_events
-         WHERE event_id=? AND user_id=?
-        """,
-        (record["id"], user_id),
-    ).fetchone()
+        now = datetime.now(timezone.utc)
+        created_at = datetime.fromtimestamp(record["created_at"], tz=timezone.utc)
+        existing = db_session.execute(
+            sa.select(NotificationEvent).where(
+                NotificationEvent.event_id == record["id"],
+                NotificationEvent.user_id == user_id,
+            )
+        ).scalar_one_or_none()
 
-    if existing:
-        is_read = int(existing["is_read"]) if existing["is_read"] is not None else 0
-        read_at = existing["read_at"]
-        if mark_unread:
-            is_read = 0
-            read_at = None
-        db_conn.execute(
-            """
-            UPDATE notification_events
-               SET title=?,
-                   message=?,
-                   severity=?,
-                   updated_at=?,
-                   is_read=?,
-                   read_at=?
-             WHERE event_id=? AND user_id=?
-            """,
-            (
-                record["title"],
-                record["message"],
-                record["severity"],
-                now,
-                is_read,
-                read_at,
-                record["id"],
-                user_id,
-            ),
-        )
-        created_at = (
-            existing["created_at"] if existing["created_at"] is not None else record["created_at"]
-        )
-    else:
-        is_read = 0 if mark_unread else 1
-        read_at = None if mark_unread else now
-        created_at = record["created_at"]
-        db_conn.execute(
-            """
-            INSERT INTO notification_events (
-                event_id,
-                user_id,
-                title,
-                message,
-                severity,
-                created_at,
-                updated_at,
-                is_read,
-                read_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record["id"],
-                user_id,
-                record["title"],
-                record["message"],
-                record["severity"],
-                created_at,
-                now,
-                is_read,
-                read_at,
-            ),
+        if existing:
+            existing.title = record["title"]
+            existing.message = record["message"]
+            existing.severity = record["severity"]
+            if mark_unread:
+                existing.is_read = False
+                existing.read_at = None
+            existing.updated_at = now
+            if existing.created_at is not None:
+                created_at = existing.created_at
+            else:
+                existing.created_at = created_at
+            event = existing
+        else:
+            event = NotificationEvent(
+                event_id=record["id"],
+                user_id=user_id,
+                title=record["title"],
+                message=record["message"],
+                severity=record["severity"],
+                created_at=created_at,
+                updated_at=now,
+                is_read=not mark_unread,
+                read_at=None if mark_unread else now,
+            )
+            db_session.add(event)
+
+        _commit_or_flush(db_session, owns_session)
+
+        unread = _sync_unread_notification_count(
+            username,
+            user_id=user_id,
+            session=db_session,
         )
 
-    db_conn.commit()
+        return _serialise_notification(event), unread
+    except Exception:
+        _rollback_if_needed(db_session, owns_session)
+        raise
+    finally:
+        if owns_session:
+            db_session.close()
 
-    unread = _sync_unread_notification_count(username, user_id=user_id)
 
-    row = db_conn.execute(
-        """
-        SELECT created_at, is_read, read_at, severity, title, message
-          FROM notification_events
-         WHERE event_id=? AND user_id=?
-        """,
-        (record["id"], user_id),
-    ).fetchone()
+def _serialise_notification(event: NotificationEvent) -> Dict[str, Any]:
+    """Convert a notification ORM entity into an API-friendly dictionary."""
 
-    created_at = row["created_at"] if row and row["created_at"] is not None else created_at
-    is_read = bool(row["is_read"]) if row else bool(not mark_unread)
-    read_at = row["read_at"] if row else (None if mark_unread else now)
-    severity = row["severity"] if row and row["severity"] else record["severity"]
-    title = row["title"] if row and row["title"] else record["title"]
-    message = row["message"] if row and row["message"] else record["message"]
-
-    enriched = {
-        "id": record["id"],
-        "title": title,
-        "message": message,
-        "severity": severity,
-        "timestamp": _iso_timestamp(created_at),
-        "isRead": is_read,
+    created_ts = event.created_at.timestamp() if event.created_at else None
+    read_ts = event.read_at.timestamp() if event.read_at else None
+    payload = {
+        "id": event.event_id,
+        "title": event.title,
+        "message": event.message,
+        "severity": event.severity,
+        "timestamp": _iso_timestamp(created_ts),
+        "isRead": bool(event.is_read),
     }
-    if read_at:
-        enriched["readAt"] = _iso_timestamp(read_at)
-
-    return enriched, unread
-
-
-def _serialise_notification_row(row: sqlite3.Row) -> Dict[str, Any]:
-    """Convert a notification row into an API-friendly dictionary."""
-
-    return {
-        "id": row["event_id"],
-        "title": row["title"],
-        "message": row["message"],
-        "severity": row["severity"],
-        "timestamp": _iso_timestamp(row["created_at"]),
-        "isRead": bool(row["is_read"]),
-        "readAt": _timestamp_to_iso(row["read_at"]),
-    }
+    read_iso = _timestamp_to_iso(read_ts)
+    if read_iso is not None:
+        payload["readAt"] = read_iso
+    return payload
 
 
-def _get_user_db_id(username: str) -> int | None:
+def _get_user_db_id(username: str, session: Session | None = None) -> int | None:
     """Return the internal database user id for ``username`` if present."""
 
+    db_session, owns_session = _acquire_session(session)
     try:
-        row = db_conn.execute(
-            "SELECT id FROM users WHERE username=?",
-            (username,),
-        ).fetchone()
-    except sqlite3.Error:
-        return None
-    if not row:
-        return None
-    try:
-        return int(row["id"])
-    except (KeyError, TypeError, ValueError):
-        try:
-            return int(row[0])
-        except (TypeError, ValueError, IndexError):
-            return None
+        return db_session.execute(
+            sa.select(User.id).where(User.username == username)
+        ).scalar_one_or_none()
+    finally:
+        if owns_session:
+            db_session.close()
 
 
 def _save_note_version(
@@ -1371,9 +1308,12 @@ COMPLIANCE_STATUSES = {"open", "in_progress", "resolved", "dismissed"}
 
 
 
-async def _broadcast_notification_count(username: str) -> None:
+async def _broadcast_notification_count(
+    username: str,
+    session: Session | None = None,
+) -> None:
     """Send updated notification count to all websocket subscribers."""
-    badges = _navigation_badges(username)
+    badges = _navigation_badges(username, session=session)
     for ws in list(notification_subscribers.get(username, [])):
         try:
             await ws.send_json(badges)
@@ -1418,7 +1358,8 @@ ensure_compliance_rules_table(db_conn)
 ensure_confidence_scores_table(db_conn)
 ensure_notification_counters_table(db_conn)
 ensure_notification_events_table(db_conn)
-patients.configure_database(db_conn)
+if hasattr(patients, "configure_database"):
+    patients.configure_database(db_conn)
 
 # Migrate previous database file from the repository directory if it exists
 old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
@@ -1841,70 +1782,97 @@ def _iso_timestamp(ts: float | None = None) -> str:
         return datetime.now(timezone.utc).isoformat()
 
 
-def _load_notification_count(username: str) -> int:
+def _load_notification_count(username: str, session: Session | None = None) -> int:
     """Fetch the persisted unread notification count for *username*."""
 
     if username in notification_counts:
         return notification_counts[username]
-    row = db_conn.execute(
-        """
-        SELECT nc.count
-          FROM notification_counters nc
-          JOIN users u ON u.id = nc.user_id
-         WHERE u.username = ?
-        """,
-        (username,),
-    ).fetchone()
-    count = int(row["count"]) if row and row["count"] is not None else 0
-    notification_counts[username] = count
-    return count
+
+    db_session, owns_session = _acquire_session(session)
+    try:
+        counter_stmt = (
+            sa.select(NotificationCounter.count)
+            .join(User, User.id == NotificationCounter.user_id)
+            .where(User.username == username)
+        )
+        count = db_session.execute(counter_stmt).scalar_one_or_none()
+        if count is None:
+            fallback_stmt = sa.select(Notification.count).where(Notification.username == username)
+            count = db_session.execute(fallback_stmt).scalar_one_or_none()
+        value = int(count or 0)
+        notification_counts[username] = value
+        return value
+    finally:
+        if owns_session:
+            db_session.close()
 
 
-def _persist_notification_count(username: str, count: int) -> None:
+def _persist_notification_count(
+    username: str, count: int, *, session: Session | None = None
+) -> None:
     """Persist unread notification *count* for *username*."""
 
-    ensure_notification_counters_table(db_conn)
-    row = db_conn.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
-    if not row:
-        return
-    user_id = row["id"]
-    now = time.time()
-    db_conn.execute(
-        """
-        INSERT INTO notification_counters (user_id, count, updated_at)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            count=excluded.count,
-            updated_at=excluded.updated_at
-        """,
-        (user_id, count, now),
-    )
-    db_conn.commit()
+    db_session, owns_session = _acquire_session(session)
+    try:
+        user_id = db_session.execute(
+            sa.select(User.id).where(User.username == username)
+        ).scalar_one_or_none()
+        if user_id is None:
+            return
+
+        now = datetime.now(timezone.utc)
+        counter = db_session.get(NotificationCounter, user_id)
+        if counter is None:
+            counter = NotificationCounter(user_id=user_id, count=count, updated_at=now)
+            db_session.add(counter)
+        else:
+            counter.count = count
+            counter.updated_at = now
+
+        record = db_session.get(Notification, username)
+        if record is None:
+            record = Notification(username=username, count=count, updated_at=now)
+            db_session.add(record)
+        else:
+            record.count = count
+            record.updated_at = now
+
+        _commit_or_flush(db_session, owns_session)
+    except Exception:
+        _rollback_if_needed(db_session, owns_session)
+        raise
+    finally:
+        if owns_session:
+            db_session.close()
 
 
-def current_notification_count(username: str) -> int:
+def current_notification_count(username: str, session: Session | None = None) -> int:
     """Return the current unread notification count for *username*."""
 
-    return _load_notification_count(username)
+    return _load_notification_count(username, session=session)
 
 
-def increment_notification_count(username: str, delta: int = 1) -> int:
+def increment_notification_count(
+    username: str, delta: int = 1, *, session: Session | None = None
+) -> int:
     """Increase unread notifications for *username* and persist the result."""
 
-    count = _load_notification_count(username) + delta
+    count = _load_notification_count(username, session=session) + delta
     if count < 0:
         count = 0
     notification_counts[username] = count
-    _persist_notification_count(username, count)
+    _persist_notification_count(username, count, session=session)
     return count
 
 
-def set_notification_count(username: str, count: int) -> int:
+def set_notification_count(
+    username: str, count: int, *, session: Session | None = None
+) -> int:
     """Explicitly set unread notifications for *username*."""
 
     count = max(count, 0)
     notification_counts[username] = count
-    _persist_notification_count(username, count)
+    _persist_notification_count(username, count, session=session)
     return count
 
 
@@ -6900,25 +6868,22 @@ async def put_ui_preferences(
 
 
 @app.get("/api/user/session")
-async def get_user_session(user=Depends(require_role("user"))):
-    row = db_conn.execute(
-        "SELECT ss.user_id, ss.data FROM session_state ss JOIN users u ON ss.user_id = u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
-    if row:
-        raw_dict: Optional[Dict[str, Any]] = None
-        if row["data"]:
-            try:
-                raw_dict = json.loads(row["data"])
-            except Exception:
-                raw_dict = None
-        normalized = _normalize_session_state(raw_dict if raw_dict is not None else row["data"])
-        if row["user_id"] is not None and raw_dict != normalized:
-            db_conn.execute(
-                "UPDATE session_state SET data=?, updated_at=? WHERE user_id=?",
-                (json.dumps(normalized), time.time(), row["user_id"]),
-            )
-            db_conn.commit()
+async def get_user_session(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+):
+    record = session.execute(
+        sa.select(SessionState)
+        .join(User, SessionState.user_id == User.id)
+        .where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if record:
+        data = record.data
+        normalized = _normalize_session_state(data)
+        if normalized != data:
+            record.data = normalized
+            record.updated_at = datetime.now(timezone.utc)
+            session.flush()
         return normalized
     return _normalize_session_state(SessionStateModel())
 
@@ -6927,40 +6892,43 @@ async def get_user_session(user=Depends(require_role("user"))):
 async def put_user_session(
     payload: Dict[str, Any] = Body(default_factory=dict),
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username=?", (user["sub"],),
-    ).fetchone()
-    if not row:
+    user_id = session.execute(
+        sa.select(User.id).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if user_id is None:
         raise HTTPException(status_code=400, detail="User not found")
-    user_id = row["id"]
-    existing_row = db_conn.execute(
-        "SELECT data FROM session_state WHERE user_id=?", (user_id,),
-    ).fetchone()
-    if existing_row and existing_row["data"]:
-        current_state = _normalize_session_state(existing_row["data"])
-    else:
-        current_state = _normalize_session_state(SessionStateModel())
+
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Invalid session payload")
+
+    state = session.get(SessionState, user_id)
+    if state is None or not state.data:
+        current_state = _normalize_session_state(SessionStateModel())
+        if state is None:
+            state = SessionState(user_id=user_id, data=current_state)
+            session.add(state)
+    else:
+        current_state = _normalize_session_state(state.data)
+
     merged_state = copy.deepcopy(current_state)
     for key, value in payload.items():
         merged_state[key] = value
     normalized = _normalize_session_state(merged_state)
-    db_conn.execute(
-        "INSERT OR REPLACE INTO session_state (user_id, data, updated_at) VALUES (?, ?, ?)",
-        (user_id, json.dumps(normalized), time.time()),
-    )
-    db_conn.commit()
+    state.data = normalized
+    state.updated_at = datetime.now(timezone.utc)
+    session.flush()
     return normalized
 
 
 @app.get("/api/notifications/count")
 async def get_notification_count(
-    user=Depends(require_role("user"))
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, int]:
-    count = _sync_unread_notification_count(user["sub"])
-    return _navigation_badges(user["sub"], count)
+    count = _sync_unread_notification_count(user["sub"], session=session)
+    return _navigation_badges(user["sub"], count, session=session)
 
 
 @app.get("/api/notifications")
@@ -6968,12 +6936,12 @@ async def list_notifications(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     username = user["sub"]
-    ensure_notification_events_table(db_conn)
-    user_id = _get_user_db_id(username)
+    user_id = _get_user_db_id(username, session=session)
     if user_id is None:
-        set_notification_count(username, 0)
+        set_notification_count(username, 0, session=session)
         return {
             "items": [],
             "total": 0,
@@ -6983,27 +6951,30 @@ async def list_notifications(
             "unreadCount": 0,
         }
 
-    rows = db_conn.execute(
-        """
-        SELECT event_id, title, message, severity, created_at, is_read, read_at
-          FROM notification_events
-         WHERE user_id=?
-         ORDER BY created_at DESC, id DESC
-         LIMIT ? OFFSET ?
-        """,
-        (user_id, limit, offset),
-    ).fetchall()
-    total_row = db_conn.execute(
-        "SELECT COUNT(*) AS total FROM notification_events WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
-    total = int(total_row["total"]) if total_row and total_row["total"] is not None else 0
-    unread = _sync_unread_notification_count(username, user_id=user_id)
-    items = [_serialise_notification_row(row) for row in rows or []]
+    events = (
+        session.execute(
+            sa.select(NotificationEvent)
+            .where(NotificationEvent.user_id == user_id)
+            .order_by(NotificationEvent.created_at.desc(), NotificationEvent.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        .scalars()
+        .all()
+    )
+    total = session.execute(
+        sa.select(sa.func.count(NotificationEvent.id)).where(
+            NotificationEvent.user_id == user_id
+        )
+    ).scalar_one()
+    unread = _sync_unread_notification_count(
+        username, user_id=user_id, session=session
+    )
+    items = [_serialise_notification(event) for event in events]
     next_offset = offset + limit if offset + limit < total else None
     return {
         "items": items,
-        "total": total,
+        "total": int(total or 0),
         "limit": limit,
         "offset": offset,
         "nextOffset": next_offset,
@@ -7015,60 +6986,61 @@ async def list_notifications(
 async def mark_notification_read(
     event_id: str,
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     username = user["sub"]
-    ensure_notification_events_table(db_conn)
-    user_id = _get_user_db_id(username)
+    user_id = _get_user_db_id(username, session=session)
     if user_id is None:
         raise HTTPException(status_code=404, detail="Notification not found")
-    row = db_conn.execute(
-        "SELECT is_read FROM notification_events WHERE event_id=? AND user_id=?",
-        (event_id, user_id),
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Notification not found")
-    if not row["is_read"]:
-        now = time.time()
-        db_conn.execute(
-            """
-            UPDATE notification_events
-               SET is_read=1,
-                   read_at=?,
-                   updated_at=?
-             WHERE event_id=? AND user_id=?
-            """,
-            (now, now, event_id, user_id),
+    event = session.execute(
+        sa.select(NotificationEvent).where(
+            NotificationEvent.event_id == event_id,
+            NotificationEvent.user_id == user_id,
         )
-        db_conn.commit()
-    unread = _sync_unread_notification_count(username, user_id=user_id)
-    await _broadcast_notification_count(username)
+    ).scalar_one_or_none()
+    if event is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    if not event.is_read:
+        now = datetime.now(timezone.utc)
+        event.is_read = True
+        event.read_at = now
+        event.updated_at = now
+        session.flush()
+    unread = _sync_unread_notification_count(
+        username, user_id=user_id, session=session
+    )
+    await _broadcast_notification_count(username, session=session)
     return {"status": "ok", "unreadCount": unread}
 
 
 @app.post("/api/notifications/read-all")
 async def mark_all_notifications_read(
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     username = user["sub"]
-    ensure_notification_events_table(db_conn)
-    user_id = _get_user_db_id(username)
+    user_id = _get_user_db_id(username, session=session)
     if user_id is None:
-        set_notification_count(username, 0)
+        set_notification_count(username, 0, session=session)
         return {"status": "ok", "unreadCount": 0}
-    now = time.time()
-    db_conn.execute(
-        """
-        UPDATE notification_events
-           SET is_read=1,
-               read_at=COALESCE(read_at, ?),
-               updated_at=?
-         WHERE user_id=? AND is_read=0
-        """,
-        (now, now, user_id),
+    now = datetime.now(timezone.utc)
+    events = session.execute(
+        sa.select(NotificationEvent).where(
+            NotificationEvent.user_id == user_id,
+            NotificationEvent.is_read.is_(False),
+        )
+    ).scalars().all()
+    for event in events:
+        event.is_read = True
+        if event.read_at is None:
+            event.read_at = now
+        event.updated_at = now
+    if events:
+        session.flush()
+    unread = _sync_unread_notification_count(
+        username, user_id=user_id, session=session
     )
-    db_conn.commit()
-    unread = _sync_unread_notification_count(username, user_id=user_id)
-    await _broadcast_notification_count(username)
+    await _broadcast_notification_count(username, session=session)
     return {"status": "ok", "unreadCount": unread}
 
 
@@ -13242,6 +13214,7 @@ async def _push_notification_event(
     payload: Dict[str, Any],
     *,
     increment: bool = False,
+    session: Session | None = None,
 ) -> None:
     """Dispatch a notification payload to ``/ws/notifications`` for *username*."""
 
@@ -13249,6 +13222,7 @@ async def _push_notification_event(
         username,
         payload,
         mark_unread=increment,
+        session=session,
     )
     enriched = {**payload}
     enriched.setdefault("channel", "notifications")
@@ -13262,49 +13236,51 @@ async def _push_notification_event(
         enriched["readAt"] = stored["readAt"]
     enriched["id"] = stored.get("id")
     enriched["unreadCount"] = count
-    enriched.update(_navigation_badges(username, count))
+    enriched.update(_navigation_badges(username, count, session=session))
     session_id = notifications_manager.latest_session(username)
     if session_id:
         await notifications_manager.push(session_id, enriched)
     else:
         await notifications_manager.push_user(username, enriched)
-    await _broadcast_notification_count(username)
+    await _broadcast_notification_count(username, session=session)
 
 
-def _get_draft_count() -> int:
+def _get_draft_count(session: Session | None = None) -> int:
     """Return the total number of draft notes available."""
 
+    db_session, owns_session = _acquire_session(session)
     try:
-        row = db_conn.execute(
-            "SELECT COUNT(*) AS total FROM notes WHERE status='draft'"
-        ).fetchone()
-    except sqlite3.Error:
-        return 0
-    if not row:
-        return 0
-    try:
-        value = row["total"]
+        total = db_session.execute(
+            sa.select(sa.func.count(Note.id)).where(Note.status == "draft")
+        ).scalar_one_or_none()
+        try:
+            return max(int(total or 0), 0)
+        except (TypeError, ValueError):
+            return 0
     except Exception:
-        value = 0
-    try:
-        return max(int(value or 0), 0)
-    except (TypeError, ValueError):
         return 0
+    finally:
+        if owns_session:
+            db_session.close()
 
 
-def _navigation_badges(username: Optional[str], notifications: Optional[int] = None) -> Dict[str, int]:
+def _navigation_badges(
+    username: Optional[str],
+    notifications: Optional[int] = None,
+    session: Session | None = None,
+) -> Dict[str, int]:
     """Compute navigation badge counts for the sidebar."""
 
     notif_count = notifications
     if notif_count is None and username:
-        notif_count = current_notification_count(username)
+        notif_count = current_notification_count(username, session=session)
     try:
         notif_value = max(int(notif_count or 0), 0)
     except (TypeError, ValueError):
         notif_value = 0
     payload = {
         "notifications": notif_value,
-        "drafts": _get_draft_count(),
+        "drafts": _get_draft_count(session=session),
     }
     payload["count"] = notif_value
     return payload
@@ -13330,6 +13306,8 @@ async def _notify_note_auto_save(username: str, note_id: Optional[int]) -> None:
 async def _notify_compliance_issue(
     record: Dict[str, Any],
     recipients: Iterable[str],
+    *,
+    session: Session | None = None,
 ) -> None:
     """Broadcast compliance issue updates and increment notifications."""
 
@@ -13362,7 +13340,12 @@ async def _notify_compliance_issue(
             await compliance_manager.push(session_id, payload)
         else:
             await compliance_manager.push_user(username, payload)
-        await _push_notification_event(username, dict(notify_payload), increment=True)
+        await _push_notification_event(
+            username,
+            dict(notify_payload),
+            increment=True,
+            session=session,
+        )
 
 
 @app.websocket("/ws/transcription")

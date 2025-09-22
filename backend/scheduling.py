@@ -19,7 +19,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from backend.time_utils import ensure_utc, from_epoch_seconds, to_epoch_seconds, utc_now
+from backend.time_utils import ensure_utc, from_epoch_seconds, utc_now
 
 import sqlalchemy as sa
 from sqlalchemy import case, select
@@ -920,13 +920,8 @@ def _apply_db_bulk_operation(
                 duration = end_dt - start_dt
 
 
-        end_dt = new_start + duration
-        now_dt = datetime.utcnow()
-
-        start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
         end_dt = ensure_utc(new_start + duration)
-        end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
-        now_ts = to_epoch_seconds(utc_now())
+        now_dt = datetime.utcnow()
 
         if session_row:
             session.execute(
@@ -980,24 +975,6 @@ def _apply_db_bulk_operation(
                 _VISIT_SESSIONS_TABLE.c.id.desc(),
             )
             .limit(1)
-
-    now_ts = to_epoch_seconds(utc_now())
-    session_row = conn.execute(
-        """
-        SELECT id
-        FROM visit_sessions
-        WHERE encounter_id=?
-        ORDER BY updated_at DESC, id DESC
-        LIMIT 1
-        """,
-        (encounter_id,),
-    ).fetchone()
-    if session_row:
-        session_id = (
-            session_row["id"]
-            if hasattr(session_row, "keys")
-            else session_row[0]  # type: ignore[index]
-
         )
         .mappings()
         .first()
@@ -1058,13 +1035,6 @@ def apply_bulk_operations(
             try:
                 appt_id = int(update["id"])
             except Exception:
-
-        time_value = update.get("time")
-        if time_value is None:
-            new_start = None
-        else:
-            new_start = _parse_datetime(time_value)
-            if new_start is None:
                 failed += 1
                 continue
 
