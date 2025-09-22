@@ -50,6 +50,9 @@ else:
 '@
 & $pythonExe -c $provisionScript
 
+Write-Host "Applying database migrations..."
+& $pythonExe -m alembic -c backend/alembic/alembic.ini upgrade head
+
 Write-Host "Starting backend (FastAPI) on port 8000..."
 $uvicornPath = Join-Path $scriptDir 'backend\venv\Scripts\uvicorn.exe'
 $backend = Start-Process $uvicornPath -ArgumentList 'backend.main:app --reload --port 8000' -PassThru

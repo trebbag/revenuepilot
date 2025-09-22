@@ -12,7 +12,9 @@ def setup_module(module):
     main.db_conn.row_factory = sqlite3.Row
     # Use shared helper to ensure all required tables (including settings) exist
     _init_core_tables(main.db_conn)
-    auth.register_user(main.db_conn, 'admin', 'secret', 'admin')
+    main.configure_auth_session_factory(main.db_conn)
+    with main.auth_session_scope() as session:
+        auth.register_user(session, 'admin', 'secret', 'admin')
 
 
 def _auth(token):

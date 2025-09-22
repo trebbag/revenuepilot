@@ -1,4 +1,7 @@
 # Optional heavy audio dependencies for advanced diarisation/noise reduction.
-# Install these only if you need multi-speaker diarisation.
+# Install these only if you need multi-speaker diarisation. Include the base
+# runtime stack (SQLAlchemy>=2.0, alembic>=1.13, psycopg[binary]>=3.2,
+# python-dotenv, etc.) before the audio extras.
+-r requirements.txt
 pyannote.audio
 torchaudio
