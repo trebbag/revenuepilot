@@ -21,6 +21,7 @@ import threading
 import uuid
 import secrets
 import math
+from dataclasses import dataclass
 import sqlalchemy as sa
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -40,6 +41,7 @@ from typing import (
     Iterator,
     Awaitable,
     Iterator,
+    Mapping,
 )
 from sqlalchemy.orm import Session
 from fastapi import (
@@ -343,6 +345,44 @@ AI_ROUTE_ERRORS = _get_or_create_metric(
     "Number of AI route invocations that failed",
     ("route",),
 )
+
+try:
+    _MAX_EXPORT_ATTEMPTS = max(1, int(os.getenv("EHR_EXPORT_MAX_ATTEMPTS", "5")))
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _MAX_EXPORT_ATTEMPTS = 5
+
+try:
+    _EXPORT_BACKOFF_INITIAL = max(
+        0.5, float(os.getenv("EHR_EXPORT_BACKOFF_INITIAL", "1"))
+    )
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _EXPORT_BACKOFF_INITIAL = 1.0
+
+try:
+    _EXPORT_BACKOFF_MULTIPLIER = max(
+        1.0, float(os.getenv("EHR_EXPORT_BACKOFF_MULTIPLIER", "2"))
+    )
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _EXPORT_BACKOFF_MULTIPLIER = 2.0
+
+try:
+    _EXPORT_BACKOFF_MAX = max(
+        _EXPORT_BACKOFF_INITIAL, float(os.getenv("EHR_EXPORT_BACKOFF_MAX", "60"))
+    )
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _EXPORT_BACKOFF_MAX = 60.0
+
+try:
+    _EXPORT_WORKER_COUNT = max(1, int(os.getenv("EHR_EXPORT_WORKERS", "1")))
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _EXPORT_WORKER_COUNT = 1
+
+_EXPORT_SUCCESS_STATES = {"exported", "bundle"}
+
+_EXPORT_QUEUE: Optional[asyncio.Queue["ExportJob"]] = None
+_EXPORT_WORKERS: List[asyncio.Task[None]] = []
+_EXPORT_RETRY_TASKS: Set[asyncio.Task[None]] = set()
+_export_worker_lock: Optional[asyncio.Lock] = None
 
 _ALERT_SUMMARY: Dict[str, Any] = {
     "workflow": {"total": 0, "byDestination": {}, "lastCompletion": None},
@@ -8574,11 +8614,225 @@ class ExportRequest(BaseModel):
         return [_validate_code(c) for c in v]
     ehrSystem: Optional[str] = None
 
+@dataclass
+class ExportJob:
+    export_id: int
+    request: ExportRequest
+    attempt: int = 0
+
+
+def _calculate_export_backoff(attempt: int) -> float:
+    delay = _EXPORT_BACKOFF_INITIAL * (_EXPORT_BACKOFF_MULTIPLIER ** (attempt - 1))
+    return min(delay, _EXPORT_BACKOFF_MAX)
+
+
+def _should_retry_export(result: Mapping[str, Any], attempt: int) -> bool:
+    if attempt >= _MAX_EXPORT_ATTEMPTS:
+        return False
+    transient = result.get("transient")
+    if isinstance(transient, bool) and transient:
+        return True
+    status_code = result.get("httpStatus")
+    if isinstance(status_code, int) and 500 <= status_code < 600:
+        return True
+    return False
+
+
+def _export_progress(status: Optional[str], detail: Any) -> float:
+    if isinstance(detail, Mapping):
+        progress = detail.get("progress")
+        if isinstance(progress, (int, float)):
+            return float(progress)
+    return 1.0 if status in _EXPORT_SUCCESS_STATES else 0.0
+
+
+def _update_export_record(
+    export_id: int, status: str, detail: Mapping[str, Any] | None = None
+) -> None:
+    payload = json.dumps(detail) if detail is not None else None
+    try:
+        db_conn.execute(
+            "UPDATE exports SET status=?, detail=?, timestamp=? WHERE id=?",
+            (status, payload, time.time(), export_id),
+        )
+        db_conn.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception(
+            "ehr_export_status_update_failed",
+            exportId=export_id,
+            status=status,
+        )
+
+
+async def _retry_export_later(job: ExportJob, delay: float) -> None:
+    try:
+        await asyncio.sleep(delay)
+        queue = _EXPORT_QUEUE
+        if queue is None:
+            logger.error(
+                "ehr_export_retry_dropped", exportId=job.export_id, delay=delay
+            )
+            return
+        await queue.put(job)
+    except asyncio.CancelledError:  # pragma: no cover - best effort requeue
+        queue = _EXPORT_QUEUE
+        if queue is not None:
+            await queue.put(job)
+        raise
+
+
+def _schedule_export_retry(job: ExportJob, delay: float) -> None:
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_retry_export_later(job, delay))
+    _EXPORT_RETRY_TASKS.add(task)
+    task.add_done_callback(_EXPORT_RETRY_TASKS.discard)
+
+
+async def _process_export_job(job: ExportJob) -> None:
+    attempt = job.attempt + 1
+    _update_export_record(
+        job.export_id,
+        "in_progress",
+        {"status": "in_progress", "attempt": attempt},
+    )
+    try:
+        result = await _perform_ehr_export(job.request)
+    except Exception as exc:  # pragma: no cover - unexpected coroutine failure
+        logger.exception(
+            "ehr_export_job_unexpected_exception",
+            exportId=job.export_id,
+            error=str(exc),
+        )
+        detail = {"status": "error", "detail": str(exc), "attempt": attempt}
+        _update_export_record(job.export_id, "error", detail)
+        return
+
+    if not isinstance(result, dict):
+        result = {"status": "error", "detail": result}
+
+    if _should_retry_export(result, attempt):
+        backoff = _calculate_export_backoff(attempt)
+        detail: Dict[str, Any] = {
+            "status": "retrying",
+            "attempt": attempt,
+            "retryIn": backoff,
+            "lastResult": result,
+        }
+        _update_export_record(job.export_id, "retrying", detail)
+        job.attempt = attempt
+        logger.info(
+            "ehr_export_retry_scheduled",
+            exportId=job.export_id,
+            attempt=attempt,
+            delay=backoff,
+        )
+        _schedule_export_retry(job, backoff)
+        return
+
+    status = result.get("status") or "error"
+    progress = 1.0 if status in _EXPORT_SUCCESS_STATES else 0.0
+    detail = {**result, "attempt": attempt, "progress": progress}
+    _update_export_record(job.export_id, status, detail)
+    logger.info(
+        "ehr_export_job_completed",
+        exportId=job.export_id,
+        status=status,
+        attempt=attempt,
+    )
+
+
+async def _export_worker_loop() -> None:
+    queue = _EXPORT_QUEUE
+    if queue is None:
+        return
+    logger.info("ehr_export_worker_started")
+    while True:
+        try:
+            job = await queue.get()
+        except asyncio.CancelledError:
+            break
+        try:
+            await _process_export_job(job)
+        except asyncio.CancelledError:  # pragma: no cover - shutdown requeue
+            try:
+                queue.put_nowait(job)
+            except Exception:
+                logger.exception(
+                    "ehr_export_worker_requeue_failed", exportId=job.export_id
+                )
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception(
+                "ehr_export_worker_error",
+                exportId=job.export_id,
+                error=str(exc),
+            )
+        finally:
+            queue.task_done()
+    logger.info("ehr_export_worker_stopped")
+
+
+async def _ensure_export_workers() -> None:
+    global _EXPORT_QUEUE, _export_worker_lock
+    if _export_worker_lock is None:
+        _export_worker_lock = asyncio.Lock()
+    async with _export_worker_lock:
+        if _EXPORT_QUEUE is None:
+            _EXPORT_QUEUE = asyncio.Queue()
+        if _EXPORT_WORKERS:
+            return
+        loop = asyncio.get_running_loop()
+        for _ in range(_EXPORT_WORKER_COUNT):
+            task = loop.create_task(_export_worker_loop())
+            _EXPORT_WORKERS.append(task)
+
+
+async def _stop_export_workers() -> None:
+    workers = list(_EXPORT_WORKERS)
+    for task in workers:
+        task.cancel()
+    if workers:
+        await asyncio.gather(*workers, return_exceptions=True)
+    _EXPORT_WORKERS.clear()
+
+    retries = list(_EXPORT_RETRY_TASKS)
+    for task in retries:
+        task.cancel()
+    if retries:
+        await asyncio.gather(*retries, return_exceptions=True)
+    _EXPORT_RETRY_TASKS.clear()
+
+    global _EXPORT_QUEUE, _export_worker_lock
+    _EXPORT_QUEUE = None
+    _export_worker_lock = None
+
+
+@app.on_event("startup")
+async def _startup_export_workers() -> None:  # pragma: no cover - FastAPI hook
+    await _ensure_export_workers()
+
+
+@app.on_event("shutdown")
+async def _shutdown_export_workers() -> None:  # pragma: no cover - FastAPI hook
+    await _stop_export_workers()
+
+
+def reset_export_workers_for_tests() -> None:
+    """Reset export worker state for isolated unit tests."""
+
+    _EXPORT_WORKERS.clear()
+    _EXPORT_RETRY_TASKS.clear()
+    global _EXPORT_QUEUE, _export_worker_lock
+    _EXPORT_QUEUE = None
+    _export_worker_lock = None
+
+
 async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
     """Internal helper to post (or generate) a FHIR bundle."""
     try:
         from backend import ehr_integration  # absolute import for packaged mode
-        result = ehr_integration.post_note_and_codes(
+        result = await asyncio.to_thread(
+            ehr_integration.post_note_and_codes,
             req.note,
             req.codes,
             req.patientID,
@@ -8587,7 +8841,7 @@ async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
             req.medications,
         )
         status = result.get("status")
-        if status not in {"exported", "bundle"}:
+        if status not in _EXPORT_SUCCESS_STATES:
             trace_id = current_trace_id()
             logger.error(
                 "ehr_export_failed", status=status, detail=result
@@ -8598,12 +8852,12 @@ async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
         trace_id = current_trace_id()
         logger.exception("ehr_export_network_error", error=str(exc))
         _record_export_failure(req.ehrSystem, str(exc), trace_id)
-        return {"status": "error", "detail": str(exc)}
+        return {"status": "error", "detail": str(exc), "transient": True}
     except Exception as exc:  # pragma: no cover - unexpected failures
         trace_id = current_trace_id()
         logger.exception("ehr_export_unexpected_error", error=str(exc))
         _record_export_failure(req.ehrSystem, str(exc), trace_id)
-        return {"status": "error", "detail": str(exc)}
+        return {"status": "error", "detail": str(exc), "transient": False}
 
 
 @app.post("/export")
@@ -8619,7 +8873,9 @@ async def export_to_ehr_api(
     req: ExportRequest, user=Depends(require_role("user"))
 ) -> Dict[str, Any]:
     """Export a note to an EHR system and track the result."""
-    result = await _perform_ehr_export(req)
+    await _ensure_export_workers()
+
+    initial_detail: Dict[str, Any] = {"status": "queued", "attempt": 0, "progress": 0.0}
     try:
         cur = db_conn.cursor()
         cur.execute(
@@ -8628,19 +8884,38 @@ async def export_to_ehr_api(
                 time.time(),
                 req.ehrSystem or "",
                 req.note,
-                result.get("status"),
-                json.dumps(result),
+                "queued",
+                json.dumps(initial_detail),
             ),
         )
         db_conn.commit()
         export_id = cur.lastrowid
-    except Exception:
+    except Exception as exc:  # pragma: no cover - database issues
+        logger.exception("ehr_export_record_insert_failed", error=str(exc))
         export_id = None
-    progress = 1.0 if result.get("status") in {"exported", "bundle"} else 0.0
-    resp: Dict[str, Any] = {"status": result.get("status"), "progress": progress}
-    if export_id is not None:
-        resp["exportId"] = export_id
-    return resp
+
+    queue = _EXPORT_QUEUE
+    if export_id is None or queue is None:
+        result = await _perform_ehr_export(req)
+        status = result.get("status")
+        progress = 1.0 if status in _EXPORT_SUCCESS_STATES else 0.0
+        resp: Dict[str, Any] = {"status": status, "progress": progress, "detail": result}
+        return resp
+
+    job = ExportJob(export_id=export_id, request=req.model_copy(deep=True))
+    await queue.put(job)
+    logger.info(
+        "ehr_export_job_enqueued",
+        exportId=export_id,
+        ehrSystem=req.ehrSystem,
+    )
+    return {
+        "status": "queued",
+        "progress": 0.0,
+        "exportId": export_id,
+        "detail": initial_detail,
+        "ehrSystem": req.ehrSystem,
+    }
 
 
 @app.get("/api/export/ehr/{export_id}")
@@ -8654,12 +8929,14 @@ async def get_export_status(
     if not row:
         raise HTTPException(status_code=404, detail="Export not found")
     detail = json.loads(row["detail"]) if row["detail"] else None
+    progress = _export_progress(row["status"], detail)
     return {
         "exportId": row["id"],
         "status": row["status"],
         "ehrSystem": row["ehr"],
         "timestamp": row["timestamp"],
         "detail": detail,
+        "progress": progress,
     }
 
 
@@ -8676,12 +8953,14 @@ async def get_export_status_generic(
     if not row:
         raise HTTPException(status_code=404, detail="Export not found")
     detail = json.loads(row["detail"]) if row["detail"] else None
+    progress = _export_progress(row["status"], detail)
     return {
         "exportId": row["id"],
         "status": row["status"],
         "ehrSystem": row["ehr"],
         "timestamp": row["timestamp"],
         "detail": detail,
+        "progress": progress,
     }
 
 

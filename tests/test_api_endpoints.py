@@ -2,6 +2,7 @@ import json
 import sqlite3
 import hashlib
 import logging
+import time
 from collections import defaultdict, deque
 
 
@@ -16,6 +17,7 @@ from backend.main import _init_core_tables
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     # Isolate database and events
+    main.reset_export_workers_for_tests()
     main.db_conn = sqlite3.connect(':memory:', check_same_thread=False)
     main.db_conn.row_factory = sqlite3.Row
     _init_core_tables(main.db_conn)
@@ -37,6 +39,7 @@ def client(monkeypatch, tmp_path):
         "transcript_history",
         defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT)),
     )
+    main.reset_export_workers_for_tests()
     return TestClient(main.app)
 
 
@@ -309,12 +312,25 @@ def test_export_ehr_tracking(client, monkeypatch):
         headers=auth_header(token),
     )
     data = resp.json()
-    assert data["status"] == "exported"
-    assert data["progress"] == 1.0
+    assert data["status"] == "queued"
+    assert data["progress"] == 0.0
     export_id = data["exportId"]
-    resp = client.get(f"/api/export/ehr/{export_id}", headers=auth_header(token))
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "exported"
+    assert export_id is not None
+
+    poll_data = None
+    for _ in range(10):
+        resp = client.get(
+            f"/api/export/ehr/{export_id}", headers=auth_header(token)
+        )
+        assert resp.status_code == 200
+        poll_data = resp.json()
+        if poll_data["status"] in {"exported", "bundle"}:
+            break
+        time.sleep(0.05)
+
+    assert poll_data is not None
+    assert poll_data["status"] == "exported"
+    assert poll_data.get("progress") == 1.0
 
 
 

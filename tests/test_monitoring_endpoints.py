@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 import backend.ehr_integration as ehr_integration
@@ -5,6 +7,7 @@ import backend.main as main
 
 
 def test_prometheus_metrics_available():
+    main.reset_export_workers_for_tests()
     client = TestClient(main.app)
     token = main.create_token('metrics-admin', 'admin')
 
@@ -21,6 +24,7 @@ def test_prometheus_metrics_available():
 
 
 def test_status_alerts_reflect_events(monkeypatch):
+    main.reset_export_workers_for_tests()
     client = TestClient(main.app)
     main.reset_alert_summary_for_tests()
 
@@ -60,6 +64,23 @@ def test_status_alerts_reflect_events(monkeypatch):
         headers={'Authorization': f'Bearer {token_user}'},
     )
     assert resp.status_code == 200
+    export_id = resp.json().get('exportId')
+    assert export_id is not None
+
+    poll_data = None
+    for _ in range(10):
+        poll_resp = client.get(
+            f'/api/export/ehr/{export_id}',
+            headers={'Authorization': f'Bearer {token_user}'},
+        )
+        assert poll_resp.status_code == 200
+        poll_data = poll_resp.json()
+        if poll_data['status'] not in {'queued', 'retrying', 'in_progress'}:
+            break
+        time.sleep(0.05)
+
+    assert poll_data is not None
+    assert poll_data['status'] == 'error'
 
     main._record_workflow_completion('ehr', {'sessionId': 'demo-session'}, 'trace-test')
 

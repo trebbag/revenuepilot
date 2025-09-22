@@ -345,16 +345,35 @@ def post_note_and_codes(
     headers = _auth_headers()
 
     resp = requests.post(url, json=payload, headers=headers or None, timeout=10)
+    status_code = resp.status_code
 
-    if resp.status_code in {401, 403}:
-        return {"status": "auth_error", "detail": resp.text, "bundle": payload}
+    if status_code in {401, 403}:
+        return {
+            "status": "auth_error",
+            "detail": resp.text,
+            "bundle": payload,
+            "httpStatus": status_code,
+        }
     if not resp.ok:
-        return {"status": "error", "detail": resp.text, "bundle": payload}
+        detail: Dict[str, Any] = {
+            "status": "error",
+            "detail": resp.text,
+            "bundle": payload,
+            "httpStatus": status_code,
+        }
+        if 500 <= status_code < 600:
+            detail["transient"] = True
+        return detail
 
     data = resp.json()
     if isinstance(data, dict):
         data = {**data}
-    return {"status": "exported", "response": data, "bundle": payload}
+    return {
+        "status": "exported",
+        "response": data,
+        "bundle": payload,
+        "httpStatus": status_code,
+    }
 
 
 __all__ = ["post_note_and_codes", "get_ehr_token"]
