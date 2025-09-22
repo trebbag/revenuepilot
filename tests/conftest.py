@@ -6,7 +6,7 @@ import sys
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator
+from typing import Iterator, List
 
 import pytest
 import sqlalchemy as sa
@@ -18,6 +18,37 @@ from sqlalchemy.pool import StaticPool
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, '0').lower() in {'1', 'true', 'yes'}
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        '--run-postgres',
+        action='store_true',
+        default=_env_flag('RUN_PG_TESTS'),
+        dest='run_postgres',
+        help='Execute tests marked with @pytest.mark.postgres that require PostgreSQL.',
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        'markers',
+        'postgres: Tests that require a PostgreSQL database and are skipped unless '
+        'RUN_PG_TESTS=1 or --run-postgres is provided.',
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: List[pytest.Item]) -> None:
+    if config.getoption('run_postgres'):
+        return
+    skip_marker = pytest.mark.skip(reason='Requires PostgreSQL. Set RUN_PG_TESTS=1 or pass --run-postgres to enable.')
+    for item in items:
+        if 'postgres' in item.keywords:
+            item.add_marker(skip_marker)
 
 try:
     import pytest_asyncio  # type: ignore  # noqa: F401
@@ -148,4 +179,81 @@ def admin_user(db_session) -> str:
     with main.auth_session_scope() as session:
         auth.register_user(session, 'admin', 'secret', 'admin')
     return 'admin'
+
+
+@pytest.fixture(scope='session')
+def sqlalchemy_database_url(pytestconfig: pytest.Config, request: pytest.FixtureRequest) -> str:
+    explicit = os.getenv('TEST_DATABASE_URL')
+    if explicit:
+        return explicit
+    if pytestconfig.getoption('run_postgres'):
+        try:
+            postgresql_proc = request.getfixturevalue('postgresql_proc')
+        except pytest.FixtureLookupError:
+            pytest.skip('PostgreSQL tests requested but pytest-postgresql is not installed.')
+        else:
+            return (
+                f"postgresql+psycopg://{postgresql_proc.user}:{postgresql_proc.password}"
+                f"@{postgresql_proc.host}:{postgresql_proc.port}/{postgresql_proc.dbname}"
+            )
+    return 'sqlite+pysqlite:///:memory:'
+
+
+@pytest.fixture(scope='session')
+def sqlalchemy_engine(sqlalchemy_database_url: str) -> Iterator[sa.Engine]:
+    engine_kwargs: dict[str, object] = {'future': True, 'pool_pre_ping': True}
+    if sqlalchemy_database_url.startswith('sqlite'):
+        engine_kwargs['connect_args'] = {'check_same_thread': False}
+        engine_kwargs['poolclass'] = StaticPool
+    engine = sa.create_engine(sqlalchemy_database_url, **engine_kwargs)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture(scope='session')
+def prepare_database(sqlalchemy_engine: sa.Engine, sqlalchemy_database_url: str) -> Iterator[None]:
+    from backend.db.models import Base
+
+    if sqlalchemy_database_url.startswith('postgres'):
+        from alembic import command as alembic_command
+        from alembic.config import Config as AlembicConfig
+
+        config_path = os.path.join(ROOT, 'backend', 'alembic', 'alembic.ini')
+        cfg = AlembicConfig(config_path)
+        cfg.set_main_option('script_location', os.path.join(ROOT, 'backend', 'alembic'))
+        cfg.set_main_option('sqlalchemy.url', sqlalchemy_database_url)
+        alembic_command.upgrade(cfg, 'head')
+        try:
+            yield
+        finally:
+            Base.metadata.drop_all(sqlalchemy_engine)
+        return
+
+    Base.metadata.create_all(sqlalchemy_engine)
+    try:
+        yield
+    finally:
+        Base.metadata.drop_all(sqlalchemy_engine)
+
+
+@pytest.fixture(scope='function')
+def orm_session(prepare_database: None, sqlalchemy_engine: sa.Engine) -> Iterator[Session]:
+    connection = sqlalchemy_engine.connect()
+    transaction = connection.begin()
+    SessionFactory = sessionmaker(bind=connection, autoflush=False, expire_on_commit=False, future=True)
+    session = SessionFactory()
+    try:
+        yield session
+        session.flush()
+    finally:
+        session.close()
+        try:
+            transaction.rollback()
+        except sa.exc.ResourceClosedError:
+            pass
+        except sa.exc.InvalidRequestError:
+            pass
+        connection.close()
 

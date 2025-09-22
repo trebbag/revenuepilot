@@ -14,10 +14,11 @@ from sqlalchemy.orm import declarative_base
 
 
 Base = declarative_base()
+legacy_metadata = sa.MetaData()
 
 clinics = sa.Table(
     "clinics",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("code", sa.Text, nullable=False, unique=True),
     sa.Column("name", sa.Text),
@@ -28,7 +29,7 @@ clinics = sa.Table(
 
 users = sa.Table(
     "users",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("username", sa.Text, unique=True),
     sa.Column("email", sa.Text, unique=True),
@@ -49,7 +50,7 @@ sa.Index("idx_users_clinic", users.c.clinic_id)
 
 settings = sa.Table(
     "settings",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), primary_key=True),
     sa.Column("theme", sa.Text, nullable=False),
     sa.Column("categories", sa.Text, nullable=False, server_default=sa.text("'{}'")),
@@ -68,7 +69,7 @@ settings = sa.Table(
 
 user_profile = sa.Table(
     "user_profile",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), primary_key=True),
     sa.Column("current_view", sa.Text),
     sa.Column("clinic", sa.Text),
@@ -78,7 +79,7 @@ user_profile = sa.Table(
 
 templates = sa.Table(
     "templates",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("user", sa.Text),
     sa.Column("clinic", sa.Text),
@@ -91,7 +92,7 @@ templates = sa.Table(
 
 events = sa.Table(
     "events",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("eventType", sa.Text, nullable=False),
     sa.Column("timestamp", sa.Float, nullable=False),
@@ -109,7 +110,7 @@ sa.Index("idx_events_type", events.c.eventType)
 
 event_aggregates = sa.Table(
     "event_aggregates",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("day", sa.Text, primary_key=True),
     sa.Column("start_ts", sa.Float, nullable=False),
     sa.Column("end_ts", sa.Float, nullable=False),
@@ -120,7 +121,7 @@ event_aggregates = sa.Table(
 
 confidence_scores = sa.Table(
     "confidence_scores",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("note_id", sa.Text),
@@ -133,7 +134,7 @@ confidence_scores = sa.Table(
 
 compliance_rules = sa.Table(
     "compliance_rules",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("description", sa.Text, nullable=False),
@@ -148,7 +149,7 @@ compliance_rules = sa.Table(
 
 compliance_issues = sa.Table(
     "compliance_issues",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("issue_id", sa.Text, nullable=False, unique=True),
     sa.Column("rule_id", sa.Text),
@@ -167,7 +168,7 @@ compliance_issues = sa.Table(
 
 compliance_issue_history = sa.Table(
     "compliance_issue_history",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("issue_id", sa.Text, nullable=False),
     sa.Column("code", sa.Text),
@@ -183,7 +184,7 @@ sa.Index("idx_compliance_history_created_at", compliance_issue_history.c.created
 
 billing_audits = sa.Table(
     "billing_audits",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("audit_id", sa.Text, nullable=False, server_default=sa.text("''")),
     sa.Column("code", sa.Text),
@@ -199,7 +200,7 @@ sa.Index("idx_billing_audits_created_at", billing_audits.c.created_at)
 
 refresh_tokens = sa.Table(
     "refresh_tokens",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("token_hash", sa.Text, nullable=False),
@@ -210,7 +211,7 @@ sa.Index("idx_refresh_user", refresh_tokens.c.user_id)
 
 sessions = sa.Table(
     "sessions",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("token_hash", sa.Text),
@@ -227,7 +228,7 @@ sa.Index("idx_sessions_user", sessions.c.user_id)
 
 password_reset_tokens = sa.Table(
     "password_reset_tokens",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("token_hash", sa.Text, nullable=False),
@@ -240,7 +241,7 @@ sa.Index("idx_password_reset_expiry", password_reset_tokens.c.expires_at)
 
 mfa_challenges = sa.Table(
     "mfa_challenges",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("session_token", sa.Text, primary_key=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("code_hash", sa.Text, nullable=False),
@@ -253,7 +254,7 @@ mfa_challenges = sa.Table(
 
 audit_log = sa.Table(
     "audit_log",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("timestamp", sa.Float, nullable=False),
     sa.Column("username", sa.Text),
@@ -271,7 +272,7 @@ sa.Index("idx_audit_log_action", audit_log.c.action)
 
 note_auto_saves = sa.Table(
     "note_auto_saves",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id")),
     sa.Column("note_id", sa.Integer),
@@ -282,7 +283,7 @@ note_auto_saves = sa.Table(
 
 note_versions = sa.Table(
     "note_versions",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("note_id", sa.Text, nullable=False),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id")),
@@ -293,7 +294,7 @@ note_versions = sa.Table(
 
 notes = sa.Table(
     "notes",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("content", sa.Text),
     sa.Column("status", sa.Text, nullable=False, server_default=sa.text("'draft'")),
@@ -304,7 +305,7 @@ notes = sa.Table(
 
 error_log = sa.Table(
     "error_log",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("timestamp", sa.Float, nullable=False),
     sa.Column("username", sa.Text),
@@ -315,7 +316,7 @@ error_log = sa.Table(
 
 exports = sa.Table(
     "exports",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("timestamp", sa.Float, nullable=False),
     sa.Column("ehr", sa.Text),
@@ -327,7 +328,7 @@ exports = sa.Table(
 
 patients = sa.Table(
     "patients",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("first_name", sa.Text),
     sa.Column("last_name", sa.Text),
@@ -346,7 +347,7 @@ sa.Index("idx_patients_dob", patients.c.dob)
 
 encounters = sa.Table(
     "encounters",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("patient_id", sa.Integer, sa.ForeignKey("patients.id"), nullable=False),
     sa.Column("date", sa.Text),
@@ -360,7 +361,7 @@ sa.Index("idx_encounters_date", encounters.c.date)
 
 visit_sessions = sa.Table(
     "visit_sessions",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("encounter_id", sa.Integer, sa.ForeignKey("encounters.id"), nullable=False),
     sa.Column("status", sa.Text, nullable=False),
@@ -373,7 +374,7 @@ visit_sessions = sa.Table(
 
 notification_counters = sa.Table(
     "notification_counters",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), primary_key=True),
     sa.Column("count", sa.Integer, nullable=False, server_default=sa.text("0")),
     sa.Column("updated_at", sa.Float, nullable=False),
@@ -381,7 +382,7 @@ notification_counters = sa.Table(
 
 notification_events = sa.Table(
     "notification_events",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("event_id", sa.Text, nullable=False, unique=True),
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), nullable=False),
@@ -399,7 +400,7 @@ sa.Index("idx_notification_events_unread", notification_events.c.user_id, notifi
 
 notifications = sa.Table(
     "notifications",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("username", sa.Text, primary_key=True),
     sa.Column("count", sa.Integer, nullable=False, server_default=sa.text("0")),
     sa.Column("updated_at", sa.Float),
@@ -407,7 +408,7 @@ notifications = sa.Table(
 
 session_state = sa.Table(
     "session_state",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("user_id", sa.Integer, sa.ForeignKey("users.id"), primary_key=True),
     sa.Column("data", sa.Text),
     sa.Column("updated_at", sa.Float),
@@ -415,7 +416,7 @@ session_state = sa.Table(
 
 shared_workflow_sessions = sa.Table(
     "shared_workflow_sessions",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("session_id", sa.Text, primary_key=True),
     sa.Column("owner_username", sa.Text),
     sa.Column("data", sa.Text, nullable=False),
@@ -428,7 +429,7 @@ sa.Index(
 
 compliance_rule_catalog = sa.Table(
     "compliance_rule_catalog",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("id", sa.Text, primary_key=True),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("category", sa.Text),
@@ -439,7 +440,7 @@ compliance_rule_catalog = sa.Table(
 
 cpt_codes = sa.Table(
     "cpt_codes",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("code", sa.Text, primary_key=True),
     sa.Column("description", sa.Text),
     sa.Column("rvu", sa.Float),
@@ -454,7 +455,7 @@ cpt_codes = sa.Table(
 
 icd10_codes = sa.Table(
     "icd10_codes",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("code", sa.Text, primary_key=True),
     sa.Column("description", sa.Text),
     sa.Column("clinical_context", sa.Text),
@@ -468,7 +469,7 @@ icd10_codes = sa.Table(
 
 hcpcs_codes = sa.Table(
     "hcpcs_codes",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("code", sa.Text, primary_key=True),
     sa.Column("description", sa.Text),
     sa.Column("rvu", sa.Float),
@@ -483,7 +484,7 @@ hcpcs_codes = sa.Table(
 
 cpt_reference = sa.Table(
     "cpt_reference",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("code", sa.Text, primary_key=True),
     sa.Column("description", sa.Text),
     sa.Column("base_rvu", sa.Float),
@@ -492,7 +493,7 @@ cpt_reference = sa.Table(
 
 payer_schedules = sa.Table(
     "payer_schedules",
-    Base.metadata,
+    legacy_metadata,
     sa.Column("payer_type", sa.Text, primary_key=True),
     sa.Column("location", sa.Text, primary_key=True, server_default=sa.text("''")),
     sa.Column("code", sa.Text, primary_key=True),

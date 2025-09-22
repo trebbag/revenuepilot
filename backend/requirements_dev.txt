@@ -4,6 +4,7 @@
 pytest
 pytest-cov
 pytest-asyncio
+pytest-postgresql
 httpx
 ruff
 flake8
