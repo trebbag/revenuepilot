@@ -1,0 +1,40 @@
+{
+  "codes": [
+    {
+      "code": "99213",
+      "rationale": "Established patient visit with moderate complexity.",
+      "confidence": "82%",
+      "upgrade_path": "99213 → 99214"
+    },
+    {
+      "Code": "E11.9",
+      "Rationale": "Type 2 diabetes mellitus without complications.",
+      "Confidence": 0.71,
+      "upgradeTo": "E11.65"
+    }
+  ],
+  "compliance": [
+    "Document total time spent with patient",
+    123
+  ],
+  "publicHealth": [
+    {
+      "Recommendation": "Offer influenza vaccine",
+      "Reason": "Chronic illness increases risk",
+      "Source": "CDC",
+      "evidence_level": "B"
+    },
+    "Encourage regular exercise"
+  ],
+  "differentials": [
+    {
+      "Diagnosis": "Influenza",
+      "score": "45%"
+    },
+    {
+      "diagnosis": "Pneumonia",
+      "score": 0.22
+    },
+    "Common cold"
+  ]
+}
