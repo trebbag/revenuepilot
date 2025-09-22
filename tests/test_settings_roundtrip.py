@@ -1,34 +1,25 @@
-import sqlite3
-
 import pytest
-from fastapi.testclient import TestClient
 
-from backend import main, migrations
+from backend import main
+from backend.db.models import User
 
 
 @pytest.fixture
-def client(monkeypatch):
-    db = sqlite3.connect(':memory:', check_same_thread=False)
-    db.row_factory = sqlite3.Row
-    migrations.ensure_settings_table(db)
-    db.execute(
-        'CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, role TEXT)'
-    )
-    pwd = main.hash_password('pw')
-    db.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', ('alice', pwd, 'user'))
-    db.commit()
-    monkeypatch.setattr(main, 'db_conn', db)
-    return TestClient(main.app)
+def user_token(db_session):
+    user = User(username="alice", password_hash=main.hash_password("pw"), role="user")
+    db_session.add(user)
+    db_session.commit()
+    return main.create_token("alice", "user")
 
 
-def auth_header(token):
-    return {'Authorization': f'Bearer {token}'}
+def auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
-def test_settings_roundtrip(client):
-    token = main.create_token('alice', 'user')
+def test_settings_roundtrip(api_client, db_session, user_token):
+    token = user_token
     # defaults
-    resp = client.get('/settings', headers=auth_header(token))
+    resp = api_client.get('/settings', headers=auth_header(token))
     assert resp.status_code == 200
     data = resp.json()
     assert data['theme'] == 'modern'
@@ -64,10 +55,10 @@ def test_settings_roundtrip(client):
         'template': -1,
         'useLocalModels': True,
     }
-    resp = client.post('/settings', json=new_settings, headers=auth_header(token))
+    resp = api_client.post('/settings', json=new_settings, headers=auth_header(token))
     assert resp.status_code == 200
 
-    resp = client.get('/settings', headers=auth_header(token))
+    resp = api_client.get('/settings', headers=auth_header(token))
     data = resp.json()
     assert data['theme'] == 'dark'
     assert data['categories']['codes'] is False
@@ -85,14 +76,14 @@ def test_settings_roundtrip(client):
     assert data.get('deidEngine') == 'regex'
 
 
-def test_invalid_settings_rejected(client):
-    token = main.create_token('alice', 'user')
+def test_invalid_settings_rejected(api_client, user_token):
+    token = user_token
     bad_theme = {
         'theme': 'neon',
         'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
         'rules': [],
     }
-    resp = client.post('/settings', json=bad_theme, headers=auth_header(token))
+    resp = api_client.post('/settings', json=bad_theme, headers=auth_header(token))
     assert resp.status_code == 422
 
     bad_categories = {
@@ -100,7 +91,7 @@ def test_invalid_settings_rejected(client):
         'categories': {'codes': 'yes'},
         'rules': [],
     }
-    resp = client.post('/settings', json=bad_categories, headers=auth_header(token))
+    resp = api_client.post('/settings', json=bad_categories, headers=auth_header(token))
     assert resp.status_code == 422
 
     bad_rules = {
@@ -108,5 +99,5 @@ def test_invalid_settings_rejected(client):
         'categories': {'codes': True, 'compliance': True, 'publicHealth': True, 'differentials': True},
         'rules': ['ok', 5],
     }
-    resp = client.post('/settings', json=bad_rules, headers=auth_header(token))
+    resp = api_client.post('/settings', json=bad_rules, headers=auth_header(token))
     assert resp.status_code == 422

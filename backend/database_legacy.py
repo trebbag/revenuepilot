@@ -150,7 +150,9 @@ def get_engine() -> Engine:
 
 
 def _seed_reference_data(conn: sqlite3.Connection) -> None:
+    session: Optional[Session] = None
     try:
+
         with session_scope(conn) as session:
             existing_rules = session.scalar(
                 sa.select(sa.func.count()).select_from(db_models.ComplianceRuleCatalogEntry)
@@ -223,6 +225,91 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
                 seed_payer_schedules(session, schedules)
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("reference_data_seed_failed: %s", exc)
+
+        existing_rules = conn.execute("SELECT COUNT(*) FROM compliance_rule_catalog").fetchone()[0]
+    except sqlite3.Error as exc:  # pragma: no cover - defensive
+        logger.warning("compliance_rules_table_inspect_failed %s", exc)
+        return
+
+    if SessionLocal is not None:
+        session_factory = SessionLocal
+    else:
+        engine = create_engine(
+            "sqlite://",
+            creator=lambda: conn,
+            poolclass=StaticPool,
+            future=True,
+        )
+        session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    session = session_factory()
+
+    try:
+        if existing_rules == 0:
+            from backend import compliance as compliance_engine
+
+            seed_compliance_rules(session, compliance_engine.get_rules())
+
+        metadata = load_code_metadata()
+        cpt_metadata = {
+            code: info
+            for code, info in metadata.items()
+            if (info.get("type") or "").upper() == "CPT"
+        }
+
+        existing_cpt_codes = conn.execute("SELECT COUNT(*) FROM cpt_codes").fetchone()[0]
+        if existing_cpt_codes == 0:
+            seed_cpt_codes(session, code_tables.DEFAULT_CPT_CODES.items())
+
+        existing_icd_codes = conn.execute("SELECT COUNT(*) FROM icd10_codes").fetchone()[0]
+        if existing_icd_codes == 0:
+            seed_icd10_codes(session, code_tables.DEFAULT_ICD10_CODES.items())
+
+        existing_hcpcs_codes = conn.execute("SELECT COUNT(*) FROM hcpcs_codes").fetchone()[0]
+        if existing_hcpcs_codes == 0:
+            seed_hcpcs_codes(session, code_tables.DEFAULT_HCPCS_CODES.items())
+
+        existing_cpt = conn.execute("SELECT COUNT(*) FROM cpt_reference").fetchone()[0]
+        if existing_cpt == 0:
+            seed_cpt_reference(session, cpt_metadata.items())
+
+        existing_schedules = conn.execute("SELECT COUNT(*) FROM payer_schedules").fetchone()[0]
+        if existing_schedules == 0:
+            schedules = []
+            for code, info in cpt_metadata.items():
+                reimbursement = info.get("reimbursement")
+                if reimbursement in (None, ""):
+                    continue
+                rvu_value = info.get("rvu")
+                base_amount = float(reimbursement)
+                schedules.append(
+                    {
+                        "payer_type": "commercial",
+                        "location": "",
+                        "code": code,
+                        "reimbursement": base_amount,
+                        "rvu": rvu_value,
+                    }
+                )
+                schedules.append(
+                    {
+                        "payer_type": "medicare",
+                        "location": "",
+                        "code": code,
+                        "reimbursement": round(base_amount * 0.8, 2),
+                        "rvu": rvu_value,
+                    }
+                )
+            seed_payer_schedules(session, schedules)
+
+        session.commit()
+    except Exception as exc:  # pragma: no cover - best effort
+        if session is not None:
+            session.rollback()
+        logger.warning("reference_data_seed_failed %s", exc)
+    finally:
+        if session is not None:
+            session.close()
+
 
 
 def _initialise_schema(conn: sqlite3.Connection) -> None:

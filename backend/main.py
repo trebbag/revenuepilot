@@ -88,6 +88,7 @@ from uuid import uuid4
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session as SQLAlchemySession, sessionmaker
 from sqlalchemy.pool import StaticPool
 try:  # prefer appdirs
@@ -145,13 +146,19 @@ from backend.db.models import (
     ComplianceRuleCatalogEntry,
     HCPCSCode,
     ICD10Code,
+    Note,
+    NoteVersion,
     PayerSchedule,
+    Setting,
+    User,
+    UserProfile as UserProfileRecord,
 )
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.database_legacy import (
     DATABASE_PATH,
+    SessionLocal,
     get_connection,
     get_session,
     initialise_schema,
@@ -1044,26 +1051,35 @@ notification_counts = NotificationStore()
 
 
 def _timestamp_to_iso(value: Any) -> str | None:
-    """Convert a Unix timestamp to ISO 8601 in UTC."""
+    """Convert a Unix timestamp or datetime to ISO 8601 in UTC."""
 
     if value is None:
         return None
+    if isinstance(value, datetime):
+        try:
+            dt = value.astimezone(timezone.utc)
+        except ValueError:
+            dt = value.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
     try:
         return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
     except Exception:
         return None
 
 
-def _parse_timestamp(value: Any) -> float:
+def _parse_timestamp(value: Any, default: float | None = None) -> float:
     """Best-effort conversion of *value* to a Unix timestamp."""
 
+    fallback = time.time() if default is None else default
     if value is None:
-        return time.time()
+        return fallback
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc if value.tzinfo is None else value.tzinfo).timestamp()
     if isinstance(value, (int, float)):
         try:
             return float(value)
         except (TypeError, ValueError):
-            return time.time()
+            return fallback
     if isinstance(value, str):
         try:
             return float(value)
@@ -1074,8 +1090,8 @@ def _parse_timestamp(value: Any) -> float:
                     normalised = normalised[:-1] + "+00:00"
                 return datetime.fromisoformat(normalised).timestamp()
             except Exception:
-                return time.time()
-    return time.time()
+                return fallback
+    return fallback
 
 
 def _normalise_notification_event_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1308,62 +1324,55 @@ def _get_user_db_id(username: str) -> int | None:
 
 
 def _save_note_version(
+    session: Session,
     note_id: str,
     content: str,
     user_id: int | None = None,
     created_at: datetime | None = None,
 ) -> datetime:
-    """Persist a note version to SQLite and prune history beyond 20 entries."""
+    """Persist a note version to the database and prune history beyond 20 entries."""
 
     ensure_note_versions_table(db_conn)
     timestamp = created_at or datetime.now(timezone.utc)
-    db_conn.execute(
-        "INSERT INTO note_versions (note_id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
-        (str(note_id), user_id, content, timestamp.timestamp()),
+    version = NoteVersion(
+        note_id=str(note_id),
+        user_id=user_id,
+        content=content,
+        created_at=timestamp,
     )
-    db_conn.execute(
-        """
-        DELETE FROM note_versions
-        WHERE note_id = ?
-          AND id NOT IN (
-            SELECT id FROM note_versions
-            WHERE note_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 20
+    session.add(version)
+    session.flush()
+
+    prune_stmt = (
+        sa.select(NoteVersion.id)
+        .where(NoteVersion.note_id == str(note_id))
+        .order_by(sa.desc(NoteVersion.created_at), sa.desc(NoteVersion.id))
+        .offset(20)
+    )
+    stale_ids = [vid for vid in session.execute(prune_stmt).scalars()]
+    if stale_ids:
+        session.execute(
+            sa.delete(NoteVersion).where(NoteVersion.id.in_(list(stale_ids)))
         )
-        """,
-        (str(note_id), str(note_id)),
-    )
     return timestamp
 
 
-def _fetch_note_versions(note_id: str) -> List[Dict[str, str]]:
-    """Retrieve ordered note versions for ``note_id`` from SQLite."""
+def _fetch_note_versions(session: Session, note_id: str) -> List[Dict[str, str]]:
+    """Retrieve ordered note versions for ``note_id`` using SQLAlchemy."""
 
     ensure_note_versions_table(db_conn)
-    try:
-        rows = db_conn.execute(
-            """
-            SELECT content, created_at
-            FROM note_versions
-            WHERE note_id=?
-            ORDER BY created_at ASC, id ASC
-            """,
-            (str(note_id),),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
+    stmt = (
+        sa.select(NoteVersion.content, NoteVersion.created_at)
+        .where(NoteVersion.note_id == str(note_id))
+        .order_by(sa.asc(NoteVersion.created_at), sa.asc(NoteVersion.id))
+    )
+    rows = session.execute(stmt).all()
     versions: List[Dict[str, str]] = []
-    for row in rows or []:
-        try:
-            created = row["created_at"]
-        except (KeyError, TypeError):
-            created = row[1] if len(row) > 1 else None
-        try:
-            content = row["content"]
-        except (KeyError, TypeError):
-            content = row[0] if row else ""
-        versions.append({"timestamp": _timestamp_to_iso(created), "content": content or ""})
+    for content, created in rows:
+        versions.append({
+            "timestamp": _timestamp_to_iso(created),
+            "content": content or "",
+        })
     return versions
 
 
@@ -1480,46 +1489,6 @@ def auth_session_scope() -> Iterator[SQLAlchemySession]:
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
-
-
-_template_sessionmakers: Dict[int, sessionmaker[Session]] = {}
-
-
-def _get_template_session_factory(conn: sqlite3.Connection) -> sessionmaker[Session]:
-    """Return a session factory bound to the given SQLite connection."""
-
-    key = id(conn)
-    factory = _template_sessionmakers.get(key)
-    if factory is None:
-        engine = create_engine(
-            "sqlite://",
-            creator=lambda conn=conn: conn,
-            poolclass=StaticPool,
-            future=True,
-        )
-        factory = sessionmaker(
-            bind=engine,
-            autoflush=False,
-            expire_on_commit=False,
-            future=True,
-        )
-        _template_sessionmakers[key] = factory
-    return factory
-
-
-@contextmanager
-def _template_session(conn: sqlite3.Connection) -> Iterator[Session]:
-    """Context manager yielding a Session bound to the provided connection."""
-
-    session_factory = _get_template_session_factory(conn)
-    session = session_factory()
-    try:
-        yield session
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
 # Keep the compliance ORM bound to the active database connection.
@@ -2931,42 +2900,67 @@ def _persist_refresh_token(user_id: int, refresh_token: str, days: int) -> None:
         logger.exception("refresh_token_persist_failed", error=str(exc))
 
 
-def _load_user_preferences(user_id: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    settings_row = db_conn.execute(
-        "SELECT theme, categories, rules, lang, summary_lang, specialty, payer, region, use_local_models, use_offline_mode, agencies, template, beautify_model, suggest_model, summarize_model, deid_engine FROM settings WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
-    if settings_row:
-        sr = dict(settings_row)
+def _as_dict(value: Any, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return dict(default or {})
+
+
+def _as_list(value: Any, default: Optional[Iterable[Any]] = None) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return list(default or [])
+
+
+def _load_user_preferences(session: Session, user_id: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    setting = session.get(Setting, user_id)
+    if setting is not None:
+        categories_default = CategorySettings().model_dump()
         settings = {
-            "theme": sr["theme"],
-            "categories": json.loads(sr["categories"]),
-            "rules": json.loads(sr["rules"]),
-            "lang": sr["lang"],
-            "summaryLang": sr["summary_lang"] or sr["lang"],
-            "specialty": sr["specialty"],
-            "payer": sr["payer"],
-            "region": sr["region"] or "",
-            "template": sr["template"],
-            "useLocalModels": bool(sr["use_local_models"]),
-            "useOfflineMode": bool(sr.get("use_offline_mode", 0)),
-            "agencies": json.loads(sr["agencies"]) if sr["agencies"] else ["CDC", "WHO"],
-            "beautifyModel": sr["beautify_model"],
-            "suggestModel": sr["suggest_model"],
-            "summarizeModel": sr["summarize_model"],
-            "deidEngine": sr["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
+            "theme": setting.theme,
+            "categories": _as_dict(setting.categories, categories_default) or categories_default,
+            "rules": _as_list(setting.rules, []),
+            "lang": setting.lang,
+            "summaryLang": setting.summary_lang or setting.lang,
+            "specialty": setting.specialty,
+            "payer": setting.payer,
+            "region": setting.region or "",
+            "template": setting.template,
+            "useLocalModels": bool(setting.use_local_models),
+            "useOfflineMode": bool(getattr(setting, "use_offline_mode", False)),
+            "agencies": _as_list(setting.agencies, ["CDC", "WHO"]) or ["CDC", "WHO"],
+            "beautifyModel": setting.beautify_model,
+            "suggestModel": setting.suggest_model,
+            "summarizeModel": setting.summarize_model,
+            "deidEngine": setting.deid_engine or os.getenv("DEID_ENGINE", "regex"),
         }
     else:
         settings = UserSettings().model_dump()
 
     try:
-        session_row = db_conn.execute(
-            "SELECT data FROM session_state WHERE user_id=?",
-            (user_id,),
-        ).fetchone()
-    except sqlite3.OperationalError:
+        session_row = session.execute(
+            sa.text("SELECT data FROM session_state WHERE user_id=:user_id"),
+            {"user_id": user_id},
+        ).mappings().first()
+    except OperationalError:
         session_row = None
-    if session_row and session_row["data"]:
+    if session_row and session_row.get("data"):
         session_state = _normalize_session_state(session_row["data"])
     else:
         session_state = _normalize_session_state(SessionStateModel())
@@ -3862,7 +3856,8 @@ async def login(model: LoginModel, request: Request) -> Dict[str, Any]:
     db_conn.commit()
     LOGIN_RATE_LIMITER.reset(limiter_key)
 
-    settings, session_state = _load_user_preferences(user_row["id"])
+    with auth_session_scope() as orm_session:
+        settings, session_state = _load_user_preferences(orm_session, user_row["id"])
     user_agent = _user_agent(request)
 
     if _row_get(user_row, "mfa_enabled"):
@@ -3960,7 +3955,8 @@ async def verify_mfa(model: VerifyMFAModel, request: Request) -> Dict[str, Any]:
             detail={"error": "Invalid or expired MFA code", "code": "INVALID_MFA"},
         )
 
-    settings, session_state = _load_user_preferences(user_row["id"])
+    with auth_session_scope() as orm_session:
+        settings, session_state = _load_user_preferences(orm_session, user_row["id"])
     ip_address = _client_ip(request)
     user_agent = _user_agent(request)
     remember_me = bool(_row_get(challenge, "remember_me"))
@@ -4290,7 +4286,8 @@ async def auth_validate(
             detail="Invalid or expired token",
         )
 
-    settings, _session_state = _load_user_preferences(row["id"])
+    with auth_session_scope() as orm_session:
+        settings, _session_state = _load_user_preferences(orm_session, row["id"])
     user_payload = _build_user_payload(row)
     user_payload.update(
         {
@@ -4622,77 +4619,68 @@ async def get_audit_logs(user=Depends(require_role("admin"))) -> List[Dict[str, 
 
 
 @app.get("/settings")
-async def get_user_settings(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def get_user_settings(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
     """Return the current user's saved settings or defaults if none exist."""
-    row = db_conn.execute(
-        "SELECT s.theme, s.categories, s.rules, s.lang, s.summary_lang, s.specialty, s.payer, s.region, s.use_local_models, s.use_offline_mode, s.agencies, s.template, s.beautify_model, s.suggest_model, s.summarize_model, s.deid_engine FROM settings s JOIN users u ON s.user_id = u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
 
-    if row:
-        rd = dict(row)
-        settings = UserSettings(
-            theme=rd["theme"],
-            categories=json.loads(rd["categories"]),
-            rules=json.loads(rd["rules"]),
-            lang=rd["lang"],
-            summaryLang=rd["summary_lang"] or rd["lang"],
-            specialty=rd["specialty"],
-            payer=rd["payer"],
-            region=rd["region"] or "",
-            template=rd["template"],
-            useLocalModels=bool(rd["use_local_models"]),
-            useOfflineMode=bool(rd.get("use_offline_mode", 0)),
-            agencies=json.loads(rd["agencies"]) if rd["agencies"] else ["CDC", "WHO"],
-            beautifyModel=rd["beautify_model"],
-            suggestModel=rd["suggest_model"],
-            summarizeModel=rd["summarize_model"],
-            deidEngine=rd["deid_engine"] or os.getenv("DEID_ENGINE", "regex"),
-        )
-        return settings.model_dump()
-    return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).model_dump()
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
+        return UserSettings(deidEngine=os.getenv("DEID_ENGINE", "regex")).model_dump()
+
+    settings_dict, _ = _load_user_preferences(session, user_record.id)
+    try:
+        validated = UserSettings.model_validate(settings_dict)
+    except ValidationError:
+        merged = UserSettings().model_dump()
+        merged.update(settings_dict)
+        validated = UserSettings.model_validate(merged)
+    return validated.model_dump()
 
 
 @app.post("/settings")
 @app.put("/api/user/preferences")
 async def save_user_settings(
-    model: UserSettings, user=Depends(require_role("user"))
+    model: UserSettings,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Persist settings for the authenticated user."""
-    # Explicit validation of deidEngine (pydantic may be bypassed if missing fields in test payload)
+
     if model.deidEngine not in {"regex", "presidio", "philter", "scrubadub"}:
         raise HTTPException(status_code=422, detail="invalid deid engine")
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username=?",
-        (user["sub"],),
-    ).fetchone()
-    if not row:
-        raise HTTPException(status_code=400, detail="User not found")
-    db_conn.execute(
-        # Added deid_engine column
-        "INSERT OR REPLACE INTO settings (user_id, theme, categories, rules, lang, summary_lang, specialty, payer, region, template, use_local_models, agencies, beautify_model, suggest_model, summarize_model, deid_engine, use_offline_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            row["id"],
-            model.theme,
-            json.dumps(model.categories.model_dump()),
-            json.dumps(model.rules),
-            model.lang,
-            model.summaryLang,
-            model.specialty,
-            model.payer,
-            model.region,
-            model.template,
-            int(model.useLocalModels),
-            json.dumps(model.agencies),
-            model.beautifyModel,
-            model.suggestModel,
-            model.summarizeModel,
-            model.deidEngine,
-            int(model.useOfflineMode),
-        ),
-    )
 
-    db_conn.commit()
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
+        raise HTTPException(status_code=400, detail="User not found")
+
+    setting = session.get(Setting, user_record.id)
+    if setting is None:
+        setting = Setting(user_id=user_record.id)
+        session.add(setting)
+
+    setting.theme = model.theme
+    setting.categories = model.categories.model_dump()
+    setting.rules = list(model.rules)
+    setting.lang = model.lang
+    setting.summary_lang = model.summaryLang
+    setting.specialty = model.specialty
+    setting.payer = model.payer
+    setting.region = model.region
+    setting.template = model.template
+    setting.use_local_models = bool(model.useLocalModels)
+    setting.agencies = list(model.agencies)
+    setting.beautify_model = model.beautifyModel
+    setting.suggest_model = model.suggestModel
+    setting.summarize_model = model.summarizeModel
+    setting.deid_engine = model.deidEngine
+    setting.use_offline_mode = bool(model.useOfflineMode)
+
     return model.model_dump()
 
 
@@ -4711,15 +4699,20 @@ async def list_available_themes() -> Dict[str, Any]:
 
 
 @app.get("/api/user/preferences")
-async def api_get_user_preferences(user=Depends(require_role("user"))):
-    return await get_user_settings(user)
+async def api_get_user_preferences(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+):
+    return await get_user_settings(user=user, session=session)
 
 
 @app.put("/api/user/preferences")
 async def api_put_user_preferences(
-    model: UserSettings, user=Depends(require_role("user"))
+    model: UserSettings,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    return await save_user_settings(model, user)
+    return await save_user_settings(model, user=user, session=session)
 
 
 @app.get("/api/integrations/ehr/config")
@@ -4790,76 +4783,61 @@ async def post_keys_endpoint(
 
 
 @app.get("/api/user/layout-preferences")
-async def get_layout_preferences(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT layout_prefs FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
-        (user["sub"],),
-    ).fetchone()
+async def get_layout_preferences(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    user_id = session.execute(
+        sa.select(User.id).where(User.username == user["sub"])
+    ).scalar_one_or_none()
 
     data: Dict[str, Any] = {}
-    if row and row["layout_prefs"]:
-        try:
-            loaded = json.loads(row["layout_prefs"])
-            if isinstance(loaded, dict):
-                data = loaded
-        except Exception as exc:
-            logger.warning(
-                "layout_preferences_deserialize_failed",
-                user=user.get("sub"),
-                error=str(exc),
-            )
+    if user_id is not None:
+        setting = session.get(Setting, user_id)
+        if setting and setting.layout_prefs:
+            try:
+                loaded = _as_dict(setting.layout_prefs, {})
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception as exc:
+                logger.warning(
+                    "layout_preferences_deserialize_failed",
+                    user=user.get("sub"),
+                    error=str(exc),
+                )
     response_payload: Dict[str, Any] = {"success": True, "data": data}
     if isinstance(data, dict):
         response_payload.update(data)
     return response_payload
 
 
-
 @app.put("/api/user/layout-preferences")
 async def put_layout_preferences(
-    prefs: Dict[str, Any], user=Depends(require_role("user"))
+    prefs: Dict[str, Any],
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Response:
-    core: Dict[str, Any]
     if "data" in prefs and isinstance(prefs["data"], dict):
         core = dict(prefs["data"])
     else:
         core = {key: value for key, value in prefs.items() if key not in {"success", "data"}}
-    data = json.dumps(core)
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username= ?",
-        (user["sub"],),
-    ).fetchone()
-    if not row:
+
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
         raise HTTPException(status_code=400, detail="User not found")
 
-    uid = row["id"]
-    db_conn.execute(
-        """
-        INSERT INTO settings (user_id, theme, layout_prefs)
-        VALUES (?, 'light', ?)
-        ON CONFLICT(user_id) DO UPDATE SET layout_prefs=excluded.layout_prefs
-        """,
-        (uid, data),
-    )
-    db_conn.commit()
+    setting = session.get(Setting, user_record.id)
+    if setting is None:
+        setting = Setting(user_id=user_record.id)
+        session.add(setting)
+        if not setting.theme:
+            setting.theme = "light"
 
-    stored = db_conn.execute(
-        "SELECT layout_prefs FROM settings WHERE user_id=?",
-        (uid,),
-    ).fetchone()
+    setting.layout_prefs = dict(core)
 
-    data_payload: Dict[str, Any] = {}
-    if stored and stored["layout_prefs"]:
-        try:
-            loaded = json.loads(stored["layout_prefs"])
-            if isinstance(loaded, dict):
-                data_payload = loaded
-        except Exception as exc:
-            logger.warning(
-                "layout_preferences_deserialize_failed",
-                user=uid,
-                error=str(exc),
-            )
+    data_payload = _as_dict(setting.layout_prefs, {})
     if not data_payload and isinstance(prefs, dict):
         data_payload = {key: value for key, value in prefs.items() if key not in {"success", "data"}}
     response_payload: Dict[str, Any] = {"success": True, "data": data_payload}
@@ -4963,7 +4941,8 @@ def _build_user_profile_payload(username: str) -> Dict[str, Any]:
             if isinstance(parsed_ui, dict):
                 ui_preferences = parsed_ui
 
-    settings, _ = _load_user_preferences(user_id)
+    with auth_session_scope() as orm_session:
+        settings, _ = _load_user_preferences(orm_session, user_id)
     combined_preferences = copy.deepcopy(settings)
     if stored_preferences:
         combined_preferences.update(stored_preferences)
@@ -5185,7 +5164,9 @@ class SessionStateModel(BaseModel):
         return self
 
 
-def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
+def _normalize_session_state(
+    payload: Any | None = None, *, sa_session: Session | None = None
+) -> Dict[str, Any]:
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -5734,7 +5715,9 @@ def _append_audit_event(
     session["auditTrail"] = audit
 
 
-def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_finalization_session(
+    session: Dict[str, Any], sa_session: Session | None = None
+) -> Dict[str, Any]:
     data = copy.deepcopy(session) if isinstance(session, dict) else {}
     if data.get("owner") is None and data.get("createdBy"):
         data["owner"] = data.get("createdBy")
@@ -6026,7 +6009,7 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(data.get("lastValidation"), dict):
         last_validation = data.get("lastValidation")
         data["lastValidation"] = last_validation if isinstance(last_validation, dict) else {}
-    _ensure_session_context(data)
+    _ensure_session_context(data, sa_session=sa_session)
     data.setdefault("createdAt", _utc_now_iso())
     data.setdefault("updatedAt", data["createdAt"])
     _recalculate_current_step(data)
@@ -6421,7 +6404,9 @@ def _normalize_transcript_entries(entries: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _ensure_session_context(session: Dict[str, Any]) -> None:
+def _ensure_session_context(
+    session: Dict[str, Any], *, sa_session: Session | None = None
+) -> None:
     """Populate patient, encounter, transcript, and timeline context fields."""
 
     context = session.get("context") if isinstance(session.get("context"), dict) else {}
@@ -6438,19 +6423,31 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
 
     need_patient_lookup = bool(patient_id)
     need_encounter_lookup = encounter_lookup is not None
-    if need_patient_lookup or need_encounter_lookup:
+    managed_session: Session | None = None
+    session_source = sa_session
+    if session_source is None and SessionLocal is not None:
         try:
-            with _template_session(db_conn) as sa_session:
+            session_source = managed_session = SessionLocal()
+        except Exception:
+            session_source = None
+    if need_patient_lookup or need_encounter_lookup:
+        if session_source is not None:
+            try:
                 if need_encounter_lookup and encounter_lookup is not None:
                     try:
-                        encounter_record = patients.get_encounter(sa_session, encounter_lookup)
+                        encounter_record = patients.get_encounter(session_source, encounter_lookup)
                     except Exception:
                         encounter_record = None
                 if need_patient_lookup:
                     try:
-                        patient_record = patients.get_patient(sa_session, patient_id)  # type: ignore[arg-type]
+                        patient_record = patients.get_patient(session_source, patient_id)  # type: ignore[arg-type]
                     except Exception:
                         patient_record = None
+            except Exception:
+                pass
+    if managed_session is not None:
+        try:
+            managed_session.close()
         except Exception:
             pass
 
@@ -6617,92 +6614,46 @@ def _register_session_activity(
     session["activeEditors"] = active_entries
 
 
-def _load_user_settings_preferences(user_id: int) -> Dict[str, Any]:
+def _load_user_settings_preferences(session: Session, user_id: int) -> Dict[str, Any]:
     """Load legacy user settings preferences for compatibility."""
 
     defaults = UserSettings().model_dump()
     preferences = copy.deepcopy(defaults)
-    try:
-        row = db_conn.execute(
-            """
-            SELECT
-                theme,
-                categories,
-                rules,
-                lang,
-                summary_lang,
-                specialty,
-                payer,
-                region,
-                use_local_models,
-                use_offline_mode,
-                agencies,
-                template,
-                beautify_model,
-                suggest_model,
-                summarize_model,
-                deid_engine
-            FROM settings
-            WHERE user_id=?
-            """,
-            (user_id,),
-        ).fetchone()
-    except sqlite3.Error:
-        row = None
-    if not row:
+    setting = session.get(Setting, user_id)
+    if setting is None:
         return preferences
-    record = dict(row)
+
     categories_default = copy.deepcopy(preferences.get("categories") or {})
     categories_value = categories_default
-    categories_raw = record.get("categories")
+    categories_raw = _as_dict(setting.categories, categories_default)
     if categories_raw:
-        try:
-            parsed = json.loads(categories_raw)
-            if isinstance(parsed, dict):
-                categories_value.update({key: bool(value) for key, value in parsed.items()})
-        except json.JSONDecodeError:
-            pass
+        categories_value.update({key: bool(value) for key, value in categories_raw.items()})
     preferences["categories"] = categories_value
-    rules_raw = record.get("rules")
-    rules_value: List[str] = []
-    if rules_raw:
-        try:
-            parsed_rules = json.loads(rules_raw)
-            if isinstance(parsed_rules, list):
-                rules_value = [str(item) for item in parsed_rules if isinstance(item, str)]
-        except json.JSONDecodeError:
-            rules_value = []
+
+    rules_value = [str(item) for item in _as_list(setting.rules, []) if isinstance(item, str)]
     preferences["rules"] = rules_value or preferences.get("rules", [])
-    lang_value = record.get("lang") or preferences.get("lang")
+
+    lang_value = setting.lang or preferences.get("lang")
     preferences["lang"] = lang_value
-    summary_lang = record.get("summary_lang") or lang_value
+    summary_lang = setting.summary_lang or lang_value
     preferences["summaryLang"] = summary_lang
-    preferences["specialty"] = record.get("specialty") or preferences.get("specialty")
-    preferences["payer"] = record.get("payer") or preferences.get("payer")
-    region = record.get("region")
+    preferences["specialty"] = setting.specialty or preferences.get("specialty")
+    preferences["payer"] = setting.payer or preferences.get("payer")
+    region = setting.region
     preferences["region"] = region if isinstance(region, str) else preferences.get("region")
-    template = record.get("template")
+    template = setting.template
     preferences["template"] = template if template is not None else preferences.get("template")
-    preferences["useLocalModels"] = bool(record.get("use_local_models", preferences.get("useLocalModels", False)))
-    preferences["useOfflineMode"] = bool(record.get("use_offline_mode", preferences.get("useOfflineMode", False)))
-    agencies_raw = record.get("agencies")
-    agencies_value = preferences.get("agencies") or []
-    if agencies_raw:
-        try:
-            parsed_agencies = json.loads(agencies_raw)
-            if isinstance(parsed_agencies, list):
-                agencies_value = [str(item) for item in parsed_agencies if item]
-        except json.JSONDecodeError:
-            agencies_value = preferences.get("agencies") or []
+    preferences["useLocalModels"] = bool(setting.use_local_models)
+    preferences["useOfflineMode"] = bool(getattr(setting, "use_offline_mode", False))
+    agencies_value = [str(item) for item in _as_list(setting.agencies, preferences.get("agencies") or []) if item]
     preferences["agencies"] = agencies_value or ["CDC", "WHO"]
-    preferences["beautifyModel"] = record.get("beautify_model") or preferences.get("beautifyModel")
-    preferences["suggestModel"] = record.get("suggest_model") or preferences.get("suggestModel")
-    preferences["summarizeModel"] = record.get("summarize_model") or preferences.get("summarizeModel")
-    deid_engine = record.get("deid_engine") or os.getenv("DEID_ENGINE")
+    preferences["beautifyModel"] = setting.beautify_model or preferences.get("beautifyModel")
+    preferences["suggestModel"] = setting.suggest_model or preferences.get("suggestModel")
+    preferences["summarizeModel"] = setting.summarize_model or preferences.get("summarizeModel")
+    deid_engine = setting.deid_engine or os.getenv("DEID_ENGINE")
     preferences["deidEngine"] = deid_engine or preferences.get("deidEngine")
-    theme = record.get("theme")
-    if isinstance(theme, str) and theme:
-        preferences["theme"] = theme
+    if isinstance(setting.theme, str) and setting.theme:
+        preferences["theme"] = setting.theme
     return preferences
 
 
@@ -6730,7 +6681,10 @@ def _sync_selected_codes_to_session_state(
 
 
 @app.get("/api/user/profile")
-async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]:
+async def get_user_profile(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
 
     base_profile = UserProfile().model_dump()
     defaults = UserSettings().model_dump()
@@ -6745,49 +6699,20 @@ async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]
         "preferences": defaults,
         "uiPreferences": normalized_defaults,
     }
-    row = db_conn.execute(
-        """
-        SELECT
-            u.id AS user_id,
-            u.username,
-            u.name,
-            u.role,
-            u.clinic_id,
-            up.current_view,
-            up.clinic,
-            up.preferences,
-            up.ui_preferences
-        FROM users u
-        LEFT JOIN user_profile up ON up.user_id = u.id
-        WHERE u.username=?
-        """,
-        (user["sub"],),
-    ).fetchone()
-    if not row:
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
         return result
-    preferences_raw = row["preferences"] if row["preferences"] else {}
-    if isinstance(preferences_raw, str):
-        try:
-            profile_preferences = json.loads(preferences_raw)
-        except json.JSONDecodeError:
-            profile_preferences = {}
-    elif isinstance(preferences_raw, dict):
-        profile_preferences = preferences_raw
-    else:
-        profile_preferences = {}
-    ui_raw = row["ui_preferences"] if row["ui_preferences"] else {}
-    if isinstance(ui_raw, str):
-        try:
-            ui_dict = json.loads(ui_raw)
-        except json.JSONDecodeError:
-            ui_dict = {}
-    elif isinstance(ui_raw, dict):
-        ui_dict = ui_raw
-    else:
-        ui_dict = {}
+    profile_record = session.get(UserProfileRecord, user_record.id)
+    profile_preferences = _as_dict(
+        getattr(profile_record, "preferences", {}) or {},
+        {},
+    )
+    ui_dict = _as_dict(getattr(profile_record, "ui_preferences", {}) or {}, {})
     normalized_ui = _normalize_ui_preferences_payload(ui_dict)
-    user_id = row["user_id"]
-    settings_preferences = _load_user_settings_preferences(user_id)
+    user_id = user_record.id
+    settings_preferences = _load_user_settings_preferences(session, user_id)
     merged_preferences = copy.deepcopy(settings_preferences)
     if isinstance(profile_preferences, dict):
         for key, value in profile_preferences.items():
@@ -6800,18 +6725,25 @@ async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]
                     merged_preferences["categories"] = value
             else:
                 merged_preferences[key] = value
-    clinic_value = row["clinic"] if row["clinic"] else row["clinic_id"]
+    clinic_value = None
+    if profile_record and profile_record.clinic:
+        clinic_value = profile_record.clinic
+    else:
+        clinic_value = user_record.clinic_id
     if clinic_value is not None and not isinstance(clinic_value, str):
         clinic_value = str(clinic_value)
     result.update(
         {
             "userId": str(user_id) if user_id is not None else None,
-            "username": row["username"],
-            "name": row["name"] or row["username"],
-            "role": row["role"],
-            "permissions": [row["role"]] if row["role"] else [],
+            "username": user_record.username,
+            "name": user_record.name or user_record.username,
+            "role": user_record.role,
+            "permissions": [user_record.role] if user_record.role else [],
             "clinic": clinic_value,
-            "currentView": row["current_view"] or base_profile.get("currentView"),
+            "currentView": (
+                getattr(profile_record, "current_view", None)
+                or base_profile.get("currentView")
+            ),
             "preferences": merged_preferences,
             "uiPreferences": normalized_ui,
             "specialty": merged_preferences.get("specialty"),
@@ -6823,72 +6755,76 @@ async def get_user_profile(user=Depends(require_role("user"))) -> Dict[str, Any]
 
 @app.put("/api/user/profile")
 async def update_user_profile(
-    profile: UserProfile, user=Depends(require_role("user"))
+    profile: UserProfile,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username=?", (user["sub"],)
-    ).fetchone()
-    if not row:
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
         raise HTTPException(status_code=400, detail="User not found")
     preferences = profile.preferences if isinstance(profile.preferences, dict) else {}
     ui_preferences = _normalize_ui_preferences_payload(profile.uiPreferences)
-    db_conn.execute(
-        "INSERT OR REPLACE INTO user_profile (user_id, current_view, clinic, preferences, ui_preferences) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (
-            row["id"],
-            profile.currentView,
-            profile.clinic,
-            json.dumps(preferences),
-            json.dumps(ui_preferences),
-        ),
-    )
-    db_conn.commit()
-    return await get_user_profile(user=user)
+    record = session.get(UserProfileRecord, user_record.id)
+    if record is None:
+        record = UserProfileRecord(user_id=user_record.id)
+        session.add(record)
+    record.current_view = profile.currentView
+    record.clinic = profile.clinic
+    record.preferences = dict(preferences)
+    record.ui_preferences = dict(ui_preferences)
+    return await get_user_profile(user=user, session=session)
 
 
 
 @app.get("/api/user/current-view")
-async def get_current_view(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT up.current_view FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
-    return {"currentView": row["current_view"] if row else None}
+async def get_current_view(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    user_id = session.execute(
+        sa.select(User.id).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if user_id is None:
+        return {"currentView": None}
+    profile = session.get(UserProfileRecord, user_id)
+    return {"currentView": getattr(profile, "current_view", None)}
 
 
 @app.get("/api/user/ui-preferences")
-async def get_ui_preferences(user=Depends(require_role("user"))) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT up.ui_preferences FROM user_profile up JOIN users u ON up.user_id = u.id WHERE u.username=?",
-        (user["sub"],),
-    ).fetchone()
-    prefs = json.loads(row["ui_preferences"]) if row and row["ui_preferences"] else {}
+async def get_ui_preferences(
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    user_id = session.execute(
+        sa.select(User.id).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    prefs: Dict[str, Any] = {}
+    if user_id is not None:
+        record = session.get(UserProfileRecord, user_id)
+        prefs = _as_dict(getattr(record, "ui_preferences", {}) or {}, {})
     normalized = _normalize_ui_preferences_payload(prefs)
     return {"uiPreferences": normalized}
 
 
 @app.put("/api/user/ui-preferences")
 async def put_ui_preferences(
-    model: UiPreferencesModel, user=Depends(require_role("user"))
+    model: UiPreferencesModel,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    row = db_conn.execute(
-        "SELECT id FROM users WHERE username=?", (user["sub"],)
-    ).fetchone()
-    if not row:
+    user_record = session.execute(
+        sa.select(User).where(User.username == user["sub"])
+    ).scalar_one_or_none()
+    if not user_record:
         raise HTTPException(status_code=400, detail="User not found")
     normalized = _normalize_ui_preferences_payload(model.uiPreferences)
-    updated = json.dumps(normalized)
-    cur = db_conn.execute(
-        "UPDATE user_profile SET ui_preferences=? WHERE user_id=?",
-        (updated, row["id"]),
-    )
-    if cur.rowcount == 0:
-        db_conn.execute(
-            "INSERT INTO user_profile (user_id, ui_preferences) VALUES (?, ?)",
-            (row["id"], updated),
-        )
-    db_conn.commit()
+    record = session.get(UserProfileRecord, user_record.id)
+    if record is None:
+        record = UserProfileRecord(user_id=user_record.id)
+        session.add(record)
+    record.ui_preferences = dict(normalized)
     return {"uiPreferences": normalized}
 
 
@@ -8323,65 +8259,69 @@ def get_templates(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    with _template_session(db_conn) as session:
-        return list_user_templates(
-            session, user["sub"], user.get("clinic"), specialty, payer
-        )
+    return list_user_templates(
+        session, user["sub"], user.get("clinic"), specialty, payer
+    )
 
 
 @app.post("/templates", response_model=TemplateModel)
 @app.post("/api/templates", response_model=TemplateModel)
 def create_template(
-    tpl: TemplateModel, user=Depends(require_role("user"))
+    tpl: TemplateModel,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        return create_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            tpl,
-            user.get("role") == "admin",
-        )
+    return create_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        tpl,
+        user.get("role") == "admin",
+    )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
 @app.put("/api/templates/{template_id}", response_model=TemplateModel)
 def update_template(
-    template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
+    template_id: int,
+    tpl: TemplateModel,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        return update_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            template_id,
-            tpl,
-            user.get("role") == "admin",
-        )
+    return update_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        tpl,
+        user.get("role") == "admin",
+    )
 
 
 @app.delete("/templates/{template_id}")
 @app.delete("/api/templates/{template_id}")
 def delete_template(
-    template_id: int, user=Depends(require_role("user"))
+    template_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        delete_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            template_id,
-            user.get("role") == "admin",
-        )
+    delete_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        user.get("role") == "admin",
+    )
     return {"status": "deleted"}
 
 
@@ -8414,24 +8354,33 @@ class NoteCreateRequest(BaseModel):
 
 @app.post("/api/notes/create")
 def create_note(
-    req: NoteCreateRequest, user=Depends(require_role("user"))
+    req: NoteCreateRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, str]:
     """Create a new draft note and seed the persisted version history."""
 
     now = datetime.now(timezone.utc)
-    timestamp = now.timestamp()
     user_id = _get_user_db_id(user["sub"])
     try:
-        cursor = db_conn.execute(
-            "INSERT INTO notes (content, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (req.content or "", "draft", timestamp, timestamp),
+        record = Note(
+            content=req.content or "",
+            status="draft",
+            created_at=now,
+            updated_at=now,
         )
-        note_id = str(cursor.lastrowid)
-        _save_note_version(note_id, req.content or "", user_id, created_at=now)
-        db_conn.commit()
-    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        session.add(record)
+        session.flush()
+        note_id = str(record.id)
+        _save_note_version(
+            session,
+            note_id,
+            req.content or "",
+            user_id,
+            created_at=now,
+        )
+    except SQLAlchemyError as exc:  # pragma: no cover - safety net
         logger.exception("note_create_failed", error=str(exc))
-        db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to create note") from exc
 
     return {"noteId": note_id}
@@ -8439,92 +8388,79 @@ def create_note(
 
 @app.post("/api/notes/auto-save")
 def auto_save_note(
-    req: AutoSaveRequest, user=Depends(require_role("user"))
+    req: AutoSaveRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Persist note content for versioning in the database."""
 
     user_id = _get_user_db_id(user["sub"])
     try:
-        _save_note_version(req.noteId, req.content, user_id)
-        row = db_conn.execute(
-            "SELECT COUNT(*) FROM note_versions WHERE note_id=?",
-            (str(req.noteId),),
-        ).fetchone()
-        version_count = int(row[0] if row else 0)
-        db_conn.commit()
-    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        _save_note_version(session, req.noteId, req.content, user_id)
+        count_stmt = (
+            sa.select(sa.func.count(NoteVersion.id)).where(
+                NoteVersion.note_id == str(req.noteId)
+            )
+        )
+        version_count = int(
+            session.execute(count_stmt).scalar_one_or_none() or 0
+        )
+    except SQLAlchemyError as exc:  # pragma: no cover - safety net
         logger.exception(
             "note_autosave_failed", note_id=str(req.noteId), error=str(exc)
         )
-        db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to auto-save note") from exc
     return {"status": "saved", "version": version_count}
 
 
 @app.get("/api/notes/versions/{note_id}")
 def get_note_versions(
-    note_id: str, user=Depends(require_role("user"))
+    note_id: str,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> List[Dict[str, str]]:
     """Return previously auto-saved versions for a note."""
 
-    return _fetch_note_versions(note_id)
+    return _fetch_note_versions(session, note_id)
 
 
 @app.get("/api/notes/auto-save/status")
 def get_auto_save_status(
-    note_id: Optional[str] = None, user=Depends(require_role("user"))
+    note_id: Optional[str] = None,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Return auto-save status for a specific note or all notes."""
 
     ensure_note_versions_table(db_conn)
     if note_id is not None:
-        try:
-            row = db_conn.execute(
-                "SELECT COUNT(*) AS count, MAX(created_at) AS last FROM note_versions WHERE note_id=?",
-                (str(note_id),),
-            ).fetchone()
-        except sqlite3.Error:
-            row = None
-        count = 0
-        last_iso = None
-        if row:
-            try:
-                count = int(row["count"])
-            except (KeyError, TypeError):
-                count = int(row[0]) if row[0] is not None else 0
-            try:
-                last_raw = row["last"]
-            except (KeyError, TypeError):
-                last_raw = row[1] if len(row) > 1 else None
-            last_iso = _timestamp_to_iso(last_raw)
+        stmt = (
+            sa.select(
+                sa.func.count(NoteVersion.id),
+                sa.func.max(NoteVersion.created_at),
+            )
+            .where(NoteVersion.note_id == str(note_id))
+        )
+        result = session.execute(stmt).one_or_none()
+        count = int(result[0] or 0) if result else 0
+        last_iso = _timestamp_to_iso(result[1] if result else None)
         return {"noteId": note_id, "versions": count, "lastSave": last_iso}
 
-    try:
-        rows = db_conn.execute(
-            "SELECT note_id, COUNT(*) AS count, MAX(created_at) AS last FROM note_versions GROUP BY note_id"
-        ).fetchall()
-    except sqlite3.Error:
-        return {}
+    rows = session.execute(
+        sa.select(
+            NoteVersion.note_id,
+            sa.func.count(NoteVersion.id),
+            sa.func.max(NoteVersion.created_at),
+        ).group_by(NoteVersion.note_id)
+    ).all()
 
     result: Dict[str, Any] = {}
-    for row in rows or []:
-        try:
-            nid = row["note_id"]
-        except (KeyError, TypeError):
-            nid = row[0] if row else None
+    for nid, count, last in rows:
         if nid is None:
             continue
-        try:
-            count = row["count"]
-        except (KeyError, TypeError):
-            count = row[1] if len(row) > 1 else 0
-        try:
-            last_raw = row["last"]
-        except (KeyError, TypeError):
-            last_raw = row[2] if len(row) > 2 else None
         result[str(nid)] = {
             "versions": int(count) if count is not None else 0,
-            "lastSave": _timestamp_to_iso(last_raw),
+            "lastSave": _timestamp_to_iso(last),
         }
     return result
 
@@ -13540,15 +13476,18 @@ async def search_patients_v2(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ):
-    with _template_session(db_conn) as sa_session:
-        return patients.search_patients(sa_session, q, limit=limit, offset=offset)
+    return patients.search_patients(session, q, limit=limit, offset=offset)
 
 
 @app.get("/api/patients/{patient_id}")
-async def get_patient(patient_id: int, user=Depends(require_role("user"))):
-    with _template_session(db_conn) as sa_session:
-        record = patients.get_patient(sa_session, patient_id)
+async def get_patient(
+    patient_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+):
+    record = patients.get_patient(session, patient_id)
     if not record:
         raise HTTPException(status_code=404, detail="patient not found")
     demographics = {
@@ -13589,20 +13528,22 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
 
 @app.get("/api/encounters/validate/{encounter_id}")
 async def validate_encounter_v2(
-    encounter_id: int, user=Depends(require_role("user"))
+    encounter_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ):
-    with _template_session(db_conn) as sa_session:
-        return _build_encounter_validation_response(sa_session, encounter_id)
+    return _build_encounter_validation_response(session, encounter_id)
 
 
 @app.post("/api/encounters/validate")
 async def validate_encounter_post(
-    payload: EncounterValidationRequest, user=Depends(require_role("user"))
+    payload: EncounterValidationRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    with _template_session(db_conn) as sa_session:
-        return _build_encounter_validation_response(
-            sa_session, payload.encounter_id, patient_id=payload.patient_id
-        )
+    return _build_encounter_validation_response(
+        session, payload.encounter_id, patient_id=payload.patient_id
+    )
 
 
 @app.post("/api/visits/session")
@@ -14179,8 +14120,8 @@ async def draft_analytics(user=Depends(require_role("user"))):
     ordered_notes: List[Tuple[float, Dict[str, Any]]] = []
 
     for row in rows:
-        created = float(row["created_at"]) if row["created_at"] else 0.0
-        updated = float(row["updated_at"]) if row["updated_at"] else created
+        created = _parse_timestamp(row["created_at"], default=0.0)
+        updated = _parse_timestamp(row["updated_at"], default=created)
         if created and updated and updated >= created:
             durations.append(updated - created)
         reference = updated or created
