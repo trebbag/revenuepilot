@@ -1,163 +1,156 @@
-import sqlite3
 import pytest
-from fastapi.testclient import TestClient
 
 import backend.main as main
-
-OLD_DB = None
-
-
-def setup_module(module):
-    """Set up in-memory DB with templates table."""
-    global OLD_DB
-    OLD_DB = main.db_conn
-    main.db_conn = sqlite3.connect(":memory:", check_same_thread=False)
-    main.db_conn.row_factory = sqlite3.Row
-    main.db_conn.execute(
-        "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, clinic TEXT, specialty TEXT, payer TEXT, name TEXT, content TEXT)"
-    )
-    main.db_conn.commit()
+from backend.db import models as db_models
 
 
-def teardown_module(module):
-    """Restore original database connection after tests complete."""
-    global OLD_DB
-    main.db_conn.close()
-    main.db_conn = OLD_DB
+@pytest.fixture
+def create_user(db_session):
+    def _create(username: str, role: str = "user", clinic: str | None = None) -> db_models.User:
+        user = db_models.User(
+            username=username,
+            password_hash=main.hash_password("pw"),
+            role=role,
+            clinic_id=clinic,
+        )
+        db_session.add(user)
+        db_session.commit()
+        return user
+
+    return _create
 
 
-def test_builtin_templates_available():
-    client = TestClient(main.app)
+def auth_header(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_builtin_templates_available(api_client, create_user):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.get("/templates", headers={"Authorization": f"Bearer {token}"})
+    resp = api_client.get("/templates", headers=auth_header(token))
     specs = {t["specialty"] for t in resp.json()}
     assert {"pediatrics", "geriatrics", "psychiatry"} <= specs
 
 
 @pytest.mark.parametrize("spec", ["pediatrics", "geriatrics", "psychiatry"])
-def test_builtin_template_filter(spec):
-    client = TestClient(main.app)
+def test_builtin_template_filter(api_client, create_user, spec):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.get(
+    resp = api_client.get(
         f"/templates?specialty={spec}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     data = resp.json()
     assert data and all(t["specialty"] == spec for t in data)
 
 
 @pytest.mark.parametrize("spec", ["pediatrics", "geriatrics", "psychiatry"])
-def test_insert_and_retrieve_per_specialty(spec):
-    client = TestClient(main.app)
+def test_insert_and_retrieve_per_specialty(api_client, create_user, spec):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.post(
+    resp = api_client.post(
         "/templates",
         json={"name": "Custom", "content": "Note", "specialty": spec},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     assert resp.status_code == 200
     tpl_id = resp.json()["id"]
-    resp = client.get(
+    resp = api_client.get(
         f"/templates?specialty={spec}",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     data = resp.json()
     assert any(t["id"] == tpl_id for t in data)
     assert all(t["specialty"] == spec for t in data)
 
 
-def test_builtin_template_payer_filter():
-    client = TestClient(main.app)
+def test_builtin_template_payer_filter(api_client, create_user):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.get(
+    resp = api_client.get(
         "/templates?payer=medicare",
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     data = resp.json()
     assert data and all(t.get("payer") == "medicare" for t in data)
 
 
-def test_create_update_and_list_templates():
-    client = TestClient(main.app)
+def test_create_update_and_list_templates(api_client, create_user):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.post(
+    resp = api_client.post(
         "/templates",
         json={"name": "Custom", "content": "Note", "specialty": "cardiology"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     assert resp.status_code == 200
     tpl_id = resp.json()["id"]
-    assert tpl_id
-    resp = client.put(
+    resp = api_client.put(
         f"/templates/{tpl_id}",
         json={"name": "Updated", "content": "New", "specialty": "cardiology"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     assert resp.status_code == 200
     assert resp.json()["name"] == "Updated"
-    resp = client.get("/templates", headers={"Authorization": f"Bearer {token}"})
+    resp = api_client.get("/templates", headers=auth_header(token))
     data = resp.json()
     assert any(t["name"] == "Updated" for t in data)
 
 
-def test_delete_template():
-    client = TestClient(main.app)
+def test_delete_template(api_client, create_user):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.post(
+    resp = api_client.post(
         "/templates",
         json={"name": "Temp", "content": "X", "specialty": "cardiology"},
-        headers={"Authorization": f"Bearer {token}"},
+        headers=auth_header(token),
     )
     tpl_id = resp.json()["id"]
-    resp = client.delete(
-        f"/templates/{tpl_id}", headers={"Authorization": f"Bearer {token}"}
-    )
+    resp = api_client.delete(f"/templates/{tpl_id}", headers=auth_header(token))
     assert resp.status_code == 200
-    resp = client.get("/templates", headers={"Authorization": f"Bearer {token}"})
+    resp = api_client.get("/templates", headers=auth_header(token))
     assert all(t["id"] != tpl_id for t in resp.json())
 
 
-def test_template_scoped_by_clinic():
-    client = TestClient(main.app)
-    token_a = main.create_token("alice", "user", clinic="clinicA")
-    # Admin creates clinic-wide template
+def test_template_scoped_by_clinic(api_client, create_user):
+    create_user("alice")
+    create_user("admin", role="admin")
+    create_user("bob")
     admin_token = main.create_token("admin", "admin", clinic="clinicA")
-    resp = client.post(
+    resp = api_client.post(
         "/templates",
         json={"name": "Scoped", "content": "S", "specialty": "cardiology"},
-        headers={"Authorization": f"Bearer {admin_token}"},
+        headers=auth_header(admin_token),
     )
     tpl_id = resp.json()["id"]
-    # User in same clinic sees the template
+
     token_a = main.create_token("alice", "user", clinic="clinicA")
-    resp = client.get(
+    resp = api_client.get(
         "/templates?specialty=cardiology",
-        headers={"Authorization": f"Bearer {token_a}"},
+        headers=auth_header(token_a),
     )
     assert any(t["id"] == tpl_id for t in resp.json())
-    # User in different clinic does not
+
     token_b = main.create_token("bob", "user", clinic="clinicB")
-    resp = client.get(
+    resp = api_client.get(
         "/templates?specialty=cardiology",
-        headers={"Authorization": f"Bearer {token_b}"},
+        headers=auth_header(token_b),
     )
     assert all(t["id"] != tpl_id for t in resp.json())
 
 
-def test_templates_require_auth():
-    client = TestClient(main.app)
-    resp = client.get("/templates")
+def test_templates_require_auth(api_client):
+    resp = api_client.get("/templates")
     assert resp.status_code in {401, 403}
 
 
-def test_templates_allow_user_role():
-    client = TestClient(main.app)
+def test_templates_allow_user_role(api_client, create_user):
+    create_user("alice")
     token = main.create_token("alice", "user", clinic="clinic1")
-    resp = client.get("/templates", headers={"Authorization": f"Bearer {token}"})
+    resp = api_client.get("/templates", headers=auth_header(token))
     assert resp.status_code == 200
 
 
-def test_templates_reject_invalid_token():
-    client = TestClient(main.app)
-    resp = client.get("/templates", headers={"Authorization": "Bearer badtoken"})
+def test_templates_reject_invalid_token(api_client):
+    resp = api_client.get("/templates", headers={"Authorization": "Bearer badtoken"})
     assert resp.status_code == 401

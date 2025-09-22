@@ -87,7 +87,7 @@ import json, sqlite3
 from uuid import uuid4
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session as SQLAlchemySession, sessionmaker
 from sqlalchemy.pool import StaticPool
 try:  # prefer appdirs
@@ -144,6 +144,8 @@ from backend.db.models import (
     ComplianceRuleCatalogEntry,
     HCPCSCode,
     ICD10Code,
+    Note,
+    NoteVersion,
     PayerSchedule,
 )
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
@@ -151,6 +153,7 @@ from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.database_legacy import (
     DATABASE_PATH,
+    SessionLocal,
     get_connection,
     get_session,
     initialise_schema,
@@ -1043,26 +1046,35 @@ notification_counts = NotificationStore()
 
 
 def _timestamp_to_iso(value: Any) -> str | None:
-    """Convert a Unix timestamp to ISO 8601 in UTC."""
+    """Convert a Unix timestamp or datetime to ISO 8601 in UTC."""
 
     if value is None:
         return None
+    if isinstance(value, datetime):
+        try:
+            dt = value.astimezone(timezone.utc)
+        except ValueError:
+            dt = value.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
     try:
         return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
     except Exception:
         return None
 
 
-def _parse_timestamp(value: Any) -> float:
+def _parse_timestamp(value: Any, default: float | None = None) -> float:
     """Best-effort conversion of *value* to a Unix timestamp."""
 
+    fallback = time.time() if default is None else default
     if value is None:
-        return time.time()
+        return fallback
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc if value.tzinfo is None else value.tzinfo).timestamp()
     if isinstance(value, (int, float)):
         try:
             return float(value)
         except (TypeError, ValueError):
-            return time.time()
+            return fallback
     if isinstance(value, str):
         try:
             return float(value)
@@ -1073,8 +1085,8 @@ def _parse_timestamp(value: Any) -> float:
                     normalised = normalised[:-1] + "+00:00"
                 return datetime.fromisoformat(normalised).timestamp()
             except Exception:
-                return time.time()
-    return time.time()
+                return fallback
+    return fallback
 
 
 def _normalise_notification_event_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1307,62 +1319,55 @@ def _get_user_db_id(username: str) -> int | None:
 
 
 def _save_note_version(
+    session: Session,
     note_id: str,
     content: str,
     user_id: int | None = None,
     created_at: datetime | None = None,
 ) -> datetime:
-    """Persist a note version to SQLite and prune history beyond 20 entries."""
+    """Persist a note version to the database and prune history beyond 20 entries."""
 
     ensure_note_versions_table(db_conn)
     timestamp = created_at or datetime.now(timezone.utc)
-    db_conn.execute(
-        "INSERT INTO note_versions (note_id, user_id, content, created_at) VALUES (?, ?, ?, ?)",
-        (str(note_id), user_id, content, timestamp.timestamp()),
+    version = NoteVersion(
+        note_id=str(note_id),
+        user_id=user_id,
+        content=content,
+        created_at=timestamp,
     )
-    db_conn.execute(
-        """
-        DELETE FROM note_versions
-        WHERE note_id = ?
-          AND id NOT IN (
-            SELECT id FROM note_versions
-            WHERE note_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 20
+    session.add(version)
+    session.flush()
+
+    prune_stmt = (
+        sa.select(NoteVersion.id)
+        .where(NoteVersion.note_id == str(note_id))
+        .order_by(sa.desc(NoteVersion.created_at), sa.desc(NoteVersion.id))
+        .offset(20)
+    )
+    stale_ids = [vid for vid in session.execute(prune_stmt).scalars()]
+    if stale_ids:
+        session.execute(
+            sa.delete(NoteVersion).where(NoteVersion.id.in_(list(stale_ids)))
         )
-        """,
-        (str(note_id), str(note_id)),
-    )
     return timestamp
 
 
-def _fetch_note_versions(note_id: str) -> List[Dict[str, str]]:
-    """Retrieve ordered note versions for ``note_id`` from SQLite."""
+def _fetch_note_versions(session: Session, note_id: str) -> List[Dict[str, str]]:
+    """Retrieve ordered note versions for ``note_id`` using SQLAlchemy."""
 
     ensure_note_versions_table(db_conn)
-    try:
-        rows = db_conn.execute(
-            """
-            SELECT content, created_at
-            FROM note_versions
-            WHERE note_id=?
-            ORDER BY created_at ASC, id ASC
-            """,
-            (str(note_id),),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
+    stmt = (
+        sa.select(NoteVersion.content, NoteVersion.created_at)
+        .where(NoteVersion.note_id == str(note_id))
+        .order_by(sa.asc(NoteVersion.created_at), sa.asc(NoteVersion.id))
+    )
+    rows = session.execute(stmt).all()
     versions: List[Dict[str, str]] = []
-    for row in rows or []:
-        try:
-            created = row["created_at"]
-        except (KeyError, TypeError):
-            created = row[1] if len(row) > 1 else None
-        try:
-            content = row["content"]
-        except (KeyError, TypeError):
-            content = row[0] if row else ""
-        versions.append({"timestamp": _timestamp_to_iso(created), "content": content or ""})
+    for content, created in rows:
+        versions.append({
+            "timestamp": _timestamp_to_iso(created),
+            "content": content or "",
+        })
     return versions
 
 
@@ -1481,46 +1486,6 @@ db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
 
 configure_schedule_database(db_conn)
-
-
-_template_sessionmakers: Dict[int, sessionmaker[Session]] = {}
-
-
-def _get_template_session_factory(conn: sqlite3.Connection) -> sessionmaker[Session]:
-    """Return a session factory bound to the given SQLite connection."""
-
-    key = id(conn)
-    factory = _template_sessionmakers.get(key)
-    if factory is None:
-        engine = create_engine(
-            "sqlite://",
-            creator=lambda conn=conn: conn,
-            poolclass=StaticPool,
-            future=True,
-        )
-        factory = sessionmaker(
-            bind=engine,
-            autoflush=False,
-            expire_on_commit=False,
-            future=True,
-        )
-        _template_sessionmakers[key] = factory
-    return factory
-
-
-@contextmanager
-def _template_session(conn: sqlite3.Connection) -> Iterator[Session]:
-    """Context manager yielding a Session bound to the provided connection."""
-
-    session_factory = _get_template_session_factory(conn)
-    session = session_factory()
-    try:
-        yield session
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
 
 
 # Keep the compliance ORM bound to the active database connection.
@@ -5192,7 +5157,9 @@ class SessionStateModel(BaseModel):
         return self
 
 
-def _normalize_session_state(payload: Any | None = None) -> Dict[str, Any]:
+def _normalize_session_state(
+    payload: Any | None = None, *, sa_session: Session | None = None
+) -> Dict[str, Any]:
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
@@ -5741,7 +5708,9 @@ def _append_audit_event(
     session["auditTrail"] = audit
 
 
-def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_finalization_session(
+    session: Dict[str, Any], sa_session: Session | None = None
+) -> Dict[str, Any]:
     data = copy.deepcopy(session) if isinstance(session, dict) else {}
     if data.get("owner") is None and data.get("createdBy"):
         data["owner"] = data.get("createdBy")
@@ -6033,7 +6002,7 @@ def _normalize_finalization_session(session: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(data.get("lastValidation"), dict):
         last_validation = data.get("lastValidation")
         data["lastValidation"] = last_validation if isinstance(last_validation, dict) else {}
-    _ensure_session_context(data)
+    _ensure_session_context(data, sa_session=sa_session)
     data.setdefault("createdAt", _utc_now_iso())
     data.setdefault("updatedAt", data["createdAt"])
     _recalculate_current_step(data)
@@ -6428,7 +6397,9 @@ def _normalize_transcript_entries(entries: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _ensure_session_context(session: Dict[str, Any]) -> None:
+def _ensure_session_context(
+    session: Dict[str, Any], *, sa_session: Session | None = None
+) -> None:
     """Populate patient, encounter, transcript, and timeline context fields."""
 
     context = session.get("context") if isinstance(session.get("context"), dict) else {}
@@ -6445,19 +6416,31 @@ def _ensure_session_context(session: Dict[str, Any]) -> None:
 
     need_patient_lookup = bool(patient_id)
     need_encounter_lookup = encounter_lookup is not None
-    if need_patient_lookup or need_encounter_lookup:
+    managed_session: Session | None = None
+    session_source = sa_session
+    if session_source is None and SessionLocal is not None:
         try:
-            with _template_session(db_conn) as sa_session:
+            session_source = managed_session = SessionLocal()
+        except Exception:
+            session_source = None
+    if need_patient_lookup or need_encounter_lookup:
+        if session_source is not None:
+            try:
                 if need_encounter_lookup and encounter_lookup is not None:
                     try:
-                        encounter_record = patients.get_encounter(sa_session, encounter_lookup)
+                        encounter_record = patients.get_encounter(session_source, encounter_lookup)
                     except Exception:
                         encounter_record = None
                 if need_patient_lookup:
                     try:
-                        patient_record = patients.get_patient(sa_session, patient_id)  # type: ignore[arg-type]
+                        patient_record = patients.get_patient(session_source, patient_id)  # type: ignore[arg-type]
                     except Exception:
                         patient_record = None
+            except Exception:
+                pass
+    if managed_session is not None:
+        try:
+            managed_session.close()
         except Exception:
             pass
 
@@ -8330,65 +8313,69 @@ def get_templates(
     specialty: Optional[str] = None,
     payer: Optional[str] = None,
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> List[TemplateModel]:
     """Return templates for the current user and clinic, optionally filtered by specialty or payer."""
 
-    with _template_session(db_conn) as session:
-        return list_user_templates(
-            session, user["sub"], user.get("clinic"), specialty, payer
-        )
+    return list_user_templates(
+        session, user["sub"], user.get("clinic"), specialty, payer
+    )
 
 
 @app.post("/templates", response_model=TemplateModel)
 @app.post("/api/templates", response_model=TemplateModel)
 def create_template(
-    tpl: TemplateModel, user=Depends(require_role("user"))
+    tpl: TemplateModel,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> TemplateModel:
     """Create a new template for the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        return create_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            tpl,
-            user.get("role") == "admin",
-        )
+    return create_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        tpl,
+        user.get("role") == "admin",
+    )
 
 
 @app.put("/templates/{template_id}", response_model=TemplateModel)
 @app.put("/api/templates/{template_id}", response_model=TemplateModel)
 def update_template(
-    template_id: int, tpl: TemplateModel, user=Depends(require_role("user"))
+    template_id: int,
+    tpl: TemplateModel,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> TemplateModel:
     """Update an existing template owned by the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        return update_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            template_id,
-            tpl,
-            user.get("role") == "admin",
-        )
+    return update_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        tpl,
+        user.get("role") == "admin",
+    )
 
 
 @app.delete("/templates/{template_id}")
 @app.delete("/api/templates/{template_id}")
 def delete_template(
-    template_id: int, user=Depends(require_role("user"))
+    template_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, str]:
     """Delete a template owned by the user or clinic."""
 
-    with _template_session(db_conn) as session:
-        delete_user_template(
-            session,
-            user["sub"],
-            user.get("clinic"),
-            template_id,
-            user.get("role") == "admin",
-        )
+    delete_user_template(
+        session,
+        user["sub"],
+        user.get("clinic"),
+        template_id,
+        user.get("role") == "admin",
+    )
     return {"status": "deleted"}
 
 
@@ -8421,24 +8408,33 @@ class NoteCreateRequest(BaseModel):
 
 @app.post("/api/notes/create")
 def create_note(
-    req: NoteCreateRequest, user=Depends(require_role("user"))
+    req: NoteCreateRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, str]:
     """Create a new draft note and seed the persisted version history."""
 
     now = datetime.now(timezone.utc)
-    timestamp = now.timestamp()
     user_id = _get_user_db_id(user["sub"])
     try:
-        cursor = db_conn.execute(
-            "INSERT INTO notes (content, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (req.content or "", "draft", timestamp, timestamp),
+        record = Note(
+            content=req.content or "",
+            status="draft",
+            created_at=now,
+            updated_at=now,
         )
-        note_id = str(cursor.lastrowid)
-        _save_note_version(note_id, req.content or "", user_id, created_at=now)
-        db_conn.commit()
-    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        session.add(record)
+        session.flush()
+        note_id = str(record.id)
+        _save_note_version(
+            session,
+            note_id,
+            req.content or "",
+            user_id,
+            created_at=now,
+        )
+    except SQLAlchemyError as exc:  # pragma: no cover - safety net
         logger.exception("note_create_failed", error=str(exc))
-        db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to create note") from exc
 
     return {"noteId": note_id}
@@ -8446,92 +8442,79 @@ def create_note(
 
 @app.post("/api/notes/auto-save")
 def auto_save_note(
-    req: AutoSaveRequest, user=Depends(require_role("user"))
+    req: AutoSaveRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Persist note content for versioning in the database."""
 
     user_id = _get_user_db_id(user["sub"])
     try:
-        _save_note_version(req.noteId, req.content, user_id)
-        row = db_conn.execute(
-            "SELECT COUNT(*) FROM note_versions WHERE note_id=?",
-            (str(req.noteId),),
-        ).fetchone()
-        version_count = int(row[0] if row else 0)
-        db_conn.commit()
-    except sqlite3.Error as exc:  # pragma: no cover - safety net
+        _save_note_version(session, req.noteId, req.content, user_id)
+        count_stmt = (
+            sa.select(sa.func.count(NoteVersion.id)).where(
+                NoteVersion.note_id == str(req.noteId)
+            )
+        )
+        version_count = int(
+            session.execute(count_stmt).scalar_one_or_none() or 0
+        )
+    except SQLAlchemyError as exc:  # pragma: no cover - safety net
         logger.exception(
             "note_autosave_failed", note_id=str(req.noteId), error=str(exc)
         )
-        db_conn.rollback()
         raise HTTPException(status_code=500, detail="Failed to auto-save note") from exc
     return {"status": "saved", "version": version_count}
 
 
 @app.get("/api/notes/versions/{note_id}")
 def get_note_versions(
-    note_id: str, user=Depends(require_role("user"))
+    note_id: str,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> List[Dict[str, str]]:
     """Return previously auto-saved versions for a note."""
 
-    return _fetch_note_versions(note_id)
+    return _fetch_note_versions(session, note_id)
 
 
 @app.get("/api/notes/auto-save/status")
 def get_auto_save_status(
-    note_id: Optional[str] = None, user=Depends(require_role("user"))
+    note_id: Optional[str] = None,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """Return auto-save status for a specific note or all notes."""
 
     ensure_note_versions_table(db_conn)
     if note_id is not None:
-        try:
-            row = db_conn.execute(
-                "SELECT COUNT(*) AS count, MAX(created_at) AS last FROM note_versions WHERE note_id=?",
-                (str(note_id),),
-            ).fetchone()
-        except sqlite3.Error:
-            row = None
-        count = 0
-        last_iso = None
-        if row:
-            try:
-                count = int(row["count"])
-            except (KeyError, TypeError):
-                count = int(row[0]) if row[0] is not None else 0
-            try:
-                last_raw = row["last"]
-            except (KeyError, TypeError):
-                last_raw = row[1] if len(row) > 1 else None
-            last_iso = _timestamp_to_iso(last_raw)
+        stmt = (
+            sa.select(
+                sa.func.count(NoteVersion.id),
+                sa.func.max(NoteVersion.created_at),
+            )
+            .where(NoteVersion.note_id == str(note_id))
+        )
+        result = session.execute(stmt).one_or_none()
+        count = int(result[0] or 0) if result else 0
+        last_iso = _timestamp_to_iso(result[1] if result else None)
         return {"noteId": note_id, "versions": count, "lastSave": last_iso}
 
-    try:
-        rows = db_conn.execute(
-            "SELECT note_id, COUNT(*) AS count, MAX(created_at) AS last FROM note_versions GROUP BY note_id"
-        ).fetchall()
-    except sqlite3.Error:
-        return {}
+    rows = session.execute(
+        sa.select(
+            NoteVersion.note_id,
+            sa.func.count(NoteVersion.id),
+            sa.func.max(NoteVersion.created_at),
+        ).group_by(NoteVersion.note_id)
+    ).all()
 
     result: Dict[str, Any] = {}
-    for row in rows or []:
-        try:
-            nid = row["note_id"]
-        except (KeyError, TypeError):
-            nid = row[0] if row else None
+    for nid, count, last in rows:
         if nid is None:
             continue
-        try:
-            count = row["count"]
-        except (KeyError, TypeError):
-            count = row[1] if len(row) > 1 else 0
-        try:
-            last_raw = row["last"]
-        except (KeyError, TypeError):
-            last_raw = row[2] if len(row) > 2 else None
         result[str(nid)] = {
             "versions": int(count) if count is not None else 0,
-            "lastSave": _timestamp_to_iso(last_raw),
+            "lastSave": _timestamp_to_iso(last),
         }
     return result
 
@@ -13542,15 +13525,18 @@ async def search_patients_v2(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ):
-    with _template_session(db_conn) as sa_session:
-        return patients.search_patients(sa_session, q, limit=limit, offset=offset)
+    return patients.search_patients(session, q, limit=limit, offset=offset)
 
 
 @app.get("/api/patients/{patient_id}")
-async def get_patient(patient_id: int, user=Depends(require_role("user"))):
-    with _template_session(db_conn) as sa_session:
-        record = patients.get_patient(sa_session, patient_id)
+async def get_patient(
+    patient_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+):
+    record = patients.get_patient(session, patient_id)
     if not record:
         raise HTTPException(status_code=404, detail="patient not found")
     demographics = {
@@ -13591,20 +13577,22 @@ async def get_patient(patient_id: int, user=Depends(require_role("user"))):
 
 @app.get("/api/encounters/validate/{encounter_id}")
 async def validate_encounter_v2(
-    encounter_id: int, user=Depends(require_role("user"))
+    encounter_id: int,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ):
-    with _template_session(db_conn) as sa_session:
-        return _build_encounter_validation_response(sa_session, encounter_id)
+    return _build_encounter_validation_response(session, encounter_id)
 
 
 @app.post("/api/encounters/validate")
 async def validate_encounter_post(
-    payload: EncounterValidationRequest, user=Depends(require_role("user"))
+    payload: EncounterValidationRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
-    with _template_session(db_conn) as sa_session:
-        return _build_encounter_validation_response(
-            sa_session, payload.encounter_id, patient_id=payload.patient_id
-        )
+    return _build_encounter_validation_response(
+        session, payload.encounter_id, patient_id=payload.patient_id
+    )
 
 
 @app.post("/api/visits/session")
@@ -14155,8 +14143,8 @@ async def draft_analytics(user=Depends(require_role("user"))):
     ordered_notes: List[Tuple[float, Dict[str, Any]]] = []
 
     for row in rows:
-        created = float(row["created_at"]) if row["created_at"] else 0.0
-        updated = float(row["updated_at"]) if row["updated_at"] else created
+        created = _parse_timestamp(row["created_at"], default=0.0)
+        updated = _parse_timestamp(row["updated_at"], default=created)
         if created and updated and updated >= created:
             durations.append(updated - created)
         reference = updated or created
