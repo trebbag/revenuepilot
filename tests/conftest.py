@@ -34,6 +34,7 @@ if 'backend.scheduling' not in sys.modules:
         get_appointment=lambda *args, **kwargs: None,
         apply_bulk_operations=lambda *args, **kwargs: (0, 0),
         reset_state=lambda: None,
+        configure_database=lambda *args, **kwargs: None,
     )
     sys.modules['backend.scheduling'] = scheduling_stub
 
