@@ -1412,6 +1412,52 @@ DB_PATH = str(db.SQLITE_PATH)
 UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
 
 
+_SAFE_CHART_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _path_within(base: Path, candidate: Path) -> bool:
+    """Return ``True`` if *candidate* resides within *base*."""
+
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def sanitize_chart_filename(original_name: str | None) -> str:
+    """Return a filesystem-safe representation of ``original_name``.
+
+    Only the final path component is retained, characters outside a conservative
+    whitelist are replaced with underscores and empty results fall back to a
+    random UUID4 string.  The value is suitable for joining with
+    :data:`UPLOAD_DIR` and remains opaque enough to avoid leaking user-provided
+    directory structures.
+    """
+
+    raw_name = Path(original_name or "").name.strip()
+    if not raw_name:
+        return uuid.uuid4().hex
+
+    sanitized = _SAFE_CHART_FILENAME_RE.sub("_", raw_name)
+    sanitized = sanitized.strip("._")
+    if not sanitized:
+        return uuid.uuid4().hex
+    # Clamp to a reasonable length to avoid pathological filesystem behaviour.
+    return sanitized[:128]
+
+
+def _resolve_chart_destination(original_name: str) -> tuple[str, Path]:
+    """Return the sanitized filename and resolved destination path."""
+
+    sanitized = sanitize_chart_filename(original_name)
+    base_dir = UPLOAD_DIR.resolve()
+    destination = (base_dir / sanitized).resolve()
+    if not _path_within(base_dir, destination):
+        raise ValueError("Resolved chart path escapes upload directory")
+    return sanitized, destination
+
+
 db_conn = db.get_sync_connection()
 # Ensure the events table exists with the latest schema.
 ensure_events_table(db_conn)
@@ -13612,12 +13658,41 @@ async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_r
 async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("user"))):
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     contents = await file.read()
-    dest = UPLOAD_DIR / file.filename
-    with open(dest, "wb") as f:
-        f.write(contents)
+    try:
+        sanitized_name, destination = _resolve_chart_destination(file.filename)
+    except ValueError:
+        safe_name = sanitize_chart_filename(file.filename)
+        logger.warning(
+            "chart_upload.rejected",
+            sanitized_filename=safe_name,
+            reason="outside_upload_dir",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename provided.",
+        ) from None
+
+    try:
+        destination.write_bytes(contents)
+    except OSError as exc:  # pragma: no cover - dependent on filesystem state
+        logger.error(
+            "chart_upload.write_failed",
+            sanitized_filename=sanitized_name,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to store uploaded chart.",
+        ) from exc
+
+    logger.info(
+        "chart_upload.saved",
+        sanitized_filename=sanitized_name,
+        size=len(contents),
+    )
     return {
         "status": "processing",
-        "filename": file.filename,
+        "filename": sanitized_name,
         "size": len(contents),
     }
 
