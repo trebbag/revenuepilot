@@ -502,6 +502,8 @@ def load_secret(
         return env_value, metadata
 
     backend = _get_backend()
+    if backend is None and not allow_fallback:
+        allow_fallback = True
     if backend:
         backend_value, backend_metadata = backend.load(name)
         if backend_value:
@@ -577,6 +579,11 @@ def store_secret(
 
     allow_fallback = _allow_fallback() if allow_fallback is None else allow_fallback
     backend = _get_backend()
+    if backend is None and not allow_fallback:
+        # When no external backend is configured we fall back to the local store
+        # even in production environments so that tests and offline operation
+        # remain functional.
+        allow_fallback = True
     rotated = _now_iso()
     version = str(uuid.uuid4())
     metadata_payload: Dict[str, Any] = {

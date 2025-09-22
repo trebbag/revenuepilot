@@ -27,6 +27,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from backend import db
+
 
 # Default intervals for broad condition categories.  These are defined as
 # constants so they can be reused when configuring or overriding mappings.
@@ -281,6 +283,17 @@ _VISIT_SESSIONS_TABLE = sa.Table(
 )
 
 
+    if conn is not None:
+        return conn
+    if _DB_CONN is not None:
+        return _DB_CONN
+    try:
+        candidate = db.get_sync_connection()
+    except Exception:
+        return None
+    return candidate if isinstance(candidate, sqlite3.Connection) else None
+
+
 def configure_database(
     conn: sqlite3.Connection | sessionmaker[Session] | Engine,
 ) -> None:
@@ -354,6 +367,7 @@ def schedule_session_scope(session: Optional[Session] = None) -> Iterator[Sessio
         yield scoped
     finally:
         scoped.close()
+
 
 _DEFAULT_APPOINTMENT_DURATION = timedelta(minutes=30)
 

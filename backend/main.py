@@ -14,7 +14,6 @@ import copy
 import logging
 import os
 import re
-import shutil
 import time
 import asyncio
 import sys
@@ -100,10 +99,10 @@ except Exception:  # fallback to platformdirs if available
             # Last-resort fallback to home directory subfolder
             return os.path.join(os.path.expanduser('~'), f'.{appname}')
 
-
 import jwt
 import structlog
 from structlog.contextvars import bind_contextvars, unbind_contextvars
+from sqlalchemy.orm import Session
 
 try:  # Load environment variables from a .env file if present
     from dotenv import load_dotenv
@@ -202,6 +201,7 @@ from backend.templates import (
     update_user_template,
     delete_user_template,
 )  # type: ignore
+from backend import db
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -1361,13 +1361,30 @@ async def _broadcast_notification_count(username: str) -> None:
 
 
 # Set up a SQLite database for persistent analytics storage.  The database
-# now lives in the user's data directory (platform-specific) so analytics
-# persist outside the project folder.  A migration step moves any existing
-# database from the old location if found.
-data_dir = user_data_dir(APP_NAME, APP_NAME)
-os.makedirs(data_dir, exist_ok=True)
-DB_PATH = os.path.join(data_dir, "analytics.db")
+# location and connection management are centralised in ``backend.db`` so the
+# same configuration is reused across modules.
+data_dir = str(db.DATA_DIR)
+DB_PATH = str(db.SQLITE_PATH)
 UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", os.path.join(data_dir, "uploaded_charts")))
+
+
+db_conn = db.get_sync_connection()
+# Ensure the events table exists with the latest schema.
+ensure_events_table(db_conn)
+ensure_exports_table(db_conn)
+ensure_patients_table(db_conn)
+ensure_encounters_table(db_conn)
+ensure_visit_sessions_table(db_conn)
+ensure_note_auto_saves_table(db_conn)
+ensure_note_versions_table(db_conn)
+ensure_notifications_table(db_conn)
+ensure_event_aggregates_table(db_conn)
+ensure_compliance_issues_table(db_conn)
+ensure_compliance_rules_table(db_conn)
+ensure_confidence_scores_table(db_conn)
+ensure_notification_counters_table(db_conn)
+ensure_notification_events_table(db_conn)
+patients.configure_database(db_conn)
 
 # Migrate previous database file from the repository directory if it exists
 old_db_path = os.path.join(os.path.dirname(__file__), "analytics.db")
@@ -1428,6 +1445,7 @@ def auth_session_scope() -> Iterator[SQLAlchemySession]:
 
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
+
 configure_schedule_database(db_conn)
 
 
@@ -1472,7 +1490,7 @@ def _template_session(conn: sqlite3.Connection) -> Iterator[Session]:
 
 
 # Keep the compliance ORM bound to the active database connection.
-compliance_engine.configure_engine(db_conn)
+compliance_engine.configure_engine(engine=db.engine)
 
 configure_auth_session_factory(db_conn)
 
@@ -1599,16 +1617,49 @@ def _seed_reference_data(conn: sqlite3.Connection) -> None:
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("reference_data_seed_failed", error=str(exc))
 
-
-def get_db() -> sqlite3.Connection:
-    """FastAPI dependency returning the primary SQLite connection."""
-
-    return db_conn
-
-
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
+
+    db.set_sync_connection(conn)
+    ensure_users_table(conn)
+    ensure_clinics_table(conn)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, username TEXT, action TEXT NOT NULL, details TEXT)"
+    )
+
+    ensure_audit_log_table(conn)
+    ensure_settings_table(conn)
+    ensure_templates_table(conn)
+    ensure_user_profile_table(conn)
+    ensure_events_table(conn)
+    ensure_refresh_table(conn)
+    ensure_session_table(conn)
+    ensure_password_reset_tokens_table(conn)
+    ensure_mfa_challenges_table(conn)
+    ensure_notes_table(conn)
+    ensure_error_log_table(conn)
+    ensure_exports_table(conn)
+    ensure_patients_table(conn)
+    ensure_encounters_table(conn)
+    ensure_visit_sessions_table(conn)
+    ensure_note_auto_saves_table(conn)
+    ensure_session_state_table(conn)
+    ensure_shared_workflow_sessions_table(conn)
+    ensure_compliance_issues_table(conn)
+    ensure_compliance_issue_history_table(conn)
+    ensure_compliance_rules_table(conn)
+    ensure_confidence_scores_table(conn)
+    ensure_notification_counters_table(conn)
+    ensure_compliance_rule_catalog_table(conn)
+    ensure_cpt_codes_table(conn)
+    ensure_icd10_codes_table(conn)
+    ensure_hcpcs_codes_table(conn)
+    ensure_cpt_reference_table(conn)
+    ensure_payer_schedule_table(conn)
+    ensure_billing_audits_table(conn)
+
     create_all_tables(conn)
+
     existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     if existing_patients == 0:
         now = datetime.utcnow().replace(microsecond=0)
@@ -7934,10 +7985,15 @@ async def dashboard_quick_actions(user=Depends(require_role("user"))):
                     start_dt = datetime.fromisoformat(appt["start"])
                 except Exception:
                     continue
-                if start_dt.date() != now_dt.date():
+                if start_dt < now_dt or start_dt >= upper_bound:
                     continue
-                if start_dt >= now_dt:
-                    upcoming += 1
+                diff = start_dt - now_dt
+                if (
+                    start_dt.date() != now_dt.date()
+                    and diff > timedelta(hours=12)
+                ):
+                    continue
+                upcoming += 1
         except Exception:
             upcoming = 0
         return {
@@ -12076,8 +12132,9 @@ async def _compliance_check(
 async def compliance_check(
     req: ComplianceCheckRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(db.get_db),
 ) -> ComplianceCheckResponse:
+    conn = db.session_connection(session)
     return await _compliance_check(req, conn)
 
 
@@ -12262,8 +12319,9 @@ async def compliance_issue_history(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(db.get_db),
 ) -> Dict[str, Any]:
+    conn = db.session_connection(session)
     query = (
         "SELECT issue_id, code, payer, findings, created_at, user_id "
         "FROM compliance_issue_history"
@@ -12954,9 +13012,10 @@ class BillingRequest(BaseModel):
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(db.get_db),
 ):
     """Return estimated reimbursement for CPT codes."""
+    conn = db.session_connection(session)
     cpt_codes = [c.upper() for c in req.cpt]
     result = code_tables.calculate_billing(
         cpt_codes,
@@ -14155,10 +14214,11 @@ async def code_details_batch(
 async def billing_calculate(
     req: BillingRequest,
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(db.get_db),
 ) -> Dict[str, Any]:
     """Calculate total reimbursement and RVUs for provided codes."""
 
+    conn = db.session_connection(session)
     codes_upper = [code.upper() for code in req.codes]
     payer_type = req.payerType or "commercial"
 
@@ -14191,8 +14251,9 @@ async def list_billing_audits(
     end: Optional[float] = Query(None, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(require_role("user")),
-    conn: sqlite3.Connection = Depends(get_db),
+    session: Session = Depends(db.get_db),
 ) -> Dict[str, Any]:
+    conn = db.session_connection(session)
     query = (
         "SELECT audit_id, code, payer, findings, created_at, user_id "
         "FROM billing_audits"

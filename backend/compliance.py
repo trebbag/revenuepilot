@@ -10,7 +10,6 @@ access.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import time
@@ -24,13 +23,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-try:  # prefer appdirs when available
-    from appdirs import user_data_dir  # type: ignore
-except Exception:  # pragma: no cover - fallback for limited environments
-    from platformdirs import user_data_dir  # type: ignore
-
+from backend import db
 from backend.compliance_models import Base, ComplianceRule
-from backend.key_manager import APP_NAME
 
 # ---------------------------------------------------------------------------
 # Rule catalogue
@@ -200,21 +194,21 @@ _SessionLocal: Optional[sessionmaker] = None
 def _default_db_url() -> str:
     """Return the SQLite URL for the analytics database."""
 
-    data_dir = user_data_dir(APP_NAME, APP_NAME)
-    os.makedirs(data_dir, exist_ok=True)
-    db_path = os.path.join(data_dir, "analytics.db")
-    return f"sqlite:///{db_path}"
+    return f"sqlite:///{db.SQLITE_PATH}"
 
 
 def configure_engine(
     connection: Optional[sqlite3.Connection] = None,
     db_url: Optional[str] = None,
+    engine: Optional[Engine] = None,
 ) -> None:
     """Configure the SQLAlchemy engine used for compliance rules."""
 
     global _engine, _SessionLocal
 
-    if connection is not None:
+    if engine is not None:
+        _engine = engine
+    elif connection is not None:
         def _creator() -> sqlite3.Connection:
             return connection
 
@@ -226,11 +220,17 @@ def configure_engine(
         )
     else:
         url = db_url or _default_db_url()
-        _engine = create_engine(
-            url,
-            connect_args={"check_same_thread": False},
-            future=True,
-        )
+        if engine is None and connection is None and not db_url:
+            _engine = db.engine
+        else:
+            connect_args: Dict[str, Any] = {}
+            if url.startswith("sqlite"):
+                connect_args["check_same_thread"] = False
+            _engine = create_engine(
+                url,
+                connect_args=connect_args,
+                future=True,
+            )
 
     Base.metadata.create_all(_engine)
     _SessionLocal = sessionmaker(
@@ -280,7 +280,7 @@ def _seed_rules_if_empty() -> None:
 
 
 # Initialise the engine on import for default usage. Tests may reconfigure it.
-configure_engine()
+configure_engine(engine=db.engine)
 
 
 def _split_rule_payload(
