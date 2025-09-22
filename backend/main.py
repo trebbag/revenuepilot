@@ -139,6 +139,7 @@ from backend.key_manager import (
     store_key,
     store_secret,
 )  # type: ignore
+import backend.db.models as db_models
 from backend.db.models import (
     CPTCode,
     CPTReference,
@@ -218,6 +219,7 @@ from backend.templates import (
     delete_user_template,
 )  # type: ignore
 import backend.database_legacy as db
+get_db = db.get_db
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -226,7 +228,6 @@ from backend.scheduling import (  # type: ignore
     get_appointment,
     apply_bulk_operations,
     configure_database as configure_schedule_database,
-    schedule_session_scope,
 )
 from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
@@ -1489,13 +1490,13 @@ def auth_session_scope() -> Iterator[SQLAlchemySession]:
 db_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 create_all_tables(db_conn)
 
-configure_schedule_database(db_conn)
-
 
 # Keep the compliance ORM bound to the active database connection.
 compliance_engine.configure_engine(engine=db.engine)
 
 configure_auth_session_factory(db_conn)
+if _auth_sessionmaker is not None:
+    configure_schedule_database(_auth_sessionmaker)
 
 
 
@@ -1675,64 +1676,56 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     create_all_tables(conn)
 
 
-    existing_patients = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
-    if existing_patients == 0:
-        now = datetime.utcnow().replace(microsecond=0)
-        last_visit_date = (now - timedelta(days=45)).date().isoformat()
-        allergies = json.dumps(["Penicillin"])
-        medications = json.dumps(["Lisinopril"])
-        conn.execute(
-            """
-            INSERT INTO patients
-                (first_name, last_name, dob, mrn, gender, insurance, last_visit, allergies, medications)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "Alice",
-                "Anderson",
-                "1985-04-12",
-                "MRN-1001",
-                "female",
-                "medicare",
-                last_visit_date,
-                allergies,
-                medications,
-            ),
+    with session_scope(conn) as session:
+        existing_patients = session.scalar(
+            sa.select(sa.func.count()).select_from(db_models.patients)
         )
-        patient_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        encounter_start = now + timedelta(days=1)
-        encounter_end = encounter_start + timedelta(minutes=30)
-        conn.execute(
-            """
-            INSERT INTO encounters (patient_id, date, type, provider, description)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                patient_id,
-                encounter_start.isoformat(),
-                "telehealth",
-                "Dr. Smith",
-                "Telehealth follow-up",
-            ),
-        )
-        encounter_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO visit_sessions (encounter_id, status, start_time, end_time, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                encounter_id,
-                "scheduled",
-                encounter_start.isoformat(),
-                encounter_end.isoformat(),
-                time.time(),
-            ),
-        )
+        if not existing_patients:
+            now = datetime.utcnow().replace(microsecond=0)
+            last_visit_date = (now - timedelta(days=45)).date().isoformat()
+            allergies = json.dumps(["Penicillin"])
+            medications = json.dumps(["Lisinopril"])
+            patient_result = session.execute(
+                db_models.patients.insert().values(
+                    first_name="Alice",
+                    last_name="Anderson",
+                    dob="1985-04-12",
+                    mrn="MRN-1001",
+                    gender="female",
+                    insurance="medicare",
+                    last_visit=last_visit_date,
+                    allergies=allergies,
+                    medications=medications,
+                )
+            )
+            patient_id = int(patient_result.inserted_primary_key[0])
+
+            encounter_start = now + timedelta(days=1)
+            encounter_end = encounter_start + timedelta(minutes=30)
+            encounter_result = session.execute(
+                db_models.encounters.insert().values(
+                    patient_id=patient_id,
+                    date=encounter_start.isoformat(),
+                    type="telehealth",
+                    provider="Dr. Smith",
+                    description="Telehealth follow-up",
+                )
+            )
+            encounter_id = int(encounter_result.inserted_primary_key[0])
+
+            session.execute(
+                db_models.visit_sessions.insert().values(
+                    encounter_id=encounter_id,
+                    status="scheduled",
+                    start_time=encounter_start.isoformat(),
+                    end_time=encounter_end.isoformat(),
+                    updated_at=time.time(),
+                )
+            )
 
     _seed_reference_data(conn)
-    conn.commit()
-    configure_schedule_database(conn)
+    if _auth_sessionmaker is not None:
+        configure_schedule_database(_auth_sessionmaker)
     compliance_engine.configure_engine(conn)
 
 
@@ -12731,7 +12724,7 @@ async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(requ
 
 @app.get("/schedule", response_model=AppointmentList)
 async def list_schedule_appointments(user=Depends(require_role("user"))):
-    with schedule_session_scope() as session:
+    with auth_session_scope() as session:
         items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
@@ -12783,10 +12776,15 @@ async def schedule_bulk_operations(
 ) -> ScheduleBulkSummary:
     if not req.updates:
         return ScheduleBulkSummary(succeeded=0, failed=0)
-    succeeded, failed = apply_bulk_operations(
-        [{"id": item.id, "action": item.action, "time": item.time} for item in req.updates],
-        req.provider,
-    )
+    with auth_session_scope() as session:
+        succeeded, failed = apply_bulk_operations(
+            [
+                {"id": item.id, "action": item.action, "time": item.time}
+                for item in req.updates
+            ],
+            req.provider,
+            session=session,
+        )
     if succeeded:
         _invalidate_dashboard_cache("quick_actions")
 
@@ -12796,7 +12794,7 @@ async def schedule_bulk_operations(
 
 @app.get("/api/schedule/appointments", response_model=AppointmentList)
 async def api_list_appointments(user=Depends(require_role("user"))):
-    with schedule_session_scope() as session:
+    with auth_session_scope() as session:
         items = list_appointments(session=session)
     parsed: List[Appointment] = []
     summaries: Dict[str, Any] = {}
@@ -13550,32 +13548,58 @@ async def validate_encounter_post(
 
 @app.post("/api/visits/session")
 async def start_visit_session(model: VisitSessionCreate, user=Depends(require_role("user"))):
-    now = datetime.utcnow().isoformat()
-    cursor = db_conn.cursor()
-    cursor.execute(
-        "INSERT INTO visit_sessions (encounter_id, status, start_time) VALUES (?, ?, ?)",
-        (model.encounter_id, "started", now),
-    )
-    session_id = cursor.lastrowid
-    db_conn.commit()
+    now = datetime.utcnow().replace(microsecond=0).isoformat()
+    with auth_session_scope() as session:
+        result = session.execute(
+            db_models.visit_sessions.insert().values(
+                encounter_id=model.encounter_id,
+                status="started",
+                start_time=now,
+                end_time=None,
+                updated_at=time.time(),
+            )
+        )
+        session_id = int(result.inserted_primary_key[0])
     return {"sessionId": session_id, "status": "started", "startTime": now}
 
 
 @app.put("/api/visits/session")
 async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_role("user"))):
-    row = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="session not found")
-    end_time = row["end_time"]
-    status = model.action
-    if model.action == "complete":
-        end_time = datetime.utcnow().isoformat()
-    db_conn.execute(
-        "UPDATE visit_sessions SET status=?, end_time=? WHERE id=?",
-        (status, end_time, model.session_id),
-    )
-    db_conn.commit()
-    updated = db_conn.execute("SELECT * FROM visit_sessions WHERE id=?", (model.session_id,)).fetchone()
+    with auth_session_scope() as session:
+        row = (
+            session.execute(
+                sa.select(db_models.visit_sessions).where(
+                    db_models.visit_sessions.c.id == model.session_id
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="session not found")
+
+        end_time = row.get("end_time")
+        status = model.action
+        if model.action == "complete":
+            end_time = datetime.utcnow().replace(microsecond=0).isoformat()
+
+        session.execute(
+            db_models.visit_sessions.update()
+            .where(db_models.visit_sessions.c.id == model.session_id)
+            .values(status=status, end_time=end_time, updated_at=time.time())
+        )
+
+        updated = (
+            session.execute(
+                sa.select(db_models.visit_sessions).where(
+                    db_models.visit_sessions.c.id == model.session_id
+                )
+            )
+            .mappings()
+            .first()
+        )
+
+    assert updated is not None
     return {
         "sessionId": updated["id"],
         "status": updated["status"],

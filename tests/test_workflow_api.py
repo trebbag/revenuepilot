@@ -4,7 +4,17 @@ from typing import Any, Dict
 import pytest
 
 import backend.main as main
-from backend.db import models as db_models
+import backend.db.models as db_models
+
+
+@pytest.fixture
+def client(api_client, db_session):
+    password = main.hash_password("pw")
+    db_session.execute(
+        db_models.users.insert().values(username="alice", password_hash=password, role="user")
+    )
+    db_session.commit()
+    return api_client
 
 
 @pytest.fixture
@@ -20,6 +30,7 @@ def create_user(db_session):
         return user
 
     return _create
+
 
 
 def auth_header(token: str) -> Dict[str, str]:

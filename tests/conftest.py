@@ -161,7 +161,7 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     raw_connection = connection.connection
     if hasattr(raw_connection, "driver_connection"):
         raw_connection = raw_connection.driver_connection
-    if hasattr(raw_connection, "connection"):
+    elif hasattr(raw_connection, "connection"):
         raw_connection = raw_connection.connection
     assert isinstance(raw_connection, sqlite3.Connection)
     raw_connection.row_factory = sqlite3.Row
