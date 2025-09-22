@@ -70,5 +70,30 @@ formatting.【F:package.json†L13-L36】【F:ci.sh†L1-L80】
 
 Comprehensive documentation now lives in [`docs/README.md`](docs/README.md),
 which links to the architecture guide, offline model setup, prompt
-customisation, desktop packaging, and API regression playbooks. Historical
-planning material has been archived under [`docs/archive/`](docs/archive).
+customisation, desktop packaging, API regression playbooks, and the new
+[`Production Database & RDS Operations`](docs/RDS_OPERATIONS.md) guide.
+Historical planning material has been archived under
+[`docs/archive/`](docs/archive).
+
+### Production database expectations
+
+RevenuePilot targets Amazon RDS for PostgreSQL in production. Follow the
+[`RDS operations guide`](docs/RDS_OPERATIONS.md) for detailed instructions,
+with the following highlights:
+
+- **Provisioning** – Create Multi-AZ instances with storage encryption,
+  automated backups (≥7 days), TLS enforced via `rds-ca-rsa2048-g1`, and
+  CloudWatch log exports for PostgreSQL error/slow logs.
+- **Networking** – Place instances in private subnets, restrict security
+  groups to the application tier, and stream CloudTrail plus RDS events for
+  auditing.
+- **Credentials** – Maintain separate `migration` (DDL) and `app_user`
+  (DML) roles, rotate passwords through AWS Secrets Manager or Parameter
+  Store, and retrieve secrets at runtime without echoing them to logs.
+- **Runtime config** – Set TLS and pooling environment variables such as
+  `PGSSLROOTCERT`, `PGSSLMODE=verify-full`, `PGCONNECT_TIMEOUT`, pool sizes,
+  and statement timeouts tuned for RDS defaults.
+- **Runbook** – Before every migration capture a snapshot, execute the
+  Alembic upgrade with the `migration` role, validate row counts, run smoke
+  tests, and be prepared to downgrade or restore from backups if
+  verification fails.
