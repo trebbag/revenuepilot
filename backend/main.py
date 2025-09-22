@@ -149,7 +149,7 @@ from backend.db.models import (
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
-from backend.db import (
+from backend.database_legacy import (
     DATABASE_PATH,
     get_connection,
     get_session,
@@ -210,7 +210,7 @@ from backend.templates import (
     update_user_template,
     delete_user_template,
 )  # type: ignore
-from backend import db
+import backend.database_legacy as db
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
 from backend.scheduling import (  # type: ignore
     create_appointment,
@@ -1386,7 +1386,7 @@ async def _broadcast_notification_count(username: str) -> None:
 
 
 # Set up a SQLite database for persistent analytics storage.  Connection
-# creation and schema initialisation live in ``backend.db`` so the dependency
+# creation and schema initialisation live in ``backend.database_legacy`` so the dependency
 # can be shared across the application and tests.
 data_dir = DATABASE_PATH.parent
 data_dir.mkdir(parents=True, exist_ok=True)
@@ -1395,7 +1395,7 @@ UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", str(data_dir / "uploaded_charts"
 db_conn = get_connection()
 
 # Set up a SQLite database for persistent analytics storage.  The database
-# location and connection management are centralised in ``backend.db`` so the
+# location and connection management are centralised in ``backend.database_legacy`` so the
 # same configuration is reused across modules.
 data_dir = str(db.DATA_DIR)
 DB_PATH = str(db.SQLITE_PATH)
@@ -1577,7 +1577,7 @@ _prune_analytics_if_needed()
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     initialise_schema(conn)
-    from backend import db as db_helpers
+    import backend.database_legacy as db_helpers
 
     db_helpers.use_connection(conn)
     conn.row_factory = sqlite3.Row

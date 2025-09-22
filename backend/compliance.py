@@ -23,7 +23,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend import db
+import backend.database_legacy as db
 from backend.compliance_models import Base, ComplianceRule
 
 # ---------------------------------------------------------------------------

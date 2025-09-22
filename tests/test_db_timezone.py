@@ -1,11 +1,11 @@
 import sqlalchemy as sa
 
-from backend.db import models
+from backend.db import models as db_models
 
 
 def test_all_datetime_columns_are_timezone_aware():
     tz_columns = []
-    for table in models.Base.metadata.sorted_tables:
+    for table in db_models.Base.metadata.sorted_tables:
         for column in table.columns:
             if isinstance(column.type, sa.DateTime):
                 tz_columns.append((table.name, column.name))
