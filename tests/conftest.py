@@ -159,6 +159,10 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     )
     connection = engine.connect()
     raw_connection = connection.connection
+    if hasattr(raw_connection, "driver_connection"):
+        raw_connection = raw_connection.driver_connection
+    if hasattr(raw_connection, "connection"):
+        raw_connection = raw_connection.connection
     assert isinstance(raw_connection, sqlite3.Connection)
     raw_connection.row_factory = sqlite3.Row
 
@@ -175,7 +179,6 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     main.notification_counts = main.NotificationStore()
     main.events = []
     main.transcript_history = defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT))
-    main.app.dependency_overrides[main.get_db] = lambda: raw_connection
 
     from backend import db as db_module
 
@@ -210,10 +213,12 @@ def in_memory_db() -> Iterator[DatabaseContext]:
         yield context
     finally:
         session_factory.close_all()
+
         from backend import db as db_module
 
         main.app.dependency_overrides.pop(main.get_db, None)
         main.app.dependency_overrides.pop(db_module.get_session, None)
+
         try:
             raw_connection.close()
         except Exception:

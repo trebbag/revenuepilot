@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urljoin
@@ -36,6 +37,12 @@ EHR_PATIENT_DETAIL_ENDPOINT = os.getenv("EHR_PATIENT_DETAIL_ENDPOINT", "/patient
 EHR_PATIENT_TIMEOUT = float(os.getenv("EHR_PATIENT_TIMEOUT", "5"))
 EHR_PATIENT_API_KEY = os.getenv("EHR_PATIENT_API_KEY")
 EHR_PATIENT_AUTH_HEADER = os.getenv("EHR_PATIENT_AUTH_HEADER", "Authorization")
+
+
+def configure_database(conn: sqlite3.Connection) -> None:
+    """Backwards compatibility hook; schema is managed via migrations."""
+
+    del conn  # intentionally unused
 
 
 def _deserialize_json_list(value: Any) -> List[str]:
