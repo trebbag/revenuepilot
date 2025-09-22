@@ -72,6 +72,33 @@ runs in CI and production deployments):
 backend/venv/bin/python -m alembic -c backend/alembic/alembic.ini upgrade head
 ```
 
+### Database migration preflight checklist
+
+Run the automated checklist before promoting the managed Postgres
+cluster. It validates both databases, ensures migrations are applied and
+forces an explicit acknowledgement that operational guardrails are in
+place:
+
+```bash
+backend/venv/bin/python scripts/preflight_db_migration.py \
+  --sqlite-path /var/backups/revenuepilot.sqlite \
+  --postgres-url "$DATABASE_URL" \
+  --aws-rds-ca-path /etc/ssl/certs/rds-combined-ca-bundle.pem \
+  --confirm-backups \
+  --confirm-maintenance-window \
+  --confirm-alerting
+```
+
+The script opens the SQLite database read-only, executes `SELECT 1`
+against Postgres (injecting the AWS RDS CA bundle when provided) and
+reports any Alembic revisions missing from the target database before
+exiting. Passing the confirmation flags tells CI/CD that RDS backups
+(automated snapshots plus a manual pre-cutover snapshot), the migration
+maintenance window and alerting/on-call integrations are all ready.
+Wire the command into the deployment pipeline immediately before the
+cutover step so failures halt the release while there is still time to
+correct course.【F:scripts/preflight_db_migration.py†L1-L202】
+
 ### Start the full stack
 
 Use the helper script to launch FastAPI and the Vite frontend together.
@@ -336,6 +363,23 @@ backend can enforce policies. Hosted environments should set
 platform-provided variables) and leave `SECRETS_FALLBACK=never`; the
 development scripts only provision local fallbacks when `ENVIRONMENT` is
 a development value.【F:backend/key_manager.py†L85-L520】【F:start.sh†L1-L64】
+
+### Post-migration monitoring and audit trails
+
+After the switchover, monitor `pg_stat_activity` to verify connection
+patterns and spot idle-in-transaction sessions that would hold locks.
+Pair it with the provider’s connection pool metrics (e.g. RDS
+`DatabaseConnections`, `MaximumUsedTransactionIDs`) and alerts when
+either approaches configured `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` ceilings.
+Collect statement timeout events by enabling Postgres `log_min_duration_statement`
+or CloudWatch/RDS performance insights so slow queries and cancelled
+statements triggered by `STATEMENT_TIMEOUT_MS` are visible to operators.
+
+For HIPAA-aligned auditing, stream the `audit_log` table to a write-once
+store or SIEM, retaining username, IP address, user agent and success
+metadata captured by the backend whenever a privileged action occurs.
+Admins can also retrieve the audit history through the `/audit`
+endpoint exposed by the FastAPI service.【F:backend/main.py†L1849-L1950】【F:backend/main.py†L4492-L4519】
 
 
 ## Additional references
