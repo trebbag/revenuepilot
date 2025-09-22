@@ -6,6 +6,7 @@ import App from '../App.jsx';
 
 vi.mock('../api.js', () => ({
   pingBackend: vi.fn().mockResolvedValue(true),
+  fetchAuthPolicy: vi.fn().mockResolvedValue({ lockoutThreshold: 5, lockoutDurationSeconds: 900 }),
   getSettings: vi.fn().mockResolvedValue({
     theme: 'modern',
     lang: 'en',

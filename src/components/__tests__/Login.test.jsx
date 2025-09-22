@@ -4,7 +4,13 @@ import { render, fireEvent, waitFor, cleanup, screen } from '@testing-library/re
 import { vi, expect, test, beforeEach, afterEach } from 'vitest';
 import '../../i18n.js';
 
-vi.mock('../../api.js', () => ({ login: vi.fn(), register: vi.fn(), pingBackend: vi.fn().mockResolvedValue(true), resetPassword: vi.fn() }));
+vi.mock('../../api.js', () => ({
+  login: vi.fn(),
+  register: vi.fn(),
+  pingBackend: vi.fn().mockResolvedValue(true),
+  resetPassword: vi.fn(),
+  fetchAuthPolicy: vi.fn().mockResolvedValue({ lockoutThreshold: 5, lockoutDurationSeconds: 900 }),
+}));
 import { login } from '../../api.js';
 import Login from '../Login.jsx';
 

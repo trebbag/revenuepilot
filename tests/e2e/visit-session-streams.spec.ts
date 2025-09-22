@@ -86,6 +86,7 @@ test.describe('Suggestion panel live websocket indicators', () => {
     })
 
     await page.route('**/health', route => route.fulfill({ status: 200, body: 'ok' }))
+    await page.route('**/auth/policy', route => route.fulfill({ json: { lockoutThreshold: 5, lockoutDurationSeconds: 900 } }))
     await page.route('**/api/user/profile', route =>
       route.fulfill({
         json: {

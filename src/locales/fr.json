@@ -210,7 +210,12 @@
     "currentPassword": "Mot de passe actuel",
     "pleaseWait": "Veuillez patienter…",
     "checking": "Vérification…",
-    "retry": "Réessayer"
+    "retry": "Réessayer",
+    "lockoutNotice": "Les comptes sont verrouillés après {{threshold}} tentatives échouées pendant {{minutes}} minutes.",
+    "remainingAttemptsWarning": "Attention : il reste {{count}} tentatives avant un verrouillage de {{minutes}} minutes.",
+    "repeatedFailuresAlert": "Les échecs répétés déclenchent des alertes de sécurité. Vérifiez vos identifiants.",
+    "accountLocked": "Ce compte est verrouillé. Réessayez dans environ {{minutes}} minutes ou contactez l’assistance.",
+    "rateLimited": "Trop de tentatives. Patientez avant de réessayer."
   },
   "logs": {
     "title": "Event Log",

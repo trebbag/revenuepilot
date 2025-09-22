@@ -210,7 +210,12 @@
     "currentPassword": "Contraseña actual",
     "pleaseWait": "Espere…",
     "checking": "Verificando…",
-    "retry": "Reintentar"
+    "retry": "Reintentar",
+    "lockoutNotice": "Las cuentas se bloquean después de {{threshold}} intentos fallidos durante {{minutes}} minutos.",
+    "remainingAttemptsWarning": "Advertencia: quedan {{count}} intentos antes de un bloqueo de {{minutes}} minutos.",
+    "repeatedFailuresAlert": "Los fallos repetidos generan alertas de seguridad. Verifique sus credenciales.",
+    "accountLocked": "Esta cuenta está bloqueada. Vuelva a intentarlo en aproximadamente {{minutes}} minutos o contacte al soporte.",
+    "rateLimited": "Demasiados intentos. Espere un momento antes de intentarlo nuevamente."
   },
   "logs": {
     "title": "Registro de eventos",

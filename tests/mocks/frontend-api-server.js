@@ -556,6 +556,10 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.get('/auth/policy', (_req, res) => {
+  res.json({ lockoutThreshold: 5, lockoutDurationSeconds: 15 * 60 });
+});
+
 app.post('/__mock__/auth/state', (req, res) => {
   const { authenticated, user } = req.body || {};
   if (typeof authenticated === 'boolean') {

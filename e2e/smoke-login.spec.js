@@ -17,6 +17,7 @@ test('smoke: login, beautify, suggestions', async () => {
 
   // Stub endpoints
   await win.route('**/health', route => route.fulfill({ status: 200, body: 'ok' }));
+  await win.route('**/auth/policy', route => route.fulfill({ json: { lockoutThreshold: 5, lockoutDurationSeconds: 900 } }));
   await win.route('**/login', route => route.fulfill({ json: { access_token: 'token', refresh_token: 'rt', settings: { theme: 'modern', categories: {} } } }));
   await win.route('**/settings', route => route.fulfill({ json: { theme: 'modern', categories: {} } }));
   await win.route('**/beautify', route => route.fulfill({ json: { beautified: 'Beautified content' } }));
