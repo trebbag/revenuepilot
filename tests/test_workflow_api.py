@@ -1,27 +1,20 @@
-import sqlite3
 import time
 from typing import Dict, Any
 
 import pytest
-from fastapi.testclient import TestClient
 
 import backend.main as main
-from backend.main import _init_core_tables
+import backend.db.models as db_models
 
 
 @pytest.fixture
-def client(monkeypatch):
-    main.db_conn = sqlite3.connect(":memory:", check_same_thread=False)
-    main.db_conn.row_factory = sqlite3.Row
-    _init_core_tables(main.db_conn)
+def client(api_client, db_session):
     password = main.hash_password("pw")
-    main.db_conn.execute(
-        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-        ("alice", password, "user"),
+    db_session.execute(
+        db_models.users.insert().values(username="alice", password_hash=password, role="user")
     )
-    main.db_conn.commit()
-    monkeypatch.setattr(main, "db_conn", main.db_conn)
-    return TestClient(main.app)
+    db_session.commit()
+    return api_client
 
 
 def auth_header(token: str) -> Dict[str, str]:

@@ -23,6 +23,12 @@ import requests
 from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.orm import Session
 
+
+def configure_database(_conn) -> None:
+    """Compatibility shim retained for legacy database initialisers."""
+
+    return None
+
 from backend import models as sa_models
 
 from backend.time_utils import ensure_utc, from_epoch_seconds

@@ -28,6 +28,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import backend.database_legacy as db
+try:  # pragma: no cover - circular import safe guard during initialisation
+    from backend import db as db_module
+except Exception:  # pragma: no cover - fallback when backend.db not yet available
+    db_module = None  # type: ignore[assignment]
 
 
 # Default intervals for broad condition categories.  These are defined as
@@ -246,6 +250,24 @@ _ENGINE: Optional[Engine] = None
 _SESSION_FACTORY: Optional[sessionmaker[Session]] = None
 
 
+def _backend_session_factory() -> Optional[sessionmaker[Session]]:
+    """Return the global session factory from ``backend.db`` if available."""
+
+    if db_module is not None:
+        candidate = getattr(db_module, "SessionLocal", None)
+        if isinstance(candidate, sessionmaker):
+            return candidate
+    return None
+
+
+def _current_session_factory() -> Optional[sessionmaker[Session]]:
+    """Return the configured session factory, falling back to ``backend.db``."""
+
+    if _SESSION_FACTORY is not None:
+        return _SESSION_FACTORY
+    return _backend_session_factory()
+
+
 _METADATA = sa.MetaData()
 
 _PATIENTS_TABLE = sa.Table(
@@ -295,11 +317,20 @@ def reset_state() -> None:
 def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[sqlite3.Connection]:
     """Return an active SQLite connection if available."""
 
-
     if conn is not None:
         return conn
-    if _DB_CONN is not None:
-        return _DB_CONN
+
+    factory = _current_session_factory()
+    if factory is not None:
+        session = factory()
+        try:
+            resolved = db.resolve_session_connection(session)
+        except Exception:
+            session.close()
+        else:
+            session.close()
+            return resolved
+
     try:
         candidate = db.get_sync_connection()
     except Exception:
@@ -308,21 +339,34 @@ def _resolve_connection(conn: Optional[sqlite3.Connection] = None) -> Optional[s
 
 
 def configure_database(
-    conn: sqlite3.Connection | sessionmaker[Session] | Engine,
+    conn: sqlite3.Connection | sessionmaker[Session] | Engine | None,
 ) -> None:
     """Configure the session factory used for scheduling helpers."""
 
     global _ENGINE, _SESSION_FACTORY
 
+    if conn is None:
+        backend_factory = _backend_session_factory()
+        if backend_factory is not None:
+            _SESSION_FACTORY = backend_factory
+            _ENGINE = getattr(backend_factory, "bind", None)
+        return
+
     if isinstance(conn, sessionmaker):
         _SESSION_FACTORY = conn
-        _ENGINE = None
+        _ENGINE = getattr(conn, "bind", None)
         return
 
     engine: Engine
     if isinstance(conn, Engine):
         engine = conn
     else:
+        backend_factory = _backend_session_factory()
+        if backend_factory is not None:
+            _SESSION_FACTORY = backend_factory
+            _ENGINE = getattr(backend_factory, "bind", None)
+            return
+
         def _creator(connection: sqlite3.Connection = conn) -> sqlite3.Connection:
             return connection
 
@@ -353,11 +397,12 @@ def _optional_session(provided: Optional[Session] = None) -> Iterator[Optional[S
         yield provided
         return
 
-    if _SESSION_FACTORY is None:
+    factory = _current_session_factory()
+    if factory is None:
         yield None
         return
 
-    session = _SESSION_FACTORY()
+    session = factory()
     try:
         yield session
     finally:
@@ -372,10 +417,11 @@ def schedule_session_scope(session: Optional[Session] = None) -> Iterator[Sessio
         yield session
         return
 
-    if _SESSION_FACTORY is None:
+    factory = _current_session_factory()
+    if factory is None:
         raise RuntimeError("Scheduling session factory is not configured")
 
-    scoped = _SESSION_FACTORY()
+    scoped = factory()
     try:
         yield scoped
     finally:
