@@ -120,6 +120,9 @@ _UNIT_NORMALIZATION = {
     "g/dl": "g/dL",
     "g\u2215dl": "g/dL",
     "mg/dl": "mg/dL",
+    "mg": "mg",
+    "mcg": "mcg",
+    "g": "g",
     "%": "%",
     "iu": "[iU]",
     "units": "[iU]",
@@ -191,12 +194,16 @@ class ClinicalFactExtractor:
                     "snomed": meta["snomed"],
                     "label": meta["label"],
                     "status": "active",
+                    "value": "active",
+                    "unit": None,
                 }
                 history_entry = {
                     "date": iso_date,
                     "section": section["label"],
                     "status": "active",
                     "evidence": [anchor],
+                    "value": "active",
+                    "unit": None,
                 }
                 self._register_fact(collector, (payload["code"], payload["label"]), payload, history_entry)
                 metrics["problems"]["normalized"] += 1
@@ -222,6 +229,8 @@ class ClinicalFactExtractor:
                 anchor = self._anchor(document, start, end)
                 details = self._parse_medication_details(context)
                 iso_date = self._resolve_date(document, start, end)
+                dose_value = details.get("dose")
+                dose_unit = details.get("dose_unit")
                 payload = {
                     "rxnorm": meta["rxnorm"],
                     "snomed": meta["snomed"],
@@ -230,11 +239,16 @@ class ClinicalFactExtractor:
                     "dose_unit": details.get("dose_unit"),
                     "route": details.get("route"),
                     "frequency": details.get("frequency"),
+                    "value": dose_value,
+                    "unit": dose_unit,
+                    "dose_text": details.get("dose_text"),
                 }
                 history_entry = {
                     "date": iso_date,
                     "section": section["label"],
-                    "value": details.get("value"),
+                    "value": dose_value,
+                    "unit": dose_unit,
+                    "dose_text": details.get("dose_text"),
                     "evidence": [anchor],
                     "context": context.strip(),
                 }
@@ -275,11 +289,15 @@ class ClinicalFactExtractor:
                     "label": meta["label"],
                     "snomed": meta["snomed"],
                     "severity": severity_match.group(1).lower() if severity_match else None,
+                    "value": severity_match.group(1).lower() if severity_match else "documented",
+                    "unit": None,
                 }
                 history_entry = {
                     "date": iso_date,
                     "section": section["label"],
                     "evidence": [anchor],
+                    "value": payload["value"],
+                    "unit": None,
                 }
                 self._register_fact(collector, meta["label"].lower(), payload, history_entry)
                 metrics["allergies"]["normalized"] += 1
@@ -302,14 +320,19 @@ class ClinicalFactExtractor:
                 unit = match.group("unit") or lab.get("default_unit")
                 normalized_unit = self._normalize_unit(unit)
                 iso_date = self._resolve_date(document, start, end)
+                inline_date = self._find_inline_date(segment, match.end())
+                if inline_date:
+                    iso_date = inline_date
+                numeric_value = float(value) if value else None
                 payload = {
                     "label": lab["label"],
                     "loinc": lab["loinc"],
                     "unit": normalized_unit,
+                    "value": numeric_value,
                 }
                 history_entry = {
                     "date": iso_date,
-                    "value": float(value) if value else None,
+                    "value": numeric_value,
                     "unit": normalized_unit,
                     "section": section["label"],
                     "evidence": [anchor],
@@ -354,15 +377,16 @@ class ClinicalFactExtractor:
                 end = start + len(line)
                 anchor = self._anchor(document, start, end)
                 iso_date = iso_date or self._resolve_date(document, start, end)
-                payload = {
-                    "label": lab["label"],
-                    "loinc": lab["loinc"],
-                    "unit": normalized_unit,
-                }
                 try:
                     numeric_value = float(value)
                 except ValueError:
                     continue
+                payload = {
+                    "label": lab["label"],
+                    "loinc": lab["loinc"],
+                    "unit": normalized_unit,
+                    "value": numeric_value,
+                }
                 history_entry = {
                     "date": iso_date,
                     "value": numeric_value,
@@ -399,6 +423,7 @@ class ClinicalFactExtractor:
                     "label": vital["label"],
                     "loinc": vital["loinc"],
                     "unit": vital["unit"],
+                    "value": value,
                 }
                 history_entry = {
                     "date": iso_date,
@@ -470,12 +495,20 @@ class ClinicalFactExtractor:
         ):
             history.append(dict(history_entry))
         history.sort(key=lambda item: (item.get("date") or "", item.get("value") or ""), reverse=True)
-        entry.update({k: v for k, v in payload.items() if v is not None})
+        filtered_payload = {k: v for k, v in payload.items() if k not in {"unit", "value"} and v is not None}
+        entry.update(filtered_payload)
+        if "unit" in payload:
+            entry["unit"] = payload.get("unit")
+        if "value" in payload and payload.get("value") is not None:
+            entry["value"] = payload.get("value")
         if history:
-            entry["last_observed"] = history[0].get("date")
-            entry["evidence"] = history[0].get("evidence", [])
-            if history[0].get("value") is not None:
-                entry["value"] = history[0]["value"]
+            latest = history[0]
+            entry["last_observed"] = latest.get("date")
+            entry["date"] = latest.get("date")
+            entry["evidence"] = latest.get("evidence", [])
+            entry["value"] = latest.get("value")
+            if "unit" in latest:
+                entry["unit"] = latest.get("unit")
 
     def _finalize_collection(self, collection: Mapping[Any, Dict[str, Any]]) -> List[Dict[str, Any]]:
         items = []
@@ -501,12 +534,20 @@ class ClinicalFactExtractor:
         window_start = max(0, start - window_radius)
         window_end = min(len(document.text), end + window_radius)
         window = document.text[window_start:window_end]
+        anchor = start
+        best: Optional[Tuple[int, str]] = None
         for pattern, fmt in _DATE_PATTERNS:
-            match = pattern.search(window)
-            if match:
+            for match in pattern.finditer(window):
                 normalized = self._normalize_date_string(match.group(0), fmt)
-                if normalized:
-                    return normalized
+                if not normalized:
+                    continue
+                absolute_start = window_start + match.start()
+                absolute_end = window_start + match.end()
+                distance = min(abs(absolute_start - anchor), abs(absolute_end - anchor))
+                if not best or distance < best[0]:
+                    best = (distance, normalized)
+        if best:
+            return best[1]
         return document.uploaded_at.date().isoformat()
 
     def _normalize_date_string(self, value: str, fmt: Optional[str]) -> Optional[str]:
@@ -528,15 +569,32 @@ class ClinicalFactExtractor:
                 return dt.date().isoformat()
         return None
 
+    def _find_inline_date(self, text: str, start: int) -> Optional[str]:
+        window = text[start : start + 80]
+        for pattern, fmt in _DATE_PATTERNS:
+            match = pattern.search(window)
+            if not match:
+                continue
+            normalized = self._normalize_date_string(match.group(0), fmt)
+            if normalized:
+                return normalized
+        return None
+
     def _parse_medication_details(self, context: str) -> Dict[str, Any]:
         lowered = context.lower()
         details: Dict[str, Any] = {}
-        dose_match = re.search(r"(\d+(?:\.\d+)?)\s*(mg|mcg|g|units|iu|tablet|tab|capsule|ml)", lowered)
+        dose_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(mg|mcg|g|units|iu|tablet|tab|capsule|ml)",
+            context,
+            re.IGNORECASE,
+        )
         if dose_match:
-            details["dose"] = float(dose_match.group(1))
-            unit = self._normalize_unit(dose_match.group(2))
+            amount = float(dose_match.group(1))
+            raw_unit = dose_match.group(2)
+            unit = self._normalize_unit(raw_unit)
+            details["dose"] = amount
             details["dose_unit"] = unit
-            details["value"] = f"{dose_match.group(1)} {unit}"
+            details["dose_text"] = f"{dose_match.group(1)} {raw_unit.strip()}"
         freq_match = re.search(r"\b(bid|tid|qd|qam|qhs|qod|q4h|q6h|weekly|daily|once daily|twice daily)\b", lowered)
         if freq_match:
             details["frequency"] = _FREQUENCY_MAP.get(freq_match.group(1), freq_match.group(1).upper())

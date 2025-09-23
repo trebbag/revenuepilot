@@ -81,11 +81,26 @@ def test_chart_context_pipeline_progress(authed_client):
     payload = snapshot.json()
     assert payload["stage"] in {"indexed", "deep"}
     problems = payload["summary"]["problems"]
-    assert any(entry.get("code") == "E11.9" for entry in problems)
+    diabetes = next(entry for entry in problems if entry.get("code") == "E11.9")
+    assert diabetes.get("value") == "active"
+    assert diabetes.get("date") is not None
+    assert diabetes.get("evidence")
+
     meds = payload["summary"]["medications"]
-    assert any("Metformin" in entry.get("label", "") for entry in meds)
+    metformin = next(entry for entry in meds if entry.get("label") == "Metformin")
+    assert metformin.get("rxnorm") == "860975"
+    assert metformin.get("unit") == "mg"
+    assert metformin.get("value") == pytest.approx(500.0)
+    assert metformin.get("date")
+    assert metformin.get("evidence")
+
     labs = payload["summary"]["labs"]
-    assert any(entry.get("label") == "Hemoglobin" for entry in labs)
+    hemoglobin = next(entry for entry in labs if entry.get("label") == "Hemoglobin")
+    assert hemoglobin.get("loinc") == "718-7"
+    assert hemoglobin.get("unit") == "g/dL"
+    assert hemoglobin.get("value") == pytest.approx(12.9)
+    assert hemoglobin.get("date") == "2025-09-01"
+    assert hemoglobin.get("evidence")
 
     doc2 = (
         "Follow up visit. BP 130/82 recorded. Hemoglobin 13.1 g/dL on 2025-09-10."
