@@ -10,6 +10,7 @@ each endpoint returns a sensible fallback.
 
 from __future__ import annotations
 
+import base64
 import copy
 import logging
 import os
@@ -22,6 +23,7 @@ import uuid
 import secrets
 import math
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo
 import sqlalchemy as sa
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -158,6 +160,7 @@ from backend.db.models import (
 from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
+from backend.time_utils import ensure_utc, utc_now
 from backend.database_legacy import (
     DATABASE_PATH,
     SessionLocal,
@@ -13057,15 +13060,385 @@ class Appointment(BaseModel):
     start: datetime
     end: datetime
     provider: Optional[str] = None
+    providerId: Optional[str] = None
     status: str = "scheduled"
     patientId: Optional[str] = None
     encounterId: Optional[str] = None
     location: Optional[str] = None
+    locationId: Optional[str] = None
+    appointmentType: Optional[str] = None
+    notes: Optional[str] = None
+    correlationId: Optional[str] = None
+    session: Optional[Dict[str, Any]] = None
     visitSummary: Optional[Dict[str, Any]] = None
 
 class AppointmentList(BaseModel):
     appointments: List[Appointment]
     visitSummaries: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ChartUploadPayload(BaseModel):
+    filename: str
+    data: str
+    contentType: Optional[str] = Field(default=None, alias="contentType")
+    profile: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+class ScheduleAppointmentCreate(BaseModel):
+    patientId: str
+    providerId: Optional[str] = None
+    start: datetime
+    end: Optional[datetime] = None
+    type: Optional[str] = None
+    locationId: Optional[str] = None
+    notes: Optional[str] = None
+    timeZone: Optional[str] = Field(default=None, alias="timeZone")
+    allowOverlap: bool = Field(default=False, alias="allowOverlap")
+    locationCapacity: Optional[int] = Field(default=None, alias="locationCapacity", ge=1)
+    chart: Optional[ChartUploadPayload] = None
+    chartUpload: Optional[ChartUploadPayload] = Field(default=None, alias="chartUpload")
+    metadata: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_legacy_fields(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        data = dict(values)
+        if "patientId" not in data and data.get("patient"):
+            data["patientId"] = data.get("patient")
+        if "providerId" not in data and data.get("provider"):
+            data["providerId"] = data.get("provider")
+        if data.get("type") is None and data.get("reason"):
+            data["type"] = data.get("reason")
+        if data.get("notes") is None and data.get("reason"):
+            data["notes"] = data.get("reason")
+        if "locationId" not in data and data.get("location"):
+            data["locationId"] = data.get("location")
+        if "chart" not in data and data.get("chartUpload"):
+            data["chart"] = data.get("chartUpload")
+        return data
+
+
+def _appointment_from_record(record: Mapping[str, Any]) -> Appointment:
+    data = dict(record)
+    start_dt = scheduling_module._parse_datetime(data.get("start"))
+    end_dt = scheduling_module._parse_datetime(data.get("end"))
+    if start_dt is None:
+        start_dt = ensure_utc(datetime.utcnow())
+    if end_dt is None:
+        end_dt = start_dt + timedelta(minutes=30)
+    data["start"] = start_dt
+    data["end"] = end_dt
+    return Appointment(**data)
+
+
+def _normalise_schedule_datetime(value: datetime, timezone_name: Optional[str]) -> datetime:
+    if value.tzinfo is None:
+        if timezone_name:
+            try:
+                zone = ZoneInfo(timezone_name)
+            except Exception as exc:  # pragma: no cover - invalid timezone edge
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unsupported timezone '{timezone_name}'",
+                ) from exc
+            value = value.replace(tzinfo=zone)
+        else:
+            value = value.replace(tzinfo=timezone.utc)
+    return ensure_utc(value)
+
+
+def _resolve_patient_identifier(session: Session, identifier: str) -> int:
+    text = (identifier or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="patientId is required")
+
+    numeric_id: Optional[int] = None
+    try:
+        numeric_id = int(text)
+    except ValueError:
+        numeric_id = None
+
+    if numeric_id is not None:
+        row = session.execute(
+            sa.select(db_models.Patient.id).where(db_models.Patient.id == numeric_id)
+        ).scalar_one_or_none()
+        if row is not None:
+            return int(row)
+
+    row = session.execute(
+        sa.select(db_models.Patient.id).where(db_models.Patient.mrn == text)
+    ).scalar_one_or_none()
+    if row is not None:
+        return int(row)
+
+    raise HTTPException(status_code=404, detail="Patient not found")
+
+
+def _slot_is_available(
+    records: Sequence[Mapping[str, Any]],
+    start: datetime,
+    end: datetime,
+    provider_id: Optional[str],
+    location_id: Optional[str],
+    *,
+    location_capacity: Optional[int],
+    allow_overlap: bool,
+) -> Tuple[bool, Optional[str]]:
+    provider_key = (provider_id or "").strip().casefold()
+    location_key = (location_id or "").strip().casefold()
+    active_location = 0
+    for record in records:
+        status_value = (record.get("status") or "").strip().lower()
+        if status_value in {"cancelled", "canceled", "completed"}:
+            continue
+        rec_start = scheduling_module._parse_datetime(record.get("start"))
+        rec_end = scheduling_module._parse_datetime(record.get("end"))
+        if rec_start is None:
+            continue
+        if rec_end is None:
+            rec_end = rec_start + timedelta(minutes=30)
+        if not (start < rec_end and rec_start < end):
+            continue
+        rec_provider = (record.get("providerId") or record.get("provider") or "").strip().casefold()
+        if provider_key and rec_provider == provider_key and not allow_overlap:
+            return False, "provider"
+        rec_location = (record.get("locationId") or record.get("location") or "").strip().casefold()
+        if location_key and rec_location == location_key:
+            active_location += 1
+    if location_key and location_capacity is not None and active_location >= location_capacity:
+        return False, "location"
+    return True, None
+
+
+def _format_schedule_datetime(dt: datetime, timezone_name: Optional[str]) -> str:
+    if timezone_name:
+        try:
+            zone = ZoneInfo(timezone_name)
+        except Exception:
+            zone = timezone.utc
+        return ensure_utc(dt).astimezone(zone).replace(microsecond=0).isoformat()
+    return ensure_utc(dt).replace(microsecond=0).isoformat()
+
+
+async def _process_inline_chart_upload(
+    patient_identifier: str, payload: ChartUploadPayload
+) -> Optional[str]:
+    data = payload.data.strip() if isinstance(payload.data, str) else ""
+    if not data:
+        return None
+    try:
+        contents = base64.b64decode(data)
+    except Exception as exc:  # pragma: no cover - malformed payload
+        raise HTTPException(status_code=400, detail="Invalid chart payload") from exc
+    if not contents:
+        raise HTTPException(status_code=400, detail="Chart payload is empty")
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        sanitized_name, destination = _resolve_chart_destination(payload.filename)
+    except ValueError:
+        safe_name = sanitize_chart_filename(payload.filename)
+        logger.warning(
+            "chart_upload.rejected",
+            sanitized_filename=safe_name,
+            reason="outside_upload_dir",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid filename provided.",
+        ) from None
+
+    try:
+        destination.write_bytes(contents)
+    except OSError as exc:  # pragma: no cover - filesystem specific
+        logger.error(
+            "chart_upload.write_failed",
+            sanitized_filename=sanitized_name,
+            error=str(exc),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to store uploaded chart.",
+        ) from exc
+
+    correlation_id = f"ctx_{uuid.uuid4().hex[:12]}"
+    result = await context_pipeline.handle_upload(
+        patient_id=patient_identifier,
+        correlation_id=correlation_id,
+        files=[
+            (
+                sanitized_name,
+                contents,
+                payload.contentType or "application/octet-stream",
+            )
+        ],
+        profile=payload.profile,
+    )
+
+    logger.info(
+        "chart_upload.saved",
+        sanitized_filename=sanitized_name,
+        size=len(contents),
+        correlation_id=correlation_id,
+        patient_id=patient_identifier,
+    )
+
+    correlation = result.get("correlation_id") if isinstance(result, Mapping) else None
+    return correlation or correlation_id
+
+
+@app.post("/api/schedule/appointments", response_model=Appointment)
+async def api_create_schedule_appointment(
+    req: ScheduleAppointmentCreate, user=Depends(require_role("user"))
+) -> Appointment:
+    timezone_name = req.timeZone
+    start = _normalise_schedule_datetime(req.start, timezone_name)
+    if req.end is not None:
+        end = _normalise_schedule_datetime(req.end, timezone_name)
+    else:
+        end = start + timedelta(minutes=30)
+    if end <= start:
+        end = start + timedelta(minutes=30)
+
+    provider_id = (req.providerId or "").strip() or None
+    provider_key = (provider_id or "").casefold()
+    location_id = (req.locationId or "").strip() or None
+    allow_overlap = bool(req.allowOverlap)
+    location_capacity = req.locationCapacity if location_id else None
+    session_metadata: Dict[str, Any] = dict(req.metadata or {})
+    if location_capacity is not None and "locationCapacity" not in session_metadata:
+        session_metadata["locationCapacity"] = location_capacity
+    if allow_overlap and "allowOverlap" not in session_metadata:
+        session_metadata["allowOverlap"] = True
+    if timezone_name and "timeZone" not in session_metadata:
+        session_metadata["timeZone"] = timezone_name
+
+    with scheduling_module.schedule_session_scope() as session:
+        patient_id = _resolve_patient_identifier(session, req.patientId)
+        records = scheduling_module.list_appointments(session=session)
+
+        target_patients = {str(patient_id), req.patientId.strip()}
+        duplicate: Optional[Mapping[str, Any]] = None
+        for record in records:
+            rec_patient = str(record.get("patientId") or record.get("patient_id") or "").strip()
+            if rec_patient and rec_patient not in target_patients:
+                continue
+            rec_provider = (record.get("providerId") or record.get("provider") or "").strip().casefold()
+            if rec_provider != provider_key:
+                continue
+            rec_start = scheduling_module._parse_datetime(record.get("start"))
+            if rec_start is None:
+                continue
+            if abs((rec_start - start).total_seconds()) < 60:
+                duplicate = record
+                break
+
+        if duplicate is not None:
+            return _appointment_from_record(duplicate)
+
+        available, reason = _slot_is_available(
+            records,
+            start,
+            end,
+            provider_id,
+            location_id,
+            location_capacity=location_capacity,
+            allow_overlap=allow_overlap,
+        )
+        if not available:
+            duration = end - start
+            step = duration if duration.total_seconds() > 0 else timedelta(minutes=30)
+            alternatives: List[str] = []
+            candidate = start + step
+            attempts = 0
+            while len(alternatives) < 3 and attempts < 12:
+                ok, _ = _slot_is_available(
+                    records,
+                    candidate,
+                    candidate + step,
+                    provider_id,
+                    location_id,
+                    location_capacity=location_capacity,
+                    allow_overlap=allow_overlap,
+                )
+                if ok:
+                    formatted = _format_schedule_datetime(candidate, timezone_name)
+                    if formatted not in alternatives:
+                        alternatives.append(formatted)
+                candidate += step
+                attempts += 1
+
+            candidate = start - step
+            while len(alternatives) < 3 and attempts < 18:
+                ok, _ = _slot_is_available(
+                    records,
+                    candidate,
+                    candidate + step,
+                    provider_id,
+                    location_id,
+                    location_capacity=location_capacity,
+                    allow_overlap=allow_overlap,
+                )
+                if ok:
+                    formatted = _format_schedule_datetime(candidate, timezone_name)
+                    if formatted not in alternatives:
+                        alternatives.append(formatted)
+                candidate -= step
+                attempts += 1
+
+        if not available:
+            detail: Dict[str, Any] = {
+                "message": "Requested slot is unavailable",
+                "reason": reason,
+                "alternatives": alternatives,
+            }
+            raise HTTPException(status_code=409, detail=detail)
+
+        chart_payload = req.chart or req.chartUpload
+        correlation_id = None
+        if chart_payload is not None:
+            correlation_id = await _process_inline_chart_upload(req.patientId, chart_payload)
+
+        if correlation_id:
+            session_metadata.setdefault("correlationId", correlation_id)
+
+        idempotency_key = f"{patient_id}:{provider_key or 'unassigned'}:{start.isoformat()}"
+        record = scheduling_module.create_persisted_appointment(
+            session,
+            patient_id=patient_id,
+            provider_id=provider_id,
+            start=start,
+            end=end,
+            appointment_type=req.type,
+            location_id=location_id,
+            notes=req.notes,
+            correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
+            extra_session_data=session_metadata,
+        )
+
+    _invalidate_dashboard_cache("quick_actions")
+
+    event_payload = {
+        "event": "schedule:created",
+        "appointmentId": record.get("id"),
+        "patientId": record.get("patientId"),
+        "start": record.get("start"),
+        "providerId": record.get("providerId") or record.get("provider"),
+        "status": record.get("status", "scheduled"),
+    }
+    if correlation_id:
+        event_payload["correlationId"] = correlation_id
+    await _broadcast_schedule_event(event_payload)
+
+    return _appointment_from_record(record)
+
 
 @app.post("/schedule", response_model=Appointment)
 async def create_schedule_appointment(appt: AppointmentCreate, user=Depends(require_role("user"))):
@@ -13098,15 +13471,7 @@ async def list_schedule_appointments(user=Depends(require_role("user"))):
         summary = item.get("visitSummary") if isinstance(item, dict) else None
         if isinstance(summary, dict) and item.get("id") is not None:
             summaries[str(item["id"])] = summary
-        parsed.append(
-            Appointment(
-                **{
-                    **item,
-                    "start": datetime.fromisoformat(item["start"]),
-                    "end": datetime.fromisoformat(item["end"]),
-                }
-            )
-        )
+        parsed.append(_appointment_from_record(item))
     return AppointmentList(appointments=parsed, visitSummaries=summaries)
 
 
@@ -13153,6 +13518,13 @@ async def schedule_bulk_operations(
         )
     if succeeded:
         _invalidate_dashboard_cache("quick_actions")
+        await _broadcast_schedule_event(
+            {
+                "event": "schedule:updated",
+                "updated": succeeded,
+                "failed": failed,
+            }
+        )
 
     return ScheduleBulkSummary(succeeded=succeeded, failed=failed)
 # ------------------- Additional API endpoints ------------------------------
@@ -13168,15 +13540,7 @@ async def api_list_appointments(user=Depends(require_role("user"))):
         summary = item.get("visitSummary") if isinstance(item, dict) else None
         if isinstance(summary, dict) and item.get("id") is not None:
             summaries[str(item["id"])] = summary
-        parsed.append(
-            Appointment(
-                **{
-                    **item,
-                    "start": datetime.fromisoformat(item["start"]),
-                    "end": datetime.fromisoformat(item["end"]),
-                }
-            )
-        )
+        parsed.append(_appointment_from_record(item))
     return AppointmentList(appointments=parsed, visitSummaries=summaries)
 
 
@@ -13535,6 +13899,19 @@ compliance_manager = ConnectionManager()
 collaboration_manager = ConnectionManager()
 codes_manager = ConnectionManager()
 notifications_manager = ConnectionManager()
+schedule_manager = ConnectionManager()
+
+
+async def _broadcast_schedule_event(payload: Dict[str, Any]) -> None:
+    """Broadcast *payload* to all active schedule websocket subscribers."""
+
+    payload = {"channel": "schedule", **payload}
+    usernames = list(schedule_manager.user_sessions.keys())
+    for username in usernames:
+        try:
+            await schedule_manager.push_user(username, dict(payload))
+        except Exception:
+            continue
 
 
 async def _push_notification_event(
@@ -13786,6 +14163,13 @@ async def ws_notifications(websocket: WebSocket) -> None:
         handshake_first=False,
         on_connect=_initial,
     )
+
+
+@app.websocket("/ws/schedule")
+async def ws_schedule(websocket: WebSocket) -> None:
+    """Broadcast schedule updates to connected clients."""
+
+    await _ws_endpoint(schedule_manager, websocket, channel="schedule", handshake_first=False)
 
 # ---------------------------------------------------------------------------
 

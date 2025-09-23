@@ -24,7 +24,7 @@ import type { StoredFinalizationSession } from "./features/finalization/workflow
 import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
-import { apiFetch, apiFetchJson } from "./lib/api"
+import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl } from "./lib/api"
 import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 import type { FinalizeResult } from "./features/finalization"
 
@@ -37,8 +37,13 @@ interface RawScheduleAppointment {
   start: string
   end: string
   provider?: string | null
+  providerId?: string | null
   status?: string | null
   location?: string | null
+  locationId?: string | null
+  appointmentType?: string | null
+  notes?: string | null
+  correlationId?: string | null
   visitSummary?: Record<string, unknown> | null
 }
 
@@ -624,6 +629,75 @@ export function ProtectedApp() {
     })
     return () => controller.abort()
   }, [loadAppointments, scheduleRefreshKey, filtersKey])
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("WebSocket" in window)) {
+      return
+    }
+
+    let ws: WebSocket | null = null
+    let reconnectTimer: number | null = null
+    let closed = false
+
+    const connect = () => {
+      if (closed) {
+        return
+      }
+      try {
+        const token = getStoredToken()
+        const target = new URL(resolveWebsocketUrl("/ws/schedule"))
+        if (token) {
+          target.searchParams.set("token", token)
+        }
+        const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
+        ws = protocols ? new WebSocket(target.toString(), protocols) : new WebSocket(target.toString())
+      } catch (error) {
+        console.error("Failed to connect to schedule events", error)
+        reconnectTimer = window.setTimeout(connect, 5000)
+        return
+      }
+
+      if (!ws) {
+        reconnectTimer = window.setTimeout(connect, 5000)
+        return
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data)
+          const eventName = typeof payload?.event === "string" ? payload.event : payload?.type
+          if (eventName === "schedule:created" || eventName === "schedule:updated") {
+            triggerScheduleRefresh()
+          }
+        } catch (error) {
+          console.error("Failed to parse schedule event", error)
+        }
+      }
+
+      ws.onclose = () => {
+        if (closed) {
+          return
+        }
+        reconnectTimer = window.setTimeout(connect, 5000)
+      }
+
+      ws.onerror = (error) => {
+        console.warn("Schedule event connection error", error)
+      }
+    }
+
+    connect()
+
+    return () => {
+      closed = true
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer)
+      }
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close()
+      }
+    }
+  }, [triggerScheduleRefresh])
 
   useEffect(() => {
     const controller = new AbortController()
