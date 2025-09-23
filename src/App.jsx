@@ -569,13 +569,22 @@ function App() {
             payload.template = templateId;
           }
           const created = await createNote(payload);
-          if (!cancelled && created?.noteId) {
-            const newId = String(created.noteId);
-            setNoteId(newId);
-            try {
-              localStorage.setItem(`noteId_${patientID}`, newId);
-            } catch {
-              /* ignore quota errors */
+          if (!cancelled && created) {
+            const createdId =
+              created?.draftId != null
+                ? String(created.draftId)
+                : created?.noteId != null
+                  ? String(created.noteId)
+                  : created?.note_id != null
+                    ? String(created.note_id)
+                    : null;
+            if (createdId) {
+              setNoteId(createdId);
+              try {
+                localStorage.setItem(`noteId_${patientID}`, createdId);
+              } catch {
+                /* ignore quota errors */
+              }
             }
           }
         } catch (err) {

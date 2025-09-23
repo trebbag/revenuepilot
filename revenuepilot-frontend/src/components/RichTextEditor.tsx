@@ -485,14 +485,9 @@ export function RichTextEditor({ disabled = false, complianceIssues = [], onDism
       }
 
       try {
-        const numericId = Number(currentNoteId)
-        const payload: Record<string, unknown> = {
-          note_id: Number.isFinite(numericId) ? numericId : currentNoteId,
-          content: text,
-        }
-        const response = await apiFetch("/api/notes/auto-save", {
-          method: "PUT",
-          jsonBody: payload,
+        const response = await apiFetch(`/api/notes/drafts/${encodeURIComponent(String(currentNoteId))}`, {
+          method: "PATCH",
+          jsonBody: { content: text },
         })
         if (!response.ok) {
           let message = `Failed to auto-save note (${response.status})`

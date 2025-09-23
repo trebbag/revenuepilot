@@ -90,6 +90,32 @@ vi.mock('../../api.js', () => ({
       ],
     },
   }),
+  getAlertSummary: vi.fn().mockResolvedValue({
+    updatedAt: '2024-01-02T12:00:00.000Z',
+    workflow: {
+      total: 4,
+      byDestination: { 'Fax Gateway': 2, Direct: 1 },
+      lastCompletion: {
+        destination: 'Fax Gateway',
+        timestamp: '2024-01-02T12:00:00.000Z',
+      },
+    },
+    exports: {
+      failures: 1,
+      bySystem: { Epic: 1 },
+      lastFailure: {
+        ehrSystem: 'Epic',
+        timestamp: '2024-01-02T08:30:00.000Z',
+        detail: 'Timeout contacting EHR',
+      },
+    },
+    ai: {
+      errors: 0,
+      byRoute: {},
+      lastError: null,
+    },
+  }),
+  getLastBackendError: vi.fn(() => null),
 }));
 
 import Dashboard from '../Dashboard.jsx';

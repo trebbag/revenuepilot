@@ -10,6 +10,7 @@ vi.mock('../../api.js', () => ({
   pingBackend: vi.fn().mockResolvedValue(true),
   resetPassword: vi.fn(),
   fetchAuthPolicy: vi.fn().mockResolvedValue({ lockoutThreshold: 5, lockoutDurationSeconds: 900 }),
+  getLastBackendError: vi.fn(() => null),
 }));
 import { login } from '../../api.js';
 import Login from '../Login.jsx';

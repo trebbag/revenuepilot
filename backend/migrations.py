@@ -514,6 +514,7 @@ def ensure_notes_table(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS notes ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "content TEXT,"
+        "encounter_id INTEGER,"
         "status TEXT NOT NULL,"
         "created_at REAL,"
         "updated_at REAL"
@@ -525,6 +526,8 @@ def ensure_notes_table(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'"
         )
+    if "encounter_id" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN encounter_id INTEGER")
     if "created_at" not in columns:
         conn.execute("ALTER TABLE notes ADD COLUMN created_at REAL")
     if "updated_at" not in columns:

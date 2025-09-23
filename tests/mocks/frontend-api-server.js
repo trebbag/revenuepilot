@@ -937,15 +937,6 @@ app.post('/api/encounters/validate', (req, res) => {
   res.json({ valid: true, encounter, errors: [] });
 });
 
-app.post('/api/notes/auto-save', (req, res) => {
-  const now = new Date().toISOString();
-  workflowSession = {
-    ...workflowSession,
-    noteContent: typeof req.body?.content === 'string' ? req.body.content : workflowSession.noteContent,
-  };
-  res.json({ status: 'saved', noteId: req.body?.noteId ?? workflowSession.noteId, version: Date.now(), savedAt: now });
-});
-
 app.get('/api/schedule/appointments', (_req, res) => {
   res.json({
     appointments: scheduleAppointments,
@@ -1094,23 +1085,37 @@ app.get('/api/encounters/validate/:id', (req, res) => {
   });
 });
 
-app.post('/api/notes/create', (req, res) => {
-  console.log('[mock] create note', req.body);
+app.post('/api/notes/drafts', (req, res) => {
+  console.log('[mock] create draft', req.body);
   const noteId = '5001';
   workflowSession = {
     ...workflowSession,
     noteId,
     noteContent: req.body?.content || workflowSession.noteContent,
   };
-  res.json({ noteId });
+  res.json({
+    draftId: noteId,
+    noteId,
+    encounterId: req.body?.encounterId ?? null,
+    patientId: req.body?.patientId ?? null,
+    createdAt: new Date().toISOString(),
+    version: 1,
+    content: req.body?.content || '',
+  });
 });
 
-app.put('/api/notes/auto-save', (req, res) => {
+app.patch('/api/notes/drafts/:id', (req, res) => {
   workflowSession = {
     ...workflowSession,
+    noteId: req.params.id,
     noteContent: req.body?.content || workflowSession.noteContent,
   };
-  res.json({ status: 'ok' });
+  res.json({
+    status: 'saved',
+    draftId: req.params.id,
+    version: typeof req.body?.version === 'number' ? req.body.version + 1 : 2,
+    updatedAt: new Date().toISOString(),
+  });
 });
 
 app.post('/api/notes/pre-finalize-check', (req, res) => {
