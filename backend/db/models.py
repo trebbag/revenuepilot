@@ -870,6 +870,7 @@ class Note(Base):
 
     id = sa.Column(Integer, primary_key=True, autoincrement=True)
     content = sa.Column(Text, nullable=True)
+    encounter_id = sa.Column(Integer, nullable=True)
     status = sa.Column(String, nullable=False, server_default=sa.text("'draft'"))
     created_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow)
     updated_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow, onupdate=_utcnow)

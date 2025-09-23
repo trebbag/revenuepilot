@@ -141,10 +141,23 @@ async function processOp(op) {
       headers,
     });
   } else if (op.type === 'note:autoSave') {
-    await rawFetch(`${baseUrl}/api/notes/auto-save`, {
-      method: 'PUT',
+    const noteId =
+      op.note?.note_id != null
+        ? op.note.note_id
+        : op.note?.noteId != null
+          ? op.note.noteId
+          : op.note?.id;
+    if (!noteId) {
+      throw new Error('Missing note identifier for offline auto-save');
+    }
+    const body = { content: op.note?.content ?? '' };
+    if (op.note?.version != null) {
+      body.version = op.note.version;
+    }
+    await rawFetch(`${baseUrl}/api/notes/drafts/${encodeURIComponent(String(noteId))}`, {
+      method: 'PATCH',
       headers,
-      body: JSON.stringify(op.note),
+      body: JSON.stringify(body),
     });
   }
 }
@@ -1543,7 +1556,7 @@ export async function createNote({
   if (template !== undefined && template !== null && template !== '') {
     body.template = template;
   }
-  const resp = await rawFetch(`${baseUrl}/api/notes/create`, {
+  const resp = await rawFetch(`${baseUrl}/api/notes/drafts`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -1564,10 +1577,13 @@ export async function createNote({
   return await resp.json();
 }
 
-export async function autoSaveNote(noteId, content) {
+export async function autoSaveNote(noteId, content, version) {
   if (!noteId) return;
   const resolvedId = String(noteId);
   const note = { note_id: resolvedId, content };
+  if (version != null) {
+    note.version = version;
+  }
   cacheRecentNote({ noteId: resolvedId, content });
   const baseUrl = resolveBaseUrl();
   const token =
@@ -1576,10 +1592,14 @@ export async function autoSaveNote(noteId, content) {
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
   try {
-    const resp = await rawFetch(`${baseUrl}/api/notes/auto-save`, {
-      method: 'PUT',
+    const body = { content };
+    if (version != null) {
+      body.version = version;
+    }
+    const resp = await rawFetch(`${baseUrl}/api/notes/drafts/${encodeURIComponent(resolvedId)}`, {
+      method: 'PATCH',
       headers,
-      body: JSON.stringify({ note_id: resolvedId, content }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) throw new Error('Failed');
   } catch {

@@ -212,8 +212,30 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
     return new Response(JSON.stringify({ sessionId: 42, status: init.jsonBody?.action ?? "complete", endTime: "2024-03-14T10:10:00Z" }), { status: 200 })
   }
 
-  if (url === "/api/notes/create") {
-    return new Response(JSON.stringify({ noteId: "note-123" }), { status: 200 })
+  if (url.endsWith("/stop") && url.startsWith("/api/visits/") && method === "POST") {
+    const encounter = url.split("/")[3]
+    return new Response(
+      JSON.stringify({
+        encounterId: encounter,
+        visitStatus: "paused",
+        duration: 300,
+        documentationComplete: false,
+      }),
+      { status: 200 },
+    )
+  }
+
+  if (url === "/api/notes/drafts" && method === "POST") {
+    return new Response(
+      JSON.stringify({
+        draftId: "note-123",
+        encounterId: init?.jsonBody?.encounterId ?? null,
+        createdAt: "2024-03-14T10:00:00Z",
+        version: 1,
+        content: typeof init?.jsonBody?.content === "string" ? init.jsonBody.content : "",
+      }),
+      { status: 200 },
+    )
   }
 
   if (url.startsWith("/api/notes/versions/")) {
@@ -222,11 +244,14 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
     return new Response(JSON.stringify([{ content, timestamp: "2024-01-01T00:00:00Z" }]), { status: 200 })
   }
 
-  if (url === "/api/notes/auto-save") {
+  if (url.startsWith("/api/notes/drafts/") && method === "PATCH") {
     if (autoSaveShouldFail) {
       return new Response(JSON.stringify({ message: "Manual save failed" }), { status: 500 })
     }
-    return new Response(JSON.stringify({ status: "saved", version: 2 }), { status: 200 })
+    return new Response(
+      JSON.stringify({ status: "saved", version: 2, updatedAt: "2024-03-14T10:05:00Z" }),
+      { status: 200 },
+    )
   }
 
   if (url === "/api/activity/log" && method === "POST") {
@@ -292,8 +317,11 @@ describe("NoteEditor manual draft save", () => {
       expect(onNavigate).toHaveBeenCalledTimes(1)
     })
 
-    const autoSaveCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input).includes("/api/notes/auto-save") && (init?.method ?? "GET").toUpperCase() === "POST")
-    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ content: expect.any(String), noteId: expect.anything() })
+    const autoSaveCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        resolveUrl(input).startsWith("/api/notes/drafts/") && (init?.method ?? "GET").toUpperCase() === "PATCH",
+    )
+    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ content: expect.any(String) })
 
     const activityCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input) === "/api/activity/log" && (init?.method ?? "GET").toUpperCase() === "POST")
     expect(activityCall?.[1]?.jsonBody).toMatchObject({
@@ -350,10 +378,13 @@ describe("NoteEditor manual draft save", () => {
       expect(onNavigate).toHaveBeenCalledTimes(1)
     })
 
-    const createCall = fetchMock.mock.calls.find(([input]) => resolveUrl(input) === "/api/notes/create")
+    const createCall = fetchMock.mock.calls.find(([input]) => resolveUrl(input) === "/api/notes/drafts")
     expect(createCall).toBeUndefined()
 
-    const autoSaveCall = fetchMock.mock.calls.find(([input, init]) => resolveUrl(input) === "/api/notes/auto-save" && (init?.method ?? "GET").toUpperCase() === "POST")
-    expect(autoSaveCall?.[1]?.jsonBody).toMatchObject({ noteId: "42" })
+    const autoSaveCall = fetchMock.mock.calls.find(
+      ([input, init]) =>
+        resolveUrl(input).startsWith("/api/notes/drafts/") && (init?.method ?? "GET").toUpperCase() === "PATCH",
+    )
+    expect(autoSaveCall?.[0]).toContain("/api/notes/drafts/42")
   })
 })

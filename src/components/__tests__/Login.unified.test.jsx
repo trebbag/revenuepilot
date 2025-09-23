@@ -13,6 +13,7 @@ vi.mock('../../api.js', () => ({
   register: vi.fn(async (u,p,l) => ({ token: 't2', refreshToken: 'r2', settings: { lang: l } })),
   resetPassword: vi.fn(async () => ({})),
   fetchAuthPolicy: vi.fn().mockResolvedValue({ lockoutThreshold: 5, lockoutDurationSeconds: 900 }),
+  getLastBackendError: vi.fn(() => null),
 }));
 
 import Login from '../Login.jsx';

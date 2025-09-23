@@ -44,6 +44,23 @@ def _apply(state: Dict[str, object], action: str) -> Dict[str, object]:
                 "documentationComplete": False,
             }
         )
+    elif action in {"stop", "pause"}:
+        start = state.get("startTime")
+        duration = int(state.get("duration") or 0)
+        if isinstance(start, str):
+            try:
+                normalised = start[:-1] + "+00:00" if start.endswith("Z") else start
+                start_dt = ensure_utc(datetime.fromisoformat(normalised))
+                duration = int(max((utc_now() - start_dt).total_seconds(), 0))
+            except Exception:
+                duration = int(state.get("duration") or 0)
+        state.update(
+            {
+                "visitStatus": "paused",
+                "duration": duration,
+                "documentationComplete": False,
+            }
+        )
     elif action == "complete":
         start = state.get("startTime")
         duration = 0

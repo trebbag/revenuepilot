@@ -622,6 +622,124 @@ export function NoteEditor({
 
   type FetchOptions = ApiFetchOptions
 
+  const buildDemographicsHeader = useCallback(() => {
+    const lines: string[] = []
+    const trimmedPatientId = patientId.trim()
+    if (trimmedPatientId) {
+      lines.push(`Patient ID: ${trimmedPatientId}`)
+    }
+
+    const demographics = patientDetails?.demographics ?? {}
+    const demographicName =
+      (typeof demographics.name === "string" && demographics.name.trim().length > 0 ? demographics.name.trim() : null) ??
+      (typeof demographics.firstName === "string" && demographics.firstName.trim().length > 0
+        ? `${demographics.firstName.trim()}${
+            typeof demographics.lastName === "string" && demographics.lastName.trim().length > 0
+              ? ` ${demographics.lastName.trim()}`
+              : ""
+          }`.trim()
+        : null)
+    const selectedName =
+      typeof selectedPatient?.name === "string" && selectedPatient.name.trim().length > 0 ? selectedPatient.name.trim() : null
+    const name = demographicName || selectedName
+    if (name) {
+      lines.push(`Patient Name: ${name}`)
+    }
+
+    const dob =
+      typeof demographics.dob === "string" && demographics.dob.trim().length > 0 ? demographics.dob.trim() : undefined
+    if (dob) {
+      lines.push(`Date of Birth: ${dob}`)
+    }
+
+    const age = typeof demographics.age === "number" && Number.isFinite(demographics.age) ? demographics.age : undefined
+    if (age != null) {
+      lines.push(`Age: ${age}`)
+    }
+
+    const gender =
+      typeof demographics.gender === "string" && demographics.gender.trim().length > 0
+        ? demographics.gender.trim()
+        : undefined
+    if (gender) {
+      lines.push(`Gender: ${gender}`)
+    }
+
+    const insurance = (() => {
+      if (typeof demographics.insurance === "string" && demographics.insurance.trim().length > 0) {
+        return demographics.insurance.trim()
+      }
+      if (typeof selectedPatient?.insurance === "string" && selectedPatient.insurance.trim().length > 0) {
+        return selectedPatient.insurance.trim()
+      }
+      return undefined
+    })()
+    if (insurance) {
+      lines.push(`Insurance: ${insurance}`)
+    }
+
+    const trimmedEncounterId = encounterId.trim()
+    if (trimmedEncounterId) {
+      lines.push(`Encounter ID: ${trimmedEncounterId}`)
+    }
+
+    const encounter = encounterValidation.encounter
+    const encounterDate =
+      typeof encounter?.date === "string" && encounter.date.trim().length > 0 ? encounter.date.trim() : undefined
+    if (encounterDate) {
+      lines.push(`Encounter Date: ${encounterDate}`)
+    }
+    const encounterType =
+      typeof encounter?.type === "string" && encounter.type.trim().length > 0 ? encounter.type.trim() : undefined
+    if (encounterType) {
+      lines.push(`Encounter Type: ${encounterType}`)
+    }
+    const encounterProvider =
+      typeof encounter?.provider === "string" && encounter.provider.trim().length > 0 ? encounter.provider.trim() : undefined
+    if (encounterProvider) {
+      lines.push(`Provider: ${encounterProvider}`)
+    }
+
+    const preferredUsername =
+      typeof (auth.user as { preferred_username?: unknown })?.preferred_username === "string"
+        ? ((auth.user as { preferred_username?: string }).preferred_username ?? "").trim()
+        : ""
+    const clinicianName =
+      (typeof auth.user?.name === "string" && auth.user.name.trim().length > 0 ? auth.user.name.trim() : null) ??
+      (preferredUsername.length > 0 ? preferredUsername : null) ??
+      (typeof auth.user?.sub === "string" && auth.user.sub.trim().length > 0 ? auth.user.sub.trim() : null)
+    if (clinicianName) {
+      lines.push(`Clinician: ${clinicianName}`)
+    }
+
+    lines.push(`Visit Started: ${new Date().toISOString()}`)
+
+    return lines.length > 0 ? `${lines.join("\n")}\n\n` : ""
+  }, [auth.user, encounterId, encounterValidation.encounter, patientDetails?.demographics, patientId, selectedPatient])
+
+  const ensureDemographicsHeader = useCallback(() => {
+    const header = buildDemographicsHeader()
+    if (!header) {
+      return header
+    }
+    const current = noteContentRef.current ?? ""
+    const headerFirstLine = header.split("\n")[0] ?? ""
+    if (current.startsWith(header) || current.startsWith(headerFirstLine)) {
+      return header
+    }
+    const trimmedCurrent = current.trimStart()
+    const updated = trimmedCurrent.length > 0 ? `${header}${trimmedCurrent}` : header
+    if (updated !== current) {
+      setNoteContent(updated)
+      noteContentRef.current = updated
+      autoSaveLastContentRef.current = updated
+      if (onNoteContentChange) {
+        onNoteContentChange(updated)
+      }
+    }
+    return header
+  }, [autoSaveLastContentRef, buildDemographicsHeader, noteContentRef, onNoteContentChange])
+
   const fetchWithAuth = useCallback((input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init), [])
 
   const convertComplianceResponse = useCallback((raw: any): ComplianceIssue[] => {
@@ -1028,14 +1146,17 @@ export function NoteEditor({
         throw new Error("Patient ID is required before creating a note")
       }
 
-      const payload = {
+      const payload: Record<string, unknown> = {
         patientId: trimmedPatientId,
         encounterId: encounterId.trim().length > 0 ? encounterId.trim() : undefined,
-        content: typeof contentOverride === "string" ? contentOverride : noteContentRef.current,
+      }
+      const contentPayload = typeof contentOverride === "string" ? contentOverride : noteContentRef.current
+      if (typeof contentPayload === "string" && contentPayload.length > 0) {
+        payload.content = contentPayload
       }
       const createPromise = (async () => {
         try {
-          const response = await fetchWithAuth("/api/notes/create", {
+          const response = await fetchWithAuth("/api/notes/drafts", {
             method: "POST",
             jsonBody: payload,
           })
@@ -1043,11 +1164,39 @@ export function NoteEditor({
             throw new Error(`Failed to create note (${response.status})`)
           }
           const data = await response.json()
-          const createdId = data?.noteId != null ? String(data.noteId) : data?.note_id != null ? String(data.note_id) : null
+          const createdId =
+            data?.draftId != null
+              ? String(data.draftId)
+              : data?.noteId != null
+                ? String(data.noteId)
+                : data?.note_id != null
+                  ? String(data.note_id)
+                  : null
           if (!createdId) {
             throw new Error("Note identifier missing from response")
           }
           setNoteId(createdId)
+          const serverContent = typeof data?.content === "string" ? data.content : undefined
+          if (typeof serverContent === "string") {
+            if (noteContentRef.current !== serverContent) {
+              setNoteContent(serverContent)
+              noteContentRef.current = serverContent
+              autoSaveLastContentRef.current = serverContent
+              if (onNoteContentChange) {
+                onNoteContentChange(serverContent)
+              }
+            } else {
+              autoSaveLastContentRef.current = serverContent
+            }
+          }
+          const createdAt =
+            typeof data?.createdAt === "string" && data.createdAt.trim().length > 0
+              ? data.createdAt
+              : new Date().toISOString()
+          const version =
+            typeof data?.version === "number" && Number.isFinite(data.version) ? data.version : null
+          setLastAutoSaveTime(createdAt)
+          setLastAutoSaveVersion(version)
           setAutoSaveError(null)
           return createdId
         } catch (error) {
@@ -1062,7 +1211,7 @@ export function NoteEditor({
       noteCreatePromiseRef.current = createPromise
       return createPromise
     },
-    [noteId, patientId, encounterId, fetchWithAuth],
+    [encounterId, fetchWithAuth, noteContentRef, noteId, onNoteContentChange, patientId, setLastAutoSaveTime, setLastAutoSaveVersion],
   )
 
   const performAutoSave = useCallback(
@@ -1105,9 +1254,13 @@ export function NoteEditor({
           }
 
           const noteIdString = String(ensuredId)
-          const response = await fetchWithAuth("/api/notes/auto-save", {
-            method: "POST",
-            jsonBody: { noteId: noteIdString, content },
+          const body: Record<string, unknown> = { content }
+          if (lastAutoSaveVersion != null) {
+            body.version = lastAutoSaveVersion
+          }
+          const response = await fetchWithAuth(`/api/notes/drafts/${encodeURIComponent(noteIdString)}`, {
+            method: "PATCH",
+            jsonBody: body,
           })
 
           if (!response.ok) {
@@ -1131,13 +1284,25 @@ export function NoteEditor({
 
           const data = await response.json().catch(() => ({}))
           const version = typeof data?.version === "number" && Number.isFinite(data.version) ? data.version : null
+          const updatedAt =
+            typeof data?.updatedAt === "string" && data.updatedAt.trim().length > 0
+              ? data.updatedAt
+              : new Date().toISOString()
 
           autoSaveLastContentRef.current = content
-          setLastAutoSaveTime(new Date().toISOString())
+          setLastAutoSaveTime(updatedAt)
           setLastAutoSaveVersion(version)
           setAutoSaveError(null)
-          if (!noteId || noteId !== noteIdString) {
-            setNoteId(noteIdString)
+          const returnedId =
+            data?.draftId != null
+              ? String(data.draftId)
+              : data?.noteId != null
+                ? String(data.noteId)
+                : data?.note_id != null
+                  ? String(data.note_id)
+                  : noteIdString
+          if (!noteId || noteId !== returnedId) {
+            setNoteId(returnedId)
           }
           return true
         } catch (error) {
@@ -1161,7 +1326,7 @@ export function NoteEditor({
         }
       }
     },
-    [ensureNoteCreated, fetchWithAuth, isFinalized, noteId, patientId],
+    [ensureNoteCreated, fetchWithAuth, isFinalized, lastAutoSaveVersion, noteId, patientId],
   )
 
   const stopAudioStream = useCallback(() => {
@@ -3006,6 +3171,12 @@ export function NoteEditor({
         if (!Number.isFinite(encounterNumeric)) {
           throw new Error("Encounter ID must be numeric")
         }
+        const headerApplied = ensureDemographicsHeader()
+        const contentForCreation =
+          typeof noteContentRef.current === "string" && noteContentRef.current.length > 0
+            ? noteContentRef.current
+            : headerApplied
+        await ensureNoteCreated(contentForCreation)
         let sessionData: any = null
         if (!visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
@@ -3037,7 +3208,6 @@ export function NoteEditor({
         } else {
           setCurrentSessionTime(pausedTime)
         }
-        await ensureNoteCreated()
         setVisitStarted(true)
         const started = await startAudioStream()
         if (!started) {
@@ -3065,9 +3235,22 @@ export function NoteEditor({
             }
           }
         }
+        const encounterNumeric = Number(encounterValidation.encounter?.encounterId ?? encounterId)
+        if (Number.isFinite(encounterNumeric)) {
+          const response = await fetchWithAuth(`/api/visits/${encodeURIComponent(String(encounterNumeric))}/stop`, {
+            method: "POST",
+          })
+          if (response.ok) {
+            const data = await response.json().catch(() => null)
+            if (data) {
+              setVisitSession((prev) => ({ ...prev, ...data }))
+            }
+          }
+        }
       } catch (error) {
         setVisitError(error instanceof Error ? error.message : "Unable to pause visit")
       } finally {
+        await performAutoSave({ reason: "manual", force: true })
         stopAudioStream()
         setVisitStarted(false)
         setPausedTime(currentSessionTime)
@@ -3085,10 +3268,14 @@ export function NoteEditor({
     hasEverStarted,
     pausedTime,
     ensureNoteCreated,
+    ensureDemographicsHeader,
+    noteContentRef,
     startAudioStream,
     stopAudioStream,
     currentSessionTime,
     isFinalized,
+    encounterValidation.encounter?.encounterId,
+    performAutoSave,
   ])
 
   return (

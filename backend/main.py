@@ -1403,6 +1403,13 @@ def _save_note_version(
     return timestamp
 
 
+def _count_note_versions(session: Session, note_id: str) -> int:
+    stmt = sa.select(sa.func.count(NoteVersion.id)).where(
+        NoteVersion.note_id == str(note_id)
+    )
+    return int(session.execute(stmt).scalar_one_or_none() or 0)
+
+
 def _fetch_note_versions(session: Session, note_id: str) -> List[Dict[str, str]]:
     """Retrieve ordered note versions for ``note_id`` using SQLAlchemy."""
 
@@ -8471,6 +8478,30 @@ class NoteCreateRequest(BaseModel):
     template: Optional[str] = None
     content: Optional[str] = Field(default="", max_length=10000)
 
+    model_config = {"populate_by_name": True}
+
+    @field_validator("patientId", mode="before")
+    @classmethod
+    def _coerce_patient(cls, value: Any) -> str:  # noqa: D401,N805
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @field_validator("patientId")
+    @classmethod
+    def _require_patient(cls, value: str) -> str:  # noqa: D401,N805
+        if not value:
+            raise ValueError("patientId is required")
+        return value
+
+    @field_validator("encounterId", mode="before")
+    @classmethod
+    def _normalize_encounter(cls, value: Any) -> Optional[str]:  # noqa: D401,N805
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
     @field_validator("content", mode="before")
     @classmethod
     def _default_content(cls, value: str | None) -> str:  # noqa: D401,N805
@@ -8482,38 +8513,282 @@ class NoteCreateRequest(BaseModel):
         return sanitize_text(value)
 
 
+class DraftUpdateRequest(BaseModel):
+    content: str = Field(..., max_length=10000)
+    version: Optional[int] = Field(default=None)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("content")
+    @classmethod
+    def sanitize_content(cls, value: str) -> str:  # noqa: D401,N805
+        return sanitize_text(value)
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _coerce_version(cls, value: Any) -> Optional[int]:  # noqa: D401,N805
+        if value in (None, "", b""):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+
+def _coerce_encounter_id(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _normalize_note_identifier(note_id: str) -> Optional[int]:
+    text = str(note_id or "").strip()
+    if not text:
+        return None
+    if text.lower().startswith("draft-"):
+        text = text[6:]
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _load_patient_details(session: Session, patient_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        return patients.get_patient(session, patient_id, include_encounters=False)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("draft_patient_lookup_failed", patient_id=patient_id, error=str(exc))
+        return None
+
+
+def _load_encounter_details(session: Session, encounter_id: int) -> Optional[Dict[str, Any]]:
+    stmt = (
+        sa.select(db_models.encounters)
+        .where(db_models.encounters.c.id == encounter_id)
+        .limit(1)
+    )
+    row = session.execute(stmt).mappings().first()
+    return dict(row) if row else None
+
+
+def _compose_demographics_header(
+    *,
+    patient_id: str,
+    patient: Optional[Mapping[str, Any]],
+    encounter_id: Optional[int],
+    encounter: Optional[Mapping[str, Any]],
+    started_at: datetime,
+    clinician: Mapping[str, Any] | None,
+) -> str:
+    lines: List[str] = []
+    normalized_patient = patient_id.strip()
+    if normalized_patient:
+        lines.append(f"Patient ID: {normalized_patient}")
+    if patient:
+        name = str(patient.get("name") or "").strip()
+        if name:
+            lines.append(f"Patient Name: {name}")
+        first = str(patient.get("firstName") or "").strip()
+        last = str(patient.get("lastName") or "").strip()
+        if first and last and not name:
+            lines.append(f"Patient Name: {first} {last}")
+        dob = str(patient.get("dob") or "").strip()
+        if dob:
+            lines.append(f"Date of Birth: {dob}")
+        age = patient.get("age")
+        if isinstance(age, int):
+            lines.append(f"Age: {age}")
+        gender = str(patient.get("gender") or "").strip()
+        if gender:
+            lines.append(f"Gender: {gender}")
+        insurance = str(patient.get("insurance") or "").strip()
+        if insurance:
+            lines.append(f"Insurance: {insurance}")
+    if encounter_id is not None:
+        lines.append(f"Encounter ID: {encounter_id}")
+    if encounter:
+        encounter_date = str(encounter.get("date") or "").strip()
+        if encounter_date:
+            lines.append(f"Encounter Date: {encounter_date}")
+        encounter_type = str(encounter.get("type") or "").strip()
+        if encounter_type:
+            lines.append(f"Encounter Type: {encounter_type}")
+        provider = str(encounter.get("provider") or "").strip()
+        if provider:
+            lines.append(f"Provider: {provider}")
+    if clinician:
+        clinician_name = (
+            str(clinician.get("name") or "").strip()
+            or str(clinician.get("preferred_username") or "").strip()
+            or str(clinician.get("sub") or "").strip()
+        )
+        if clinician_name:
+            lines.append(f"Clinician: {clinician_name}")
+    timestamp_text = started_at.replace(microsecond=0).isoformat()
+    if timestamp_text.endswith("+00:00"):
+        timestamp_text = timestamp_text[:-6] + "Z"
+    lines.append(f"Visit Started: {timestamp_text}")
+    return "\n".join(lines).strip()
+
+
+def _merge_header_with_content(header: str, content: str) -> str:
+    header = header.strip()
+    body = content.strip()
+    if not header:
+        return sanitize_text(body)
+    if body:
+        header_first_line = header.splitlines()[0]
+        if body.startswith(header) or body.startswith(header_first_line):
+            return sanitize_text(body)
+        combined = f"{header}\n\n{body}".strip()
+        return sanitize_text(combined)
+    return sanitize_text(header)
+
+
+def _create_draft_record(
+    session: Session,
+    request: NoteCreateRequest,
+    user_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    encounter_id = _coerce_encounter_id(request.encounterId)
+    patient_details = _load_patient_details(session, request.patientId)
+    encounter_details = (
+        _load_encounter_details(session, encounter_id)
+        if encounter_id is not None
+        else None
+    )
+    now = datetime.now(timezone.utc)
+    header = _compose_demographics_header(
+        patient_id=request.patientId,
+        patient=patient_details,
+        encounter_id=encounter_id,
+        encounter=encounter_details,
+        started_at=now,
+        clinician=user_context,
+    )
+    merged_content = _merge_header_with_content(header, request.content or "")
+
+    note = Note(
+        content=merged_content,
+        encounter_id=encounter_id,
+        status="draft",
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(note)
+    session.flush()
+
+    note_id = str(note.id)
+    user_id = _get_user_db_id(user_context.get("sub", ""))
+    timestamp = _save_note_version(
+        session,
+        note_id,
+        merged_content,
+        user_id,
+        created_at=now,
+    )
+    note.updated_at = timestamp
+    session.flush()
+
+    version = _count_note_versions(session, note_id)
+    response = {
+        "draftId": note_id,
+        "noteId": note_id,
+        "encounterId": str(encounter_id) if encounter_id is not None else None,
+        "patientId": request.patientId,
+        "createdAt": _timestamp_to_iso(now),
+        "content": merged_content,
+        "version": version,
+    }
+    return response
+
 @app.post("/api/notes/create")
 def create_note(
     req: NoteCreateRequest,
     user=Depends(require_role("user")),
     session: Session = Depends(get_session),
 ) -> Dict[str, str]:
-    """Create a new draft note and seed the persisted version history."""
+    """Create a new draft note (legacy endpoint)."""
 
-    now = datetime.now(timezone.utc)
-    user_id = _get_user_db_id(user["sub"])
     try:
-        record = Note(
-            content=req.content or "",
-            status="draft",
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(record)
-        session.flush()
-        note_id = str(record.id)
-        _save_note_version(
-            session,
-            note_id,
-            req.content or "",
-            user_id,
-            created_at=now,
-        )
+        result = _create_draft_record(session, req, user)
     except SQLAlchemyError as exc:  # pragma: no cover - safety net
         logger.exception("note_create_failed", error=str(exc))
         raise HTTPException(status_code=500, detail="Failed to create note") from exc
 
-    return {"noteId": note_id}
+    return {"noteId": result["noteId"]}
+
+
+@app.post("/api/notes/drafts")
+def create_draft_note(
+    req: NoteCreateRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    """Create a new draft note and return metadata for the editor."""
+
+    try:
+        result = _create_draft_record(session, req, user)
+    except SQLAlchemyError as exc:  # pragma: no cover - safety net
+        logger.exception("draft_create_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to create draft") from exc
+
+    return result
+
+
+@app.patch("/api/notes/drafts/{note_id}")
+def update_draft_note(
+    note_id: str,
+    req: DraftUpdateRequest,
+    user=Depends(require_role("user")),
+    session: Session = Depends(get_session),
+) -> Dict[str, Any]:
+    """Persist updates to an existing draft with optimistic versioning."""
+
+    normalized_id = _normalize_note_identifier(note_id)
+    if normalized_id is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    note: Note | None = session.get(Note, normalized_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    current_version = _count_note_versions(session, str(normalized_id))
+    conflict = req.version is not None and req.version != current_version
+    user_id = _get_user_db_id(user.get("sub", ""))
+
+    try:
+        note.content = req.content
+        timestamp = _save_note_version(
+            session,
+            str(normalized_id),
+            req.content,
+            user_id,
+        )
+        note.updated_at = timestamp
+        session.flush()
+    except SQLAlchemyError as exc:  # pragma: no cover - defensive
+        logger.exception("draft_update_failed", note_id=str(normalized_id), error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to update draft") from exc
+
+    new_version = _count_note_versions(session, str(normalized_id))
+    response: Dict[str, Any] = {
+        "draftId": str(normalized_id),
+        "status": "saved",
+        "version": new_version,
+        "updatedAt": _timestamp_to_iso(timestamp),
+    }
+    if conflict:
+        response["conflictResolved"] = True
+        response["previousVersion"] = current_version
+    return response
 
 
 @app.post("/api/notes/auto-save")
@@ -13546,7 +13821,7 @@ async def api_list_appointments(user=Depends(require_role("user"))):
 
 class VisitManageRequest(BaseModel):
     encounterId: str
-    action: Literal["start", "complete"]
+    action: Literal["start", "stop", "complete"]
 
 
 class VisitState(BaseModel):
@@ -13565,6 +13840,17 @@ async def manage_visit_state(
 ):
     background_tasks.add_task(visits.update_visit_state, req.encounterId, req.action)
     state = visits.peek_state(req.encounterId, req.action)
+    return VisitState(**state)
+
+
+@app.post("/api/visits/{encounter_id}/stop", response_model=VisitState)
+async def stop_visit(
+    encounter_id: str,
+    background_tasks: BackgroundTasks,
+    user=Depends(require_role("user")),
+):
+    background_tasks.add_task(visits.update_visit_state, encounter_id, "stop")
+    state = visits.peek_state(encounter_id, "stop")
     return VisitState(**state)
 
 
