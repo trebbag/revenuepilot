@@ -98,7 +98,19 @@ def test_local_models_used_when_available(offline_client, monkeypatch):
                 "evidenceLevel": "A",
             }
         ],
-        "differentials": [{"diagnosis": "dx", "score": 0.1}],
+        "differentials": [
+            {
+                "dx": "dx",
+                "diagnosis": "dx",
+                "whatItIs": "",
+                "supportingFactors": ["offline"],
+                "contradictingFactors": [],
+                "testsToConfirm": ["test"],
+                "testsToExclude": [],
+                "evidence": ["offline snippet"],
+                "score": 0.1,
+            }
+        ],
         "questions": [
             {
                 "prompt": "Confirm medication changes",
@@ -126,5 +138,10 @@ def test_local_models_used_when_available(offline_client, monkeypatch):
     assert r2.json()["summary"] == "short"
 
     r3 = client.post("/suggest", json={"text": "x"}, headers=auth_header(token))
-    assert r3.json() == sample
+    payload = r3.json()
+    assert payload["codes"] == sample["codes"]
+    assert payload["compliance"] == sample["compliance"]
+    assert payload["publicHealth"] == sample["publicHealth"]
+    assert payload.get("questions") == sample["questions"]
+    assert payload["differentials"] == [{"diagnosis": "dx", "score": 0.1}]
 

@@ -76,7 +76,19 @@ def test_local_suggest(monkeypatch, tmp_path):
                 "evidenceLevel": "A",
             }
         ],
-        "differentials": [{"diagnosis": "dx", "score": 0.1}],
+        "differentials": [
+            {
+                "dx": "dx",
+                "diagnosis": "dx",
+                "whatItIs": "",
+                "supportingFactors": ["offline"],
+                "contradictingFactors": [],
+                "testsToConfirm": ["test"],
+                "testsToExclude": [],
+                "evidence": ["offline snippet"],
+                "score": 0.1,
+            }
+        ],
         "questions": [
             {
                 "prompt": "Any labs pending?",

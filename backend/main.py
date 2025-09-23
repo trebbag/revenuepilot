@@ -7418,6 +7418,8 @@ class DifferentialsGenerateRequest(BaseModel):
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
     transcript_cursor: Optional[str] = Field(None, alias="transcript_cursor")
+    vitalsLatest: List[Dict[str, Any]] = Field(default_factory=list)
+    labsRecent: List[Dict[str, Any]] = Field(default_factory=list)
 
     class Config:
         populate_by_name = True
@@ -7426,6 +7428,11 @@ class DifferentialsGenerateRequest(BaseModel):
     @classmethod
     def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
         return sanitize_text(v)
+
+    @field_validator("vitalsLatest", "labsRecent", mode="before")
+    @classmethod
+    def normalize_measurements(cls, value: Any) -> List[Dict[str, Any]]:  # noqa: D401,N805
+        return _normalize_measurement_payloads(value)
 
 
 class PreventionSuggestRequest(BaseModel):
@@ -7542,6 +7549,7 @@ class SuggestionsResponse(BaseModel):
     compliance: List[str]
     publicHealth: List[PublicHealthSuggestion]
     differentials: List[DifferentialSuggestion]
+    questions: List[Dict[str, Any]] = Field(default_factory=list)
     followUp: Optional[FollowUp] = None
 
 
@@ -7919,6 +7927,84 @@ def _coerce_string_list(value: Any) -> List[str]:
     return []
 
 
+def _normalize_measurement_payloads(value: Any) -> List[Dict[str, Any]]:
+    if not value:
+        return []
+    if isinstance(value, Mapping):
+        if any(isinstance(v, Mapping) for v in value.values()):
+            items = list(value.values())
+        else:
+            items = [value]
+    elif isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        items = list(value)
+    else:
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for raw in items:
+        if not isinstance(raw, Mapping):
+            continue
+        label = _coerce_string(
+            raw.get("label")
+            or raw.get("name")
+            or raw.get("test")
+            or raw.get("vital")
+            or raw.get("code")
+        )
+        value_text = _coerce_string(
+            raw.get("value") or raw.get("reading") or raw.get("result")
+        )
+        unit = _coerce_string(raw.get("unit") or raw.get("units"))
+        date = _coerce_string(
+            raw.get("date")
+            or raw.get("observed")
+            or raw.get("timestamp")
+            or raw.get("lastObserved")
+            or raw.get("last_observed")
+        )
+        code = _coerce_string(
+            raw.get("loinc")
+            or raw.get("cpt")
+            or raw.get("code")
+            or raw.get("identifier")
+        )
+        system = _coerce_string(raw.get("system") or raw.get("codingSystem"))
+        interpretation = _coerce_string(
+            raw.get("interpretation") or raw.get("status") or raw.get("note")
+        )
+        evidence = _coerce_string_list(raw.get("evidence"))
+        if not label and not value_text and not code:
+            continue
+        entry: Dict[str, Any] = {
+            "label": label,
+            "value": value_text,
+            "unit": unit,
+            "date": date,
+            "code": code,
+            "system": system,
+            "interpretation": interpretation,
+        }
+        if evidence:
+            entry["evidence"] = evidence
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_test_identifiers(value: Any) -> List[str]:
+    items = _coerce_string_list(value)
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for item in items:
+        key = item.strip().lower()
+        if not key:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 @dataclass
 class SuggestionGateState:
     note_hash: str
@@ -8138,53 +8224,57 @@ def _dedupe_code_suggestions(
 
 
 def _coerce_differential_item(raw: Mapping[str, Any], index: int) -> DifferentialItem:
-    diagnosis = _coerce_string(raw.get("diagnosis")) or f"Differential {index + 1}"
-    icd_code = _coerce_string(raw.get("icdCode") or raw.get("code"))
-    icd_description = _coerce_string(raw.get("icdDescription") or raw.get("description"))
-    reasoning = _coerce_string(raw.get("reasoning") or raw.get("rationale"))
+    dx = _coerce_string(raw.get("dx") or raw.get("diagnosis")) or f"Differential {index + 1}"
+    what_it_is = _coerce_string(
+        raw.get("whatItIs") or raw.get("description") or raw.get("summary")
+    )
     supporting = _coerce_string_list(
-        raw.get("supportingFactors") or raw.get("forFactors")
+        raw.get("supportingFactors")
+        or raw.get("forFactors")
+        or raw.get("supporting")
     )
     contradicting = _coerce_string_list(
-        raw.get("contradictingFactors") or raw.get("againstFactors")
+        raw.get("contradictingFactors")
+        or raw.get("againstFactors")
+        or raw.get("contradicting")
     )
-    tests_confirm = _coerce_string_list(raw.get("testsToConfirm"))
-    tests_exclude = _coerce_string_list(raw.get("testsToExclude"))
-    what_it_is = _coerce_string(raw.get("whatItIs")) or icd_description or diagnosis
-    details = _coerce_string(raw.get("details"))
-    confidence_factors = _coerce_string(raw.get("confidenceFactors"))
-    learn_more = _coerce_string(raw.get("learnMoreUrl"))
-    icd_value = icd_code or diagnosis
+    confirm = _normalize_test_identifiers(
+        raw.get("testsToConfirm") or raw.get("confirmatoryTests")
+    )
+    exclude = _normalize_test_identifiers(
+        raw.get("testsToExclude") or raw.get("ruleOutTests")
+    )
+    evidence = _coerce_string_list(raw.get("evidence"))
     return DifferentialItem(
-        diagnosis=diagnosis,
-        icdCode=icd_value,
-        icdDescription=icd_description or diagnosis,
-        confidence=_normalize_confidence(raw.get("confidence") or raw.get("score")),
-        reasoning=reasoning,
+        dx=dx,
+        whatItIs=what_it_is or dx,
         supportingFactors=supporting,
         contradictingFactors=contradicting,
-        testsToConfirm=tests_confirm,
-        testsToExclude=tests_exclude,
-        whatItIs=what_it_is,
-        details=details,
-        confidenceFactors=confidence_factors,
-        learnMoreUrl=learn_more,
-        forFactors=list(supporting),
-        againstFactors=list(contradicting),
-        evidence=_coerce_string_list(raw.get("evidence")),
+        testsToConfirm=confirm,
+        testsToExclude=exclude,
+        evidence=evidence,
     )
 
 
-def _normalize_differentials(raw_items: Iterable[Any]) -> List[DifferentialItem]:
+def _normalize_differentials(
+    raw_items: Iterable[Any],
+    concerns: Optional[List[str]] = None,
+) -> List[DifferentialItem]:
     result: List[DifferentialItem] = []
     for index, raw in enumerate(raw_items):
-        if isinstance(raw, DifferentialItem):
-            item = raw
-        elif isinstance(raw, Mapping):
-            item = _coerce_differential_item(raw, index)
-        else:
-            continue
-        result.append(item)
+        try:
+            if isinstance(raw, DifferentialItem):
+                item = raw
+            elif isinstance(raw, Mapping):
+                item = _coerce_differential_item(raw, index)
+            else:
+                raise ValueError("differential entry must be an object")
+            result.append(item)
+        except (ValidationError, ValueError) as exc:
+            if concerns is not None:
+                concerns.append(
+                    f"Differential #{index + 1} was skipped: {exc}"
+                )
     return result
 
 
@@ -8439,26 +8529,26 @@ class ComplianceRuleUpdateRequest(ComplianceRuleBase):
 
 
 class DifferentialItem(BaseModel):
-    diagnosis: str
-    icdCode: str = ""
-    icdDescription: str = ""
-    confidence: int = Field(0, ge=0, le=100)
-    reasoning: str = ""
+    dx: str
+    whatItIs: str = ""
     supportingFactors: List[str] = Field(default_factory=list)
     contradictingFactors: List[str] = Field(default_factory=list)
     testsToConfirm: List[str] = Field(default_factory=list)
     testsToExclude: List[str] = Field(default_factory=list)
-    whatItIs: str = ""
-    details: str = ""
-    confidenceFactors: str = ""
-    learnMoreUrl: str = ""
-    forFactors: List[str] = Field(default_factory=list)
-    againstFactors: List[str] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_support_and_tests(self) -> "DifferentialItem":  # noqa: D401
+        if not (self.supportingFactors or self.contradictingFactors):
+            raise ValueError("At least one supporting or contradicting factor is required")
+        if not (self.testsToConfirm or self.testsToExclude):
+            raise ValueError("At least one confirmatory or exclusion test is required")
+        return self
 
 
 class DifferentialsResponse(BaseModel):
     differentials: List[DifferentialItem]
+    potentialConcerns: List[str] = Field(default_factory=list)
 
 
 class PreventionItem(BaseModel):
@@ -11748,11 +11838,15 @@ async def suggest(
                 for item in code_items
             ],
         )
+        questions_payload = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(questions_payload, list):
+            questions_payload = []
         return SuggestionsResponse(
             codes=codes,
             compliance=data["compliance"],
             publicHealth=public_health,
             differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
+            questions=questions_payload,
         )
     # Try to call the LLM to generate structured suggestions.  The prompt
     # instructs the model to return JSON with keys codes, compliance,
@@ -11878,11 +11972,15 @@ async def suggest(
             req.payer,
         )
         _log_confidence_scores(user, req.noteId, logged_codes)
+        questions_payload = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(questions_payload, list):
+            questions_payload = []
         return SuggestionsResponse(
             codes=codes_list,
             compliance=compliance,
             publicHealth=public_health,
             differentials=diffs,
+            questions=questions_payload,
             followUp=follow_up,
         )
     except Exception as exc:
@@ -12053,6 +12151,7 @@ async def suggest(
             compliance=compliance,
             publicHealth=public_health,
             differentials=diffs,
+            questions=[],
             followUp=follow_up,
         )
 
@@ -13826,54 +13925,107 @@ async def _differentials_generate(
 ) -> DifferentialsResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    potential_concerns: list[str] = []
+    concern_keys: set[str] = set()
+
+    def add_concern(message: str) -> None:
+        text = _coerce_string(message)
+        if not text:
+            return
+        key = text.lower()
+        if key in concern_keys:
+            return
+        concern_keys.add(key)
+        potential_concerns.append(text)
+
+    if not req.vitalsLatest:
+        add_concern("No recent vitals were supplied; cross-check vital trends manually.")
+    if not req.labsRecent:
+        add_concern(
+            "No recent labs were supplied; consider whether lab data is needed to refine the differential."
+        )
+
+    skipped_messages: list[str] = []
     if offline:
         from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest(cleaned)
-        diffs = _normalize_differentials(data.get("differentials", []))
-        return DifferentialsResponse(differentials=diffs)
-    try:
-        context_lines = []
-        if req.context_stage:
-            context_lines.append(f"Context stage: {req.context_stage}")
-        if req.correlation_id:
-            context_lines.append(f"Correlation ID: {req.correlation_id}")
-        if req.context_generated_at:
-            context_lines.append(f"Context generated at: {req.context_generated_at}")
-        context_block = "\n".join(context_lines) or "None provided"
-        stage_hint = (
-            "Superficial context; rely primarily on the documented presentation."
-            if (req.context_stage or "").lower() == "superficial"
-            else "Deep or indexed context available; cross-check against longitudinal data."
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a clinical decision support system. Respond strictly with JSON in the form "
-                    "{\"differentials\":[{\"diagnosis\":\"\",\"icdCode\":\"\",\"icdDescription\":\"\","
-                    "\"confidence\":0,\"reasoning\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],"
-                    "\"testsToConfirm\":[],\"testsToExclude\":[],\"whatItIs\":\"\",\"details\":\"\","
-                    "\"confidenceFactors\":\"\",\"learnMoreUrl\":\"\",\"evidence\":[]}]}. Always include every property, even when"
-                    " empty (use empty strings or arrays). Confidence must be an integer 0-100."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Note:\n{cleaned}\nContext details:\n{context_block}\n{stage_hint}"
-                ),
-            },
-        ]
-        resp = call_openai(messages)
-        data = json.loads(resp)
-        diffs = _normalize_differentials(data.get("differentials", []))
-        return DifferentialsResponse(differentials=diffs)
-    except Exception as exc:
-        trace_id = current_trace_id()
-        logger.error("ai_differentials_failed", error=str(exc))
-        _record_ai_error("differentials_generate", exc, trace_id)
-        return DifferentialsResponse(differentials=[])
+        diffs = _normalize_differentials(data.get("differentials", []), skipped_messages)
+        for msg in _coerce_string_list(data.get("potentialConcerns")):
+            add_concern(msg)
+    else:
+        try:
+            context_lines = []
+            if req.context_stage:
+                context_lines.append(f"Context stage: {req.context_stage}")
+            if req.correlation_id:
+                context_lines.append(f"Correlation ID: {req.correlation_id}")
+            if req.context_generated_at:
+                context_lines.append(f"Context generated at: {req.context_generated_at}")
+            context_block = "\n".join(context_lines) or "None provided"
+            stage_hint = (
+                "Superficial context; rely primarily on the documented presentation."
+                if (req.context_stage or "").lower() == "superficial"
+                else "Deep or indexed context available; cross-check against longitudinal data."
+            )
+            context_payload = {
+                "note": cleaned,
+                "contextDetails": {
+                    "stage": req.context_stage,
+                    "correlationId": req.correlation_id,
+                    "generatedAt": req.context_generated_at,
+                    "summary": context_block,
+                    "stageHint": stage_hint,
+                },
+                "vitalsLatest": req.vitalsLatest,
+                "labsRecent": req.labsRecent,
+            }
+            system_prompt = (
+                "You are a clinical decision support system. Respond strictly with JSON matching this schema: "
+                "{\"differentials\":[{\"dx\":\"\",\"whatItIs\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],\"testsToConfirm\":[],\"testsToExclude\":[],\"evidence\":[]}],\"potentialConcerns\":[]}\n"
+                "Each differential must provide at least one supporting or contradicting factor and at least one confirmatory or exclusion test. "
+                "Evidence entries should be direct snippets or quotes from the provided note or context. "
+                "Prefer normalized test identifiers such as LOINC or CPT codes when available. "
+                "Do not add commentary outside of the JSON."
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt,
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(context_payload, ensure_ascii=False, indent=2),
+                },
+            ]
+            resp = call_openai(messages)
+            data = json.loads(resp)
+            diffs = _normalize_differentials(data.get("differentials", []), skipped_messages)
+            for msg in _coerce_string_list(data.get("potentialConcerns")):
+                add_concern(msg)
+        except Exception as exc:
+            trace_id = current_trace_id()
+            logger.error("ai_differentials_failed", error=str(exc))
+            _record_ai_error("differentials_generate", exc, trace_id)
+            return DifferentialsResponse(
+                differentials=[],
+                potentialConcerns=potential_concerns
+                + [
+                    "Differential generation failed; refer to clinical judgment and manual review."
+                ],
+            )
+
+    for msg in skipped_messages:
+        add_concern(msg)
+
+    for item in diffs:
+        if not item.evidence:
+            add_concern(f"{item.dx} lacks evidence snippets; verify source documentation.")
+
+    return DifferentialsResponse(
+        differentials=diffs,
+        potentialConcerns=potential_concerns,
+    )
 
 
 @app.post("/api/ai/differentials/generate", response_model=DifferentialsResponse)
