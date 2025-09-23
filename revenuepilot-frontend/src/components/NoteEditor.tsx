@@ -1,4 +1,12 @@
-import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react"
+import {
+  useState,
+  useEffect,
+  useMemo,
+  useRef,
+  useCallback,
+  type ReactNode,
+  type MutableRefObject,
+} from "react"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
@@ -96,6 +104,7 @@ interface TranscriptEntry {
 }
 
 const TRANSCRIPT_RECENT_WINDOW_MS = 60_000
+const TRANSCRIPTION_CONNECTION_ERROR = "Unable to maintain transcription connection."
 
 const SPEAKER_STYLES: Record<TranscriptSpeakerRole, { badge: string; dot: string; text: string }> = {
   clinician: {
@@ -170,6 +179,494 @@ function parseConfidence(value: unknown): number | null {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+const TRANSCRIPT_ARRAY_KEYS = [
+  "entries",
+  "transcriptEntries",
+  "segments",
+  "items",
+  "values",
+  "messages",
+  "chunks",
+  "deltas",
+  "results",
+  "samples",
+  "history",
+  "lines",
+  "parts",
+  "alternatives",
+]
+
+const TRANSCRIPT_OBJECT_KEYS = [
+  "entry",
+  "segment",
+  "message",
+  "delta",
+  "result",
+  "payload",
+  "data",
+  "detail",
+  "details",
+  "current",
+]
+
+const TRANSCRIPT_TEXT_KEYS = [
+  "text",
+  "transcript",
+  "value",
+  "content",
+  "message",
+  "line",
+  "utterance",
+  "snippet",
+  "body",
+]
+
+const TRANSCRIPT_TIMESTAMP_KEYS = [
+  "timestamp",
+  "ts",
+  "time",
+  "offset",
+  "start",
+  "startTime",
+  "startMs",
+  "startedAt",
+  "started_at",
+  "createdAt",
+  "updatedAt",
+  "receivedAt",
+  "timeMs",
+  "timestampMs",
+  "offsetMs",
+  "begin",
+  "beginMs",
+]
+
+const TRANSCRIPT_CONFIDENCE_KEYS = [
+  "confidence",
+  "confidenceScore",
+  "accuracy",
+  "probability",
+  "score",
+  "confidence_percent",
+  "likelihood",
+]
+
+const TRANSCRIPT_ROLE_KEYS = [
+  "speakerRole",
+  "role",
+  "speaker",
+  "participant",
+  "channel",
+  "actor",
+  "speakerTag",
+  "speaker_type",
+  "speakerType",
+  "source",
+]
+
+const TRANSCRIPT_LABEL_KEYS = [
+  "speakerLabel",
+  "speaker_label",
+  "speakerName",
+  "speaker_name",
+  "displayName",
+  "name",
+  "label",
+  "speaker",
+  "role",
+  "participant",
+  "source",
+]
+
+const TRANSCRIPT_ID_KEYS = [
+  "id",
+  "entryId",
+  "segmentId",
+  "eventId",
+  "cursor",
+  "cursorId",
+  "cursor_id",
+  "sequence",
+  "seq",
+  "index",
+  "messageId",
+  "token",
+  "uuid",
+  "guid",
+  "lineId",
+]
+
+type TranscriptNormalizationMode = "append" | "replace" | "clear"
+
+interface TranscriptNormalizationResult {
+  entries: TranscriptEntry[]
+  mode: TranscriptNormalizationMode
+  snap: boolean
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function normalizeEventName(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+  const normalised = value.trim().toLowerCase()
+  if (!normalised) {
+    return null
+  }
+  return normalised.replace(/[^a-z0-9]+/g, "_")
+}
+
+function buildTranscriptEntryFromSource(
+  source: unknown,
+  counterRef: MutableRefObject<number>,
+): TranscriptEntry | null {
+  if (typeof source === "string") {
+    const trimmed = source.trim()
+    if (!trimmed) {
+      return null
+    }
+    const timestamp = Date.now()
+    counterRef.current += 1
+    return {
+      id: `transcript-${timestamp}-${counterRef.current}`,
+      text: trimmed,
+      timestamp,
+      speaker: formatSpeakerLabel("other"),
+      speakerRole: "other",
+    }
+  }
+
+  if (!isPlainObject(source)) {
+    return null
+  }
+
+  const record = source
+
+  let text = ""
+  for (const key of TRANSCRIPT_TEXT_KEYS) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim().length > 0) {
+      text = value.trim()
+      break
+    }
+    if (Array.isArray(value)) {
+      const combined = value
+        .map((item) => {
+          if (typeof item === "string") {
+            return item.trim()
+          }
+          if (isPlainObject(item) && typeof item.word === "string") {
+            return item.word.trim()
+          }
+          return ""
+        })
+        .filter(Boolean)
+        .join(" ")
+      if (combined.trim().length > 0) {
+        text = combined.trim()
+        break
+      }
+    }
+  }
+
+  if (!text) {
+    const words = record.words
+    if (Array.isArray(words)) {
+      const combined = words
+        .map((item) => {
+          if (typeof item === "string") {
+            return item.trim()
+          }
+          if (isPlainObject(item) && typeof item.word === "string") {
+            return item.word.trim()
+          }
+          return ""
+        })
+        .filter(Boolean)
+        .join(" ")
+      if (combined.trim().length > 0) {
+        text = combined.trim()
+      }
+    }
+  }
+
+  text = text.trim()
+  if (!text) {
+    return null
+  }
+
+  let timestampValue: unknown
+  for (const key of TRANSCRIPT_TIMESTAMP_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      timestampValue = record[key]
+      break
+    }
+  }
+  if (timestampValue === undefined) {
+    if (record.end !== undefined && record.end !== null) {
+      timestampValue = record.end
+    } else if (record.endTime !== undefined && record.endTime !== null) {
+      timestampValue = record.endTime
+    }
+  }
+  const timestamp = coerceTimestamp(timestampValue)
+
+  let confidenceValue: unknown
+  for (const key of TRANSCRIPT_CONFIDENCE_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      confidenceValue = record[key]
+      break
+    }
+  }
+  const confidence = parseConfidence(confidenceValue)
+
+  let roleValue: unknown
+  for (const key of TRANSCRIPT_ROLE_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      roleValue = record[key]
+      break
+    }
+  }
+  const role = normaliseSpeakerRole(roleValue)
+
+  let speakerLabel: string | null = null
+  for (const key of TRANSCRIPT_LABEL_KEYS) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim().length > 0) {
+      speakerLabel = value.trim()
+      break
+    }
+  }
+  if (!speakerLabel || speakerLabel.trim().toLowerCase() === role) {
+    speakerLabel = formatSpeakerLabel(role)
+  }
+
+  let idValue: unknown
+  for (const key of TRANSCRIPT_ID_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      idValue = record[key]
+      break
+    }
+  }
+  if (idValue === undefined && record.timestampId !== undefined && record.timestampId !== null) {
+    idValue = record.timestampId
+  }
+
+  let entryId: string
+  if (typeof idValue === "string" && idValue.trim().length > 0) {
+    entryId = idValue.trim()
+  } else if (typeof idValue === "number" && Number.isFinite(idValue)) {
+    entryId = `transcript-${idValue}`
+  } else {
+    counterRef.current += 1
+    entryId = `transcript-${timestamp}-${counterRef.current}`
+  }
+
+  const entry: TranscriptEntry = {
+    id: entryId,
+    text,
+    timestamp,
+    speaker: speakerLabel,
+    speakerRole: role,
+  }
+  if (confidence !== null) {
+    entry.confidence = confidence
+  }
+  return entry
+}
+
+function normalizeTranscriptStreamPayload(
+  payload: unknown,
+  counterRef: MutableRefObject<number>,
+): TranscriptNormalizationResult {
+  const result: TranscriptNormalizationResult = { entries: [], mode: "append", snap: false }
+
+  if (payload === null || payload === undefined) {
+    return result
+  }
+
+  if (typeof payload === "string") {
+    const trimmed = payload.trim()
+    if (!trimmed) {
+      return result
+    }
+    try {
+      return normalizeTranscriptStreamPayload(JSON.parse(trimmed), counterRef)
+    } catch {
+      const entry = buildTranscriptEntryFromSource(trimmed, counterRef)
+      if (entry) {
+        result.entries = [entry]
+        result.snap = true
+      }
+      return result
+    }
+  }
+
+  if (payload instanceof ArrayBuffer) {
+    const decoded = new TextDecoder().decode(payload)
+    return normalizeTranscriptStreamPayload(decoded, counterRef)
+  }
+
+  if (ArrayBuffer.isView(payload)) {
+    const view = payload as ArrayBufferView
+    const sliced = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+    const decoded = new TextDecoder().decode(sliced)
+    return normalizeTranscriptStreamPayload(decoded, counterRef)
+  }
+
+  if (!isPlainObject(payload)) {
+    const entry = buildTranscriptEntryFromSource(payload, counterRef)
+    if (entry) {
+      result.entries = [entry]
+      result.snap = true
+    }
+    return result
+  }
+
+  const root = payload
+  const data = isPlainObject(root.data) ? (root.data as Record<string, unknown>) : root
+  const sources: Record<string, unknown>[] = [root]
+  if (data !== root) {
+    sources.push(data)
+  }
+
+  const entryMap = new Map<string, TranscriptEntry>()
+  const seen = new Set<unknown>()
+
+  const collect = (value: unknown, depth = 0) => {
+    if (value === null || value === undefined || depth > 4) {
+      return
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        collect(item, depth + 1)
+      }
+      return
+    }
+    if (isPlainObject(value)) {
+      if (seen.has(value)) {
+        return
+      }
+      seen.add(value)
+
+      const direct = buildTranscriptEntryFromSource(value, counterRef)
+      if (direct) {
+        entryMap.set(direct.id, direct)
+      }
+
+      for (const key of TRANSCRIPT_ARRAY_KEYS) {
+        const child = value[key]
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            collect(item, depth + 1)
+          }
+        }
+      }
+
+      for (const key of TRANSCRIPT_OBJECT_KEYS) {
+        const child = value[key]
+        if (!child) {
+          continue
+        }
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            collect(item, depth + 1)
+          }
+        } else {
+          collect(child, depth + 1)
+        }
+      }
+      return
+    }
+
+    const entry = buildTranscriptEntryFromSource(value, counterRef)
+    if (entry) {
+      entryMap.set(entry.id, entry)
+    }
+  }
+
+  collect(data)
+  if (data !== root) {
+    collect(root)
+  }
+
+  if (entryMap.size > 0) {
+    result.entries = Array.from(entryMap.values()).sort((a, b) => a.timestamp - b.timestamp)
+    result.snap = true
+  }
+
+  const eventNames = [
+    normalizeEventName(root.event),
+    normalizeEventName(data.event),
+    normalizeEventName((root as Record<string, unknown>).type),
+    normalizeEventName((data as Record<string, unknown>).type),
+    normalizeEventName((root as Record<string, unknown>).action),
+    normalizeEventName((data as Record<string, unknown>).action),
+  ].filter((name): name is string => Boolean(name))
+
+  const hasResetFlag = sources.some((value) => value.reset === true || value.clear === true)
+  const hasReplaceFlag = sources.some((value) => value.replace === true || value.snapshot === true || value.history === true)
+  const hasSnapFlag = sources.some((value) => value.snap === true || value.shouldSnap === true)
+
+  if (hasSnapFlag && !result.snap) {
+    result.snap = true
+  }
+
+  if (!result.snap && eventNames.some((name) => name.endsWith("_end") || name.endsWith("_complete"))) {
+    result.snap = true
+  }
+
+  const isResetEvent =
+    hasResetFlag || eventNames.some((name) => name.includes("reset") || name.includes("clear"))
+
+  const isSnapshotEvent =
+    hasReplaceFlag || eventNames.some((name) => name.includes("snapshot") || name.includes("history"))
+
+  if (isResetEvent && result.entries.length === 0) {
+    result.mode = "clear"
+  } else if (isSnapshotEvent || (isResetEvent && result.entries.length > 0)) {
+    result.mode = "replace"
+  }
+
+  return result
+}
+
+async function decodeWebsocketData(data: unknown): Promise<unknown> {
+  if (typeof data === "string") {
+    const trimmed = data.trim()
+    if (!trimmed) {
+      return null
+    }
+    try {
+      return JSON.parse(trimmed)
+    } catch {
+      return trimmed
+    }
+  }
+
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    const text = await data.text()
+    return decodeWebsocketData(text)
+  }
+
+  if (data instanceof ArrayBuffer) {
+    const decoded = new TextDecoder().decode(data)
+    return decodeWebsocketData(decoded)
+  }
+
+  if (ArrayBuffer.isView(data)) {
+    const view = data as ArrayBufferView
+    const sliced = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+    const decoded = new TextDecoder().decode(sliced)
+    return decodeWebsocketData(decoded)
+  }
+
+  return data
 }
 
 export type StreamConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error"
@@ -478,6 +975,27 @@ export function NoteEditor({
   const [transcriptSearch, setTranscriptSearch] = useState("")
   const [shouldSnapTranscriptToEnd, setShouldSnapTranscriptToEnd] = useState(false)
 
+  const clearTranscriptionStreamError = useCallback(() => {
+    setTranscriptionError((prev) => {
+      if (!prev) {
+        return null
+      }
+      const normalized = prev.trim().toLowerCase()
+      if (normalized.includes("transcription") && normalized.includes("connection")) {
+        return null
+      }
+      if (normalized.includes("transcription stream")) {
+        return null
+      }
+      return prev
+    })
+  }, [])
+
+  const setTranscriptionStreamError = useCallback((message?: string) => {
+    const detail = typeof message === "string" && message.trim().length > 0 ? ` ${message.trim()}` : ""
+    setTranscriptionError(`${TRANSCRIPTION_CONNECTION_ERROR}${detail}`.trim())
+  }, [])
+
   const initialRecordedSeconds = testOverrides?.initialRecordedSeconds ?? 0
   const [visitStarted, setVisitStarted] = useState(false)
   const [visitLoading, setVisitLoading] = useState(false)
@@ -684,6 +1202,10 @@ export function NoteEditor({
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
+  const transcriptionSocketRef = useRef<WebSocket | null>(null)
+  const transcriptionReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const transcriptionAttemptsRef = useRef(0)
+  const previousTranscriptionStreamKeyRef = useRef<string | null>(null)
   const complianceSocketRef = useRef<WebSocket | null>(null)
   const complianceReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAttemptsRef = useRef(0)
@@ -1174,6 +1696,211 @@ export function NoteEditor({
     },
     [streamBaseParams],
   )
+
+  const processTranscriptionPacket = useCallback(
+    (payload: unknown): TranscriptNormalizationResult => {
+      const result = normalizeTranscriptStreamPayload(payload, transcriptIdCounterRef)
+
+      if (result.mode === "clear") {
+        transcriptIdCounterRef.current = 0
+        setTranscriptEntries([])
+      } else if (result.mode === "replace") {
+        transcriptIdCounterRef.current = result.entries.length
+        setTranscriptEntries(result.entries.slice())
+      } else if (result.entries.length > 0) {
+        setTranscriptEntries((prev) => {
+          const previous = Array.isArray(prev) ? prev : []
+          const map = new Map(previous.map((entry) => [entry.id, entry]))
+          for (const entry of result.entries) {
+            map.set(entry.id, entry)
+          }
+          const next = Array.from(map.values())
+          next.sort((a, b) => a.timestamp - b.timestamp)
+          return next
+        })
+      }
+
+      if (result.snap) {
+        setShouldSnapTranscriptToEnd(true)
+      }
+
+      return result
+    },
+    [setTranscriptEntries, setShouldSnapTranscriptToEnd, transcriptIdCounterRef],
+  )
+
+  useEffect(() => {
+    const keyParts = [
+      streamBaseParams.sessionId ?? "",
+      streamBaseParams.encounterId ?? "",
+      streamBaseParams.patientId ?? "",
+      streamBaseParams.noteId ?? "",
+    ]
+    const nextKey = keyParts.join("|")
+    const previousKey = previousTranscriptionStreamKeyRef.current
+    if (previousKey !== null && previousKey !== nextKey) {
+      transcriptIdCounterRef.current = 0
+      setTranscriptEntries([])
+      setShouldSnapTranscriptToEnd(true)
+    }
+    previousTranscriptionStreamKeyRef.current = nextKey
+  }, [
+    streamBaseParams.encounterId,
+    streamBaseParams.noteId,
+    streamBaseParams.patientId,
+    streamBaseParams.sessionId,
+  ])
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return () => undefined
+    }
+
+    if (!streamBaseParams.sessionId) {
+      if (transcriptionReconnectTimerRef.current) {
+        clearTimeout(transcriptionReconnectTimerRef.current)
+        transcriptionReconnectTimerRef.current = null
+      }
+      const socket = transcriptionSocketRef.current
+      if (socket) {
+        try {
+          socket.onopen = null
+          socket.onclose = null
+          socket.onerror = null
+          socket.onmessage = null
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close()
+          }
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+      transcriptionSocketRef.current = null
+      transcriptionAttemptsRef.current = 0
+      clearTranscriptionStreamError()
+      return () => undefined
+    }
+
+    let cancelled = false
+
+    const cleanupTimer = () => {
+      if (transcriptionReconnectTimerRef.current) {
+        clearTimeout(transcriptionReconnectTimerRef.current)
+        transcriptionReconnectTimerRef.current = null
+      }
+    }
+
+    const closeSocket = () => {
+      const socket = transcriptionSocketRef.current
+      if (socket) {
+        try {
+          socket.onopen = null
+          socket.onclose = null
+          socket.onerror = null
+          socket.onmessage = null
+          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close()
+          }
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+      transcriptionSocketRef.current = null
+    }
+
+    const scheduleReconnect = (message?: string) => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      const attempt = transcriptionAttemptsRef.current + 1
+      transcriptionAttemptsRef.current = attempt
+      const delay = Math.min(15_000, Math.max(500, 500 * Math.min(attempt, 6)))
+      setTranscriptionStreamError(message)
+      transcriptionReconnectTimerRef.current = window.setTimeout(() => {
+        if (cancelled) {
+          return
+        }
+        connect()
+      }, delay)
+    }
+
+    const connect = () => {
+      if (cancelled) {
+        return
+      }
+      cleanupTimer()
+      closeSocket()
+
+      const { url, token } = buildStreamUrl("/ws/transcription")
+      try {
+        const socket =
+          token != null ? new WebSocket(url.toString(), ["authorization", `Bearer ${token}`]) : new WebSocket(url.toString())
+
+        transcriptionSocketRef.current = socket
+
+        socket.onopen = () => {
+          if (cancelled) {
+            return
+          }
+          transcriptionAttemptsRef.current = 0
+          clearTranscriptionStreamError()
+        }
+
+        socket.onmessage = async (event) => {
+          if (cancelled) {
+            return
+          }
+          try {
+            const decoded = await decodeWebsocketData(event.data)
+            processTranscriptionPacket(decoded)
+            clearTranscriptionStreamError()
+          } catch (error) {
+            console.error("Failed to process transcription stream payload", error)
+          }
+        }
+
+        socket.onerror = () => {
+          if (cancelled) {
+            return
+          }
+          setTranscriptionStreamError()
+        }
+
+        socket.onclose = () => {
+          transcriptionSocketRef.current = null
+          if (cancelled) {
+            return
+          }
+          scheduleReconnect()
+        }
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        const message = error instanceof Error ? error.message : undefined
+        scheduleReconnect(message)
+      }
+    }
+
+    transcriptionAttemptsRef.current = 0
+    connect()
+
+    return () => {
+      cancelled = true
+      cleanupTimer()
+      closeSocket()
+    }
+  }, [
+    buildStreamUrl,
+    clearTranscriptionStreamError,
+    processTranscriptionPacket,
+    setTranscriptionStreamError,
+    streamBaseParams.encounterId,
+    streamBaseParams.noteId,
+    streamBaseParams.patientId,
+    streamBaseParams.sessionId,
+  ])
 
   const convertWizardIssuesToCompliance = useCallback((issues?: Record<string, unknown>): ComplianceIssue[] => {
     if (!issues || typeof issues !== "object") {
@@ -2209,6 +2936,7 @@ export function NoteEditor({
       websocketRef.current = ws
 
       ws.onopen = () => {
+        clearTranscriptionStreamError()
         if (queuedAudioChunksRef.current.length) {
           for (const chunk of queuedAudioChunksRef.current) {
             ws.send(chunk)
@@ -2217,91 +2945,18 @@ export function NoteEditor({
         }
       }
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const raw =
-            typeof event.data === "string"
-              ? JSON.parse(event.data)
-              : JSON.parse(new TextDecoder().decode(event.data))
-          if (!raw || typeof raw !== "object") return
-
-          const eventType = typeof raw.event === "string" ? raw.event.trim() : undefined
-          if (eventType === "transcript:end") {
-            setShouldSnapTranscriptToEnd(true)
-            return
-          }
-
-          const data =
-            raw.data && typeof raw.data === "object" && !Array.isArray(raw.data) ? (raw.data as Record<string, unknown>) : raw
-
-          const textSource =
-            typeof data.transcript === "string" && data.transcript.trim().length > 0
-              ? data.transcript.trim()
-              : typeof data.text === "string" && data.text.trim().length > 0
-                ? data.text.trim()
-                : typeof raw.transcript === "string" && raw.transcript.trim().length > 0
-                  ? raw.transcript.trim()
-                  : typeof raw.text === "string" && raw.text.trim().length > 0
-                    ? raw.text.trim()
-                    : ""
-
-          if (!textSource) return
-
-          const confidence = parseConfidence(data.confidence ?? raw.confidence)
-          const timestamp = coerceTimestamp((data as Record<string, unknown>).ts ?? (data as Record<string, unknown>).timestamp ?? raw.ts ?? raw.timestamp)
-          const role = normaliseSpeakerRole(
-            (data as Record<string, unknown>).speaker ??
-              (data as Record<string, unknown>).speakerRole ??
-              (data as Record<string, unknown>).role ??
-              (data as Record<string, unknown>).speakerLabel ??
-              raw.speaker ??
-              raw.speakerLabel,
-          )
-          const speakerLabel =
-            typeof (data as Record<string, unknown>).speakerLabel === "string" && (data as Record<string, unknown>).speakerLabel?.trim().length
-              ? ((data as Record<string, unknown>).speakerLabel as string).trim()
-              : typeof raw.speakerLabel === "string" && raw.speakerLabel.trim().length > 0
-                ? raw.speakerLabel.trim()
-                : formatSpeakerLabel(role)
-
-          let entryId: string
-          const rawId = (data as Record<string, unknown>).id ?? (data as Record<string, unknown>).eventId ?? raw.id ?? raw.eventId
-          if (typeof rawId === "string" && rawId.trim().length > 0) {
-            entryId = rawId.trim()
-          } else if (typeof rawId === "number" && Number.isFinite(rawId)) {
-            entryId = `transcript-${rawId}`
-          } else {
-            transcriptIdCounterRef.current += 1
-            entryId = `transcript-${timestamp}-${transcriptIdCounterRef.current}`
-          }
-
-          const entry: TranscriptEntry = {
-            id: entryId,
-            text: textSource,
-            confidence,
-            timestamp,
-            speaker: speakerLabel || formatSpeakerLabel(role),
-            speakerRole: role,
-          }
-
-          setTranscriptEntries((prev) => {
-            const next = Array.isArray(prev) ? [...prev] : []
-            const existingIndex = next.findIndex((item) => item.id === entry.id)
-            if (existingIndex >= 0) {
-              next[existingIndex] = entry
-            } else {
-              next.push(entry)
-            }
-            next.sort((a, b) => a.timestamp - b.timestamp)
-            return next
-          })
+          const decoded = await decodeWebsocketData(event.data)
+          processTranscriptionPacket(decoded)
+          clearTranscriptionStreamError()
         } catch (error) {
           console.error("Failed to parse transcript payload", error)
         }
       }
 
       ws.onerror = () => {
-        setTranscriptionError("Unable to maintain transcription connection.")
+        setTranscriptionStreamError()
       }
 
       ws.onclose = () => {
