@@ -284,7 +284,7 @@ _PATIENTS_TABLE = sa.Table(
 _ENCOUNTERS_TABLE = sa.Table(
     "encounters",
     _METADATA,
-    sa.Column("id", sa.Integer),
+    sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("patient_id", sa.Integer),
     sa.Column("date", sa.String),
     sa.Column("type", sa.String),
@@ -295,13 +295,13 @@ _ENCOUNTERS_TABLE = sa.Table(
 _VISIT_SESSIONS_TABLE = sa.Table(
     "visit_sessions",
     _METADATA,
-    sa.Column("id", sa.Integer),
+    sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("encounter_id", sa.Integer),
     sa.Column("status", sa.String),
-    sa.Column("start_time", sa.DateTime(timezone=True)),
-    sa.Column("end_time", sa.DateTime(timezone=True)),
+    sa.Column("start_time", sa.String),
+    sa.Column("end_time", sa.String),
     sa.Column("data", sa.JSON),
-    sa.Column("updated_at", sa.DateTime(timezone=True)),
+    sa.Column("updated_at", sa.Float),
 )
 
 
@@ -588,18 +588,30 @@ def _build_visit_summary(
     if insurance:
         summary["insurance"] = insurance
 
+    session_payload: Dict[str, Any] | None = None
     if session_row is not None:
         session_data = session_row.get("data")
         if session_data:
             if isinstance(session_data, Mapping):
-                summary["session"] = dict(session_data)
+                session_payload = dict(session_data)
             else:
                 try:
                     parsed = json.loads(session_data)
-                    if isinstance(parsed, dict):
-                        summary["session"] = parsed
                 except json.JSONDecodeError:
-                    summary["session"] = session_data
+                    parsed = None
+                if isinstance(parsed, dict):
+                    session_payload = parsed
+                elif session_data:
+                    session_payload = {"raw": session_data}
+
+        if session_payload:
+            summary["session"] = session_payload
+            location_override = session_payload.get("locationName") or session_payload.get(
+                "locationId"
+            )
+            if isinstance(location_override, str) and location_override.strip():
+                summary.setdefault("location", location_override.strip())
+
         updated_at = session_row.get("updated_at")
         if updated_at is not None:
             summary["sessionUpdatedAt"] = _serialize_datetime(
@@ -675,6 +687,12 @@ def _load_db_appointments(session: Session) -> list[dict]:
         location = "Virtual" if (
             encounter_type and encounter_type.lower().startswith("tele")
         ) else "Main Clinic"
+        location_id: Optional[str] = None
+        appointment_type = encounter_type
+        notes = (row.get("description") or "").strip() or None
+        correlation_id: Optional[str] = None
+        provider_id = (row.get("provider") or "").strip() or None
+        session_payload: Dict[str, Any] | None = None
 
         summary = _build_visit_summary(
             encounter_id,
@@ -691,6 +709,39 @@ def _load_db_appointments(session: Session) -> list[dict]:
             session_row=session_row,
         )
 
+        if session_row is not None:
+            session_data = session_row.get("data")
+            if isinstance(session_data, Mapping):
+                session_payload = dict(session_data)
+            elif session_data:
+                try:
+                    parsed = json.loads(session_data)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    session_payload = parsed
+            if session_payload:
+                location_override = session_payload.get("locationName") or session_payload.get(
+                    "locationId"
+                )
+                if isinstance(location_override, str) and location_override.strip():
+                    location = location_override.strip()
+                    location_id = location_override.strip()
+                appointment_override = session_payload.get("appointmentType") or session_payload.get(
+                    "type"
+                )
+                if isinstance(appointment_override, str) and appointment_override.strip():
+                    appointment_type = appointment_override.strip()
+                notes_override = session_payload.get("notes")
+                if isinstance(notes_override, str) and notes_override.strip():
+                    notes = notes_override.strip()
+                provider_override = session_payload.get("providerId")
+                if isinstance(provider_override, str) and provider_override.strip():
+                    provider_id = provider_override.strip()
+                corr_override = session_payload.get("correlationId")
+                if isinstance(corr_override, str) and corr_override.strip():
+                    correlation_id = corr_override.strip()
+
         appointments.append(
             {
                 "id": int(encounter_id),
@@ -701,13 +752,95 @@ def _load_db_appointments(session: Session) -> list[dict]:
                 "start": _serialize_datetime(start_dt) or start_dt.isoformat(),
                 "end": _serialize_datetime(end_dt) or end_dt.isoformat(),
                 "provider": provider,
+                "providerId": provider_id,
                 "status": status,
                 "location": location,
+                "locationId": location_id,
+                "appointmentType": appointment_type,
+                "notes": notes,
+                "correlationId": correlation_id,
                 "visitSummary": summary,
+                "session": session_payload,
             }
         )
 
     return appointments
+
+
+def create_persisted_appointment(
+    session: Session,
+    *,
+    patient_id: int,
+    provider_id: Optional[str],
+    start: datetime,
+    end: datetime,
+    appointment_type: Optional[str] = None,
+    location_id: Optional[str] = None,
+    notes: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    extra_session_data: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    """Persist a new appointment backed by the encounters tables."""
+
+    start_utc = ensure_utc(start).replace(microsecond=0)
+    end_utc = ensure_utc(end).replace(microsecond=0)
+    encounter_payload: Dict[str, Any] = {
+        "patient_id": patient_id,
+        "date": _serialize_datetime(start_utc) or start_utc.isoformat(),
+        "type": (appointment_type or "").strip() or None,
+        "provider": (provider_id or "").strip() or None,
+        "description": notes or None,
+    }
+    result = session.execute(_ENCOUNTERS_TABLE.insert().values(**encounter_payload))
+    encounter_id = int(result.inserted_primary_key[0])
+
+    session_payload: Dict[str, Any] = {}
+    if extra_session_data:
+        session_payload.update(extra_session_data)
+    if location_id and not session_payload.get("locationId"):
+        session_payload["locationId"] = location_id
+    if appointment_type and not session_payload.get("appointmentType"):
+        session_payload["appointmentType"] = appointment_type
+    if notes and not session_payload.get("notes"):
+        session_payload["notes"] = notes
+    if provider_id and not session_payload.get("providerId"):
+        session_payload["providerId"] = provider_id
+    if correlation_id:
+        session_payload["correlationId"] = correlation_id
+    if idempotency_key:
+        session_payload["idempotencyKey"] = idempotency_key
+
+    session.execute(
+        _VISIT_SESSIONS_TABLE.insert().values(
+            encounter_id=encounter_id,
+            status="scheduled",
+            start_time=_serialize_datetime(start_utc) or start_utc.isoformat(),
+            end_time=_serialize_datetime(end_utc) or end_utc.isoformat(),
+            updated_at=to_epoch_seconds(utc_now()),
+            data=session_payload or None,
+        )
+    )
+    session.commit()
+
+    records = list_appointments(session=session)
+    for record in records:
+        if int(record.get("id", 0)) == encounter_id:
+            return record
+
+    return {
+        "id": encounter_id,
+        "patientId": str(patient_id),
+        "start": start_utc.isoformat(),
+        "end": end_utc.isoformat(),
+        "provider": provider_id,
+        "status": "scheduled",
+        "locationId": location_id,
+        "location": location_id,
+        "appointmentType": appointment_type,
+        "notes": notes,
+        "correlationId": correlation_id,
+    }
 
 
 def create_appointment(
@@ -838,6 +971,13 @@ def _normalise_provider(provider: Optional[str]) -> Optional[str]:
     return provider or None
 
 
+def _provider_key(provider: Optional[str]) -> Optional[str]:
+    value = _normalise_provider(provider)
+    if value is None:
+        return None
+    return "".join(ch for ch in value.casefold() if ch.isalnum()) or None
+
+
 def _find_appointment_locked(appt_id: int) -> Optional[dict]:
     for rec in _APPOINTMENTS:
         if rec.get("id") == appt_id:
@@ -873,10 +1013,12 @@ def _apply_in_memory_operation(
     new_start: Optional[datetime],
 ) -> bool:
     existing_provider = _normalise_provider(rec.get("provider"))
+    existing_key = _provider_key(existing_provider)
+    incoming_key = _provider_key(provider)
     if provider:
-        if existing_provider and existing_provider.casefold() != provider.casefold():
+        if existing_key and incoming_key and existing_key != incoming_key:
             return False
-        if not existing_provider:
+        if not existing_provider or existing_provider != provider:
             rec["provider"] = provider
 
     if not rec.get("status"):
@@ -926,10 +1068,12 @@ def _apply_db_bulk_operation(
         return False
 
     existing_provider = _normalise_provider(encounter.get("provider"))
+    existing_key = _provider_key(existing_provider)
+    incoming_key = _provider_key(provider)
     if provider:
-        if existing_provider and existing_provider.casefold() != provider.casefold():
+        if existing_key and incoming_key and existing_key != incoming_key:
             return False
-        if not existing_provider:
+        if not existing_provider or existing_provider != provider:
             session.execute(
                 _ENCOUNTERS_TABLE.update()
                 .where(_ENCOUNTERS_TABLE.c.id == encounter_id)
@@ -967,8 +1111,6 @@ def _apply_db_bulk_operation(
 
 
         end_dt = new_start + duration
-        now_dt = datetime.utcnow()
-
         start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
         end_dt = ensure_utc(new_start + duration)
         end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
@@ -979,10 +1121,10 @@ def _apply_db_bulk_operation(
                 _VISIT_SESSIONS_TABLE.update()
                 .where(_VISIT_SESSIONS_TABLE.c.id == session_row["id"])
                 .values(
-                    start_time=new_start,
-                    end_time=end_dt,
+                    start_time=start_iso,
+                    end_time=end_iso,
                     status="scheduled",
-                    updated_at=now_dt,
+                    updated_at=now_ts,
                 )
             )
         else:
@@ -990,9 +1132,9 @@ def _apply_db_bulk_operation(
                 _VISIT_SESSIONS_TABLE.insert().values(
                     encounter_id=encounter_id,
                     status="scheduled",
-                    start_time=new_start,
-                    end_time=end_dt,
-                    updated_at=now_dt,
+                    start_time=start_iso,
+                    end_time=end_iso,
+                    updated_at=now_ts,
                 )
             )
 
@@ -1016,7 +1158,7 @@ def _apply_db_bulk_operation(
         return False
 
 
-    now_dt = datetime.utcnow()
+    now_ts = to_epoch_seconds(utc_now())
     session_row = (
         session.execute(
             select(_VISIT_SESSIONS_TABLE)
@@ -1034,7 +1176,7 @@ def _apply_db_bulk_operation(
         session.execute(
             _VISIT_SESSIONS_TABLE.update()
             .where(_VISIT_SESSIONS_TABLE.c.id == session_row["id"])
-            .values(status=status, updated_at=now_dt)
+            .values(status=status, updated_at=now_ts)
         )
     else:
         session.execute(
@@ -1043,7 +1185,7 @@ def _apply_db_bulk_operation(
                 status=status,
                 start_time=None,
                 end_time=None,
-                updated_at=now_dt,
+                updated_at=now_ts,
             )
         )
     session.commit()

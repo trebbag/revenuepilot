@@ -134,14 +134,23 @@ export interface ScheduleResponse {
 }
 
 export interface AppointmentInput {
-  patient: string;
-  reason: string;
+  patient?: string;
+  reason?: string;
   start: Date | string | number;
   end?: Date | string | number;
   provider?: string;
   patientId?: string;
   encounterId?: string;
   location?: string;
+  providerId?: string;
+  locationId?: string;
+  type?: string;
+  notes?: string;
+  allowOverlap?: boolean;
+  locationCapacity?: number;
+  timeZone?: string;
+  metadata?: Record<string, unknown>;
+  chart?: Record<string, unknown>;
 }
 
 export interface AppointmentRecord {
@@ -151,10 +160,15 @@ export interface AppointmentRecord {
   start: Date | null;
   end: Date | null;
   provider?: string | null;
+  providerId?: string | null;
   status?: string | null;
   patientId?: string | null;
   encounterId?: string | null;
   location?: string | null;
+  locationId?: string | null;
+  appointmentType?: string | null;
+  notes?: string | null;
+  correlationId?: string | null;
   visitSummary?: Record<string, unknown> | null;
 }
 
@@ -217,10 +231,15 @@ function mapAppointment(raw: any): AppointmentRecord {
     start: parseDate(raw?.start),
     end: parseDate(raw?.end),
     provider: raw?.provider ?? null,
+    providerId: raw?.providerId ?? null,
     status: raw?.status ?? null,
     patientId: raw?.patientId ?? null,
     encounterId: raw?.encounterId ?? null,
     location: raw?.location ?? null,
+    locationId: raw?.locationId ?? null,
+    appointmentType: raw?.appointmentType ?? raw?.type ?? null,
+    notes: raw?.notes ?? null,
+    correlationId: raw?.correlationId ?? null,
     visitSummary: raw?.visitSummary ?? null,
   };
 }
@@ -251,8 +270,6 @@ export async function listAppointments(): Promise<AppointmentListResult> {
 
 export async function createAppointment(appt: AppointmentInput): Promise<AppointmentRecord> {
   const payload: Record<string, unknown> = {
-    patient: appt.patient,
-    reason: appt.reason,
     start: toIsoString(appt.start),
   };
   if (appt.end !== undefined) payload.end = toIsoString(appt.end);
@@ -260,6 +277,24 @@ export async function createAppointment(appt: AppointmentInput): Promise<Appoint
   if (appt.patientId) payload.patientId = appt.patientId;
   if (appt.encounterId) payload.encounterId = appt.encounterId;
   if (appt.location) payload.location = appt.location;
+  if (appt.providerId) payload.providerId = appt.providerId;
+  if (appt.locationId) payload.locationId = appt.locationId;
+  if (appt.type) payload.type = appt.type;
+  if (appt.notes) payload.notes = appt.notes;
+  if (appt.allowOverlap !== undefined) payload.allowOverlap = appt.allowOverlap;
+  if (appt.locationCapacity !== undefined) payload.locationCapacity = appt.locationCapacity;
+  if (appt.timeZone) payload.timeZone = appt.timeZone;
+  if (appt.metadata) payload.metadata = appt.metadata;
+  if (appt.chart) payload.chart = appt.chart;
+  if (!payload.patientId && appt.patient) {
+    payload.patientId = appt.patient;
+  }
+  if (!payload.type && appt.reason) {
+    payload.type = appt.reason;
+  }
+  if (!payload.notes && appt.reason) {
+    payload.notes = appt.reason;
+  }
   const data = await createScheduleAppointmentRaw(payload);
   return mapAppointment(data);
 }

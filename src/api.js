@@ -877,23 +877,51 @@ export async function listScheduleAppointments() {
 export async function createScheduleAppointment(appt = {}) {
   const baseUrl = resolveBaseUrl();
   const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const start = normaliseDateTimeInput(appt.start);
+  if (!start) throw new Error('start is required');
+  const patientId = (appt.patientId || appt.patient || '').toString().trim();
+  if (!patientId) throw new Error('patientId is required');
+
   const body = {
-    patient: appt.patient || '',
-    reason: appt.reason || '',
-    start: normaliseDateTimeInput(appt.start),
+    patientId,
+    providerId: appt.providerId || appt.provider || undefined,
+    start,
+    end: appt.end ? normaliseDateTimeInput(appt.end) : undefined,
+    type: appt.type || appt.reason || undefined,
+    locationId: appt.locationId || appt.location || undefined,
+    notes: appt.notes || appt.reason || undefined,
   };
-  if (!body.patient) throw new Error('patient is required');
-  if (!body.reason) throw new Error('reason is required');
-  if (!body.start) throw new Error('start is required');
-  if (appt.end) body.end = normaliseDateTimeInput(appt.end);
-  if (appt.provider) body.provider = appt.provider;
-  if (appt.patientId) body.patientId = appt.patientId;
-  if (appt.encounterId) body.encounterId = appt.encounterId;
-  if (appt.location) body.location = appt.location;
-  const resp = await fetch(`${baseUrl}/schedule`, {
+
+  if (!body.type) {
+    body.type = 'visit';
+  }
+  if (body.notes && typeof body.notes === 'string') {
+    body.notes = body.notes.trim();
+  }
+  if (appt.allowOverlap !== undefined) {
+    body.allowOverlap = Boolean(appt.allowOverlap);
+  }
+  if (appt.locationCapacity !== undefined) {
+    body.locationCapacity = Number(appt.locationCapacity);
+  }
+  if (appt.timeZone) {
+    body.timeZone = appt.timeZone;
+  }
+  if (appt.metadata && typeof appt.metadata === 'object') {
+    body.metadata = appt.metadata;
+  }
+  if (appt.chart) {
+    body.chart = appt.chart;
+  }
+
+  const cleanPayload = Object.fromEntries(
+    Object.entries(body).filter(([, value]) => value !== undefined && value !== null),
+  );
+
+  const resp = await fetch(`${baseUrl}/api/schedule/appointments`, {
     method: 'POST',
     headers,
-    body: JSON.stringify(body),
+    body: JSON.stringify(cleanPayload),
   });
   if (resp.status === 401 || resp.status === 403) {
     throw new Error('Unauthorized');

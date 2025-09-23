@@ -20,44 +20,63 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import types
+import importlib
 import importlib.util
 from pathlib import Path
 
-if 'backend.scheduling' not in sys.modules:
-    scheduling_stub = types.SimpleNamespace(
-        DEFAULT_EVENT_SUMMARY="",
-        export_ics=lambda *args, **kwargs: None,
-        recommend_follow_up=lambda *args, **kwargs: [],
-        create_appointment=lambda *args, **kwargs: None,
-        list_appointments=lambda *args, **kwargs: [],
-        export_appointment_ics=lambda *args, **kwargs: None,
-        get_appointment=lambda *args, **kwargs: None,
-        apply_bulk_operations=lambda *args, **kwargs: (0, 0),
-        reset_state=lambda: None,
-        configure_database=lambda *args, **kwargs: None,
-    )
-    sys.modules['backend.scheduling'] = scheduling_stub
+import sqlite3
 
-if 'backend.db' not in sys.modules:
-    existing_spec = importlib.util.find_spec('backend.db')
-    if existing_spec is None:
-        import sqlite3
+db_module = types.ModuleType('backend.db')
+db_module.__path__ = []  # type: ignore[attr-defined]
+db_module.DATABASE_PATH = Path(':memory:')
 
-        db_module = types.ModuleType('backend.db')
-        db_module.DATABASE_PATH = Path(':memory:')
 
-        def _get_connection() -> sqlite3.Connection:
-            conn = sqlite3.connect(':memory:', check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            return conn
+def _get_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(':memory:', check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-        def _get_session():  # pragma: no cover - should be overridden in tests
-            raise RuntimeError('get_session dependency must be overridden in tests')
 
-        def _initialise_schema(conn: sqlite3.Connection) -> None:  # pragma: no cover - no-op for tests
-            return None
+def _get_session():  # pragma: no cover - should be overridden in tests
+    raise RuntimeError('get_session dependency must be overridden in tests')
 
-        def _resolve_session_connection(session):  # pragma: no cover - minimal fallback
+
+def _initialise_schema(conn: sqlite3.Connection) -> None:  # pragma: no cover - no-op for tests
+    return None
+
+
+def _resolve_session_connection(session):  # pragma: no cover - minimal fallback
+    if hasattr(session, 'connection'):
+        try:
+            return session.connection().connection
+        except Exception:
+            return session
+    return session
+
+
+db_module.get_connection = _get_connection
+db_module.get_session = _get_session
+db_module.initialise_schema = _initialise_schema
+db_module.resolve_session_connection = _resolve_session_connection
+db_module.get_sync_connection = lambda: None
+models_path = Path(ROOT) / 'backend' / 'db' / 'models.py'
+spec = importlib.util.spec_from_file_location('backend.db.models', models_path)
+assert spec and spec.loader
+models_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(models_module)  # type: ignore[union-attr]
+sys.modules['backend.db.models'] = models_module
+db_module.models = models_module
+sys.modules['backend.db'] = db_module
+
+
+if 'backend.database_legacy' not in sys.modules:
+    try:
+        importlib.import_module('backend.database_legacy')
+    except Exception:
+        sys.modules.pop('backend.database_legacy', None)
+        db_legacy = types.ModuleType('backend.database_legacy')
+
+        def _resolve_session_connection(session):
             if hasattr(session, 'connection'):
                 try:
                     return session.connection().connection
@@ -65,19 +84,39 @@ if 'backend.db' not in sys.modules:
                     return session
             return session
 
-        db_module.get_connection = _get_connection
-        db_module.get_session = _get_session
-        db_module.initialise_schema = _initialise_schema
-        db_module.resolve_session_connection = _resolve_session_connection
-        models_path = Path(ROOT) / 'backend' / 'db' / 'models.py'
-        spec = importlib.util.spec_from_file_location('backend.db.models', models_path)
-        assert spec and spec.loader
-        models_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(models_module)  # type: ignore[union-attr]
-        sys.modules['backend.db.models'] = models_module
-        db_module.models = models_module
-        sys.modules['backend.db'] = db_module
+        def _get_sync_connection():
+            return None
 
+        db_legacy.resolve_session_connection = _resolve_session_connection
+        db_legacy.get_sync_connection = _get_sync_connection
+        db_legacy.DATA_DIR = Path('.')
+        sys.modules['backend.database_legacy'] = db_legacy
+
+
+if 'backend.scheduling' not in sys.modules:
+    try:
+        scheduling_module = importlib.import_module('backend.scheduling')
+    except Exception:
+        scheduling_stub = types.SimpleNamespace(
+            DEFAULT_EVENT_SUMMARY="",
+            export_ics=lambda *args, **kwargs: None,
+            recommend_follow_up=lambda *args, **kwargs: [],
+            create_appointment=lambda *args, **kwargs: None,
+            list_appointments=lambda *args, **kwargs: [],
+            export_appointment_ics=lambda *args, **kwargs: None,
+            get_appointment=lambda *args, **kwargs: None,
+            apply_bulk_operations=lambda *args, **kwargs: (0, 0),
+            reset_state=lambda: None,
+            configure_database=lambda *args, **kwargs: None,
+            schedule_session_scope=lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError('schedule_session_scope unavailable in test stub')
+            ),
+        )
+        sys.modules['backend.scheduling'] = scheduling_stub
+    else:
+        sys.modules['backend.scheduling'] = scheduling_module
+
+import backend.scheduling as scheduling_module
 
 def _env_flag(name: str) -> bool:
     return os.getenv(name, '0').lower() in {'1', 'true', 'yes'}
@@ -205,6 +244,9 @@ def in_memory_db() -> Iterator[DatabaseContext]:
         expire_on_commit=False,
         future=True,
     )
+
+    scheduling_module.configure_database(session_factory)
+    scheduling_module.reset_state()
 
     context = DatabaseContext(
         engine=engine,
