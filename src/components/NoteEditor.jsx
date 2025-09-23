@@ -840,7 +840,7 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const pauseVisitSession = async (reason = 'exit', options = {}) => {
     const session = sessionStateRef.current;
-    if (!session?.sessionId || session.status === 'complete') return;
+    if (!session?.sessionId || session.status === 'completed') return;
     try {
       const res = await updateVisitSession({
         sessionId: session.sessionId,
@@ -866,11 +866,11 @@ const NoteEditor = forwardRef(function NoteEditor(
 
   const completeVisitSession = async (reason = 'finalize') => {
     const session = sessionStateRef.current;
-    if (!session?.sessionId || session.status === 'complete') return;
+    if (!session?.sessionId || session.status === 'completed') return;
     try {
       const res = await updateVisitSession({
         sessionId: session.sessionId,
-        action: 'complete',
+        action: 'stop',
       });
       setSessionState((prev) => (prev ? { ...prev, ...res } : prev));
       sessionKeyRef.current = '';
@@ -894,7 +894,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (!hasIds) {
       if (
         sessionStateRef.current?.sessionId &&
-        sessionStateRef.current.status === 'started'
+        sessionStateRef.current.status === 'active'
       ) {
         pauseVisitSession('missing_details');
       }
@@ -911,7 +911,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       sessionKeyRef.current &&
       sessionKeyRef.current !== key &&
       current?.sessionId &&
-      current.status === 'started'
+      current.status === 'active'
     ) {
       pauseVisitSession('switch_patient');
     }
@@ -926,7 +926,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         if (cancelled) return;
         const info = {
           sessionId: res.sessionId,
-          status: res.status || 'started',
+          status: res.status || 'active',
           startTime: res.startTime,
           endTime: res.endTime || null,
           patientId: patientInput,
@@ -1283,7 +1283,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     if (sessionTimerRef.current) {
       clearInterval(sessionTimerRef.current);
     }
-    if (!session.endTime && session.status !== 'complete') {
+    if (!session.endTime && session.status !== 'completed') {
       sessionTimerRef.current = setInterval(updateElapsed, 1000);
     } else {
       sessionTimerRef.current = null;
@@ -1390,7 +1390,7 @@ const NoteEditor = forwardRef(function NoteEditor(
   const hasVisitSession = Boolean(visitSession?.sessionId);
   const formattedSessionDuration = formatDuration(sessionElapsedSeconds);
   const sessionStatusLabel = visitSession?.status
-    ? visitSession.status === 'complete'
+    ? visitSession.status === 'completed'
       ? t('noteEditor.visitSessionComplete')
       : visitSession.status === 'pause'
         ? t('noteEditor.visitSessionPaused')

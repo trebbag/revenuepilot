@@ -548,6 +548,44 @@ def _load_visit_sessions(session: Session) -> Dict[int, Mapping[str, Any]]:
     return latest
 
 
+def _extract_session_runtime(row: Mapping[str, Any]) -> Tuple[int, Optional[str]]:
+    payload_raw = row.get("data")
+    payload: Dict[str, Any]
+    if isinstance(payload_raw, Mapping):
+        payload = dict(payload_raw)
+    elif isinstance(payload_raw, str) and payload_raw.strip():
+        try:
+            parsed = json.loads(payload_raw)
+        except json.JSONDecodeError:
+            payload = {"raw": payload_raw}
+        else:
+            payload = parsed if isinstance(parsed, dict) else {"raw": payload_raw}
+    else:
+        payload = {}
+
+    base_seconds = payload.get("durationSeconds")
+    try:
+        duration_seconds = int(base_seconds)
+    except (TypeError, ValueError):
+        duration_seconds = 0
+
+    last_resumed_raw = payload.get("lastResumedAt")
+    if isinstance(last_resumed_raw, datetime):
+        last_resumed = _serialize_datetime(ensure_utc(last_resumed_raw))
+    elif isinstance(last_resumed_raw, str):
+        last_resumed = last_resumed_raw.strip() or None
+    else:
+        last_resumed = None
+
+    if row.get("status") == "active" and last_resumed:
+        resumed_dt = _parse_datetime(last_resumed)
+        if resumed_dt is not None:
+            delta = ensure_utc(utc_now()) - resumed_dt
+            duration_seconds += max(int(delta.total_seconds()), 0)
+
+    return duration_seconds, last_resumed
+
+
 def _build_visit_summary(
     encounter_id: int,
     patient_id: Optional[int],
@@ -589,6 +627,9 @@ def _build_visit_summary(
         summary["insurance"] = insurance
 
     session_payload: Dict[str, Any] | None = None
+    session_status: Optional[str] = None
+    session_duration: Optional[int] = None
+    last_resumed_at: Optional[str] = None
     if session_row is not None:
         session_data = session_row.get("data")
         if session_data:
@@ -617,6 +658,27 @@ def _build_visit_summary(
             summary["sessionUpdatedAt"] = _serialize_datetime(
                 _parse_datetime(updated_at)
             )
+
+        session_status = (session_row.get("status") or "").strip().lower() or None
+        duration_seconds, last_resumed_at = _extract_session_runtime(session_row)
+        session_duration = duration_seconds
+        if last_resumed_at and session_payload is not None:
+            session_payload.setdefault("lastResumedAt", last_resumed_at)
+
+    if session_status:
+        summary["visitStatus"] = session_status
+        if session_status == "completed":
+            summary["documentationComplete"] = True
+    if session_duration is not None:
+        summary["durationSeconds"] = session_duration
+        existing_minutes = summary.get("durationMinutes")
+        try:
+            minutes = int(session_duration // 60)
+        except (TypeError, ValueError):
+            minutes = None
+        if minutes is not None:
+            if existing_minutes is None or minutes > existing_minutes:
+                summary["durationMinutes"] = minutes
 
     return {key: value for key, value in summary.items() if value is not None}
 

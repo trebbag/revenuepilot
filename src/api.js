@@ -2525,10 +2525,14 @@ export async function updateVisitSession({ sessionId, action }) {
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
+  let normalizedAction = action;
+  if (normalizedAction === 'active') normalizedAction = 'resume';
+  else if (normalizedAction === 'complete') normalizedAction = 'stop';
+  else if (normalizedAction === 'paused') normalizedAction = 'pause';
   const resp = await rawFetch(`${baseUrl}/api/visits/session`, {
     method: 'PUT',
     headers,
-    body: JSON.stringify({ session_id: sessionId, action }),
+    body: JSON.stringify({ session_id: sessionId, action: normalizedAction }),
   });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error('Failed to update visit session');

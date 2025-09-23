@@ -15183,11 +15183,119 @@ class EncounterValidationRequest(BaseModel):
 
 class VisitSessionCreate(BaseModel):
     encounter_id: int
+    action: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _normalise_action(cls, value: Optional[str]) -> Optional[str]:  # noqa: D401
+        if value is None:
+            return None
+        text = value.strip().lower()
+        if not text:
+            return None
+        # Accept legacy synonyms from earlier implementations.
+        if text == "active":
+            return "resume"
+        if text == "complete":
+            return "stop"
+        return text
 
 
 class VisitSessionUpdate(BaseModel):
     session_id: int
     action: str
+
+    @field_validator("action")
+    @classmethod
+    def _normalise_action(cls, value: str) -> str:  # noqa: D401
+        text = (value or "").strip().lower()
+        if text == "active":
+            return "resume"
+        if text == "complete":
+            return "stop"
+        return text
+
+
+def _parse_session_payload(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+        return parsed if isinstance(parsed, dict) else {"raw": raw}
+    return {}
+
+
+def _parse_session_timestamp(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    if isinstance(value, (int, float)):
+        try:
+            return ensure_utc(datetime.fromtimestamp(float(value), tz=timezone.utc))
+        except Exception:
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        return ensure_utc(dt)
+    return None
+
+
+def _serialise_timestamp(dt: datetime | None) -> Optional[str]:
+    if dt is None:
+        return None
+    normalised = ensure_utc(dt).replace(microsecond=0)
+    text = normalised.isoformat()
+    if text.endswith("+00:00"):
+        text = text[:-6]
+    if text.endswith("Z"):
+        text = text[:-1]
+    return text
+
+
+def _calculate_session_duration(row: Mapping[str, Any]) -> Tuple[int, Optional[str]]:
+    payload = _parse_session_payload(row.get("data"))
+    base_seconds = payload.get("durationSeconds")
+    try:
+        duration_seconds = int(base_seconds)
+    except (TypeError, ValueError):
+        duration_seconds = 0
+    last_resumed_at: Optional[str] = None
+    raw_last_resumed = payload.get("lastResumedAt")
+    if isinstance(raw_last_resumed, str) and raw_last_resumed.strip():
+        last_resumed_at = raw_last_resumed.strip()
+    elif isinstance(raw_last_resumed, datetime):
+        last_resumed_at = _serialise_timestamp(raw_last_resumed)
+
+    if row.get("status") == "active" and last_resumed_at:
+        resumed_dt = _parse_session_timestamp(last_resumed_at)
+        if resumed_dt is not None:
+            delta = ensure_utc(utc_now()) - resumed_dt
+            duration_seconds += max(int(delta.total_seconds()), 0)
+    return duration_seconds, last_resumed_at
+
+
+def _format_visit_session(row: Mapping[str, Any]) -> Dict[str, Any]:
+    duration_seconds, last_resumed_at = _calculate_session_duration(row)
+    return {
+        "sessionId": row.get("id"),
+        "encounterId": row.get("encounter_id"),
+        "status": row.get("status"),
+        "startTime": row.get("start_time"),
+        "endTime": row.get("end_time"),
+        "durationSeconds": duration_seconds,
+        "lastResumedAt": last_resumed_at,
+    }
 
 
 def _build_encounter_validation_response(
@@ -15315,23 +15423,93 @@ async def validate_encounter_post(
 
 @app.post("/api/visits/session")
 async def start_visit_session(model: VisitSessionCreate, user=Depends(require_role("user"))):
-    now = datetime.utcnow().replace(microsecond=0).isoformat()
+    action = model.action or "start"
+    if action not in {"start", "resume"}:
+        raise HTTPException(status_code=400, detail="Unsupported session action")
+
+    now = ensure_utc(utc_now())
+    now_iso = _serialise_timestamp(now)
+
     with auth_session_scope() as session:
-        result = session.execute(
-            db_models.visit_sessions.insert().values(
-                encounter_id=model.encounter_id,
-                status="started",
-                start_time=now,
-                end_time=None,
-                updated_at=time.time(),
+        existing = (
+            session.execute(
+                sa.select(db_models.visit_sessions)
+                .where(db_models.visit_sessions.c.encounter_id == model.encounter_id)
+                .order_by(
+                    sa.desc(db_models.visit_sessions.c.updated_at),
+                    sa.desc(db_models.visit_sessions.c.id),
+                )
+                .limit(1)
             )
+            .mappings()
+            .first()
         )
-        session_id = int(result.inserted_primary_key[0])
-    return {"sessionId": session_id, "status": "started", "startTime": now}
+
+        if existing and existing.get("status") != "completed":
+            session_id = int(existing["id"])
+            payload = _parse_session_payload(existing.get("data"))
+            duration_seconds, _ = _calculate_session_duration(existing)
+            payload["durationSeconds"] = duration_seconds
+            payload["lastResumedAt"] = now_iso
+
+            values = {
+                "status": "active",
+                "start_time": existing.get("start_time") or now_iso,
+                "end_time": None,
+                "data": json.dumps(payload),
+                "updated_at": time.time(),
+            }
+
+            session.execute(
+                db_models.visit_sessions.update()
+                .where(db_models.visit_sessions.c.id == session_id)
+                .values(**values)
+            )
+
+            updated = (
+                session.execute(
+                    sa.select(db_models.visit_sessions).where(
+                        db_models.visit_sessions.c.id == session_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        else:
+            payload = {"durationSeconds": 0, "lastResumedAt": now_iso}
+            result = session.execute(
+                db_models.visit_sessions.insert().values(
+                    encounter_id=model.encounter_id,
+                    status="active",
+                    start_time=now_iso,
+                    end_time=None,
+                    data=json.dumps(payload),
+                    updated_at=time.time(),
+                )
+            )
+            session_id = int(result.inserted_primary_key[0])
+            updated = (
+                session.execute(
+                    sa.select(db_models.visit_sessions).where(
+                        db_models.visit_sessions.c.id == session_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to load visit session")
+
+    return _format_visit_session(updated)
 
 
 @app.put("/api/visits/session")
 async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_role("user"))):
+    action = model.action
+    if action not in {"pause", "resume", "stop"}:
+        raise HTTPException(status_code=400, detail="Unsupported session action")
+
     with auth_session_scope() as session:
         row = (
             session.execute(
@@ -15345,15 +15523,35 @@ async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_r
         if not row:
             raise HTTPException(status_code=404, detail="session not found")
 
-        end_time = row.get("end_time")
-        status = model.action
-        if model.action == "complete":
-            end_time = datetime.utcnow().replace(microsecond=0).isoformat()
+        now = ensure_utc(utc_now())
+        now_iso = _serialise_timestamp(now)
+
+        payload = _parse_session_payload(row.get("data"))
+        duration_seconds, _ = _calculate_session_duration(row)
+        payload["durationSeconds"] = duration_seconds
+
+        if action == "pause":
+            payload["lastResumedAt"] = None
+            status = "paused"
+            end_time = row.get("end_time")
+        elif action == "resume":
+            payload["lastResumedAt"] = now_iso
+            status = "active"
+            end_time = None
+        else:  # stop
+            payload["lastResumedAt"] = None
+            status = "completed"
+            end_time = now_iso
 
         session.execute(
             db_models.visit_sessions.update()
             .where(db_models.visit_sessions.c.id == model.session_id)
-            .values(status=status, end_time=end_time, updated_at=time.time())
+            .values(
+                status=status,
+                end_time=end_time,
+                data=json.dumps(payload),
+                updated_at=time.time(),
+            )
         )
 
         updated = (
@@ -15367,12 +15565,50 @@ async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_r
         )
 
     assert updated is not None
-    return {
-        "sessionId": updated["id"],
-        "status": updated["status"],
-        "startTime": updated["start_time"],
-        "endTime": updated["end_time"],
-    }
+    return _format_visit_session(updated)
+
+
+@app.get("/api/visits/session")
+async def get_visit_session(
+    encounter_id: Optional[int] = Query(default=None, alias="encounter_id"),
+    session_id: Optional[int] = Query(default=None, alias="session_id"),
+    user=Depends(require_role("user")),
+):
+    if encounter_id is None and session_id is None:
+        raise HTTPException(
+            status_code=400, detail="encounter_id or session_id is required"
+        )
+
+    with auth_session_scope() as session:
+        if session_id is not None:
+            row = (
+                session.execute(
+                    sa.select(db_models.visit_sessions).where(
+                        db_models.visit_sessions.c.id == session_id
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        else:
+            row = (
+                session.execute(
+                    sa.select(db_models.visit_sessions)
+                    .where(db_models.visit_sessions.c.encounter_id == encounter_id)
+                    .order_by(
+                        sa.desc(db_models.visit_sessions.c.updated_at),
+                        sa.desc(db_models.visit_sessions.c.id),
+                    )
+                    .limit(1)
+                )
+                .mappings()
+                .first()
+            )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    return _format_visit_session(row)
 
 
 @app.post("/api/charts/upload")
