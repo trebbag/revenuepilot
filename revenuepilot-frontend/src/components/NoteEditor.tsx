@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback, type ReactNode } from "react"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
@@ -84,13 +84,92 @@ interface EncounterValidationState {
   }
 }
 
+type TranscriptSpeakerRole = "clinician" | "patient" | "other"
+
 interface TranscriptEntry {
   id: string
   text: string
-  confidence: number
-  isInterim: boolean
+  confidence?: number | null
   timestamp: number
-  speaker?: string
+  speaker: string
+  speakerRole: TranscriptSpeakerRole
+}
+
+const TRANSCRIPT_RECENT_WINDOW_MS = 60_000
+
+const SPEAKER_STYLES: Record<TranscriptSpeakerRole, { badge: string; dot: string; text: string }> = {
+  clinician: {
+    badge: "bg-blue-100 text-blue-700 border border-blue-200",
+    dot: "bg-blue-500",
+    text: "text-blue-700",
+  },
+  patient: {
+    badge: "bg-emerald-100 text-emerald-700 border border-emerald-200",
+    dot: "bg-emerald-500",
+    text: "text-emerald-700",
+  },
+  other: {
+    badge: "bg-slate-200 text-slate-700 border border-slate-300",
+    dot: "bg-slate-400",
+    text: "text-slate-700",
+  },
+}
+
+function normaliseSpeakerRole(value: unknown): TranscriptSpeakerRole {
+  if (typeof value === "string") {
+    const normalised = value.trim().toLowerCase()
+    if (normalised.startsWith("clin")) return "clinician"
+    if (normalised.startsWith("prov")) return "clinician"
+    if (normalised.startsWith("doc")) return "clinician"
+    if (normalised.startsWith("pat")) return "patient"
+    if (normalised.startsWith("pt")) return "patient"
+  }
+  return "other"
+}
+
+function formatSpeakerLabel(role: TranscriptSpeakerRole): string {
+  switch (role) {
+    case "clinician":
+      return "Clinician"
+    case "patient":
+      return "Patient"
+    default:
+      return "Other"
+  }
+}
+
+function coerceTimestamp(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === "string") {
+    const numeric = Number.parseFloat(value)
+    if (Number.isFinite(numeric)) {
+      return numeric
+    }
+    const parsed = Date.parse(value)
+    if (!Number.isNaN(parsed)) {
+      return parsed
+    }
+  }
+  return Date.now()
+}
+
+function parseConfidence(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.min(1, value))
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const numeric = Number.parseFloat(value)
+    if (Number.isFinite(numeric)) {
+      return Math.max(0, Math.min(1, numeric))
+    }
+  }
+  return null
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 export type StreamConnectionStatus = "idle" | "connecting" | "open" | "closed" | "error"
@@ -396,6 +475,8 @@ export function NoteEditor({
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [transcriptionIndex, setTranscriptionIndex] = useState(-1)
   const [showFullTranscript, setShowFullTranscript] = useState(false)
+  const [transcriptSearch, setTranscriptSearch] = useState("")
+  const [shouldSnapTranscriptToEnd, setShouldSnapTranscriptToEnd] = useState(false)
 
   const initialRecordedSeconds = testOverrides?.initialRecordedSeconds ?? 0
   const [visitStarted, setVisitStarted] = useState(false)
@@ -612,6 +693,8 @@ export function NoteEditor({
   const collaborationSocketRef = useRef<WebSocket | null>(null)
   const collaborationReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const collaborationAttemptsRef = useRef(0)
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null)
+  const transcriptIdCounterRef = useRef(0)
   const prevInitialNoteIdRef = useRef<string | null>(initialNoteData?.noteId ?? null)
   const prevInitialContentRef = useRef<string>(initialNoteData?.content ?? "")
   const prevInitialPatientIdRef = useRef<string | undefined>(initialNoteData?.patientId)
@@ -1365,6 +1448,7 @@ export function NoteEditor({
     websocketRef.current = null
     queuedAudioChunksRef.current = []
     setIsRecording(false)
+    setShouldSnapTranscriptToEnd(true)
   }, [])
 
   useEffect(() => {
@@ -2062,6 +2146,8 @@ export function NoteEditor({
     setCurrentSessionTime(0)
     setPausedTime(initialRecordedSeconds)
     setTranscriptEntries([])
+    setTranscriptSearch("")
+    transcriptIdCounterRef.current = 0
     setTranscriptionIndex(-1)
     setTranscriptionError(null)
     setComplianceIssues([])
@@ -2133,18 +2219,82 @@ export function NoteEditor({
 
       ws.onmessage = (event) => {
         try {
-          const payload = typeof event.data === "string" ? JSON.parse(event.data) : JSON.parse(new TextDecoder().decode(event.data))
-          if (!payload || typeof payload !== "object" || !payload.transcript) return
-          const text = String(payload.transcript)
-          const entry: TranscriptEntry = {
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            text,
-            confidence: typeof payload.confidence === "number" ? payload.confidence : typeof payload.confidence === "string" ? Number.parseFloat(payload.confidence) || 0 : 0,
-            isInterim: Boolean(payload.isInterim),
-            timestamp: Date.now(),
-            speaker: typeof payload.speakerLabel === "string" && payload.speakerLabel.trim().length > 0 ? payload.speakerLabel.trim() : undefined,
+          const raw =
+            typeof event.data === "string"
+              ? JSON.parse(event.data)
+              : JSON.parse(new TextDecoder().decode(event.data))
+          if (!raw || typeof raw !== "object") return
+
+          const eventType = typeof raw.event === "string" ? raw.event.trim() : undefined
+          if (eventType === "transcript:end") {
+            setShouldSnapTranscriptToEnd(true)
+            return
           }
-          setTranscriptEntries((prev) => [...prev, entry])
+
+          const data =
+            raw.data && typeof raw.data === "object" && !Array.isArray(raw.data) ? (raw.data as Record<string, unknown>) : raw
+
+          const textSource =
+            typeof data.transcript === "string" && data.transcript.trim().length > 0
+              ? data.transcript.trim()
+              : typeof data.text === "string" && data.text.trim().length > 0
+                ? data.text.trim()
+                : typeof raw.transcript === "string" && raw.transcript.trim().length > 0
+                  ? raw.transcript.trim()
+                  : typeof raw.text === "string" && raw.text.trim().length > 0
+                    ? raw.text.trim()
+                    : ""
+
+          if (!textSource) return
+
+          const confidence = parseConfidence(data.confidence ?? raw.confidence)
+          const timestamp = coerceTimestamp((data as Record<string, unknown>).ts ?? (data as Record<string, unknown>).timestamp ?? raw.ts ?? raw.timestamp)
+          const role = normaliseSpeakerRole(
+            (data as Record<string, unknown>).speaker ??
+              (data as Record<string, unknown>).speakerRole ??
+              (data as Record<string, unknown>).role ??
+              (data as Record<string, unknown>).speakerLabel ??
+              raw.speaker ??
+              raw.speakerLabel,
+          )
+          const speakerLabel =
+            typeof (data as Record<string, unknown>).speakerLabel === "string" && (data as Record<string, unknown>).speakerLabel?.trim().length
+              ? ((data as Record<string, unknown>).speakerLabel as string).trim()
+              : typeof raw.speakerLabel === "string" && raw.speakerLabel.trim().length > 0
+                ? raw.speakerLabel.trim()
+                : formatSpeakerLabel(role)
+
+          let entryId: string
+          const rawId = (data as Record<string, unknown>).id ?? (data as Record<string, unknown>).eventId ?? raw.id ?? raw.eventId
+          if (typeof rawId === "string" && rawId.trim().length > 0) {
+            entryId = rawId.trim()
+          } else if (typeof rawId === "number" && Number.isFinite(rawId)) {
+            entryId = `transcript-${rawId}`
+          } else {
+            transcriptIdCounterRef.current += 1
+            entryId = `transcript-${timestamp}-${transcriptIdCounterRef.current}`
+          }
+
+          const entry: TranscriptEntry = {
+            id: entryId,
+            text: textSource,
+            confidence,
+            timestamp,
+            speaker: speakerLabel || formatSpeakerLabel(role),
+            speakerRole: role,
+          }
+
+          setTranscriptEntries((prev) => {
+            const next = Array.isArray(prev) ? [...prev] : []
+            const existingIndex = next.findIndex((item) => item.id === entry.id)
+            if (existingIndex >= 0) {
+              next[existingIndex] = entry
+            } else {
+              next.push(entry)
+            }
+            next.sort((a, b) => a.timestamp - b.timestamp)
+            return next
+          })
         } catch (error) {
           console.error("Failed to parse transcript payload", error)
         }
@@ -2732,6 +2882,23 @@ export function NoteEditor({
     }
   }, [transcriptEntries])
 
+  useEffect(() => {
+    if (!shouldSnapTranscriptToEnd) return
+    if (!showFullTranscript) return
+    const anchor = transcriptEndRef.current
+    if (!anchor) {
+      return
+    }
+    anchor.scrollIntoView({ behavior: "smooth", block: "end" })
+    setShouldSnapTranscriptToEnd(false)
+  }, [shouldSnapTranscriptToEnd, showFullTranscript, transcriptEntries])
+
+  useEffect(() => {
+    if (showFullTranscript) {
+      setShouldSnapTranscriptToEnd(true)
+    }
+  }, [showFullTranscript])
+
   const handleDismissIssue = (issueId: string) => {
     setComplianceIssues((prev) => prev.map((issue) => (issue.id === issueId ? { ...issue, dismissed: true } : issue)))
   }
@@ -2926,7 +3093,18 @@ export function NoteEditor({
 
   const recentTranscription = useMemo(() => {
     if (!transcriptEntries.length) return []
-    return transcriptEntries.slice(Math.max(0, transcriptEntries.length - 3))
+    const now = Date.now()
+    const subset: TranscriptEntry[] = []
+    for (let index = transcriptEntries.length - 1; index >= 0; index -= 1) {
+      const entry = transcriptEntries[index]
+      const age = now - entry.timestamp
+      if (age <= TRANSCRIPT_RECENT_WINDOW_MS || subset.length === 0) {
+        subset.push(entry)
+      } else {
+        break
+      }
+    }
+    return subset.reverse()
   }, [transcriptEntries])
 
   const totalTranscriptWords = useMemo(() => {
@@ -2938,10 +3116,53 @@ export function NoteEditor({
   }, [transcriptEntries])
 
   const averageTranscriptConfidence = useMemo(() => {
-    if (!transcriptEntries.length) return null
-    const sum = transcriptEntries.reduce((total, entry) => total + entry.confidence, 0)
-    return sum / transcriptEntries.length
+    const samples = transcriptEntries
+      .map((entry) => (typeof entry.confidence === "number" && Number.isFinite(entry.confidence) ? Math.max(0, Math.min(1, entry.confidence)) : null))
+      .filter((value): value is number => value !== null)
+    if (!samples.length) return null
+    const sum = samples.reduce((total, value) => total + value, 0)
+    return sum / samples.length
   }, [transcriptEntries])
+
+  const normalizedTranscriptQuery = transcriptSearch.trim().toLowerCase()
+  const hasTranscriptSearch = normalizedTranscriptQuery.length > 0
+
+  const entryMatchesSearch = useCallback(
+    (entry: TranscriptEntry) => {
+      if (!hasTranscriptSearch) return true
+      const textValue = entry.text?.toLowerCase() ?? ""
+      const speakerValue = entry.speaker?.toLowerCase() ?? ""
+      return textValue.includes(normalizedTranscriptQuery) || speakerValue.includes(normalizedTranscriptQuery)
+    },
+    [hasTranscriptSearch, normalizedTranscriptQuery],
+  )
+
+  const matchingTranscriptCount = useMemo(() => {
+    if (!transcriptEntries.length) return 0
+    return transcriptEntries.reduce((count, entry) => (entryMatchesSearch(entry) ? count + 1 : count), 0)
+  }, [entryMatchesSearch, transcriptEntries])
+
+  const highlightTranscriptText = useCallback(
+    (text: string): ReactNode => {
+      if (!hasTranscriptSearch || !text) return text
+      try {
+        const regex = new RegExp(`(${escapeRegExp(normalizedTranscriptQuery)})`, "ig")
+        const parts = text.split(regex)
+        return parts.map((part, index) =>
+          part.toLowerCase() === normalizedTranscriptQuery ? (
+            <mark key={index} className="rounded-sm bg-amber-200 px-1 py-0.5 text-foreground">
+              {part}
+            </mark>
+          ) : (
+            <span key={index}>{part}</span>
+          ),
+        )
+      } catch {
+        return text
+      }
+    },
+    [hasTranscriptSearch, normalizedTranscriptQuery],
+  )
 
   const totalTranscribedLines = transcriptEntries.length
   const currentTranscriptCount = transcriptionIndex >= 0 ? transcriptionIndex + 1 : 0
@@ -3205,6 +3426,8 @@ export function NoteEditor({
           setCurrentSessionTime(0)
           setPausedTime(0)
           setTranscriptEntries([])
+          setTranscriptSearch("")
+          transcriptIdCounterRef.current = 0
         } else {
           setCurrentSessionTime(pausedTime)
         }
@@ -3517,25 +3740,35 @@ export function NoteEditor({
                           </div>
                         </TooltipTrigger>
                         <TooltipContent side="bottom" align="center" className="max-w-sm p-3 bg-popover border-border">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground mb-2">
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
                               <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? "bg-destructive animate-pulse" : "bg-muted-foreground"}`}></div>
                               {isRecording ? "Live Transcription Preview" : "Transcription Preview (Paused)"}
                             </div>
-                            <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-1">
-                              {recentTranscription.map((entry, index) => (
-                                <div
-                                  key={entry.id}
-                                  className={`text-xs leading-relaxed ${index === recentTranscription.length - 1 ? "text-foreground font-medium" : "text-muted-foreground"}`}
-                                  style={{
-                                    opacity: index === recentTranscription.length - 1 ? 1 : 0.7 - index * 0.2,
-                                  }}
-                                >
-                                  {entry.text}
-                                </div>
-                              ))}
+                            <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-2">
+                              {recentTranscription.length ? (
+                                recentTranscription.map((entry, index) => {
+                                  const styles = SPEAKER_STYLES[entry.speakerRole] ?? SPEAKER_STYLES.other
+                                  const isLatest = index === recentTranscription.length - 1
+                                  return (
+                                    <div
+                                      key={entry.id}
+                                      className={`flex items-start gap-2 text-xs leading-relaxed ${isLatest ? "text-foreground" : "text-muted-foreground"}`}
+                                      style={{ opacity: isLatest ? 1 : Math.max(0.25, 0.75 - index * 0.2) }}
+                                    >
+                                      <div className={`mt-1 h-1.5 w-1.5 rounded-full ${styles.dot}`}></div>
+                                      <div className="flex-1 space-y-1">
+                                        <Badge className={`text-[10px] font-semibold uppercase tracking-wide ${styles.badge}`}>{entry.speaker}</Badge>
+                                        <div className={isLatest ? "font-medium" : undefined}>{entry.text}</div>
+                                      </div>
+                                    </div>
+                                  )
+                                })
+                              ) : (
+                                <div className="text-xs text-muted-foreground">Transcript will appear once the conversation begins.</div>
+                              )}
                             </div>
-                            <div className="text-xs text-muted-foreground mt-2 pt-2 border-t border-border">
+                            <div className="text-xs text-muted-foreground pt-2 border-t border-border">
                               Click audio wave to view full transcript
                               {!isRecording && <div className="mt-1 text-muted-foreground/80">Recording paused - transcript available</div>}
                             </div>
@@ -3642,6 +3875,19 @@ export function NoteEditor({
                   <span className="font-mono tabular-nums">{formatTime(totalDisplayTime)}</span>
                 </div>
               </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <Input
+                  value={transcriptSearch}
+                  onChange={(event) => setTranscriptSearch(event.target.value)}
+                  placeholder="Search transcript..."
+                  className="sm:max-w-xs"
+                />
+                {hasTranscriptSearch && (
+                  <div className="text-xs text-muted-foreground">
+                    {matchingTranscriptCount} match{matchingTranscriptCount === 1 ? "" : "es"}
+                  </div>
+                )}
+              </div>
             </div>
           </DialogHeader>
 
@@ -3654,39 +3900,53 @@ export function NoteEditor({
               </div>
 
               <div className="space-y-3">
+                {hasTranscriptSearch && transcriptEntries.length > 0 && matchingTranscriptCount === 0 && (
+                  <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
+                    No transcript entries match “{transcriptSearch.trim()}”.
+                  </div>
+                )}
                 {transcriptEntries.map((entry, index) => {
                   const isRecent = index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
                   const isCurrent = index === transcriptionIndex && isRecording
-                  const rawText = entry.text ?? ""
-                  let speakerLabel = entry.speaker?.trim()
-                  let content = rawText
-                  if (!speakerLabel && rawText.includes(":")) {
-                    const [potentialSpeaker, ...rest] = rawText.split(":")
-                    if (rest.length) {
-                      speakerLabel = potentialSpeaker.trim()
-                      content = rest.join(":").trim()
-                    }
-                  }
-                  if (!speakerLabel || speakerLabel.length === 0) {
-                    speakerLabel = "Speaker"
-                  }
-                  if (!content || content.length === 0) {
-                    content = rawText
-                  }
+                  const styles = SPEAKER_STYLES[entry.speakerRole] ?? SPEAKER_STYLES.other
+                  const matchesQuery = entryMatchesSearch(entry)
+                  const speakerMatches = hasTranscriptSearch && entry.speaker.toLowerCase().includes(normalizedTranscriptQuery)
+                  const timestampDate = new Date(entry.timestamp)
+                  const timestampLabel = Number.isFinite(entry.timestamp)
+                    ? timestampDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    : ""
 
                   return (
                     <div
                       key={entry.id}
-                      className={`flex gap-3 p-3 rounded-lg transition-all duration-300 ${
-                        isCurrent ? "bg-destructive/10 border border-destructive/20 shadow-sm" : isRecent ? "bg-accent/50" : "bg-muted/30"
+                      className={`flex gap-4 p-3 rounded-lg border transition-all duration-300 ${
+                        isCurrent
+                          ? "bg-destructive/10 border-destructive/30 shadow-sm"
+                          : isRecent
+                            ? "bg-accent/40 border-accent/60"
+                            : "bg-muted/30 border-transparent"
                       }`}
-                      style={{
-                        opacity: index <= transcriptionIndex ? 1 : 0.4,
-                      }}
+                      style={{ opacity: matchesQuery ? 1 : 0.45 }}
                     >
-                      <div className={`font-medium text-sm min-w-16 ${speakerLabel.toLowerCase() === "doctor" ? "text-primary" : "text-blue-600"}`}>{speakerLabel}:</div>
+                      <div className="flex flex-col gap-2 min-w-[6rem]">
+                        <Badge
+                          className={`text-[11px] font-semibold uppercase tracking-wide ${styles.badge} ${
+                            speakerMatches ? "ring-2 ring-amber-400 shadow-sm" : ""
+                          }`}
+                        >
+                          {entry.speaker}
+                        </Badge>
+                        {timestampLabel && (
+                          <time
+                            dateTime={timestampDate.toISOString()}
+                            className={`text-[11px] font-medium ${styles.text} opacity-80`}
+                          >
+                            {timestampLabel}
+                          </time>
+                        )}
+                      </div>
                       <div className={`text-sm leading-relaxed flex-1 ${isCurrent ? "font-medium" : ""}`}>
-                        {content}
+                        {highlightTranscriptText(entry.text)}
                         {isCurrent && isRecording && <span className="inline-block w-2 h-4 bg-destructive ml-1 animate-pulse"></span>}
                       </div>
                     </div>
@@ -3697,6 +3957,7 @@ export function NoteEditor({
                     No transcript available yet. Start the visit to capture the conversation.
                   </div>
                 )}
+                <div ref={transcriptEndRef} />
               </div>
 
               {isRecording && (
