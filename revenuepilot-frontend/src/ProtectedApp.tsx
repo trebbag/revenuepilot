@@ -323,7 +323,10 @@ export function ProtectedApp() {
       case "in-progress":
       case "in progress":
       case "start":
+      case "active":
         return "In Progress"
+      case "paused":
+        return "Checked In"
       case "completed":
         return "Completed"
       case "cancelled":
@@ -396,8 +399,9 @@ export function ProtectedApp() {
       const reason = normalizeText(summaryReason ?? raw.reason, "Scheduled visit")
       const summaryProvider = readString(summary?.provider)
       const provider = normalizeText(summaryProvider ?? raw.provider, "Unassigned")
+      const summaryVisitStatus = readString(summary?.visitStatus)
       const summaryStatus = readString(summary?.status)
-      const status = mapScheduleStatus(summaryStatus ?? raw.status)
+      const status = mapScheduleStatus(summaryVisitStatus ?? summaryStatus ?? raw.status)
       const encounterType = readString(summary?.encounterType)
       const rawLocation = readString(raw.location) ?? readString(summary?.location)
       const isVirtual = Boolean(
@@ -415,7 +419,9 @@ export function ProtectedApp() {
       const fallbackEncounterId = idDigits ? `ENC-${idDigits.padStart(4, "0")}` : `ENC-${(idString || "0").padStart(4, "0")}`
       const encounterId = normalizeText(encounterIdSource, fallbackEncounterId)
 
-      const documentationComplete = typeof summary?.documentationComplete === "boolean" ? summary.documentationComplete : undefined
+      const documentationComplete = typeof summary?.documentationComplete === "boolean"
+        ? summary.documentationComplete
+        : (summaryVisitStatus ?? "").toLowerCase() === "completed"
       const summaryNotes = readString(summary?.summary) ?? readString(summary?.notes) ?? readString(summary?.chiefComplaint)
 
       return {
@@ -435,7 +441,7 @@ export function ProtectedApp() {
         fileUpToDate: documentationComplete ?? status === "Completed",
         priority: determinePriority(start, status, reason),
         isVirtual,
-        sourceStatus: normalizeText(summaryStatus ?? raw.status, "scheduled"),
+        sourceStatus: normalizeText(summaryVisitStatus ?? summaryStatus ?? raw.status, "scheduled"),
         visitSummary: summary,
       }
     },

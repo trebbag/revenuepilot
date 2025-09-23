@@ -205,24 +205,56 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
   }
 
   if (url === "/api/visits/session" && method === "POST") {
-    return new Response(JSON.stringify({ sessionId: 42, status: "started", startTime: "2024-03-14T10:00:00Z" }), { status: 200 })
-  }
-
-  if (url === "/api/visits/session" && method === "PUT") {
-    return new Response(JSON.stringify({ sessionId: 42, status: init.jsonBody?.action ?? "complete", endTime: "2024-03-14T10:10:00Z" }), { status: 200 })
-  }
-
-  if (url.endsWith("/stop") && url.startsWith("/api/visits/") && method === "POST") {
-    const encounter = url.split("/")[3]
     return new Response(
       JSON.stringify({
-        encounterId: encounter,
-        visitStatus: "paused",
-        duration: 300,
-        documentationComplete: false,
+        sessionId: 42,
+        status: "active",
+        startTime: "2024-03-14T10:00:00",
+        durationSeconds: 0,
+        lastResumedAt: "2024-03-14T10:00:00",
       }),
       { status: 200 },
     )
+  }
+
+  if (url === "/api/visits/session" && method === "PUT") {
+    const action = init.jsonBody?.action
+    if (action === "resume") {
+      return new Response(
+        JSON.stringify({
+          sessionId: 42,
+          status: "active",
+          startTime: "2024-03-14T10:00:00",
+          durationSeconds: 120,
+          lastResumedAt: "2024-03-14T10:05:00",
+        }),
+        { status: 200 },
+      )
+    }
+    if (action === "stop") {
+      return new Response(
+        JSON.stringify({
+          sessionId: 42,
+          status: "completed",
+          startTime: "2024-03-14T10:00:00",
+          endTime: "2024-03-14T10:10:00",
+          durationSeconds: 600,
+        }),
+        { status: 200 },
+      )
+    }
+    if (action === "pause") {
+      return new Response(
+        JSON.stringify({
+          sessionId: 42,
+          status: "paused",
+          durationSeconds: 300,
+          startTime: "2024-03-14T10:00:00",
+        }),
+        { status: 200 },
+      )
+    }
+    return new Response(JSON.stringify({ sessionId: 42, status: "completed" }), { status: 200 })
   }
 
   if (url === "/api/notes/drafts" && method === "POST") {

@@ -29,14 +29,14 @@ vi.mock('../../api.js', () => ({
     .fn()
     .mockResolvedValue({
       sessionId: 101,
-      status: 'started',
+      status: 'active',
       startTime: '2023-01-01T00:00:00.000Z',
     }),
   updateVisitSession: vi
     .fn()
     .mockResolvedValue({
       sessionId: 101,
-      status: 'pause',
+      status: 'paused',
       startTime: '2023-01-01T00:00:00.000Z',
       endTime: null,
     }),
@@ -389,12 +389,12 @@ test('suggestion panel renders codes and inserts into draft', async () => {
 test('starts visit session when identifiers are provided and completes on export', async () => {
   startVisitSession.mockResolvedValue({
     sessionId: 55,
-    status: 'started',
+    status: 'active',
     startTime: '2024-01-01T00:00:00.000Z',
   });
   updateVisitSession.mockResolvedValueOnce({
     sessionId: 55,
-    status: 'complete',
+    status: 'completed',
     startTime: '2024-01-01T00:00:00.000Z',
     endTime: '2024-01-01T00:10:00.000Z',
   });
@@ -409,7 +409,7 @@ test('starts visit session when identifiers are provided and completes on export
   fireEvent.click(getByText('Export to EHR'));
 
   await waitFor(() =>
-    expect(updateVisitSession).toHaveBeenCalledWith({ sessionId: 55, action: 'complete' }),
+    expect(updateVisitSession).toHaveBeenCalledWith({ sessionId: 55, action: 'stop' }),
   );
   expect(logEvent).toHaveBeenCalledWith(
     'visit_session_start',
@@ -424,7 +424,7 @@ test('starts visit session when identifiers are provided and completes on export
 test('pauses visit session on unmount when still active', async () => {
   startVisitSession.mockResolvedValue({
     sessionId: 77,
-    status: 'started',
+    status: 'active',
     startTime: '2024-02-01T12:00:00.000Z',
   });
 

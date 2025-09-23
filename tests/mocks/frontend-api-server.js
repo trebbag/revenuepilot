@@ -1308,6 +1308,8 @@ app.post('/api/visits/session', (req, res) => {
     status: 'active',
     startTime: new Date().toISOString(),
     endTime: null,
+    durationSeconds: 0,
+    lastResumedAt: new Date().toISOString(),
     encounterId,
   };
   res.json(activeVisit);
@@ -1315,16 +1317,25 @@ app.post('/api/visits/session', (req, res) => {
 
 app.put('/api/visits/session', (req, res) => {
   const action = req.body?.action;
-  if (action === 'active') {
+  const now = new Date().toISOString();
+  if (action === 'resume') {
     activeVisit = {
       ...activeVisit,
       status: 'active',
+      lastResumedAt: now,
     };
-  } else if (action === 'paused') {
+  } else if (action === 'pause') {
     activeVisit = {
       ...activeVisit,
       status: 'paused',
-      endTime: new Date().toISOString(),
+      lastResumedAt: null,
+    };
+  } else if (action === 'stop') {
+    activeVisit = {
+      ...activeVisit,
+      status: 'completed',
+      endTime: now,
+      lastResumedAt: null,
     };
   }
   res.json(activeVisit);

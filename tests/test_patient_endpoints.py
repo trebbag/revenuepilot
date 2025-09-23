@@ -118,11 +118,11 @@ def test_patient_encounter_flow(client):
     session_id = resp.json()['sessionId']
     resp = client.put(
         '/api/visits/session',
-        json={'session_id': session_id, 'action': 'complete'},
+        json={'session_id': session_id, 'action': 'stop'},
         headers=auth_header(token),
     )
     assert resp.status_code == 200
-    assert resp.json()['status'] == 'complete'
+    assert resp.json()['status'] == 'completed'
 
     resp = client.post(
         '/api/charts/upload',

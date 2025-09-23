@@ -122,17 +122,20 @@ test.describe('Suggestion panel live websocket indicators', () => {
         return route.fulfill({
           json: {
             sessionId: 11,
-            status: 'started',
-            startTime: '2024-01-01T00:00:00Z',
+            status: 'active',
+            startTime: '2024-01-01T00:00:00',
+            durationSeconds: 0,
+            lastResumedAt: '2024-01-01T00:00:00',
           },
         })
       }
       return route.fulfill({
         json: {
           sessionId: 11,
-          status: 'pause',
-          startTime: '2024-01-01T00:00:00Z',
+          status: 'paused',
+          startTime: '2024-01-01T00:00:00',
           endTime: null,
+          durationSeconds: 120,
         },
       })
     })
