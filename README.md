@@ -23,6 +23,7 @@ desktop packaging pipeline always reflects the canonical source.【F:package.jso
 - **Administrative tooling** including dashboards, activity logs,
   configuration panels, notifications, scheduling, and workflow
   finalisation endpoints.【F:revenuepilot-frontend/src/components/Dashboard.tsx†L1-L192】【F:backend/main.py†L7536-L12239】
+- **Staged chart ingestion** drives context awareness: Superficial (fast context), Deep (normalized facts with evidence anchors), and Indexed (embedding + lexical search). The UI and AI always use the richest available stage, show freshness, and degrade gracefully. Typical completion: Deep + Indexed within one hour; Superficial within a few minutes.【F:backend/context_pipeline.py†L1-L415】【F:backend/main.py†L13966-L14033】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L257-L356】
 - **Packaging pipeline** that bundles the React build and FastAPI backend
   into signed Electron installers with optional auto-update hosting.【F:package.json†L11-L94】【F:docs/DESKTOP_BUILD.md†L1-L68】
 

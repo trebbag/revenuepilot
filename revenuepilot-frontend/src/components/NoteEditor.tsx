@@ -17,6 +17,7 @@ import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFe
 import { useAuth } from "../contexts/AuthContext"
 import { useSession } from "../contexts/SessionContext"
 import type { StoredFinalizationSession } from "../features/finalization/workflowTypes"
+import useContextStage from "../hooks/useContextStage"
 
 export interface ComplianceIssue {
   id: string
@@ -228,6 +229,13 @@ interface NoteEditorProps {
   onComplianceStreamUpdate?: (issues: ComplianceIssue[], state: StreamConnectionState) => void
   onCodeStreamUpdate?: (suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => void
   onCollaborationStreamUpdate?: (state: CollaborationStreamState) => void
+  onContextStageChange?: (info: NoteContextStageInfo | null) => void
+}
+
+export interface NoteContextStageInfo {
+  correlationId: string | null
+  bestStage: string | null
+  contextGeneratedAt: string | null
 }
 
 export function NoteEditor({
@@ -251,12 +259,59 @@ export function NoteEditor({
   onComplianceStreamUpdate,
   onCodeStreamUpdate,
   onCollaborationStreamUpdate,
+  onContextStageChange,
 }: NoteEditorProps) {
   const auth = useAuth()
   const { state: sessionState } = useSession()
   const [patientInputValue, setPatientInputValue] = useState(initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(initialNoteData?.patientId || prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
+
+  const normalizedPatientId = useMemo(() => patientId.trim(), [patientId])
+  const patientIdForContext = normalizedPatientId.length > 0 ? normalizedPatientId : undefined
+  const contextStageState = useContextStage(null, { patientId: patientIdForContext })
+
+  useEffect(() => {
+    if (!onContextStageChange) {
+      return
+    }
+    if (!patientIdForContext) {
+      onContextStageChange(null)
+      return
+    }
+    onContextStageChange({
+      correlationId: contextStageState.correlationId,
+      bestStage: contextStageState.bestStage,
+      contextGeneratedAt: contextStageState.contextGeneratedAt,
+    })
+  }, [
+    onContextStageChange,
+    patientIdForContext,
+    contextStageState.correlationId,
+    contextStageState.bestStage,
+    contextStageState.contextGeneratedAt,
+  ])
+
+  const contextStageDisplay = useMemo(() => {
+    const result: Record<string, string> = {}
+    const order: Array<"superficial" | "deep" | "indexed"> = ["superficial", "deep", "indexed"]
+    order.forEach((stage) => {
+      const info = contextStageState.stages[stage]
+      if (!info || !info.state) {
+        result[stage] = "⧗"
+      } else if (info.state === "completed") {
+        result[stage] = "✓"
+      } else if (info.state === "running") {
+        const pct = Number.isFinite(info.percent) ? Math.round((info.percent ?? 0) as number) : null
+        result[stage] = pct != null ? `${pct}%` : "…"
+      } else if (info.state === "failed") {
+        result[stage] = "⚠"
+      } else {
+        result[stage] = "⧗"
+      }
+    })
+    return result
+  }, [contextStageState.stages])
   const [patientSuggestions, setPatientSuggestions] = useState<PatientSuggestion[]>([])
   const [patientSearchLoading, setPatientSearchLoading] = useState(false)
   const [patientSearchError, setPatientSearchError] = useState<string | null>(null)
@@ -3180,6 +3235,43 @@ export function NoteEditor({
             )}
             {autoSaveError && <span className="text-destructive">{autoSaveError}</span>}
           </div>
+
+          {patientIdForContext && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-1 text-xs text-muted-foreground rounded-full border border-border px-2 py-1">
+                  <span className="font-medium">Context:</span>
+                  {[
+                    { key: "superficial", label: "Superficial" },
+                    { key: "deep", label: "Deep" },
+                    { key: "indexed", label: "Indexed" },
+                  ].map((stage, index) => {
+                    const display = contextStageDisplay[stage.key as keyof typeof contextStageDisplay]
+                    const isBest = contextStageState.bestStage === stage.key
+                    return (
+                      <div key={stage.key} className="flex items-center gap-1">
+                        <span className={isBest ? "font-semibold text-foreground" : undefined}>{stage.label}</span>
+                        <span>{display}</span>
+                        {index < 2 && <span>·</span>}
+                      </div>
+                    )
+                  })}
+                </div>
+              </TooltipTrigger>
+              <TooltipContent className="text-xs space-y-1">
+                <div>Profile: {contextStageState.profile ?? "balanced"}</div>
+                {contextStageState.lastUpdated && (
+                  <div>Updated: {new Date(contextStageState.lastUpdated).toLocaleString()}</div>
+                )}
+                {contextStageState.stages.superficial?.doc_count != null && (
+                  <div>Documents: {contextStageState.stages.superficial.doc_count}</div>
+                )}
+                {contextStageState.bestStage !== "indexed" && (
+                  <div className="text-muted-foreground">Deep parsing may still be in progress.</div>
+                )}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {/* Start Visit with Recording Indicator */}
           <div className="flex items-center gap-3">

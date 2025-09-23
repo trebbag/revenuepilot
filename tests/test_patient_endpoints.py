@@ -126,13 +126,14 @@ def test_patient_encounter_flow(client):
 
     resp = client.post(
         '/api/charts/upload',
+        params={'patient_id': 'pt-test'},
         files={'file': ('chart.txt', b'123')},
         headers=auth_header(token),
     )
     assert resp.status_code == 200
     info = resp.json()
-    assert info['filename'] == 'chart.txt'
-    assert info['size'] == 3
+    assert info['patient_id'] == 'pt-test'
+    assert info['files'][0]['name'] == 'chart.txt'
     assert (main.UPLOAD_DIR / 'chart.txt').exists()
 
 

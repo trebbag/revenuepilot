@@ -1158,6 +1158,102 @@ class SharedWorkflowSession(Base):
     session_id = sa.Column(String, primary_key=True)
     owner_username = sa.Column(String, nullable=True, index=True)
     data = sa.Column(sa.JSON, nullable=False)
+
+
+class ChartDocument(Base):
+    __tablename__ = "chart_documents"
+
+    doc_id = sa.Column(String, primary_key=True)
+    patient_id = sa.Column(String, nullable=False, index=True)
+    correlation_id = sa.Column(String, nullable=True, index=True)
+    name = sa.Column(String, nullable=False)
+    mime = sa.Column(String, nullable=True)
+    bytes_sha256 = sa.Column(String, nullable=False, index=True)
+    pages = sa.Column(Integer, nullable=True)
+    uploaded_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        sa.UniqueConstraint("patient_id", "bytes_sha256", name="uq_chart_documents_patient_hash"),
+    )
+
+
+class ChartParseJob(Base):
+    __tablename__ = "chart_parse_jobs"
+
+    job_id = sa.Column(String, primary_key=True)
+    correlation_id = sa.Column(String, nullable=False, index=True)
+    patient_id = sa.Column(String, nullable=False, index=True)
+    stage = sa.Column(String, nullable=False)
+    state = sa.Column(String, nullable=False)
+    percent = sa.Column(Integer, nullable=False, default=0)
+    started_at = sa.Column(DateTime(timezone=True), nullable=True)
+    finished_at = sa.Column(DateTime(timezone=True), nullable=True)
+    eta_sec = sa.Column(Integer, nullable=True)
+    profile = sa.Column(String, nullable=False, default="balanced")
+    doc_count = sa.Column(Integer, nullable=True)
+    created_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class ChartParseJobEvent(Base):
+    __tablename__ = "chart_parse_job_events"
+
+    event_id = sa.Column(String, primary_key=True)
+    job_id = sa.Column(String, sa.ForeignKey("chart_parse_jobs.job_id", ondelete="CASCADE"), nullable=False)
+    ts = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    type = sa.Column(String, nullable=False)
+    payload = sa.Column(sa.JSON, nullable=True)
+
+    job = sa.orm.relationship(ChartParseJob, backref="events")
+
+
+class PatientContextSuperficial(Base):
+    __tablename__ = "patient_context_superficial"
+
+    patient_id = sa.Column(String, primary_key=True)
+    correlation_id = sa.Column(String, nullable=False, index=True)
+    kv = sa.Column(sa.JSON, nullable=False, default=dict)
+    provenance = sa.Column(sa.JSON, nullable=False, default=dict)
+    generated_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class PatientContextNormalized(Base):
+    __tablename__ = "patient_context_normalized"
+
+    patient_id = sa.Column(String, primary_key=True)
+    correlation_id = sa.Column(String, nullable=False, index=True)
+    problems = sa.Column(sa.JSON, nullable=False, default=list)
+    meds = sa.Column(sa.JSON, nullable=False, default=list)
+    allergies = sa.Column(sa.JSON, nullable=False, default=list)
+    labs = sa.Column(sa.JSON, nullable=False, default=list)
+    vitals = sa.Column(sa.JSON, nullable=False, default=list)
+    provenance = sa.Column(sa.JSON, nullable=False, default=dict)
+    generated_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+
+class PatientIndexChunk(Base):
+    __tablename__ = "patient_index_chunks"
+
+    chunk_id = sa.Column(String, primary_key=True)
+    patient_id = sa.Column(String, nullable=False, index=True)
+    doc_id = sa.Column(String, sa.ForeignKey("chart_documents.doc_id", ondelete="CASCADE"), nullable=False)
+    stage = sa.Column(String, nullable=False)
+    section = sa.Column(String, nullable=True)
+    text = sa.Column(Text, nullable=False)
+    token_count = sa.Column(Integer, nullable=True)
+    char_start = sa.Column(Integer, nullable=True)
+    char_end = sa.Column(Integer, nullable=True)
+    metadata_payload = sa.Column("metadata", sa.JSON, nullable=True)
+
+
+class PatientIndexEmbedding(Base):
+    __tablename__ = "patient_index_embeddings"
+
+    chunk_id = sa.Column(String, sa.ForeignKey("patient_index_chunks.chunk_id", ondelete="CASCADE"), primary_key=True)
+    embedding = sa.Column(sa.JSON, nullable=False)
+    model = sa.Column(String, nullable=False)
+    created_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    chunk = sa.orm.relationship(PatientIndexChunk, backref="embedding")
     updated_at = sa.Column(DateTime(timezone=True), nullable=False, server_default=sa.func.now(), default=_utcnow, onupdate=_utcnow)
 
 
