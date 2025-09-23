@@ -6,16 +6,20 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from backend.db import models as db_models
+from backend.clinical_parsing import ClinicalFactExtractor
+from backend.embedding import HashingVectorizerEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,7 @@ class UploadedChartFile:
     text: str
     sha256: str
     doc_id: str
+    uploaded_at: datetime
 
 
 def _utc_now() -> datetime:
@@ -97,12 +102,25 @@ class ChartContextPipeline:
         session_factory: Callable[[], Session],
         *,
         default_profile: str = "balanced",
+        upload_dir: Path | Callable[[], Path] | None = None,
+        fact_extractor: Optional[ClinicalFactExtractor] = None,
+        embedding_model: Optional[HashingVectorizerEmbedding] = None,
     ) -> None:
         self._session_factory = session_factory
         self._default_profile = default_profile
         self._event_manager = ContextEventManager()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+        if callable(upload_dir):
+            self._upload_dir_getter = upload_dir
+        elif upload_dir is not None:
+            fixed_dir = Path(upload_dir)
+            self._upload_dir_getter = lambda fixed_dir=fixed_dir: fixed_dir
+        else:
+            default_dir = Path(os.getenv("CHART_UPLOAD_DIR", "/tmp/revenuepilot_charts"))
+            self._upload_dir_getter = lambda default_dir=default_dir: default_dir
+        self._fact_extractor = fact_extractor or ClinicalFactExtractor()
+        self._embedding_model = embedding_model or HashingVectorizerEmbedding()
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -119,6 +137,81 @@ class ChartContextPipeline:
         if env_profile and env_profile in {"fast", "balanced", "thorough"}:
             return env_profile
         return self._default_profile
+
+    def _resolve_upload_dir(self) -> Path:
+        directory = Path(self._upload_dir_getter())
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover - filesystem dependent
+            logger.warning("context_pipeline.upload_dir_error", error=str(exc), path=str(directory))
+        return directory
+
+    def _load_patient_documents(
+        self,
+        patient_id: str,
+        staged_files: list[UploadedChartFile],
+    ) -> list[UploadedChartFile]:
+        by_doc: dict[str, UploadedChartFile] = {file.doc_id: file for file in staged_files}
+        with self._session_scope() as session:
+            records = (
+                session.execute(
+                    sa.select(db_models.ChartDocument)
+                    .where(db_models.ChartDocument.patient_id == patient_id)
+                )
+                .scalars()
+                .all()
+            )
+        upload_dir = self._resolve_upload_dir()
+        for record in records:
+            if record.doc_id in by_doc:
+                existing = by_doc[record.doc_id]
+                if record.uploaded_at:
+                    existing.uploaded_at = record.uploaded_at
+                continue
+            path = (upload_dir / record.name).resolve()
+            try:
+                data = path.read_bytes()
+            except OSError:
+                logger.warning(
+                    "context_pipeline.missing_document",
+                    doc_id=record.doc_id,
+                    path=str(path),
+                )
+                continue
+            text = _decode_text(data)
+            by_doc[record.doc_id] = UploadedChartFile(
+                name=record.name,
+                mime=record.mime,
+                data=data,
+                text=text,
+                sha256=record.bytes_sha256,
+                doc_id=record.doc_id,
+                uploaded_at=record.uploaded_at or _utc_now(),
+            )
+        return list(by_doc.values())
+
+    def _existing_index_state(
+        self,
+        patient_id: str,
+    ) -> tuple[dict[str, str], dict[str, list[str]]]:
+        with self._session_scope() as session:
+            chunks = (
+                session.execute(
+                    sa.select(db_models.PatientIndexChunk)
+                    .where(db_models.PatientIndexChunk.patient_id == patient_id)
+                )
+                .scalars()
+                .all()
+            )
+        chunk_ids_by_doc: dict[str, list[str]] = defaultdict(list)
+        hashes_by_doc: dict[str, str] = {}
+        for chunk in chunks:
+            chunk_ids_by_doc[chunk.doc_id].append(chunk.chunk_id)
+            metadata = chunk.metadata_payload if isinstance(chunk.metadata_payload, dict) else {}
+            doc_hash = metadata.get("doc_sha256") if isinstance(metadata, dict) else None
+            if doc_hash and chunk.doc_id not in hashes_by_doc:
+                hashes_by_doc[chunk.doc_id] = doc_hash
+        return hashes_by_doc, chunk_ids_by_doc
 
     # ------------------------------------------------------------------
     # Upload orchestration
@@ -154,6 +247,7 @@ class ChartContextPipeline:
                 if existing:
                     doc_id = existing.doc_id
                     existing.correlation_id = correlation_id
+                    uploaded_at = existing.uploaded_at or _utc_now()
                     doc_records.append({
                         "doc_id": doc_id,
                         "name": existing.name,
@@ -161,6 +255,7 @@ class ChartContextPipeline:
                         "reused": True,
                     })
                 else:
+                    upload_time = _utc_now()
                     doc_id = f"doc_{hashlib.sha1((patient_id + sha).encode()).hexdigest()[:12]}"
                     record = db_models.ChartDocument(
                         doc_id=doc_id,
@@ -169,9 +264,10 @@ class ChartContextPipeline:
                         name=name,
                         mime=mime,
                         bytes_sha256=sha,
-                        uploaded_at=_utc_now(),
+                        uploaded_at=upload_time,
                     )
                     session.add(record)
+                    uploaded_at = upload_time
                     needs_processing = True
                     doc_records.append({
                         "doc_id": doc_id,
@@ -188,6 +284,7 @@ class ChartContextPipeline:
                         text=text,
                         sha256=sha,
                         doc_id=doc_records[-1]["doc_id"],
+                        uploaded_at=uploaded_at,
                     )
                 )
             session.flush()
@@ -588,7 +685,14 @@ class ChartContextPipeline:
                 "state": "running",
             },
         )
-        facts = self._extract_facts(files)
+        all_files = self._load_patient_documents(patient_id, files)
+        facts, metrics = self._fact_extractor.extract(all_files)
+        logger.info(
+            "context_pipeline.deep.metrics",
+            correlation_id=correlation_id,
+            patient_id=patient_id,
+            metrics=metrics,
+        )
         await self._event_manager.broadcast(
             correlation_id,
             {
@@ -608,7 +712,7 @@ class ChartContextPipeline:
                 allergies=facts["allergies"],
                 labs=facts["labs"],
                 vitals=facts["vitals"],
-                provenance={"doc_count": len(files)},
+                provenance={"doc_count": len(all_files), "metrics": metrics},
                 generated_at=_utc_now(),
             )
             session.merge(payload)
@@ -641,64 +745,97 @@ class ChartContextPipeline:
                 "state": "running",
             },
         )
+        all_files = self._load_patient_documents(patient_id, files)
+        density = 1 if profile == "fast" else 2 if profile == "balanced" else 4
+        chunk_token_target = max(120 // density, 40)
+        existing_hashes, chunk_ids_by_doc = self._existing_index_state(patient_id)
+        reindex_docs = {
+            file.doc_id
+            for file in all_files
+            if existing_hashes.get(file.doc_id) != file.sha256
+        }
+        target_docs = reindex_docs or set()
+        token_pattern = re.compile(r"\S+")
         chunks: list[db_models.PatientIndexChunk] = []
         embeddings: list[db_models.PatientIndexEmbedding] = []
-        density = 1 if profile == "fast" else 2 if profile == "balanced" else 4
-        for file in files:
-            words = file.text.split()
-            chunk_size = max(80 // density, 20)
-            for idx in range(0, len(words), chunk_size):
-                portion_words = words[idx : idx + chunk_size]
-                if not portion_words:
+        if target_docs:
+            for file in all_files:
+                if file.doc_id not in target_docs:
                     continue
-                text = " ".join(portion_words)
-                char_start = max(file.text.find(portion_words[0]), 0)
-                char_end = char_start + len(text)
-                chunk_id = f"chk_{hashlib.sha1((file.doc_id + str(idx)).encode()).hexdigest()[:12]}"
-                chunks.append(
-                    db_models.PatientIndexChunk(
-                        chunk_id=chunk_id,
-                        patient_id=patient_id,
-                        doc_id=file.doc_id,
-                        stage=_INDEXED,
-                        section="body",
-                        text=text,
-                        token_count=len(portion_words),
-                        char_start=char_start,
-                        char_end=char_end,
-                        metadata_payload={"correlation_id": correlation_id},
-                    )
-                )
-                embedding = self._fake_embedding(text)
-                embeddings.append(
-                    db_models.PatientIndexEmbedding(
-                        chunk_id=chunk_id,
-                        embedding=embedding,
-                        model="mock-embedding",
-                        created_at=_utc_now(),
-                    )
-                )
-        with self._session_scope() as session:
-            existing_chunk_ids = [
-                row[0]
-                for row in session.execute(
-                    sa.select(db_models.PatientIndexChunk.chunk_id)
-                    .where(db_models.PatientIndexChunk.patient_id == patient_id)
-                )
-            ]
-            if existing_chunk_ids:
-                session.execute(
-                    sa.delete(db_models.PatientIndexEmbedding).where(
-                        db_models.PatientIndexEmbedding.chunk_id.in_(existing_chunk_ids)
-                    )
-                )
-            session.execute(
-                sa.delete(db_models.PatientIndexChunk).where(db_models.PatientIndexChunk.patient_id == patient_id)
-            )
-            for chunk in chunks:
-                session.merge(chunk)
-            for emb in embeddings:
-                session.merge(emb)
+                sections = self._fact_extractor.sectionize(file.text)
+                for section_index, section in enumerate(sections):
+                    section_text = file.text[section["start"] : section["end"]]
+                    tokens = list(token_pattern.finditer(section_text))
+                    if not tokens:
+                        continue
+                    for idx in range(0, len(tokens), chunk_token_target):
+                        chunk_tokens = tokens[idx : idx + chunk_token_target]
+                        if not chunk_tokens:
+                            continue
+                        start_offset = chunk_tokens[0].start()
+                        end_offset = chunk_tokens[-1].end()
+                        text_segment = section_text[start_offset:end_offset].strip()
+                        if not text_segment:
+                            continue
+                        char_start = section["start"] + start_offset
+                        char_end = section["start"] + end_offset
+                        page = file.text.count("\f", 0, char_start) + 1
+                        chunk_id = "chk_" + hashlib.sha1(
+                            f"{file.doc_id}:{file.sha256}:{section_index}:{idx}".encode()
+                        ).hexdigest()[:12]
+                        chunks.append(
+                            db_models.PatientIndexChunk(
+                                chunk_id=chunk_id,
+                                patient_id=patient_id,
+                                doc_id=file.doc_id,
+                                stage=_INDEXED,
+                                section=section["label"],
+                                text=text_segment,
+                                token_count=len(chunk_tokens),
+                                char_start=char_start,
+                                char_end=char_end,
+                                metadata_payload={
+                                    "correlation_id": correlation_id,
+                                    "doc_sha256": file.sha256,
+                                    "page": page,
+                                },
+                            )
+                        )
+                        embedding = self._embedding_model.embed(text_segment)
+                        embeddings.append(
+                            db_models.PatientIndexEmbedding(
+                                chunk_id=chunk_id,
+                                embedding=embedding,
+                                model=f"hashing-{self._embedding_model.dimensions}",
+                                created_at=_utc_now(),
+                            )
+                        )
+        logger.info(
+            "context_pipeline.index.metrics",
+            correlation_id=correlation_id,
+            patient_id=patient_id,
+            reindexed_docs=len(reindex_docs),
+            chunk_count=len(chunks),
+        )
+        if chunks:
+            with self._session_scope() as session:
+                for doc_id in (target_docs or set()):
+                    existing_ids = chunk_ids_by_doc.get(doc_id, [])
+                    if existing_ids:
+                        session.execute(
+                            sa.delete(db_models.PatientIndexEmbedding).where(
+                                db_models.PatientIndexEmbedding.chunk_id.in_(existing_ids)
+                            )
+                        )
+                        session.execute(
+                            sa.delete(db_models.PatientIndexChunk).where(
+                                db_models.PatientIndexChunk.chunk_id.in_(existing_ids)
+                            )
+                        )
+                for chunk in chunks:
+                    session.merge(chunk)
+                for emb in embeddings:
+                    session.merge(emb)
         await self._mark_job_state(job_id, "completed", percent=100)
         await self._event_manager.broadcast(
             correlation_id,
@@ -709,158 +846,6 @@ class ChartContextPipeline:
                 "state": "completed",
             },
         )
-
-    def _fake_embedding(self, text: str) -> list[float]:
-        # Deterministic pseudo-embedding for testing purposes
-        values = [float((ord(ch) % 32) / 31.0) for ch in text[:32]]
-        if not values:
-            values = [0.0]
-        return values
-
-    def _extract_facts(self, files: list[UploadedChartFile]) -> dict[str, list[dict[str, Any]]]:
-        problems: list[dict[str, Any]] = []
-        medications: list[dict[str, Any]] = []
-        allergies: list[dict[str, Any]] = []
-        vitals: list[dict[str, Any]] = []
-        labs: list[dict[str, Any]] = []
-
-        for file in files:
-            text = file.text
-            lower = text.lower()
-            # Problems
-            idx = lower.find("type 2 diabetes")
-            if idx != -1:
-                problems.append(
-                    {
-                        "code": "E11.9",
-                        "system": "ICD10",
-                        "label": "Type 2 diabetes",
-                        "evidence": [
-                            {
-                                "doc_id": file.doc_id,
-                                "char_start": idx,
-                                "char_end": idx + len("Type 2 diabetes"),
-                            }
-                        ],
-                    }
-                )
-            # Medications
-            med_idx = lower.find("metformin")
-            if med_idx != -1:
-                span = self._expand_until(text, med_idx, {"\n"})
-                medications.append(
-                    {
-                        "rxnorm": "860975",
-                        "label": text[span[0] : span[1]].strip() or "Metformin",
-                        "route": "PO",
-                        "evidence": [
-                            {
-                                "doc_id": file.doc_id,
-                                "char_start": span[0],
-                                "char_end": span[1],
-                            }
-                        ],
-                    }
-                )
-            # Allergies
-            allergy_idx = lower.find("penicillin")
-            if allergy_idx != -1:
-                allergies.append(
-                    {
-                        "label": "Penicillin",
-                        "severity": "moderate",
-                        "evidence": [
-                            {
-                                "doc_id": file.doc_id,
-                                "char_start": allergy_idx,
-                                "char_end": allergy_idx + len("penicillin"),
-                            }
-                        ],
-                    }
-                )
-            # Vitals (BP)
-            bp_idx = lower.find("bp")
-            if bp_idx != -1:
-                bp_text = self._extract_bp(text[bp_idx:bp_idx + 40])
-                if bp_text:
-                    vitals.append(
-                        {
-                            "name": "BP",
-                            "value": bp_text["value"],
-                            "date": bp_text.get("date"),
-                            "evidence": [
-                                {
-                                    "doc_id": file.doc_id,
-                                    "char_start": bp_idx + bp_text["start"],
-                                    "char_end": bp_idx + bp_text["end"],
-                                }
-                            ],
-                        }
-                    )
-            # Labs (Hemoglobin)
-            lab_idx = lower.find("hemoglobin")
-            if lab_idx != -1:
-                lab_details = self._extract_lab(text, lab_idx)
-                if lab_details:
-                    labs.append(
-                        {
-                            "loinc": "718-7",
-                            "label": "Hemoglobin",
-                            "value": lab_details["value"],
-                            "unit": lab_details.get("unit"),
-                            "date": lab_details.get("date"),
-                            "ref_low": lab_details.get("ref_low"),
-                            "ref_high": lab_details.get("ref_high"),
-                            "evidence": [
-                                {
-                                    "doc_id": file.doc_id,
-                                    "char_start": lab_details["start"],
-                                    "char_end": lab_details["end"],
-                                }
-                            ],
-                        }
-                    )
-        return {
-            "problems": problems,
-            "medications": medications,
-            "allergies": allergies,
-            "vitals": vitals,
-            "labs": labs,
-        }
-
-    def _expand_until(self, text: str, index: int, terminators: set[str]) -> tuple[int, int]:
-        start = index
-        while start > 0 and text[start - 1] not in terminators:
-            start -= 1
-        end = index
-        while end < len(text) and text[end] not in terminators:
-            end += 1
-        return start, end
-
-    def _extract_bp(self, segment: str) -> Optional[dict[str, Any]]:
-        import re
-
-        match = re.search(r"bp[^0-9]*?(\d{2,3})\s*[\/-]\s*(\d{2,3})(?:[^0-9]*(20\d{2}-\d{2}-\d{2}))?", segment, flags=re.IGNORECASE)
-        if not match:
-            return None
-        systolic, diastolic, date = match.groups()
-        span = match.span(0)
-        return {"value": f"{systolic}/{diastolic}", "date": date, "start": span[0], "end": span[1]}
-
-    def _extract_lab(self, text: str, index: int) -> Optional[dict[str, Any]]:
-        import re
-
-        segment = text[index:index + 80]
-        match = re.search(r"hemoglobin[^0-9]*(\d{1,2}\.\d)(?:\s*(g/dl|g\\/dl))?", segment, flags=re.IGNORECASE)
-        if not match:
-            return None
-        value = float(match.group(1))
-        unit = match.group(2) or "g/dL"
-        date_match = re.search(r"(20\d{2}-\d{2}-\d{2})", text[max(0, index - 40):index + 40])
-        date = date_match.group(1) if date_match else None
-        span = match.span(0)
-        return {"value": value, "unit": unit, "date": date, "start": index + span[0], "end": index + span[1]}
-
     # ------------------------------------------------------------------
     # Persistence helpers
     # ------------------------------------------------------------------
