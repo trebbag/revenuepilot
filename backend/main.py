@@ -239,6 +239,7 @@ from backend import patients  # type: ignore
 from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
 from backend.context_pipeline import ChartContextPipeline
+from backend.ai_gating import AIGatingService, AIGateInput, normalize_note_text
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     LOCKOUT_DURATION_SECONDS,
@@ -262,6 +263,32 @@ USE_OFFLINE_MODEL = os.getenv("USE_OFFLINE_MODEL", "false").lower() in {
     "yes",
 }
 ENABLE_TRACE_MEM = os.getenv("ENABLE_TRACE_MEM", "false").lower() in {"1", "true", "yes"}
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+AI_MODEL_HIGH = os.getenv("AI_MODEL_HIGH", "gpt-4o")
+AI_MODEL_MINI = os.getenv("AI_MODEL_MINI", "gpt-4o-mini")
+AI_EMBED_MODEL = os.getenv("AI_EMBED_MODEL", "text-embedding-3-small")
+AI_GATING_HASH_SALT = os.getenv("AI_NOTE_HASH_SALT", "revpilot")
+AI_GATE_MIN_SECS = max(0.1, _env_float("AI_GATE_MIN_SECS", 0.7))
+AI_GATE_COOLDOWN_FULL = max(0.0, _env_float("AI_GATE_4O_COOLDOWN", 7.0))
+AI_GATE_COOLDOWN_MINI = max(0.0, _env_float("AI_GATE_MINI_COOLDOWN", 2.0))
 
 # Expose engine/hash flags so existing tests that monkeypatch backend.main still work.
 _DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
@@ -347,6 +374,24 @@ AI_ROUTE_ERRORS = _get_or_create_metric(
     Counter,
     "revenuepilot_ai_route_errors_total",
     "Number of AI route invocations that failed",
+    ("route",),
+)
+AI_GATE_DECISIONS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_decisions_total",
+    "AI gating decisions partitioned by route and outcome",
+    ("route", "decision", "reason"),
+)
+AI_GATE_ALLOWED_TOTAL = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_allowed_total",
+    "AI gate allowances by model and route",
+    ("model", "route"),
+)
+AI_GATE_FORCE_TOTAL = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_force_total",
+    "Number of gating requests flagged with force=true",
     ("route",),
 )
 
@@ -1456,6 +1501,30 @@ data_dir.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = Path(os.getenv("CHART_UPLOAD_DIR", str(data_dir / "uploaded_charts")))
 
 db_conn = get_connection()
+
+_ai_gate_service: Optional[AIGatingService] = None
+_ai_gate_conn_id: Optional[int] = None
+
+
+def _ai_gating_enabled() -> bool:
+    return _env_flag("AI_GATING_ENABLED", False)
+
+
+def _get_ai_gate_service() -> AIGatingService:
+    global _ai_gate_service, _ai_gate_conn_id
+    conn_id = id(db_conn)
+    if _ai_gate_service is None or _ai_gate_conn_id != conn_id:
+        _ai_gate_service = AIGatingService(
+            db_conn,
+            model_high=AI_MODEL_HIGH,
+            model_mini=AI_MODEL_MINI,
+            hash_salt=AI_GATING_HASH_SALT,
+            min_secs=AI_GATE_MIN_SECS,
+            cooldown_full=AI_GATE_COOLDOWN_FULL,
+            cooldown_mini=AI_GATE_COOLDOWN_MINI,
+        )
+        _ai_gate_conn_id = conn_id
+    return _ai_gate_service
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # location and connection management are centralised in ``backend.database_legacy`` so the
@@ -7419,6 +7488,39 @@ class NoteContentUpdateResponse(BaseModel):
     session: WorkflowSessionResponse
 
 
+class AIGateJobMetadata(BaseModel):
+    jobId: str
+    model: str
+    route: str
+    queuedAt: str
+
+
+class AIGateAllowResponse(BaseModel):
+    allowed: bool = True
+    model: str
+    route: str
+    job: AIGateJobMetadata
+    detail: Dict[str, Any]
+
+
+class AIGateBlockedResponse(BaseModel):
+    blocked: bool = True
+    reason: str
+    detail: Dict[str, Any]
+
+
+class AIGateRequest(BaseModel):
+    noteId: str = Field(..., alias="noteId")
+    noteContent: str
+    requestType: Literal["auto", "manual_mini", "manual_full", "finalization"]
+    transcriptCursor: Optional[str] = None
+    force: StrictBool = False
+    acceptedJson: Optional[Dict[str, Any]] = None
+    inputTimestamp: Optional[float] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class FinalizeResult(BaseModel):
     finalizedContent: str
     codesSummary: List[Dict[str, Any]] = Field(default_factory=list)
@@ -12459,6 +12561,140 @@ async def update_patient_question_status_v1(
         "question": question_payload,
         "session": WorkflowSessionResponse(**_session_to_response(normalized)),
     }
+
+
+@app.post("/api/notes/ai/gate", response_model=AIGateAllowResponse | AIGateBlockedResponse)
+async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
+    username = user["sub"]
+    clinician_id = _get_user_db_id(username)
+    if clinician_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    normalized = normalize_note_text(req.noteContent)
+    L = len(normalized)
+    mini_threshold = max(60, math.ceil(0.05 * L))
+    full_threshold = max(100, math.ceil(0.10 * L))
+    detail = {
+        "L": L,
+        "delta_chars": L,
+        "mini_threshold": mini_threshold,
+        "full_threshold": full_threshold,
+        "cooldown_remaining_ms": 0,
+        "reason": None,
+        "cold_start_completed": False,
+        "notes_started_today": 0,
+        "cap_auto4o": 4,
+        "cap_daily_manual4o": 20,
+        "auto4o_count": 0,
+        "manual4o_count_day": 0,
+    }
+
+    now = datetime.now(timezone.utc)
+    if not _ai_gating_enabled():
+        model = AI_MODEL_HIGH if req.requestType in {"auto", "manual_full", "finalization"} else AI_MODEL_MINI
+        job_payload = {
+            "jobId": uuid4().hex,
+            "model": model,
+            "route": req.requestType,
+            "queuedAt": now.isoformat(),
+        }
+        response = JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "allowed": True,
+                "model": model,
+                "route": req.requestType,
+                "job": job_payload,
+                "detail": detail,
+            },
+        )
+        response.headers["X-AI-Gate"] = f"allowed:{model}"
+        return response
+
+    accepted_json: Optional[Mapping[str, Any]]
+    if isinstance(req.acceptedJson, Mapping):
+        accepted_json = req.acceptedJson
+    else:
+        accepted_json = None
+
+    input_time: Optional[datetime] = None
+    if req.inputTimestamp is not None:
+        try:
+            input_time = datetime.fromtimestamp(float(req.inputTimestamp), tz=timezone.utc)
+        except Exception:
+            input_time = now
+
+    payload = AIGateInput(
+        note_id=req.noteId,
+        clinician_id=clinician_id,
+        text=req.noteContent,
+        request_type=req.requestType,
+        force=bool(req.force),
+        transcript_cursor=req.transcriptCursor,
+        accepted_json=accepted_json,
+        input_timestamp=input_time,
+    )
+
+    if req.force:
+        AI_GATE_FORCE_TOTAL.labels(route=req.requestType).inc()
+
+    try:
+        decision = _get_ai_gate_service().evaluate(payload)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        logger.error("ai_gate_evaluation_failed", error=str(exc))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="AI gating unavailable")
+
+    detail_dict = decision.detail.asdict()
+    detail_dict["force"] = bool(req.force)
+
+    if decision.allowed:
+        AI_GATE_DECISIONS.labels(route=decision.route, decision="allowed", reason="allowed").inc()
+        AI_GATE_ALLOWED_TOTAL.labels(model=decision.model or "unknown", route=decision.route).inc()
+        job_payload = {
+            "jobId": decision.job_id or uuid4().hex,
+            "model": decision.model or AI_MODEL_HIGH,
+            "route": decision.route,
+            "queuedAt": now.isoformat(),
+        }
+        logger.info(
+            "ai_gate_allowed_response",
+            note_id=req.noteId,
+            model=decision.model,
+            route=decision.route,
+            job_id=job_payload["jobId"],
+        )
+        response = JSONResponse(
+            status_code=decision.status_code,
+            content={
+                "allowed": True,
+                "model": decision.model,
+                "route": decision.route,
+                "job": job_payload,
+                "detail": detail_dict,
+            },
+        )
+        response.headers["X-AI-Gate"] = f"allowed:{decision.model}" if decision.model else "allowed:unknown"
+        return response
+
+    reason = decision.reason or "UNKNOWN"
+    AI_GATE_DECISIONS.labels(route=decision.route, decision="blocked", reason=reason).inc()
+    logger.info(
+        "ai_gate_blocked_response",
+        note_id=req.noteId,
+        route=decision.route,
+        reason=reason,
+        detail=detail_dict,
+    )
+    response = JSONResponse(
+        status_code=decision.status_code,
+        content={
+            "blocked": True,
+            "reason": reason,
+            "detail": detail_dict,
+        },
+    )
+    response.headers["X-AI-Gate"] = f"blocked:{reason}"
+    return response
 
 
 @app.post("/api/notes/pre-finalize-check")

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import enum
 import json
-from datetime import datetime, timezone
+from datetime import date as date_cls, datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import sqlalchemy as sa
@@ -1175,6 +1175,80 @@ class ChartDocument(Base):
 
     __table_args__ = (
         sa.UniqueConstraint("patient_id", "bytes_sha256", name="uq_chart_documents_patient_hash"),
+    )
+
+
+class AINoteState(Base):
+    __tablename__ = "ai_note_state"
+
+    note_id = sa.Column(String, primary_key=True)
+    clinician_id = sa.Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    last_note_hash = sa.Column(String, nullable=True)
+    last_note_snapshot = sa.Column(Text, nullable=True)
+    last_transcript_cursor = sa.Column(String, nullable=True)
+    last_section_map = sa.Column(sa.JSON, nullable=True)
+    last_model_call_ts = sa.Column(DateTime(timezone=True), nullable=True)
+    last_mini_call_ts = sa.Column(DateTime(timezone=True), nullable=True)
+    last_allowed_ts = sa.Column(DateTime(timezone=True), nullable=True)
+    last_input_ts = sa.Column(DateTime(timezone=True), nullable=True)
+    auto4o_count = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    finalization_count = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    manual4o_count = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    last_accepted_json_hash = sa.Column(String, nullable=True)
+    cold_start_completed = sa.Column(Boolean, nullable=False, server_default=sa.text("0"), default=False)
+    daily_note_counted = sa.Column(Boolean, nullable=False, server_default=sa.text("0"), default=False)
+    allowed_count = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    total_delta_chars = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    mean_time_between_allowed_ms = sa.Column(Float, nullable=False, server_default=sa.text("0"), default=0.0)
+    created_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        default=_utcnow,
+    )
+    updated_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+
+class AIClinicianDailyStat(Base):
+    __tablename__ = "ai_clinician_daily_stats"
+
+    clinician_id = sa.Column(Integer, ForeignKey("users.id"), primary_key=True)
+    day = sa.Column(sa.Date, primary_key=True, default=date_cls.today)
+    manual4o_count = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    notes_started = sa.Column(Integer, nullable=False, server_default=sa.text("0"), default=0)
+    tokens_estimated = sa.Column(Float, nullable=False, server_default=sa.text("0"), default=0.0)
+    cost_cents_estimated = sa.Column(Float, nullable=False, server_default=sa.text("0"), default=0.0)
+    updated_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        sa.Index("idx_ai_clinician_daily_stats_day", "day"),
+    )
+
+
+class AIClinicianAggregate(Base):
+    __tablename__ = "ai_clinician_aggregate"
+
+    clinician_id = sa.Column(Integer, ForeignKey("users.id"), primary_key=True)
+    length_samples = sa.Column(sa.JSON, nullable=False, default=list)
+    median_final_note_length = sa.Column(Integer, nullable=True)
+    updated_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        default=_utcnow,
+        onupdate=_utcnow,
     )
 
 
