@@ -1215,6 +1215,19 @@ class AINoteState(Base):
     )
 
 
+class AIJsonSnapshot(Base):
+    __tablename__ = "ai_json_snapshots"
+
+    hash = sa.Column(String, primary_key=True)
+    payload = sa.Column(sa.JSON, nullable=False)
+    created_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+        default=_utcnow,
+    )
+
+
 class AIClinicianDailyStat(Base):
     __tablename__ = "ai_clinician_daily_stats"
 

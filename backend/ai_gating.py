@@ -18,6 +18,7 @@ import statistics
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections.abc import Mapping as MappingABC
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import structlog
@@ -26,6 +27,7 @@ from backend.openai_client import get_embedding_client
 from backend.db.models import (
     AIClinicianAggregate,
     AIClinicianDailyStat,
+    AIJsonSnapshot,
     AINoteState,
 )
 from backend.migrations import session_scope
@@ -255,6 +257,24 @@ def compute_json_divergence(previous: Mapping[str, Any], current: Mapping[str, A
     return delta / len(union)
 
 
+def _normalize_json_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a JSON-serialisable deep copy of *payload*."""
+
+    return json.loads(json.dumps(payload))
+
+
+def _merge_preferred(preferred: Mapping[str, Any], current: Mapping[str, Any]) -> Dict[str, Any]:
+    """Deep merge *preferred* values into *current* while preserving mappings."""
+
+    result: Dict[str, Any] = json.loads(json.dumps(current))
+    for key, value in preferred.items():
+        if isinstance(value, MappingABC) and isinstance(result.get(key), MappingABC):
+            result[key] = _merge_preferred(value, result[key])
+        else:
+            result[key] = json.loads(json.dumps(value)) if isinstance(value, (dict, list)) else value
+    return result
+
+
 def _diff_spans(old: str, new: str) -> List[DiffSpan]:
     matcher = difflib.SequenceMatcher(a=old, b=new)
     spans: List[DiffSpan] = []
@@ -292,6 +312,8 @@ def _ensure_aware(ts: Optional[datetime]) -> Optional[datetime]:
 class AIGatingService:
     """Encapsulates all server-side gating heuristics."""
 
+    JSON_STICKY_DIVERGENCE_THRESHOLD = 0.30
+
     def __init__(
         self,
         connection,
@@ -319,6 +341,110 @@ class AIGatingService:
             self._embedder = get_embedding_client(model_name)
         self._cost_high_cents = 0.2  # heuristic per thousand tokens
         self._cost_mini_cents = 0.05
+
+    def reconcile_structured_json(
+        self,
+        note_id: str,
+        clinician_id: int,
+        model_json: Mapping[str, Any],
+        *,
+        divergence_threshold: float = JSON_STICKY_DIVERGENCE_THRESHOLD,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Merge previously accepted structured JSON into ``model_json`` when similar."""
+
+        if not isinstance(model_json, MappingABC):
+            raise TypeError("model_json must be a mapping")
+
+        metadata: Dict[str, Any] = {
+            "noteId": note_id,
+            "divergence": None,
+            "mergedFromAccepted": False,
+            "previousHash": None,
+            "currentHash": None,
+            "threshold": float(divergence_threshold),
+        }
+
+        try:
+            normalized_current = _normalize_json_payload(model_json)
+        except (TypeError, ValueError):
+            logger.info(
+                "ai_gate_json_normalize_failed",
+                note_id=note_id,
+                clinician_id=clinician_id,
+                exc_info=True,
+            )
+            normalized_current = dict(model_json)
+
+        with session_scope(self._connection) as session:
+            state = session.get(AINoteState, note_id)
+            if state is None:
+                state = AINoteState(
+                    note_id=note_id,
+                    clinician_id=clinician_id,
+                    last_note_snapshot="",
+                )
+                session.add(state)
+                session.flush()
+            else:
+                state.clinician_id = clinician_id
+
+            previous_payload: Optional[Dict[str, Any]] = None
+            if state.last_accepted_json_hash:
+                metadata["previousHash"] = state.last_accepted_json_hash
+                previous_payload = self._load_json_snapshot(session, state.last_accepted_json_hash)
+
+            divergence: Optional[float] = None
+            if previous_payload is not None:
+                try:
+                    divergence = compute_json_divergence(previous_payload, normalized_current)
+                except Exception:
+                    logger.info(
+                        "ai_gate_json_divergence_failed",
+                        note_id=note_id,
+                        clinician_id=clinician_id,
+                        exc_info=True,
+                    )
+                    divergence = None
+            metadata["divergence"] = divergence
+
+            should_merge = (
+                previous_payload is not None
+                and divergence is not None
+                and divergence <= max(divergence_threshold, 0.0)
+            )
+            merged_payload = normalized_current
+            if should_merge:
+                try:
+                    merged_payload = _merge_preferred(previous_payload, normalized_current)
+                    metadata["mergedFromAccepted"] = True
+                except (TypeError, ValueError):
+                    logger.info(
+                        "ai_gate_json_merge_failed",
+                        note_id=note_id,
+                        clinician_id=clinician_id,
+                        exc_info=True,
+                    )
+                    merged_payload = normalized_current
+
+            new_hash = self._store_json_payload(session, merged_payload, note_id=note_id)
+            if new_hash:
+                metadata["currentHash"] = new_hash
+                state.last_accepted_json_hash = new_hash
+
+            session.add(state)
+
+            logger.info(
+                "ai_gate_json_divergence",
+                note_id=note_id,
+                clinician_id=clinician_id,
+                divergence=float(divergence) if divergence is not None else None,
+                merged=metadata["mergedFromAccepted"],
+                threshold=float(divergence_threshold),
+                previous_hash=metadata["previousHash"],
+                current_hash=metadata["currentHash"],
+            )
+
+            return merged_payload, metadata
 
     # Public API -----------------------------------------------------
 
@@ -673,10 +799,13 @@ class AIGatingService:
         if payload.transcript_cursor is not None:
             state.last_transcript_cursor = payload.transcript_cursor
         if payload.accepted_json:
-            try:
-                state.last_accepted_json_hash = compute_json_hash(payload.accepted_json, self._hash_salt)
-            except Exception:
-                logger.info("ai_gate_json_hash_failed", exc_info=True)
+            stored_hash = self._store_json_payload(
+                session,
+                payload.accepted_json,
+                note_id=payload.note_id,
+            )
+            if stored_hash:
+                state.last_accepted_json_hash = stored_hash
 
         if not state.cold_start_completed and high_accuracy:
             state.cold_start_completed = True
@@ -729,6 +858,65 @@ class AIGatingService:
             aggregate.median_final_note_length = int(statistics.median(samples)) if samples else None
         except statistics.StatisticsError:
             aggregate.median_final_note_length = length
+
+    def _store_json_payload(
+        self,
+        session,
+        payload: Mapping[str, Any],
+        *,
+        note_id: str,
+    ) -> Optional[str]:
+        if not isinstance(payload, MappingABC):
+            return None
+        try:
+            normalized = _normalize_json_payload(payload)
+        except (TypeError, ValueError):
+            logger.info(
+                "ai_gate_json_normalize_failed",
+                note_id=note_id,
+                exc_info=True,
+            )
+            return None
+        try:
+            json_hash = compute_json_hash(normalized, self._hash_salt)
+        except Exception:
+            logger.info(
+                "ai_gate_json_hash_failed",
+                note_id=note_id,
+                exc_info=True,
+            )
+            return None
+
+        snapshot = session.get(AIJsonSnapshot, json_hash)
+        if snapshot is None:
+            snapshot = AIJsonSnapshot(hash=json_hash, payload=normalized)
+            session.add(snapshot)
+        else:
+            snapshot.payload = normalized
+            session.add(snapshot)
+        return json_hash
+
+    def _load_json_snapshot(
+        self,
+        session,
+        json_hash: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not json_hash:
+            return None
+        snapshot = session.get(AIJsonSnapshot, json_hash)
+        if snapshot is None:
+            return None
+        payload = snapshot.payload
+        if isinstance(payload, MappingABC):
+            try:
+                return _normalize_json_payload(payload)
+            except (TypeError, ValueError):
+                logger.info(
+                    "ai_gate_json_normalize_failed",
+                    hash=json_hash,
+                    exc_info=True,
+                )
+        return None
 
 
 __all__ = [
