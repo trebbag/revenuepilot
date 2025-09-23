@@ -1605,7 +1605,11 @@ def _context_session_factory() -> SQLAlchemySession:
     return _auth_sessionmaker()
 
 
-context_pipeline = ChartContextPipeline(_context_session_factory, default_profile=os.getenv("PROFILE", "balanced"))
+context_pipeline = ChartContextPipeline(
+    _context_session_factory,
+    default_profile=os.getenv("PROFILE", "balanced"),
+    upload_dir=lambda: UPLOAD_DIR,
+)
 
 
 
