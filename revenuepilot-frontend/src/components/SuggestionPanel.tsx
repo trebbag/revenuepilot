@@ -93,6 +93,26 @@ interface PreventionSuggestionItem {
   rationale?: string
 }
 
+const normalizeConfidence = (value: unknown): number | undefined => {
+  if (value === null || value === undefined) {
+    return undefined
+  }
+  const numeric = typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(numeric)) {
+    return undefined
+  }
+  if (numeric <= 1 && numeric >= 0) {
+    return Math.round(Math.max(0, Math.min(1, numeric)) * 100)
+  }
+  if (numeric < 0) {
+    return 0
+  }
+  if (numeric > 100) {
+    return 100
+  }
+  return Math.round(numeric)
+}
+
 export function SuggestionPanel({
   onClose,
   selectedCodes,
@@ -188,16 +208,18 @@ export function SuggestionPanel({
         const descriptionValue = typeof entry.description === "string" ? entry.description.trim() : ""
         const rationaleValue = typeof entry.rationale === "string" ? entry.rationale.trim() : ""
         const identifier = codeValue || descriptionValue || entry.id || `live-${index + 1}`
-        const rawConfidence = typeof entry.confidence === "number" ? entry.confidence : undefined
-        const normalizedConfidence = rawConfidence === undefined ? undefined : rawConfidence <= 1 ? Math.round(Math.max(0, Math.min(1, rawConfidence)) * 100) : Math.round(Math.min(rawConfidence, 100))
+        const normalizedConfidence = normalizeConfidence(entry.confidence)
         return {
           code: codeValue || identifier,
           type: entry.type || "AI",
           description: descriptionValue || rationaleValue || identifier,
           rationale: rationaleValue || descriptionValue || codeValue || identifier,
-          reasoning: rationaleValue || undefined,
+          reasoning: rationaleValue || descriptionValue || codeValue || identifier,
           confidence: normalizedConfidence,
           whatItIs: descriptionValue || undefined,
+          usageRules: [],
+          reasonsSuggested: [],
+          potentialConcerns: [],
         } satisfies CodeSuggestionItem
       })
       .filter((entry): entry is CodeSuggestionItem => Boolean(entry))
@@ -324,18 +346,29 @@ export function SuggestionPanel({
             signal,
           })) ?? {}
 
-        const normalized: CodeSuggestionItem[] = (data?.suggestions || []).map((item: any) => ({
-          code: item.code,
-          type: item.type,
-          description: item.description,
-          rationale: item.reasoning || item.description,
-          reasoning: item.reasoning,
-          confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-          whatItIs: item.whatItIs,
-          usageRules: item.usageRules || [],
-          reasonsSuggested: item.reasonsSuggested || [],
-          potentialConcerns: item.potentialConcerns || [],
-        }))
+        const normalized: CodeSuggestionItem[] = (data?.suggestions || []).map((item: any, index: number) => {
+          const codeValue = typeof item?.code === "string" ? item.code : `suggestion-${index + 1}`
+          const descriptionValue = typeof item?.description === "string" ? item.description : ""
+          const rationaleValue = typeof item?.rationale === "string" ? item.rationale : ""
+          const reasoningValue = typeof item?.reasoning === "string" ? item.reasoning : rationaleValue
+
+          return {
+            code: codeValue,
+            type: typeof item?.type === "string" ? item.type : "",
+            description: descriptionValue,
+            rationale: rationaleValue || reasoningValue || descriptionValue || codeValue,
+            reasoning: reasoningValue || rationaleValue || descriptionValue || codeValue,
+            confidence: normalizeConfidence(item?.confidence),
+            whatItIs: typeof item?.whatItIs === "string" ? item.whatItIs : descriptionValue || rationaleValue || codeValue,
+            usageRules: Array.isArray(item?.usageRules) ? item.usageRules.map((entry: any) => String(entry)) : [],
+            reasonsSuggested: Array.isArray(item?.reasonsSuggested)
+              ? item.reasonsSuggested.map((entry: any) => String(entry))
+              : [],
+            potentialConcerns: Array.isArray(item?.potentialConcerns)
+              ? item.potentialConcerns.map((entry: any) => String(entry))
+              : [],
+          }
+        })
         setCodeSuggestions(normalized)
       } catch (error) {
         if ((error as Error).name === "AbortError") {
@@ -392,27 +425,33 @@ export function SuggestionPanel({
           })) ?? {}
 
         const normalized: DifferentialItem[] = (data?.differentials || []).map((item: any) => {
-          const supporting = item.supportingFactors || []
-          const contradicting = item.contradictingFactors || []
-          const testsToConfirm = item.testsToConfirm || []
-          const testsToExclude = item.testsToExclude || []
+          const supporting = Array.isArray(item.supportingFactors) ? item.supportingFactors.map((factor: any) => String(factor)) : []
+          const contradicting = Array.isArray(item.contradictingFactors)
+            ? item.contradictingFactors.map((factor: any) => String(factor))
+            : []
+          const testsToConfirm = Array.isArray(item.testsToConfirm)
+            ? item.testsToConfirm.map((test: any) => String(test))
+            : []
+          const testsToExclude = Array.isArray(item.testsToExclude)
+            ? item.testsToExclude.map((test: any) => String(test))
+            : []
 
           return {
             diagnosis: item.diagnosis,
             icdCode: item.icdCode || item.diagnosis,
             icdDescription: item.icdDescription || item.diagnosis,
-            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-            reasoning: item.reasoning,
+            confidence: normalizeConfidence(item.confidence),
+            reasoning: typeof item.reasoning === "string" ? item.reasoning : "",
             supportingFactors: supporting,
             contradictingFactors: contradicting,
             forFactors: supporting,
             againstFactors: contradicting,
             testsToConfirm,
             testsToExclude,
-            whatItIs: item.whatItIs,
-            details: item.details,
-            confidenceFactors: item.confidenceFactors,
-            learnMoreUrl: item.learnMoreUrl,
+            whatItIs: typeof item.whatItIs === "string" ? item.whatItIs : "",
+            details: typeof item.details === "string" ? item.details : "",
+            confidenceFactors: typeof item.confidenceFactors === "string" ? item.confidenceFactors : "",
+            learnMoreUrl: typeof item.learnMoreUrl === "string" ? item.learnMoreUrl : "",
           }
         })
         setDifferentialSuggestions(normalized)
@@ -455,25 +494,27 @@ export function SuggestionPanel({
         const data =
           (await apiFetchJson<{ recommendations?: any[] }>("/api/ai/prevention/suggest", {
             method: "POST",
-            jsonBody: {},
+            jsonBody: { ...contextRequestPayload },
             signal,
           })) ?? {}
 
         const normalized: PreventionSuggestionItem[] = (data?.recommendations || []).map((item: any, index: number) => {
-          const recommendation = item.recommendation || `Recommendation ${index + 1}`
+          const recommendation = typeof item.recommendation === "string" ? item.recommendation : `Recommendation ${index + 1}`
+          const idValue = typeof item.id === "string" ? item.id : recommendation || `prevent-${index + 1}`
+          const codeValue = typeof item.code === "string" ? item.code : idValue
           return {
-            id: recommendation,
-            code: recommendation,
-            type: "PREVENTION",
-            category: "prevention",
+            id: idValue,
+            code: codeValue,
+            type: typeof item.type === "string" ? item.type : "PREVENTION",
+            category: typeof item.category === "string" ? item.category : "prevention",
             recommendation,
-            priority: item.priority,
-            source: item.source,
-            confidence: typeof item.confidence === "number" ? Math.round(item.confidence * 100) : undefined,
-            reasoning: item.reasoning,
-            ageRelevant: item.ageRelevant,
-            description: item.reasoning || recommendation,
-            rationale: item.reasoning,
+            priority: typeof item.priority === "string" ? item.priority : "",
+            source: typeof item.source === "string" ? item.source : "",
+            confidence: normalizeConfidence(item.confidence),
+            reasoning: typeof item.reasoning === "string" ? item.reasoning : "",
+            ageRelevant: typeof item.ageRelevant === "boolean" ? item.ageRelevant : Boolean(item.ageRelevant),
+            description: typeof item.description === "string" ? item.description : recommendation,
+            rationale: typeof item.rationale === "string" ? item.rationale : typeof item.reasoning === "string" ? item.reasoning : "",
           }
         })
         setPreventionSuggestions(normalized)
