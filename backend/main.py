@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import copy
+import difflib
+import hashlib
 import logging
 import os
 import re
@@ -7366,6 +7368,7 @@ class CodesSuggestRequest(BaseModel):
     context_generated_at: Optional[str] = Field(None, alias="context_generated_at")
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+    transcript_cursor: Optional[str] = Field(None, alias="transcript_cursor")
 
     class Config:
         populate_by_name = True
@@ -7399,6 +7402,7 @@ class ComplianceCheckRequest(BaseModel):
     codes: Optional[List[str]] = None
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+    transcript_cursor: Optional[str] = Field(None, alias="transcript_cursor")
 
     @field_validator("content")
     @classmethod
@@ -7413,6 +7417,7 @@ class DifferentialsGenerateRequest(BaseModel):
     context_generated_at: Optional[str] = Field(None, alias="context_generated_at")
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+    transcript_cursor: Optional[str] = Field(None, alias="transcript_cursor")
 
     class Config:
         populate_by_name = True
@@ -7855,6 +7860,13 @@ class QuestionStatusUpdateRequest(BaseModel):
     updatedBy: Optional[str] = None
     timestamp: Optional[str] = None
 
+class CodeGapQuestion(BaseModel):
+    prompt: str = ""
+    why: str = ""
+    confidence: int = Field(0, ge=0, le=100)
+    evidence: List[str] = Field(default_factory=list)
+
+
 class CodeSuggestItem(BaseModel):
     code: str
     type: str = ""
@@ -7866,6 +7878,7 @@ class CodeSuggestItem(BaseModel):
     usageRules: List[str] = Field(default_factory=list)
     reasonsSuggested: List[str] = Field(default_factory=list)
     potentialConcerns: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
 
     @field_validator("code")
     @classmethod
@@ -7875,6 +7888,7 @@ class CodeSuggestItem(BaseModel):
 
 class CodesSuggestResponse(BaseModel):
     suggestions: List[CodeSuggestItem]
+    questions: List[CodeGapQuestion] = Field(default_factory=list)
 
 
 def _coerce_string(value: Any) -> str:
@@ -7903,6 +7917,95 @@ def _coerce_string_list(value: Any) -> List[str]:
                 results.append(text)
         return results
     return []
+
+
+@dataclass
+class SuggestionGateState:
+    note_hash: str
+    note_text: str
+    sections: Set[str]
+    timestamp: float
+    transcript_cursor: Optional[str]
+
+
+_SUGGESTION_GATE_LOCK = threading.Lock()
+_SUGGESTION_GATE_STATES: Dict[Tuple[str, str], SuggestionGateState] = {}
+_SECTION_HEADER_RE = re.compile(r"^[A-Z][A-Z0-9\s/&'()\-]{2,}:$")
+_MIN_CHAR_DELTA = 40
+_MIN_SECONDS_BETWEEN_REQUESTS = 2.0
+_NO_MEANINGFUL_CHANGES_MESSAGE = "No meaningful changes"
+
+
+def _extract_section_headers(text: str) -> Set[str]:
+    headers: Set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if _SECTION_HEADER_RE.match(line):
+            headers.add(line.upper())
+    return headers
+
+
+def _char_delta(previous: str, current: str) -> int:
+    if previous == current:
+        return 0
+    matcher = difflib.SequenceMatcher(a=previous, b=current)
+    delta = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        delta += max(i2 - i1, j2 - j1)
+    return delta
+
+
+def _enforce_suggestion_gate(
+    username: str,
+    route: str,
+    note_text: str,
+    transcript_cursor: Optional[str],
+) -> bool:
+    normalized = normalize_note_text(note_text)
+    note_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    sections = _extract_section_headers(normalized)
+    now = time.time()
+    key = (username, route)
+
+    with _SUGGESTION_GATE_LOCK:
+        state = _SUGGESTION_GATE_STATES.get(key)
+        if state is None:
+            _SUGGESTION_GATE_STATES[key] = SuggestionGateState(
+                note_hash=note_hash,
+                note_text=normalized,
+                sections=sections,
+                timestamp=now,
+                transcript_cursor=transcript_cursor,
+            )
+            return True
+
+        transcript_changed = (
+            transcript_cursor is not None
+            and transcript_cursor != state.transcript_cursor
+        )
+        elapsed = now - state.timestamp
+        if not transcript_changed and elapsed < _MIN_SECONDS_BETWEEN_REQUESTS:
+            return False
+
+        delta = _char_delta(state.note_text, normalized)
+        new_sections = sections.difference(state.sections)
+        meaningful_change = transcript_changed or bool(new_sections) or delta >= _MIN_CHAR_DELTA
+
+        if not meaningful_change:
+            return False
+
+        _SUGGESTION_GATE_STATES[key] = SuggestionGateState(
+            note_hash=note_hash,
+            note_text=normalized,
+            sections=sections,
+            timestamp=now,
+            transcript_cursor=transcript_cursor,
+        )
+        return True
 
 
 def _normalize_confidence(value: Any) -> int:
@@ -7940,6 +8043,31 @@ def _normalize_code_identifier(value: str | None) -> str:
     return str(value).strip().upper()
 
 
+def _coerce_gap_question(raw: Mapping[str, Any]) -> CodeGapQuestion:
+    prompt = _coerce_string(raw.get("prompt") or raw.get("question"))
+    why = _coerce_string(raw.get("why") or raw.get("reason"))
+    confidence = _normalize_confidence(raw.get("confidence"))
+    evidence = _coerce_string_list(raw.get("evidence") or raw.get("evidenceText"))
+    return CodeGapQuestion(
+        prompt=prompt or "",
+        why=why,
+        confidence=confidence,
+        evidence=evidence,
+    )
+
+
+def _normalize_gap_questions(raw_items: Iterable[Any]) -> List[CodeGapQuestion]:
+    questions: List[CodeGapQuestion] = []
+    for raw in raw_items:
+        if isinstance(raw, CodeGapQuestion):
+            questions.append(raw)
+        elif isinstance(raw, Mapping):
+            questions.append(_coerce_gap_question(raw))
+        elif isinstance(raw, str):
+            questions.append(CodeGapQuestion(prompt=_coerce_string(raw)))
+    return questions
+
+
 def _coerce_code_item(raw: Mapping[str, Any], index: int) -> CodeSuggestItem:
     code = _coerce_string(raw.get("code"))
     description = _coerce_string(raw.get("description"))
@@ -7967,6 +8095,7 @@ def _coerce_code_item(raw: Mapping[str, Any], index: int) -> CodeSuggestItem:
         usageRules=usage_rules,
         reasonsSuggested=reasons,
         potentialConcerns=concerns,
+        evidence=_coerce_string_list(raw.get("evidence")),
     )
 
 
@@ -8042,6 +8171,7 @@ def _coerce_differential_item(raw: Mapping[str, Any], index: int) -> Differentia
         learnMoreUrl=learn_more,
         forFactors=list(supporting),
         againstFactors=list(contradicting),
+        evidence=_coerce_string_list(raw.get("evidence")),
     )
 
 
@@ -8324,6 +8454,7 @@ class DifferentialItem(BaseModel):
     learnMoreUrl: str = ""
     forFactors: List[str] = Field(default_factory=list)
     againstFactors: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
 
 
 class DifferentialsResponse(BaseModel):
@@ -13173,7 +13304,8 @@ async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
         raw_items = data.get("codes", []) if isinstance(data, dict) else []
         normalised = _normalize_code_suggestions(raw_items)
         deduped = _dedupe_code_suggestions(normalised, req.codes)
-        return CodesSuggestResponse(suggestions=deduped)
+        questions = _normalize_gap_questions(data.get("questions", [])) if isinstance(data, dict) else []
+        return CodesSuggestResponse(suggestions=deduped, questions=questions)
     try:
         stage_hint = (
             "Patient context is superficial; focus on explicit documentation."
@@ -13187,7 +13319,8 @@ async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
                     "You are an expert medical coder. Respond strictly with JSON in the form "
                     "{\"suggestions\":[{\"code\":\"\",\"type\":\"\",\"description\":\"\","
                     "\"rationale\":\"\",\"reasoning\":\"\",\"confidence\":0,\"whatItIs\":\"\","
-                    "\"usageRules\":[],\"reasonsSuggested\":[],\"potentialConcerns\":[]}]}. "
+                    "\"usageRules\":[],\"reasonsSuggested\":[],\"potentialConcerns\":[],\"evidence\":[]}]},"
+                    "\"questions\":[{\"prompt\":\"\",\"why\":\"\",\"confidence\":0,\"evidence\":[]}]}. "
                     "Confidence must be an integer from 0 to 100. Always include every property even when data is"
                     " unavailable (use empty strings or arrays). Do not repeat or suggest any codes listed under "
                     "'Selected codes'."
@@ -13205,18 +13338,30 @@ async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
         data = json.loads(resp)
         normalised = _normalize_code_suggestions(data.get("suggestions", []))
         deduped = _dedupe_code_suggestions(normalised, req.codes)
-        return CodesSuggestResponse(suggestions=deduped)
+        questions = _normalize_gap_questions(data.get("questions", []))
+        return CodesSuggestResponse(suggestions=deduped, questions=questions)
     except Exception as exc:
         trace_id = current_trace_id()
         logger.error("ai_codes_suggest_failed", error=str(exc))
         _record_ai_error("codes_suggest", exc, trace_id)
-        return CodesSuggestResponse(suggestions=[])
+        return CodesSuggestResponse(suggestions=[], questions=[])
 
 
 @app.post("/api/ai/codes/suggest", response_model=CodesSuggestResponse)
 async def codes_suggest(
     req: CodesSuggestRequest, user=Depends(require_role("user"))
-) -> CodesSuggestResponse:
+) -> CodesSuggestResponse | JSONResponse:
+    allowed = _enforce_suggestion_gate(
+        user.get("sub", ""),
+        "codes",
+        req.content,
+        req.transcript_cursor,
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"message": _NO_MEANINGFUL_CHANGES_MESSAGE},
+        )
     return await _codes_suggest(req)
 
 
@@ -13417,7 +13562,18 @@ async def compliance_check(
     req: ComplianceCheckRequest,
     user=Depends(require_role("user")),
     session: Session = Depends(get_session),
-) -> ComplianceCheckResponse:
+) -> ComplianceCheckResponse | JSONResponse:
+    allowed = _enforce_suggestion_gate(
+        user.get("sub", ""),
+        "compliance",
+        req.content,
+        req.transcript_cursor,
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"message": _NO_MEANINGFUL_CHANGES_MESSAGE},
+        )
     conn = resolve_session_connection(session)
     return await _compliance_check(req, conn)
 
@@ -13698,7 +13854,7 @@ async def _differentials_generate(
                     "{\"differentials\":[{\"diagnosis\":\"\",\"icdCode\":\"\",\"icdDescription\":\"\","
                     "\"confidence\":0,\"reasoning\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],"
                     "\"testsToConfirm\":[],\"testsToExclude\":[],\"whatItIs\":\"\",\"details\":\"\","
-                    "\"confidenceFactors\":\"\",\"learnMoreUrl\":\"\"}]}. Always include every property, even when"
+                    "\"confidenceFactors\":\"\",\"learnMoreUrl\":\"\",\"evidence\":[]}]}. Always include every property, even when"
                     " empty (use empty strings or arrays). Confidence must be an integer 0-100."
                 ),
             },
@@ -13723,7 +13879,18 @@ async def _differentials_generate(
 @app.post("/api/ai/differentials/generate", response_model=DifferentialsResponse)
 async def differentials_generate(
     req: DifferentialsGenerateRequest, user=Depends(require_role("user"))
-) -> DifferentialsResponse:
+) -> DifferentialsResponse | JSONResponse:
+    allowed = _enforce_suggestion_gate(
+        user.get("sub", ""),
+        "differentials",
+        req.content,
+        req.transcript_cursor,
+    )
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"message": _NO_MEANINGFUL_CHANGES_MESSAGE},
+        )
     return await _differentials_generate(req)
 
 

@@ -6,7 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collap
 import { ScrollArea } from "./ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
-import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle } from "lucide-react"
+import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle, HelpCircle } from "lucide-react"
 import { apiFetchJson } from "../lib/api"
 import type { ComplianceIssue, LiveCodeSuggestion, NoteContextStageInfo, StreamConnectionState } from "./NoteEditor"
 
@@ -28,6 +28,7 @@ interface SuggestionPanelProps {
   complianceConnection?: StreamConnectionState
   codesConnection?: StreamConnectionState
   contextInfo?: NoteContextStageInfo | null
+  transcriptCursor?: string | null
 }
 
 interface SelectedCodeItem {
@@ -55,6 +56,7 @@ interface DifferentialItem {
   learnMoreUrl?: string
   testsToConfirm?: string[]
   testsToExclude?: string[]
+  evidence?: string[]
 }
 
 interface CodeSuggestionItem {
@@ -68,6 +70,7 @@ interface CodeSuggestionItem {
   usageRules?: string[]
   reasonsSuggested?: string[]
   potentialConcerns?: string[]
+  evidence?: string[]
 }
 
 interface ComplianceAlertItem {
@@ -93,6 +96,13 @@ interface PreventionSuggestionItem {
   rationale?: string
 }
 
+interface GapQuestionItem {
+  prompt: string
+  why?: string
+  confidence?: number
+  evidence?: string[]
+}
+
 const normalizeConfidence = (value: unknown): number | undefined => {
   if (value === null || value === undefined) {
     return undefined
@@ -113,6 +123,8 @@ const normalizeConfidence = (value: unknown): number | undefined => {
   return Math.round(numeric)
 }
 
+const NO_MEANINGFUL_CHANGES = "No meaningful changes"
+
 export function SuggestionPanel({
   onClose,
   selectedCodes,
@@ -126,6 +138,7 @@ export function SuggestionPanel({
   complianceConnection,
   codesConnection,
   contextInfo,
+  transcriptCursor,
 }: SuggestionPanelProps) {
   const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
   const [codesLoading, setCodesLoading] = useState(false)
@@ -143,8 +156,11 @@ export function SuggestionPanel({
   const [preventionLoading, setPreventionLoading] = useState(false)
   const [preventionError, setPreventionError] = useState<string | null>(null)
 
+  const [gapQuestions, setGapQuestions] = useState<GapQuestionItem[]>([])
+
   const [expandedCards, setExpandedCards] = useState({
     codes: true,
+    questions: true,
     compliance: true,
     prevention: false,
     differentials: true,
@@ -197,6 +213,19 @@ export function SuggestionPanel({
 
   const shouldFetchCodes = !codesStreamAvailable
   const shouldFetchCompliance = !complianceStreamAvailable
+
+  const requestHighlight = useCallback((evidence?: string[]) => {
+    if (typeof window === "undefined") {
+      return
+    }
+    const segments = Array.isArray(evidence)
+      ? evidence.map((entry) => String(entry)).filter((entry) => entry.trim().length > 0)
+      : []
+    const event = new CustomEvent("note-evidence-highlight", {
+      detail: { evidence: segments },
+    })
+    window.dispatchEvent(event)
+  }, [])
 
   const mapStreamingCodes = useCallback((input?: LiveCodeSuggestion[]): CodeSuggestionItem[] => {
     if (!Array.isArray(input)) {
@@ -322,6 +351,7 @@ export function SuggestionPanel({
       setCodeSuggestions([])
       setComplianceAlerts([])
       setDifferentialSuggestions([])
+      setGapQuestions([])
       return
     }
 
@@ -340,9 +370,14 @@ export function SuggestionPanel({
       setCodesError(null)
       try {
         const data =
-          (await apiFetchJson<{ suggestions?: any[] }>("/api/ai/codes/suggest", {
+          (await apiFetchJson<{ suggestions?: any[]; questions?: any[] }>("/api/ai/codes/suggest", {
             method: "POST",
-            jsonBody: { content: trimmed, codes: codesInUse, ...contextRequestPayload },
+            jsonBody: {
+              content: trimmed,
+              codes: codesInUse,
+              ...contextRequestPayload,
+              transcript_cursor: transcriptCursor ?? undefined,
+            },
             signal,
           })) ?? {}
 
@@ -367,16 +402,41 @@ export function SuggestionPanel({
             potentialConcerns: Array.isArray(item?.potentialConcerns)
               ? item.potentialConcerns.map((entry: any) => String(entry))
               : [],
+            evidence: Array.isArray(item?.evidence)
+              ? item.evidence
+                  .map((entry: any) => String(entry))
+                  .filter((entry: string) => entry.trim().length > 0)
+              : [],
           }
         })
         setCodeSuggestions(normalized)
+        const normalizedQuestions: GapQuestionItem[] = Array.isArray(data?.questions)
+          ? data.questions
+              .map((item: any) => ({
+                prompt: typeof item?.prompt === "string" ? item.prompt : typeof item?.question === "string" ? item.question : "",
+                why: typeof item?.why === "string" ? item.why : undefined,
+                confidence: normalizeConfidence(item?.confidence),
+                evidence: Array.isArray(item?.evidence)
+                  ? item.evidence
+                      .map((entry: any) => String(entry))
+                      .filter((entry: string) => entry.trim().length > 0)
+                  : [],
+              }))
+              .filter((item: GapQuestionItem) => item.prompt.trim().length > 0)
+          : []
+        setGapQuestions(normalizedQuestions)
       } catch (error) {
         if ((error as Error).name === "AbortError") {
+          return
+        }
+        const message = error instanceof Error ? error.message : ""
+        if (message === NO_MEANINGFUL_CHANGES) {
           return
         }
         console.error("Failed to load code suggestions", error)
         setCodesError("Unable to load code suggestions.")
         setCodeSuggestions([])
+        setGapQuestions([])
       } finally {
         setCodesLoading(false)
       }
@@ -403,6 +463,10 @@ export function SuggestionPanel({
         setComplianceAlerts(normalized)
       } catch (error) {
         if ((error as Error).name === "AbortError") {
+          return
+        }
+        const message = error instanceof Error ? error.message : ""
+        if (message === NO_MEANINGFUL_CHANGES) {
           return
         }
         console.error("Failed to load compliance alerts", error)
@@ -452,11 +516,20 @@ export function SuggestionPanel({
             details: typeof item.details === "string" ? item.details : "",
             confidenceFactors: typeof item.confidenceFactors === "string" ? item.confidenceFactors : "",
             learnMoreUrl: typeof item.learnMoreUrl === "string" ? item.learnMoreUrl : "",
+            evidence: Array.isArray(item.evidence)
+              ? item.evidence
+                  .map((entry: any) => String(entry))
+                  .filter((entry: string) => entry.trim().length > 0)
+              : [],
           }
         })
         setDifferentialSuggestions(normalized)
       } catch (error) {
         if ((error as Error).name === "AbortError") {
+          return
+        }
+        const message = error instanceof Error ? error.message : ""
+        if (message === NO_MEANINGFUL_CHANGES) {
           return
         }
         console.error("Failed to load differentials", error)
@@ -481,7 +554,7 @@ export function SuggestionPanel({
       controller.abort()
       window.clearTimeout(debounceId)
     }
-  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance, contextRequestPayload])
+  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance, contextRequestPayload, transcriptCursor])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -629,6 +702,7 @@ export function SuggestionPanel({
 
   const cardConfigs = [
     { key: "codes", title: "Codes", icon: Code, count: filteredCodeSuggestions.length, color: "text-blue-600" },
+    { key: "questions", title: "Questions", icon: HelpCircle, count: gapQuestions.length, color: "text-indigo-600" },
     { key: "compliance", title: "Compliance", icon: Shield, count: complianceAlerts.length, color: "text-amber-600" },
     { key: "prevention", title: "Prevention", icon: Heart, count: filteredPreventionSuggestions.length, color: "text-red-600" },
     { key: "differentials", title: "Differentials", icon: Stethoscope, count: filteredDifferentialSuggestions.length, color: "text-purple-600" },
@@ -751,7 +825,10 @@ export function SuggestionPanel({
                               return (
                                 <Tooltip key={codeKey}>
                                   <TooltipTrigger asChild>
-                                    <div className="p-2.5 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors">
+                                    <div
+                                      className="p-2.5 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors"
+                                      onClick={() => requestHighlight(code.evidence)}
+                                    >
                                       <div className="flex items-center gap-3">
                                         <Button
                                           size="sm"
@@ -879,6 +956,36 @@ export function SuggestionPanel({
                                 </Tooltip>
                               )
                             })}
+                          </div>
+                        )}
+
+                        {config.key === "questions" && (
+                          <div className="space-y-3">
+                            {gapQuestions.length === 0 ? (
+                              <p className="text-sm text-muted-foreground">No documentation questions detected.</p>
+                            ) : (
+                              gapQuestions.map((question, index) => (
+                                <div
+                                  key={`${question.prompt}-${index}`}
+                                  className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors"
+                                  onClick={() => requestHighlight(question.evidence)}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="space-y-1">
+                                      <p className="text-sm font-medium text-foreground">{question.prompt}</p>
+                                      {question.why && <p className="text-xs text-muted-foreground">{question.why}</p>}
+                                      {question.evidence && question.evidence.length > 0 && (
+                                        <div className="text-xs text-muted-foreground">
+                                          <span className="font-medium text-foreground">Evidence:</span>{" "}
+                                          {question.evidence.join(", ")}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <ConfidenceGauge confidence={question.confidence} size={22} />
+                                  </div>
+                                </div>
+                              ))
+                            )}
                           </div>
                         )}
 
@@ -1017,7 +1124,10 @@ export function SuggestionPanel({
                               return (
                                 <Tooltip key={`${item.diagnosis}-${index}`}>
                                   <TooltipTrigger asChild>
-                                    <div className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors">
+                                    <div
+                                      className="p-3 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors"
+                                      onClick={() => requestHighlight(item.evidence)}
+                                    >
                                       <div className="space-y-2">
                                         <div className="flex items-center justify-between">
                                           <div className="flex-1">

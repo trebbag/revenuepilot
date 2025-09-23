@@ -77,6 +77,14 @@ def test_local_suggest(monkeypatch, tmp_path):
             }
         ],
         "differentials": [{"diagnosis": "dx", "score": 0.1}],
+        "questions": [
+            {
+                "prompt": "Any labs pending?",
+                "why": "Lab gaps affect coding",
+                "confidence": 0.5,
+                "evidence": [],
+            }
+        ],
     }
 
     class Model:
@@ -100,4 +108,5 @@ def test_local_suggest_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(om, "_get_llama", lambda path: Model())
     out = om.suggest("note")
     assert out["codes"][0]["code"] == "00000"
+    assert "questions" in out
 

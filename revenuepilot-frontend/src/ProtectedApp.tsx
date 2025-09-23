@@ -138,6 +138,7 @@ export function ProtectedApp() {
   } | null>(null)
   const [activeDraft, setActiveDraft] = useState<ActiveDraftState | null>(null)
   const [noteEditorContent, setNoteEditorContent] = useState<string>(activeDraft?.content ?? "")
+  const [transcriptCursor, setTranscriptCursor] = useState<string | null>(null)
   const [liveComplianceIssues, setLiveComplianceIssues] = useState<ComplianceIssue[]>([])
   const [complianceStreamState, setComplianceStreamState] = useState<StreamConnectionState>({
     status: "idle",
@@ -1574,6 +1575,7 @@ export function ProtectedApp() {
                       selectedCodes={selectedCodes}
                       selectedCodesList={selectedCodesList}
                       onNoteContentChange={setNoteEditorContent}
+                      onTranscriptCursorChange={setTranscriptCursor}
                       onNavigateToDrafts={() => handleNavigate("drafts")}
                       initialViewMode="draft"
                       viewMode={noteViewMode}
@@ -1617,6 +1619,7 @@ export function ProtectedApp() {
                         complianceConnection={complianceStreamState}
                         codesConnection={codeStreamState}
                         contextInfo={contextStageInfo}
+                        transcriptCursor={transcriptCursor}
                       />
                     </ResizablePanel>
                   </>

@@ -240,6 +240,38 @@ const createComplianceSignature = (content: string, codes: string[]): string => 
   return JSON.stringify({ content: normalizedContent, codes: sortedCodes })
 }
 
+const hashTranscriptEntries = (entries: TranscriptEntry[]): string => {
+  let hash = 0
+  for (const entry of entries) {
+    const timestamp = Number.isFinite(entry.timestamp) ? Math.round(entry.timestamp) : 0
+    const basis = `${entry.id ?? ""}|${timestamp}|${entry.speakerRole}|${entry.text ?? ""}`
+    for (let index = 0; index < basis.length; index += 1) {
+      hash = (hash * 31 + basis.charCodeAt(index)) | 0
+    }
+  }
+  return (hash >>> 0).toString(36)
+}
+
+const createTranscriptCursor = (entries: TranscriptEntry[]): string | null => {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return null
+  }
+
+  const tail = entries.slice(-5)
+  const summary = {
+    total: entries.length,
+    tail: tail.map((entry) => ({
+      id: entry.id,
+      ts: Number.isFinite(entry.timestamp) ? Math.round(entry.timestamp) : 0,
+      speaker: entry.speakerRole,
+      len: entry.text.length,
+    })),
+    hash: hashTranscriptEntries(tail),
+  }
+
+  return JSON.stringify(summary)
+}
+
 const severityFromText = (text: string): ComplianceIssue["severity"] => {
   const lower = text.toLowerCase()
   if (lower.includes("critical") || lower.includes("violation") || lower.includes("missing")) {
@@ -309,6 +341,7 @@ interface NoteEditorProps {
   onCodeStreamUpdate?: (suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => void
   onCollaborationStreamUpdate?: (state: CollaborationStreamState) => void
   onContextStageChange?: (info: NoteContextStageInfo | null) => void
+  onTranscriptCursorChange?: (cursor: string | null) => void
 }
 
 export interface NoteContextStageInfo {
@@ -339,6 +372,7 @@ export function NoteEditor({
   onCodeStreamUpdate,
   onCollaborationStreamUpdate,
   onContextStageChange,
+  onTranscriptCursorChange,
 }: NoteEditorProps) {
   const auth = useAuth()
   const { state: sessionState } = useSession()
@@ -695,6 +729,7 @@ export function NoteEditor({
   const collaborationAttemptsRef = useRef(0)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const transcriptIdCounterRef = useRef(0)
+  const transcriptCursorRef = useRef<string | null>(null)
   const prevInitialNoteIdRef = useRef<string | null>(initialNoteData?.noteId ?? null)
   const prevInitialContentRef = useRef<string>(initialNoteData?.content ?? "")
   const prevInitialPatientIdRef = useRef<string | undefined>(initialNoteData?.patientId)
@@ -2881,6 +2916,26 @@ export function NoteEditor({
       setTranscriptionIndex(transcriptEntries.length - 1)
     }
   }, [transcriptEntries])
+
+  useEffect(() => {
+    const cursor = createTranscriptCursor(transcriptEntries)
+    if (transcriptCursorRef.current === cursor) {
+      return
+    }
+    transcriptCursorRef.current = cursor
+    if (onTranscriptCursorChange) {
+      onTranscriptCursorChange(cursor)
+    }
+  }, [transcriptEntries, onTranscriptCursorChange])
+
+  useEffect(() => {
+    return () => {
+      transcriptCursorRef.current = null
+      if (onTranscriptCursorChange) {
+        onTranscriptCursorChange(null)
+      }
+    }
+  }, [onTranscriptCursorChange])
 
   useEffect(() => {
     if (!shouldSnapTranscriptToEnd) return
