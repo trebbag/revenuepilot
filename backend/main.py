@@ -1522,6 +1522,7 @@ def _get_ai_gate_service() -> AIGatingService:
             min_secs=AI_GATE_MIN_SECS,
             cooldown_full=AI_GATE_COOLDOWN_FULL,
             cooldown_mini=AI_GATE_COOLDOWN_MINI,
+            embed_model=AI_EMBED_MODEL,
         )
         _ai_gate_conn_id = conn_id
     return _ai_gate_service
