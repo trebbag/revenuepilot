@@ -204,6 +204,27 @@ def suggest(
             }
         ],
         "differentials": [
-            {"diagnosis": "offline differential", "score": 0.5}
+            {
+                "dx": "offline differential",
+                "diagnosis": "offline differential",
+                "whatItIs": "Placeholder offline condition",
+                "supportingFactors": ["Offline mode active"],
+                "contradictingFactors": [],
+                "testsToConfirm": ["00000"],
+                "testsToExclude": ["00001"],
+                "evidence": ["No live model available"],
+                "score": 0.1,
+            }
+        ],
+        "potentialConcerns": [
+            "Using offline fallback; validate diagnoses against clinical context."
+        ],
+        "questions": [
+            {
+                "prompt": "Document key exam findings",
+                "why": "Ensures accurate offline suggestion coverage.",
+                "confidence": 0.5,
+                "evidence": ["offline"],
+            }
         ],
     }

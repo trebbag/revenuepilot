@@ -62,6 +62,7 @@ def test_codes_suggest_normalizes_contract(
         )
 
     monkeypatch.setattr(main, "call_openai", fake_call)
+    monkeypatch.setattr(main, "_enforce_suggestion_gate", lambda *a, **k: True)
 
     response = suggestion_client.post(
         "/api/ai/codes/suggest",
@@ -85,6 +86,7 @@ def test_codes_suggest_normalizes_contract(
         "code",
         "confidence",
         "description",
+        "evidence",
         "potentialConcerns",
         "rationale",
         "reasonsSuggested",
@@ -124,6 +126,7 @@ def test_codes_suggest_dedupes_existing_codes(
         )
 
     monkeypatch.setattr(main, "call_openai", fake_call)
+    monkeypatch.setattr(main, "_enforce_suggestion_gate", lambda *a, **k: True)
 
     response = suggestion_client.post(
         "/api/ai/codes/suggest",
@@ -142,18 +145,16 @@ def test_differentials_include_all_fields(
             {
                 "differentials": [
                     {
-                        "diagnosis": "Heart failure",
-                        "confidence": 0.55,
+                        "dx": "Heart failure",
+                        "whatItIs": "Pump failure",
                         "supportingFactors": ["Dyspnea"],
                         "contradictingFactors": ["Normal BNP"],
-                        "testsToConfirm": ["Echocardiogram"],
+                        "testsToConfirm": ["93306 (CPT) Echocardiogram"],
                         "testsToExclude": ["Stress test"],
-                        "whatItIs": "Pump failure",
-                        "details": "Evaluate fluid status",
-                        "confidenceFactors": "Symptoms align but labs pending",
-                        "learnMoreUrl": "https://example.org",
+                        "evidence": ["\"Shortness of breath\" noted in assessment."],
                     }
-                ]
+                ],
+                "potentialConcerns": ["Model output"]
             }
         )
 
@@ -169,27 +170,16 @@ def test_differentials_include_all_fields(
     assert isinstance(body.get("differentials"), list)
     assert len(body["differentials"]) == 1
     diff = body["differentials"][0]
-    assert set(diff.keys()) == {
-        "againstFactors",
-        "confidence",
-        "confidenceFactors",
-        "contradictingFactors",
-        "details",
-        "diagnosis",
-        "icdCode",
-        "icdDescription",
-        "learnMoreUrl",
-        "reasoning",
-        "supportingFactors",
-        "testsToConfirm",
-        "testsToExclude",
-        "whatItIs",
-        "forFactors",
+    assert diff == {
+        "dx": "Heart failure",
+        "whatItIs": "Pump failure",
+        "supportingFactors": ["Dyspnea"],
+        "contradictingFactors": ["Normal BNP"],
+        "testsToConfirm": ["93306 (CPT) Echocardiogram"],
+        "testsToExclude": ["Stress test"],
+        "evidence": ["\"Shortness of breath\" noted in assessment."],
     }
-    assert diff["confidence"] == 55
-    assert diff["icdCode"] == "Heart failure"
-    assert diff["forFactors"] == ["Dyspnea"]
-    assert diff["againstFactors"] == ["Normal BNP"]
+    assert body["potentialConcerns"]
 
 
 def test_prevention_items_are_normalized(
