@@ -4,6 +4,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 
 from backend import main
 from backend.db.models import AIJsonSnapshot, AINoteState
@@ -187,6 +188,96 @@ def test_ai_gate_enforces_cooldown(gating_client):
         headers=_auth_header(token),
     )
     assert resp_after.status_code == 202
+
+
+def _get_metric(name: str, labels: Dict[str, str]) -> float:
+    value = REGISTRY.get_sample_value(name, labels)
+    return 0.0 if value is None else float(value)
+
+
+def test_ai_gate_metrics_record_permitted_runs(gating_client):
+    client = gating_client
+    token = main.create_token("doc", "user")
+    clinician_id = main._get_user_db_id("doc")
+    assert clinician_id is not None
+
+    note_id = "note-metrics"
+    base_note = ("Sentence. " * 120).strip() + "."
+
+    auto_labels = {"route": "auto", "clinician_id": str(clinician_id), "note_id": note_id}
+    manual_labels = {
+        "route": "manual_full",
+        "clinician_id": str(clinician_id),
+        "note_id": note_id,
+    }
+    final_labels = {
+        "route": "finalization",
+        "clinician_id": str(clinician_id),
+        "note_id": note_id,
+    }
+
+    assert REGISTRY.get_sample_value("revenuepilot_ai_gate_auto4o_count", auto_labels) is None
+
+    resp_auto = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": note_id,
+            "noteContent": base_note,
+            "requestType": "auto",
+        },
+        headers=_auth_header(token),
+    )
+    assert resp_auto.status_code == 202
+    assert _get_metric("revenuepilot_ai_gate_auto4o_count", auto_labels) == pytest.approx(1.0)
+
+    time.sleep(0.12)
+    manual_note = base_note + " " + ("Additional sentence." * 8)
+    resp_manual = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": note_id,
+            "noteContent": manual_note,
+            "requestType": "manual_full",
+        },
+        headers=_auth_header(token),
+    )
+    assert resp_manual.status_code == 202
+    assert _get_metric("revenuepilot_ai_gate_manual4o_count", manual_labels) == pytest.approx(1.0)
+
+    time.sleep(0.12)
+    resp_final = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": note_id,
+            "noteContent": manual_note,
+            "requestType": "finalization",
+        },
+        headers=_auth_header(token),
+    )
+    assert resp_final.status_code == 202
+    assert _get_metric("revenuepilot_ai_gate_finalization_count", final_labels) == pytest.approx(1.0)
+
+    mean_value = _get_metric(
+        "revenuepilot_ai_gate_mean_time_between_allowed_ms", final_labels
+    )
+    edits_value = _get_metric(
+        "revenuepilot_ai_gate_edits_per_allowed_run", final_labels
+    )
+    assert mean_value > 0.0
+    assert edits_value > 0.0
+
+    row = main.db_conn.execute(
+        """
+        SELECT allowed_count, total_delta_chars, mean_time_between_allowed_ms
+        FROM ai_note_state
+        WHERE note_id = ?
+        """,
+        (note_id,),
+    ).fetchone()
+    assert row is not None
+    expected_edits = row["total_delta_chars"] / max(row["allowed_count"], 1)
+    assert edits_value == pytest.approx(expected_edits)
+    assert mean_value == pytest.approx(row["mean_time_between_allowed_ms"])
 
 
 

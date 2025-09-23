@@ -22,6 +22,7 @@ import threading
 import uuid
 import secrets
 import math
+import socket
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 import sqlalchemy as sa
@@ -37,6 +38,7 @@ from typing import (
     Any,
     Literal,
     Set,
+    Sequence,
     Tuple,
     Callable,
     Iterable,
@@ -69,6 +71,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
+    Gauge,
     Histogram,
     REGISTRY,
     generate_latest,
@@ -346,6 +349,80 @@ def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames)
     return metric_cls(name, documentation, labelnames=labelnames)
 
 
+class _StatsdClient:
+    """Minimal DogStatsD compatible client used for optional metrics forwarding."""
+
+    def __init__(self):
+        host = os.getenv("STATSD_HOST")
+        if not host:
+            self._enabled = False
+            self._socket = None
+            return
+
+        port_raw = os.getenv("STATSD_PORT", "8125")
+        try:
+            port = int(port_raw)
+        except (TypeError, ValueError):
+            self._enabled = False
+            self._socket = None
+            return
+
+        self._address = (host, port)
+        self._prefix = os.getenv("STATSD_PREFIX", "revenuepilot")
+        try:
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:
+            self._enabled = False
+            self._socket = None
+            return
+
+        self._lock = threading.Lock()
+        self._enabled = True
+
+    def _metric_name(self, name: str) -> str:
+        if self._prefix:
+            return f"{self._prefix}.{name}"
+        return name
+
+    def _send(self, metric: str, value: float, metric_type: str, tags: Sequence[str] | None = None) -> None:
+        if not self._enabled or self._socket is None:
+            return
+
+        parts = [f"{self._metric_name(metric)}:{value}|{metric_type}"]
+        if tags:
+            parts.append("|#" + ",".join(tags))
+        payload = "".join(parts)
+        try:
+            with self._lock:
+                self._socket.sendto(payload.encode("utf-8"), self._address)
+        except OSError:
+            self._enabled = False
+
+    def gauge(self, metric: str, value: float, *, tags: Sequence[str] | None = None) -> None:
+        self._send(metric, value, "g", tags)
+
+    def increment(self, metric: str, value: float = 1.0, *, tags: Sequence[str] | None = None) -> None:
+        self._send(metric, value, "c", tags)
+
+    def histogram(self, metric: str, value: float, *, tags: Sequence[str] | None = None) -> None:
+        self._send(metric, value, "h", tags)
+
+
+_STATSD_CLIENT = _StatsdClient()
+
+
+def statsd_gauge(metric: str, value: float, *, tags: Sequence[str] | None = None) -> None:
+    _STATSD_CLIENT.gauge(metric, value, tags=tags)
+
+
+def statsd_increment(metric: str, value: float = 1.0, *, tags: Sequence[str] | None = None) -> None:
+    _STATSD_CLIENT.increment(metric, value, tags=tags)
+
+
+def statsd_histogram(metric: str, value: float, *, tags: Sequence[str] | None = None) -> None:
+    _STATSD_CLIENT.histogram(metric, value, tags=tags)
+
+
 REQUEST_COUNTER = _get_or_create_metric(
     Counter,
     "revenuepilot_requests_total",
@@ -393,6 +470,36 @@ AI_GATE_FORCE_TOTAL = _get_or_create_metric(
     "revenuepilot_ai_gate_force_total",
     "Number of gating requests flagged with force=true",
     ("route",),
+)
+AI_GATE_AUTO4O_COUNT = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_ai_gate_auto4o_count",
+    "Number of auto-4o calls allowed per clinician and note",
+    ("route", "clinician_id", "note_id"),
+)
+AI_GATE_MANUAL4O_COUNT = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_ai_gate_manual4o_count",
+    "Number of manual-4o calls allowed per clinician and note",
+    ("route", "clinician_id", "note_id"),
+)
+AI_GATE_FINALIZATION_COUNT = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_ai_gate_finalization_count",
+    "Number of finalization calls allowed per clinician and note",
+    ("route", "clinician_id", "note_id"),
+)
+AI_GATE_MEAN_TIME_BETWEEN_ALLOWED = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_ai_gate_mean_time_between_allowed_ms",
+    "Mean time between allowed AI gating runs in milliseconds",
+    ("route", "clinician_id", "note_id"),
+)
+AI_GATE_EDITS_PER_ALLOWED_RUN = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_ai_gate_edits_per_allowed_run",
+    "Average edited characters per allowed AI gating run",
+    ("route", "clinician_id", "note_id"),
 )
 
 try:
