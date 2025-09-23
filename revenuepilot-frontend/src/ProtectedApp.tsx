@@ -150,6 +150,7 @@ export function ProtectedApp() {
     nextRetryDelayMs: null,
   })
   const [collaborationState, setCollaborationState] = useState<CollaborationStreamState | null>(null)
+  const [contextStageInfo, setContextStageInfo] = useState<NoteContextStageInfo | null>(null)
 
   const handleComplianceStreamUpdate = useCallback((issues: ComplianceIssue[], state: StreamConnectionState) => {
     setLiveComplianceIssues(issues)
@@ -1513,6 +1514,7 @@ export function ProtectedApp() {
                       onComplianceStreamUpdate={handleComplianceStreamUpdate}
                       onCodeStreamUpdate={handleCodeStreamUpdate}
                       onCollaborationStreamUpdate={handleCollaborationStreamUpdate}
+                      onContextStageChange={setContextStageInfo}
                     />
                     <SelectedCodesBar
                       selectedCodes={selectedCodes}
@@ -1540,6 +1542,7 @@ export function ProtectedApp() {
                         streamingCodes={liveCodeSuggestions}
                         complianceConnection={complianceStreamState}
                         codesConnection={codeStreamState}
+                        contextInfo={contextStageInfo}
                       />
                     </ResizablePanel>
                   </>

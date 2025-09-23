@@ -39,41 +39,44 @@ if 'backend.scheduling' not in sys.modules:
     sys.modules['backend.scheduling'] = scheduling_stub
 
 if 'backend.db' not in sys.modules:
-    import sqlite3
-    db_module = types.ModuleType('backend.db')
-    db_module.DATABASE_PATH = Path(':memory:')
+    existing_spec = importlib.util.find_spec('backend.db')
+    if existing_spec is None:
+        import sqlite3
 
-    def _get_connection() -> sqlite3.Connection:
-        conn = sqlite3.connect(':memory:', check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+        db_module = types.ModuleType('backend.db')
+        db_module.DATABASE_PATH = Path(':memory:')
 
-    def _get_session():  # pragma: no cover - should be overridden in tests
-        raise RuntimeError('get_session dependency must be overridden in tests')
+        def _get_connection() -> sqlite3.Connection:
+            conn = sqlite3.connect(':memory:', check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            return conn
 
-    def _initialise_schema(conn: sqlite3.Connection) -> None:  # pragma: no cover - no-op for tests
-        return None
+        def _get_session():  # pragma: no cover - should be overridden in tests
+            raise RuntimeError('get_session dependency must be overridden in tests')
 
-    def _resolve_session_connection(session):  # pragma: no cover - minimal fallback
-        if hasattr(session, 'connection'):
-            try:
-                return session.connection().connection
-            except Exception:
-                return session
-        return session
+        def _initialise_schema(conn: sqlite3.Connection) -> None:  # pragma: no cover - no-op for tests
+            return None
 
-    db_module.get_connection = _get_connection
-    db_module.get_session = _get_session
-    db_module.initialise_schema = _initialise_schema
-    db_module.resolve_session_connection = _resolve_session_connection
-    models_path = Path(ROOT) / 'backend' / 'db' / 'models.py'
-    spec = importlib.util.spec_from_file_location('backend.db.models', models_path)
-    assert spec and spec.loader
-    models_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(models_module)  # type: ignore[union-attr]
-    sys.modules['backend.db.models'] = models_module
-    db_module.models = models_module
-    sys.modules['backend.db'] = db_module
+        def _resolve_session_connection(session):  # pragma: no cover - minimal fallback
+            if hasattr(session, 'connection'):
+                try:
+                    return session.connection().connection
+                except Exception:
+                    return session
+            return session
+
+        db_module.get_connection = _get_connection
+        db_module.get_session = _get_session
+        db_module.initialise_schema = _initialise_schema
+        db_module.resolve_session_connection = _resolve_session_connection
+        models_path = Path(ROOT) / 'backend' / 'db' / 'models.py'
+        spec = importlib.util.spec_from_file_location('backend.db.models', models_path)
+        assert spec and spec.loader
+        models_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(models_module)  # type: ignore[union-attr]
+        sys.modules['backend.db.models'] = models_module
+        db_module.models = models_module
+        sys.modules['backend.db'] = db_module
 
 
 def _env_flag(name: str) -> bool:

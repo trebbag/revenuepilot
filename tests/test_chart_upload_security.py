@@ -43,13 +43,15 @@ def test_chart_upload_confines_to_directory(tmp_path: Path, authed_client, monke
     resp = client.post(
         "/api/charts/upload",
         headers=_auth_header(token),
+        params={"patient_id": "pt-1"},
         files={"file": ("../../../../etc/passwd", b"payload")},
     )
     assert resp.status_code == 200
     payload = resp.json()
-    assert payload["filename"] != "../../../../etc/passwd"
+    assert payload["patient_id"] == "pt-1"
+    assert payload["files"][0]["name"] != "../../../../etc/passwd"
 
-    stored = tmp_path / payload["filename"]
+    stored = tmp_path / payload["files"][0]["name"]
     assert stored.exists()
     assert stored.read_bytes() == b"payload"
 
@@ -63,6 +65,7 @@ def test_chart_upload_rejects_escape_attempt(tmp_path: Path, authed_client, monk
     resp = client.post(
         "/api/charts/upload",
         headers=_auth_header(token),
+        params={"patient_id": "pt-1"},
         files={"file": ("chart.txt", b"payload")},
     )
     assert resp.status_code == 400

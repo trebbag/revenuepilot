@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/t
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
 import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle } from "lucide-react"
 import { apiFetchJson } from "../lib/api"
-import type { ComplianceIssue, LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
+import type { ComplianceIssue, LiveCodeSuggestion, NoteContextStageInfo, StreamConnectionState } from "./NoteEditor"
 
 interface SuggestionPanelProps {
   onClose: () => void
@@ -27,6 +27,7 @@ interface SuggestionPanelProps {
   streamingCodes?: LiveCodeSuggestion[]
   complianceConnection?: StreamConnectionState
   codesConnection?: StreamConnectionState
+  contextInfo?: NoteContextStageInfo | null
 }
 
 interface SelectedCodeItem {
@@ -104,6 +105,7 @@ export function SuggestionPanel({
   streamingCodes,
   complianceConnection,
   codesConnection,
+  contextInfo,
 }: SuggestionPanelProps) {
   const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
   const [codesLoading, setCodesLoading] = useState(false)
@@ -133,6 +135,23 @@ export function SuggestionPanel({
   const [selectedDifferential, setSelectedDifferential] = useState<DifferentialItem | null>(null)
 
   const codesInUse = useMemo(() => (selectedCodesList || []).map((item) => item?.code).filter((code): code is string => Boolean(code)), [selectedCodesList])
+
+  const contextRequestPayload = useMemo(() => {
+    if (!contextInfo) {
+      return {}
+    }
+    const payload: Record<string, string> = {}
+    if (contextInfo.correlationId) {
+      payload.correlation_id = contextInfo.correlationId
+    }
+    if (contextInfo.bestStage) {
+      payload.context_stage = contextInfo.bestStage
+    }
+    if (contextInfo.contextGeneratedAt) {
+      payload.context_generated_at = contextInfo.contextGeneratedAt
+    }
+    return payload
+  }, [contextInfo])
 
   const filteredCodeSuggestions = useMemo(() => codeSuggestions.filter((code) => !addedCodes.includes(code.code)), [codeSuggestions, addedCodes])
 
@@ -301,7 +320,7 @@ export function SuggestionPanel({
         const data =
           (await apiFetchJson<{ suggestions?: any[] }>("/api/ai/codes/suggest", {
             method: "POST",
-            jsonBody: { content: trimmed },
+            jsonBody: { content: trimmed, codes: codesInUse, ...contextRequestPayload },
             signal,
           })) ?? {}
 
@@ -368,7 +387,7 @@ export function SuggestionPanel({
         const data =
           (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
             method: "POST",
-            jsonBody: { content: trimmed },
+            jsonBody: { content: trimmed, ...contextRequestPayload },
             signal,
           })) ?? {}
 
@@ -423,7 +442,7 @@ export function SuggestionPanel({
       controller.abort()
       window.clearTimeout(debounceId)
     }
-  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance])
+  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance, contextRequestPayload])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -626,6 +645,11 @@ export function SuggestionPanel({
               </div>
             </div>
             <p className="text-xs text-muted-foreground">Live AI recommendations stream in real time when connected.</p>
+            {contextInfo?.bestStage === "superficial" && (
+              <Badge variant="outline" className="w-max bg-amber-50 text-amber-700 border-amber-200 text-xs">
+                Limited context – deep parsing pending
+              </Badge>
+            )}
           </div>
           <Button variant="ghost" size="sm" onClick={onClose}>
             <X className="h-4 w-4" />

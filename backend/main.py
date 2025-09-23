@@ -235,6 +235,7 @@ from backend import code_tables  # type: ignore
 from backend import patients  # type: ignore
 from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
+from backend.context_pipeline import ChartContextPipeline
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     LOCKOUT_DURATION_SECONDS,
@@ -1585,6 +1586,16 @@ compliance_engine.configure_engine(engine=db.engine)
 configure_auth_session_factory(db_conn)
 if _auth_sessionmaker is not None:
     configure_schedule_database(_auth_sessionmaker)
+
+
+def _context_session_factory() -> SQLAlchemySession:
+    if _auth_sessionmaker is None or _auth_connection_id != id(db_conn):
+        configure_auth_session_factory(db_conn)
+    assert _auth_sessionmaker is not None
+    return _auth_sessionmaker()
+
+
+context_pipeline = ChartContextPipeline(_context_session_factory, default_profile=os.getenv("PROFILE", "balanced"))
 
 
 
@@ -13654,6 +13665,61 @@ async def _notify_compliance_issue(
         await _push_notification_event(username, dict(notify_payload), increment=True)
 
 
+@app.websocket("/ws/context/{correlation_id}")
+async def ws_context_updates(websocket: WebSocket, correlation_id: str) -> None:
+    await ws_require_role(websocket, "user")
+    await websocket.accept()
+    queue = await context_pipeline.events.connect(correlation_id)
+    try:
+        await websocket.send_json({"event": "connected", "correlation_id": correlation_id})
+        status_payload = context_pipeline.get_status_by_correlation(correlation_id)
+        patient_hint = websocket.query_params.get("patient_id") or ""
+        if status_payload:
+            stages = status_payload.get("stages", {})
+            available: List[str] = []
+            for stage_name, payload in stages.items():
+                message = {
+                    "event": "context:stage",
+                    "correlation_id": correlation_id,
+                    "stage": stage_name,
+                    "state": payload.get("state"),
+                }
+                percent = payload.get("percent")
+                if percent is not None:
+                    message["percent"] = percent
+                await websocket.send_json(message)
+                if payload.get("state") == "completed":
+                    available.append(stage_name)
+            if available:
+                best_stage = "superficial"
+                if "deep" in available:
+                    best_stage = "deep"
+                if "indexed" in available:
+                    best_stage = "indexed"
+                snapshot_stage = "final" if best_stage == "indexed" else best_stage
+                patient_value = status_payload.get("patient_id") or patient_hint
+                if patient_value:
+                    snapshot_url = f"/api/patients/{patient_value}/context?stage={snapshot_stage}"
+                else:
+                    snapshot_url = f"/api/patients/context?stage={snapshot_stage}"
+                await websocket.send_json(
+                    {
+                        "event": "context:ready",
+                        "correlation_id": correlation_id,
+                        "best_stage": best_stage,
+                        "available_stages": available,
+                        "snapshot_url": snapshot_url,
+                    }
+                )
+        while True:
+            payload = await queue.get()
+            await websocket.send_json(payload)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await context_pipeline.events.disconnect(correlation_id, queue)
+
+
 @app.websocket("/ws/transcription")
 async def ws_transcription(websocket: WebSocket) -> None:
     """Live speech-to-text stream.
@@ -13964,9 +14030,21 @@ async def update_visit_session(model: VisitSessionUpdate, user=Depends(require_r
 
 
 @app.post("/api/charts/upload")
-async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("user"))):
+async def upload_chart(
+    request: Request,
+    file: UploadFile = File(...),
+    patient_id: str | None = Query(default=None, alias="patient_id"),
+    profile: str | None = Query(default=None, alias="profile"),
+    user=Depends(require_role("user")),
+):
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     contents = await file.read()
+    normalized_patient = (patient_id or "").strip()
+    if not normalized_patient:
+        normalized_patient = (request.query_params.get("patient") or "").strip()
+    if not normalized_patient:
+        raise HTTPException(status_code=400, detail="patient_id is required")
+
     try:
         sanitized_name, destination = _resolve_chart_destination(file.filename)
     except ValueError:
@@ -13994,16 +14072,42 @@ async def upload_chart(file: UploadFile = File(...), user=Depends(require_role("
             detail="Failed to store uploaded chart.",
         ) from exc
 
+    correlation_id = f"ctx_{uuid.uuid4().hex[:12]}"
+    result = await context_pipeline.handle_upload(
+        patient_id=normalized_patient,
+        correlation_id=correlation_id,
+        files=[(sanitized_name, contents, file.content_type)],
+        profile=profile,
+    )
+
     logger.info(
         "chart_upload.saved",
         sanitized_filename=sanitized_name,
         size=len(contents),
+        correlation_id=correlation_id,
+        patient_id=normalized_patient,
     )
-    return {
-        "status": "processing",
-        "filename": sanitized_name,
-        "size": len(contents),
-    }
+    return result
+
+
+@app.get("/api/patients/{patient_id}/context/status")
+async def get_patient_context_status(patient_id: str, user=Depends(require_role("user"))):
+    status_payload = context_pipeline.get_status(patient_id)
+    if not status_payload:
+        raise HTTPException(status_code=404, detail="No chart context available")
+    return status_payload
+
+
+@app.get("/api/patients/{patient_id}/context")
+async def get_patient_context_snapshot(
+    patient_id: str,
+    stage: str = Query("superficial"),
+    user=Depends(require_role("user")),
+):
+    snapshot = context_pipeline.get_snapshot(patient_id, stage)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="No chart context available")
+    return snapshot
 
 
 # Notes and drafts management

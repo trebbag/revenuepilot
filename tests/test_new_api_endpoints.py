@@ -134,7 +134,10 @@ def test_charts_upload(client):
     resp = client.post(
         "/api/charts/upload",
         headers=auth_header(token),
+        params={"patient_id": "pt-42"},
         files={"file": ("chart.txt", b"data")},
     )
     assert resp.status_code == 200
-    assert resp.json()["status"] == "processing"
+    payload = resp.json()
+    assert payload["patient_id"] == "pt-42"
+    assert payload["correlation_id"].startswith("ctx_")
