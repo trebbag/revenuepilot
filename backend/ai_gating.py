@@ -786,6 +786,7 @@ class AIGatingService:
         prev_allowed = state.allowed_count
         state.allowed_count += 1
         last_allowed = _ensure_aware(state.last_allowed_ts)
+        elapsed_ms: float | None = None
         if last_allowed and prev_allowed > 0:
             elapsed_ms = (now - last_allowed).total_seconds() * 1000.0
             state.mean_time_between_allowed_ms = (
@@ -829,6 +830,56 @@ class AIGatingService:
 
         job_id = uuid.uuid4().hex
         detail.reason = None
+
+        from backend import main as backend_main
+
+        labels = {
+            "route": payload.request_type,
+            "clinician_id": str(payload.clinician_id),
+            "note_id": str(payload.note_id),
+        }
+        statsd_tags = [
+            f"route:{payload.request_type}",
+            f"clinician_id:{payload.clinician_id}",
+            f"note_id:{payload.note_id}",
+        ]
+
+        if high_accuracy and payload.request_type == "auto":
+            backend_main.AI_GATE_AUTO4O_COUNT.labels(**labels).set(float(state.auto4o_count))
+            backend_main.statsd_gauge(
+                "ai_gate.auto4o_count", float(state.auto4o_count), tags=statsd_tags
+            )
+        if high_accuracy and payload.request_type == "manual_full":
+            backend_main.AI_GATE_MANUAL4O_COUNT.labels(**labels).set(float(state.manual4o_count))
+            backend_main.statsd_gauge(
+                "ai_gate.manual4o_count", float(state.manual4o_count), tags=statsd_tags
+            )
+        if payload.request_type == "finalization":
+            backend_main.AI_GATE_FINALIZATION_COUNT.labels(**labels).set(float(state.finalization_count))
+            backend_main.statsd_gauge(
+                "ai_gate.finalization_count",
+                float(state.finalization_count),
+                tags=statsd_tags,
+            )
+
+        backend_main.AI_GATE_MEAN_TIME_BETWEEN_ALLOWED.labels(**labels).set(
+            float(state.mean_time_between_allowed_ms)
+        )
+        backend_main.statsd_gauge(
+            "ai_gate.mean_time_between_allowed_ms",
+            float(state.mean_time_between_allowed_ms),
+            tags=statsd_tags,
+        )
+        if elapsed_ms is not None:
+            backend_main.statsd_histogram(
+                "ai_gate.time_between_allowed_ms", float(elapsed_ms), tags=statsd_tags
+            )
+
+        edits_per_allowed = state.total_delta_chars / max(state.allowed_count, 1)
+        backend_main.AI_GATE_EDITS_PER_ALLOWED_RUN.labels(**labels).set(float(edits_per_allowed))
+        backend_main.statsd_gauge(
+            "ai_gate.edits_per_allowed_run", float(edits_per_allowed), tags=statsd_tags
+        )
 
         logger.info(
             "ai_gate_allowed",
