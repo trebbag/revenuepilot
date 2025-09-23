@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 import structlog
 
-from backend.embedding import HashingVectorizerEmbedding
+from backend.openai_client import get_embedding_client
 from backend.db.models import (
     AIClinicianAggregate,
     AIClinicianDailyStat,
@@ -37,6 +37,9 @@ logger = structlog.get_logger(__name__)
 
 
 SentenceBoundary = (".", "?", "!")
+
+EMBED_SENTINEL_OLD = "<<OLD_NOTE_SPAN>>"
+EMBED_SENTINEL_NEW = "<<NEW_NOTE_SPAN>>"
 
 ZERO_WIDTH_REPLACEMENTS = str.maketrans({
     "\u200b": "",
@@ -203,17 +206,27 @@ def trigram_dice(a: str, b: str) -> float:
     return (2 * intersection) / max(len(set_a) + len(set_b), 1)
 
 
-def embedding_distance(embedder: HashingVectorizerEmbedding, a: str, b: str) -> Optional[float]:
+def embedding_distance(embedder: Any, a: str, b: str) -> Optional[float]:
     """Cosine distance between embeddings of ``a`` and ``b``."""
 
     try:
-        vec_a = embedder.embed(a)
-        vec_b = embedder.embed(b)
+        if hasattr(embedder, "embed_many"):
+            vectors = embedder.embed_many([a, b])
+            if not isinstance(vectors, Sequence) or len(vectors) != 2:
+                return None
+            vec_a, vec_b = vectors
+        else:
+            vec_a = embedder.embed(a)
+            vec_b = embedder.embed(b)
     except Exception:
         return None
     if not vec_a or not vec_b:
         return None
-    dot = sum(x * y for x, y in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(x * x for x in vec_a))
+    norm_b = math.sqrt(sum(x * x for x in vec_b))
+    if not norm_a or not norm_b:
+        return None
+    dot = sum(x * y for x, y in zip(vec_a, vec_b)) / (norm_a * norm_b)
     dot = max(min(dot, 1.0), -1.0)
     return 1.0 - dot
 
@@ -311,6 +324,8 @@ class AIGatingService:
         min_secs: float,
         cooldown_full: float,
         cooldown_mini: float,
+        embed_model: Optional[str] = None,
+        embedding_client: Any = None,
     ) -> None:
         self._connection = connection
         self._model_high = model_high
@@ -319,7 +334,11 @@ class AIGatingService:
         self._min_secs = max(0.0, float(min_secs))
         self._cooldown_full = max(0.0, float(cooldown_full))
         self._cooldown_mini = max(0.0, float(cooldown_mini))
-        self._embedder = HashingVectorizerEmbedding(dimensions=256)
+        if embedding_client is not None:
+            self._embedder = embedding_client
+        else:
+            model_name = embed_model or "text-embedding-3-small"
+            self._embedder = get_embedding_client(model_name)
         self._cost_high_cents = 0.2  # heuristic per thousand tokens
         self._cost_mini_cents = 0.05
 
@@ -728,7 +747,11 @@ class AIGatingService:
             dice = trigram_dice(span.old_text, span.new_text)
             if dice > 0.90:
                 continue
-            distance = embedding_distance(self._embedder, span.old_text, span.new_text)
+            distance = embedding_distance(
+                self._embedder,
+                f"{EMBED_SENTINEL_OLD}\n{span.old_text}",
+                f"{EMBED_SENTINEL_NEW}\n{span.new_text}",
+            )
             if distance is None:
                 return True
             if distance >= 0.08:
@@ -906,4 +929,6 @@ __all__ = [
     "compute_hash",
     "compute_json_hash",
     "compute_json_divergence",
+    "EMBED_SENTINEL_NEW",
+    "EMBED_SENTINEL_OLD",
 ]
