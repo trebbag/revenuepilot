@@ -7250,14 +7250,40 @@ class NoteRequest(BaseModel):
 
 class CodesSuggestRequest(BaseModel):
     content: str = Field(..., max_length=10000)
-    patientData: Optional[Dict[str, Any]] = None
+    codes: Optional[List[str]] = None
+    correlation_id: Optional[str] = Field(None, alias="correlation_id")
+    context_stage: Optional[Literal["superficial", "deep", "indexed"]] = Field(
+        None, alias="context_stage"
+    )
+    context_generated_at: Optional[str] = Field(None, alias="context_generated_at")
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
 
     @field_validator("content")
     @classmethod
     def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
         return sanitize_text(v)
+
+    @field_validator("codes", mode="before")
+    @classmethod
+    def normalize_codes(cls, value: Any) -> Optional[List[str]]:  # noqa: D401,N805
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, Iterable):
+            raise TypeError("codes must be a list of strings")
+        cleaned: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned or None
 
 
 class ComplianceCheckRequest(BaseModel):
@@ -7274,10 +7300,14 @@ class ComplianceCheckRequest(BaseModel):
 
 class DifferentialsGenerateRequest(BaseModel):
     content: str = Field(..., max_length=10000)
-    symptoms: Optional[List[str]] = None
-    patientData: Optional[Dict[str, Any]] = None
+    correlation_id: Optional[str] = Field(None, alias="correlation_id")
+    context_stage: Optional[str] = Field(None, alias="context_stage")
+    context_generated_at: Optional[str] = Field(None, alias="context_generated_at")
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
 
     @field_validator("content")
     @classmethod
@@ -7286,10 +7316,15 @@ class DifferentialsGenerateRequest(BaseModel):
 
 
 class PreventionSuggestRequest(BaseModel):
-    patientData: Optional[Dict[str, Any]] = None
     demographics: Optional[Dict[str, Any]] = None
+    correlation_id: Optional[str] = Field(None, alias="correlation_id")
+    context_stage: Optional[str] = Field(None, alias="context_stage")
+    context_generated_at: Optional[str] = Field(None, alias="context_generated_at")
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
+
+    class Config:
+        populate_by_name = True
 
 
 class RealtimeAnalyzeRequest(BaseModel):
@@ -7714,10 +7749,15 @@ class QuestionStatusUpdateRequest(BaseModel):
 
 class CodeSuggestItem(BaseModel):
     code: str
-    type: Optional[str] = None
-    description: Optional[str] = None
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    reasoning: Optional[str] = None
+    type: str = ""
+    description: str = ""
+    rationale: str = ""
+    reasoning: str = ""
+    confidence: int = Field(0, ge=0, le=100)
+    whatItIs: str = ""
+    usageRules: List[str] = Field(default_factory=list)
+    reasonsSuggested: List[str] = Field(default_factory=list)
+    potentialConcerns: List[str] = Field(default_factory=list)
 
     @field_validator("code")
     @classmethod
@@ -7727,6 +7767,239 @@ class CodeSuggestItem(BaseModel):
 
 class CodesSuggestResponse(BaseModel):
     suggestions: List[CodeSuggestItem]
+
+
+def _coerce_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and math.isnan(value):
+            return ""
+        return str(value).strip()
+    return str(value).strip()
+
+
+def _coerce_string_list(value: Any) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    if isinstance(value, Iterable):
+        results: List[str] = []
+        for item in value:
+            text = _coerce_string(item)
+            if text:
+                results.append(text)
+        return results
+    return []
+
+
+def _normalize_confidence(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if math.isnan(number):
+        return 0
+    if number <= 1.0:
+        number = max(0.0, min(1.0, number))
+        return int(round(number * 100))
+    number = max(0.0, min(number, 100.0))
+    return int(round(number))
+
+
+def _normalize_code_type(value: Any) -> str:
+    text = _coerce_string(value).upper().replace(" ", "")
+    if not text:
+        return ""
+    if text in {"CPT"}:
+        return "CPT"
+    if text in {"ICD10", "ICD-10", "ICD_10"}:
+        return "ICD-10"
+    if text in {"HCPCS"}:
+        return "HCPCS"
+    return ""
+
+
+def _normalize_code_identifier(value: str | None) -> str:
+    if not value:
+        return ""
+    return str(value).strip().upper()
+
+
+def _coerce_code_item(raw: Mapping[str, Any], index: int) -> CodeSuggestItem:
+    code = _coerce_string(raw.get("code"))
+    description = _coerce_string(raw.get("description"))
+    rationale = _coerce_string(raw.get("rationale"))
+    reasoning = _coerce_string(raw.get("reasoning"))
+    if not rationale and reasoning:
+        rationale = reasoning
+    if not reasoning and rationale:
+        reasoning = rationale
+    if not description:
+        description = rationale or reasoning or code
+    fallback_code = code or description or f"SUGGESTION-{index + 1}"  # pragma: no cover - defensive
+    what_it_is = _coerce_string(raw.get("whatItIs")) or description or fallback_code
+    usage_rules = _coerce_string_list(raw.get("usageRules"))
+    reasons = _coerce_string_list(raw.get("reasonsSuggested") or raw.get("supportingFactors"))
+    concerns = _coerce_string_list(raw.get("potentialConcerns") or raw.get("contradictingFactors"))
+    return CodeSuggestItem(
+        code=fallback_code,
+        type=_normalize_code_type(raw.get("type")),
+        description=description or fallback_code,
+        rationale=rationale,
+        reasoning=reasoning,
+        confidence=_normalize_confidence(raw.get("confidence")),
+        whatItIs=what_it_is,
+        usageRules=usage_rules,
+        reasonsSuggested=reasons,
+        potentialConcerns=concerns,
+    )
+
+
+def _normalize_code_suggestions(raw_items: Iterable[Any]) -> List[CodeSuggestItem]:
+    normalised: List[CodeSuggestItem] = []
+    for index, raw in enumerate(raw_items):
+        if isinstance(raw, CodeSuggestItem):
+            item = raw
+        elif isinstance(raw, Mapping):
+            item = _coerce_code_item(raw, index)
+        else:
+            continue
+        normalised.append(item)
+    return normalised
+
+
+def _dedupe_code_suggestions(
+    items: Iterable[CodeSuggestItem],
+    existing: Optional[Iterable[str]],
+) -> List[CodeSuggestItem]:
+    selected = {
+        _normalize_code_identifier(code)
+        for code in (existing or [])
+        if code is not None and str(code).strip()
+    }
+    seen: Set[str] = set()
+    result: List[CodeSuggestItem] = []
+    for item in items:
+        code_key = _normalize_code_identifier(item.code)
+        alt_key = _normalize_code_identifier(item.description)
+        identifier = code_key or alt_key
+        if identifier and identifier in selected:
+            continue
+        if identifier:
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+        result.append(item)
+    return result
+
+
+def _coerce_differential_item(raw: Mapping[str, Any], index: int) -> DifferentialItem:
+    diagnosis = _coerce_string(raw.get("diagnosis")) or f"Differential {index + 1}"
+    icd_code = _coerce_string(raw.get("icdCode") or raw.get("code"))
+    icd_description = _coerce_string(raw.get("icdDescription") or raw.get("description"))
+    reasoning = _coerce_string(raw.get("reasoning") or raw.get("rationale"))
+    supporting = _coerce_string_list(
+        raw.get("supportingFactors") or raw.get("forFactors")
+    )
+    contradicting = _coerce_string_list(
+        raw.get("contradictingFactors") or raw.get("againstFactors")
+    )
+    tests_confirm = _coerce_string_list(raw.get("testsToConfirm"))
+    tests_exclude = _coerce_string_list(raw.get("testsToExclude"))
+    what_it_is = _coerce_string(raw.get("whatItIs")) or icd_description or diagnosis
+    details = _coerce_string(raw.get("details"))
+    confidence_factors = _coerce_string(raw.get("confidenceFactors"))
+    learn_more = _coerce_string(raw.get("learnMoreUrl"))
+    icd_value = icd_code or diagnosis
+    return DifferentialItem(
+        diagnosis=diagnosis,
+        icdCode=icd_value,
+        icdDescription=icd_description or diagnosis,
+        confidence=_normalize_confidence(raw.get("confidence") or raw.get("score")),
+        reasoning=reasoning,
+        supportingFactors=supporting,
+        contradictingFactors=contradicting,
+        testsToConfirm=tests_confirm,
+        testsToExclude=tests_exclude,
+        whatItIs=what_it_is,
+        details=details,
+        confidenceFactors=confidence_factors,
+        learnMoreUrl=learn_more,
+        forFactors=list(supporting),
+        againstFactors=list(contradicting),
+    )
+
+
+def _normalize_differentials(raw_items: Iterable[Any]) -> List[DifferentialItem]:
+    result: List[DifferentialItem] = []
+    for index, raw in enumerate(raw_items):
+        if isinstance(raw, DifferentialItem):
+            item = raw
+        elif isinstance(raw, Mapping):
+            item = _coerce_differential_item(raw, index)
+        else:
+            continue
+        result.append(item)
+    return result
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = _coerce_string(value).lower()
+    if text in {"true", "1", "yes", "y", "t"}:
+        return True
+    if text in {"false", "0", "no", "n", "f"}:
+        return False
+    return False
+
+
+def _coerce_prevention_item(raw: Mapping[str, Any], index: int) -> PreventionItem:
+    recommendation = _coerce_string(raw.get("recommendation") or raw.get("title"))
+    identifier = _coerce_string(raw.get("id")) or recommendation or f"prevention-{index + 1}"
+    code = _coerce_string(raw.get("code")) or identifier
+    reasoning = _coerce_string(raw.get("reasoning") or raw.get("rationale"))
+    description = _coerce_string(raw.get("description")) or recommendation or reasoning
+    rationale = _coerce_string(raw.get("rationale")) or reasoning
+    priority = _coerce_string(raw.get("priority"))
+    source = _coerce_string(raw.get("source"))
+    age_relevant = _coerce_bool(raw.get("ageRelevant"))
+    return PreventionItem(
+        id=identifier,
+        code=code or identifier,
+        type="PREVENTION",
+        category="prevention",
+        recommendation=recommendation or code or identifier,
+        priority=priority,
+        source=source,
+        confidence=_normalize_confidence(raw.get("confidence")),
+        reasoning=reasoning,
+        ageRelevant=age_relevant,
+        description=description or recommendation or code or identifier,
+        rationale=rationale,
+    )
+
+
+def _normalize_prevention_items(raw_items: Iterable[Any]) -> List[PreventionItem]:
+    items: List[PreventionItem] = []
+    for index, raw in enumerate(raw_items):
+        if isinstance(raw, PreventionItem):
+            item = raw
+        elif isinstance(raw, Mapping):
+            item = _coerce_prevention_item(raw, index)
+        else:
+            continue
+        items.append(item)
+    return items
 
 
 class RuleCitation(BaseModel):
@@ -7929,11 +8202,20 @@ class ComplianceRuleUpdateRequest(ComplianceRuleBase):
 
 class DifferentialItem(BaseModel):
     diagnosis: str
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    reasoning: Optional[str] = None
-    supportingFactors: Optional[List[str]] = None
-    contradictingFactors: Optional[List[str]] = None
-    testsToConfirm: Optional[List[str]] = None
+    icdCode: str = ""
+    icdDescription: str = ""
+    confidence: int = Field(0, ge=0, le=100)
+    reasoning: str = ""
+    supportingFactors: List[str] = Field(default_factory=list)
+    contradictingFactors: List[str] = Field(default_factory=list)
+    testsToConfirm: List[str] = Field(default_factory=list)
+    testsToExclude: List[str] = Field(default_factory=list)
+    whatItIs: str = ""
+    details: str = ""
+    confidenceFactors: str = ""
+    learnMoreUrl: str = ""
+    forFactors: List[str] = Field(default_factory=list)
+    againstFactors: List[str] = Field(default_factory=list)
 
 
 class DifferentialsResponse(BaseModel):
@@ -7941,12 +8223,18 @@ class DifferentialsResponse(BaseModel):
 
 
 class PreventionItem(BaseModel):
+    id: str
+    code: str
+    type: str = "PREVENTION"
+    category: str = "prevention"
     recommendation: str
-    priority: Optional[str] = None
-    source: Optional[str] = None
-    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
-    reasoning: Optional[str] = None
-    ageRelevant: Optional[bool] = None
+    priority: str = ""
+    source: str = ""
+    confidence: int = Field(0, ge=0, le=100)
+    reasoning: str = ""
+    ageRelevant: bool = False
+    description: str = ""
+    rationale: str = ""
 
 
 class PreventionResponse(BaseModel):
@@ -12757,40 +13045,59 @@ async def finalize_note(
 async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
+    context_stage = (req.context_stage or "superficial").lower()
+    context_lines = [f"Context stage: {context_stage}"]
+    if req.correlation_id:
+        context_lines.append(f"Correlation ID: {req.correlation_id}")
+    if req.context_generated_at:
+        context_lines.append(f"Context generated at: {req.context_generated_at}")
+    if context_stage == "superficial":
+        context_lines.append("Context quality is superficial; rely primarily on the supplied note content.")
+    else:
+        context_lines.append("Rich patient context is available; incorporate relevant details when grounded.")
+    context_block = "\n".join(context_lines)
+    selected_codes_json = json.dumps(req.codes or [])
+
     if offline:
         from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest(cleaned)
-        suggestions = [
-            CodeSuggestItem(
-                code=item.get("code", ""),
-                type=item.get("type"),
-                description=item.get("rationale"),
-                confidence=1.0,
-                reasoning=item.get("rationale"),
-            )
-            for item in data.get("codes", [])
-        ]
-        return CodesSuggestResponse(suggestions=suggestions)
+        raw_items = data.get("codes", []) if isinstance(data, dict) else []
+        normalised = _normalize_code_suggestions(raw_items)
+        deduped = _dedupe_code_suggestions(normalised, req.codes)
+        return CodesSuggestResponse(suggestions=deduped)
     try:
-        patient = json.dumps(req.patientData or {})
+        stage_hint = (
+            "Patient context is superficial; focus on explicit documentation."
+            if context_stage == "superficial"
+            else "Deep patient context is available; prefer context-aligned codes."
+        )
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are an expert medical coder. Return JSON with key 'suggestions' "
-                    "as an array of {code,type,description,confidence,reasoning}. Confidence in 0-1."
+                    "You are an expert medical coder. Respond strictly with JSON in the form "
+                    "{\"suggestions\":[{\"code\":\"\",\"type\":\"\",\"description\":\"\","
+                    "\"rationale\":\"\",\"reasoning\":\"\",\"confidence\":0,\"whatItIs\":\"\","
+                    "\"usageRules\":[],\"reasonsSuggested\":[],\"potentialConcerns\":[]}]}. "
+                    "Confidence must be an integer from 0 to 100. Always include every property even when data is"
+                    " unavailable (use empty strings or arrays). Do not repeat or suggest any codes listed under "
+                    "'Selected codes'."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Note:\n{cleaned}\nPatient data:{patient}",
+                "content": (
+                    f"Note:\n{cleaned}\nSelected codes:{selected_codes_json}\n"
+                    f"Context details:\n{context_block}\n{stage_hint}"
+                ),
             },
         ]
         resp = call_openai(messages)
         data = json.loads(resp)
-        suggestions = [CodeSuggestItem(**s) for s in data.get("suggestions", [])]
-        return CodesSuggestResponse(suggestions=suggestions)
+        normalised = _normalize_code_suggestions(data.get("suggestions", []))
+        deduped = _dedupe_code_suggestions(normalised, req.codes)
+        return CodesSuggestResponse(suggestions=deduped)
     except Exception as exc:
         trace_id = current_trace_id()
         logger.error("ai_codes_suggest_failed", error=str(exc))
@@ -13259,33 +13566,44 @@ async def _differentials_generate(
         from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest(cleaned)
-        diffs = [
-            DifferentialItem(
-                diagnosis=item.get("diagnosis", ""),
-                confidence=item.get("score"),
-                reasoning="offline",
-            )
-            for item in data.get("differentials", [])
-        ]
+        diffs = _normalize_differentials(data.get("differentials", []))
         return DifferentialsResponse(differentials=diffs)
     try:
-        symptoms = json.dumps(req.symptoms or [])
-        patient = json.dumps(req.patientData or {})
+        context_lines = []
+        if req.context_stage:
+            context_lines.append(f"Context stage: {req.context_stage}")
+        if req.correlation_id:
+            context_lines.append(f"Correlation ID: {req.correlation_id}")
+        if req.context_generated_at:
+            context_lines.append(f"Context generated at: {req.context_generated_at}")
+        context_block = "\n".join(context_lines) or "None provided"
+        stage_hint = (
+            "Superficial context; rely primarily on the documented presentation."
+            if (req.context_stage or "").lower() == "superficial"
+            else "Deep or indexed context available; cross-check against longitudinal data."
+        )
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a clinical decision support system. Return JSON {differentials:[{diagnosis,confidence,reasoning,supportingFactors,contradictingFactors,testsToConfirm}]}. Confidence 0-1."
+                    "You are a clinical decision support system. Respond strictly with JSON in the form "
+                    "{\"differentials\":[{\"diagnosis\":\"\",\"icdCode\":\"\",\"icdDescription\":\"\","
+                    "\"confidence\":0,\"reasoning\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],"
+                    "\"testsToConfirm\":[],\"testsToExclude\":[],\"whatItIs\":\"\",\"details\":\"\","
+                    "\"confidenceFactors\":\"\",\"learnMoreUrl\":\"\"}]}. Always include every property, even when"
+                    " empty (use empty strings or arrays). Confidence must be an integer 0-100."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Note:\n{cleaned}\nSymptoms:{symptoms}\nPatient:{patient}",
+                "content": (
+                    f"Note:\n{cleaned}\nContext details:\n{context_block}\n{stage_hint}"
+                ),
             },
         ]
         resp = call_openai(messages)
         data = json.loads(resp)
-        diffs = [DifferentialItem(**d) for d in data.get("differentials", [])]
+        diffs = _normalize_differentials(data.get("differentials", []))
         return DifferentialsResponse(differentials=diffs)
     except Exception as exc:
         trace_id = current_trace_id()
@@ -13317,35 +13635,45 @@ async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionRespon
         from backend.offline_model import suggest as offline_suggest
 
         data = offline_suggest("")
-        recs = [
-            PreventionItem(
-                recommendation=item.get("recommendation", ""),
-                priority="routine",
-                source=item.get("source"),
-                confidence=1.0,
-                reasoning=item.get("reason"),
-            )
-            for item in data.get("publicHealth", [])
-        ]
+        recs = _normalize_prevention_items(data.get("publicHealth", []))
         return PreventionResponse(recommendations=recs)
     try:
-        patient = json.dumps(req.patientData or {})
-        demo = json.dumps(req.demographics or {})
+        demographics = json.dumps(req.demographics or {})
+        context_lines = []
+        if req.context_stage:
+            context_lines.append(f"Context stage: {req.context_stage}")
+        if req.correlation_id:
+            context_lines.append(f"Correlation ID: {req.correlation_id}")
+        if req.context_generated_at:
+            context_lines.append(f"Context generated at: {req.context_generated_at}")
+        context_block = "\n".join(context_lines) or "None provided"
+        stage_hint = (
+            "Superficial context; base prevention guidance on demographics and general guidelines."
+            if (req.context_stage or "").lower() == "superficial"
+            else "Deep context available; tailor prevention guidance using the enriched record when appropriate."
+        )
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a preventative care assistant. Return JSON {recommendations:[{recommendation,priority,source,confidence,reasoning}]}."
+                    "You are a preventative care assistant. Respond strictly with JSON in the form "
+                    "{\"recommendations\":[{\"id\":\"\",\"code\":\"\",\"type\":\"PREVENTION\","
+                    "\"category\":\"prevention\",\"recommendation\":\"\",\"priority\":\"\","
+                    "\"source\":\"\",\"confidence\":0,\"reasoning\":\"\",\"ageRelevant\":false,"
+                    "\"description\":\"\",\"rationale\":\"\"}]}. Always include every property, even when unknown. "
+                    "Confidence must be an integer 0-100."
                 ),
             },
             {
                 "role": "user",
-                "content": f"Patient:{patient}\nDemographics:{demo}",
+                "content": (
+                    f"Demographics:{demographics}\nContext details:\n{context_block}\n{stage_hint}"
+                ),
             },
         ]
         resp = call_openai(messages)
         data = json.loads(resp)
-        recs = [PreventionItem(**r) for r in data.get("recommendations", [])]
+        recs = _normalize_prevention_items(data.get("recommendations", []))
         return PreventionResponse(recommendations=recs)
     except Exception as exc:
         trace_id = current_trace_id()
