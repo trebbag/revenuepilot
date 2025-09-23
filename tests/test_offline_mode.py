@@ -64,6 +64,7 @@ def test_offline_suggest(offline_client):
     assert r1["compliance"]
     assert r1["publicHealth"]
     assert r1["differentials"]
+    assert "questions" in r1
 
 
 def test_offline_summarize(offline_client):
@@ -98,6 +99,14 @@ def test_local_models_used_when_available(offline_client, monkeypatch):
             }
         ],
         "differentials": [{"diagnosis": "dx", "score": 0.1}],
+        "questions": [
+            {
+                "prompt": "Confirm medication changes",
+                "why": "Ensures accurate plan documentation",
+                "confidence": 0.6,
+                "evidence": [],
+            }
+        ],
     }
 
     from backend import offline_model as om

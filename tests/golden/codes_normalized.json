@@ -2,12 +2,14 @@
   "codes": [
     {
       "code": "99213",
-      "rationale": "Established patient visit with moderate complexity."
+      "rationale": "Established patient visit with moderate complexity.",
+      "evidence": ["Documented 20-minute follow-up"]
     },
     {
       "code": "E11.9",
       "rationale": "Type 2 diabetes mellitus without complications.",
-      "upgrade_to": "E11.65"
+      "upgrade_to": "E11.65",
+      "evidence": ["A1c 7.8% noted"]
     }
   ],
   "compliance": [
@@ -28,11 +30,13 @@
   "differentials": [
     {
       "diagnosis": "Influenza",
-      "score": 0.45
+      "score": 0.45,
+      "evidence": ["Fever 101F"]
     },
     {
       "diagnosis": "Pneumonia",
-      "score": 0.22
+      "score": 0.22,
+      "evidence": []
     },
     {
       "diagnosis": "Common cold"
@@ -42,5 +46,13 @@
     "interval": "6 weeks",
     "ics": "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nSUMMARY:Follow-up appointment\nDTSTART:20240212T000000Z\nDTEND:20240212T000000Z\nEND:VEVENT\nEND:VCALENDAR",
     "reason": "specialty cardiology payer medicare override"
-  }
+  },
+  "questions": [
+    {
+      "prompt": "What is the patient's latest HbA1c?",
+      "why": "Supports accurate diabetes severity coding",
+      "confidence": 65,
+      "evidence": ["Labs referenced in assessment"]
+    }
+  ]
 }

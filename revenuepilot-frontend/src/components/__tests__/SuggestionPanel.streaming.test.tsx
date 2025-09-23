@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, fireEvent } from "@testing-library/react"
 import { act } from "react-dom/test-utils"
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 
@@ -140,6 +140,7 @@ describe("SuggestionPanel streaming integration", () => {
         streamingCompliance={[]}
         codesConnection={defaultConnectionState("error", { lastError: "Socket failed" })}
         complianceConnection={defaultConnectionState("closed")}
+        transcriptCursor="cursor-token"
       />,
     )
 
@@ -158,5 +159,78 @@ describe("SuggestionPanel streaming integration", () => {
     expect(screen.getAllByText(/REST fallback active/)).toHaveLength(2)
     expect(screen.getByText(/Live stream error: Socket failed/)).toBeInTheDocument()
     expect(screen.getByText(/Live stream disconnected\. Retrying shortly\./)).toBeInTheDocument()
+
+    const codesRequest = apiFetchJsonMock.mock.calls.find(([input]) =>
+      resolveUrl(input).includes("/api/ai/codes/suggest"),
+    )
+    expect(codesRequest?.[1]).toBeDefined()
+    expect((codesRequest?.[1]?.jsonBody as Record<string, unknown>)?.transcript_cursor).toBe("cursor-token")
+  })
+
+  it("renders gap questions from REST responses and dispatches highlight events", async () => {
+    const questionEventSpy = vi.spyOn(window, "dispatchEvent")
+
+    apiFetchJsonMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = resolveUrl(input)
+      if (url.includes("/api/ai/codes/suggest")) {
+        return {
+          suggestions: [],
+          questions: [
+            {
+              prompt: "Document medication list?",
+              why: "No medication history found",
+              confidence: 0.72,
+              evidence: ["Medication list section"],
+            },
+          ],
+        }
+      }
+      if (url.includes("/api/ai/compliance/check")) {
+        return { alerts: [] }
+      }
+      if (url.includes("/api/ai/differentials/generate")) {
+        return { differentials: [] }
+      }
+      if (url.includes("/api/ai/prevention/suggest")) {
+        return { recommendations: [] }
+      }
+      return {}
+    })
+
+    try {
+      render(
+        <SuggestionPanel
+          {...baseProps}
+          streamingCodes={[]}
+          streamingCompliance={[]}
+          codesConnection={defaultConnectionState("error")}
+          complianceConnection={defaultConnectionState("error")}
+          transcriptCursor="cursor-questions"
+        />,
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(600)
+        await Promise.resolve()
+      })
+
+      await flushPromises()
+
+      vi.useRealTimers()
+      await waitFor(() => {
+        expect(screen.getByText("Document medication list?")).toBeInTheDocument()
+      })
+      vi.useFakeTimers()
+
+      fireEvent.click(screen.getByText("Document medication list?"))
+
+      const highlightEvent = questionEventSpy.mock.calls.find(([event]) => event.type === "note-evidence-highlight")?.[0]
+      expect(highlightEvent).toBeDefined()
+      expect((highlightEvent as CustomEvent<{ evidence?: string[] }>).detail?.evidence).toEqual([
+        "Medication list section",
+      ])
+    } finally {
+      questionEventSpy.mockRestore()
+    }
   })
 })

@@ -4,13 +4,15 @@
       "code": "99213",
       "rationale": "Established patient visit with moderate complexity.",
       "confidence": "82%",
-      "upgrade_path": "99213 → 99214"
+      "upgrade_path": "99213 → 99214",
+      "evidence": ["Documented 20-minute follow-up"]
     },
     {
       "Code": "E11.9",
       "Rationale": "Type 2 diabetes mellitus without complications.",
       "Confidence": 0.71,
-      "upgradeTo": "E11.65"
+      "upgradeTo": "E11.65",
+      "evidence": ["A1c 7.8% noted"]
     }
   ],
   "compliance": [
@@ -29,12 +31,22 @@
   "differentials": [
     {
       "Diagnosis": "Influenza",
-      "score": "45%"
+      "score": "45%",
+      "evidence": ["Fever 101F"]
     },
     {
       "diagnosis": "Pneumonia",
-      "score": 0.22
+      "score": 0.22,
+      "evidence": []
     },
     "Common cold"
+  ],
+  "questions": [
+    {
+      "prompt": "What is the patient's latest HbA1c?",
+      "why": "Supports accurate diabetes severity coding",
+      "confidence": 0.65,
+      "evidence": ["Labs referenced in assessment"]
+    }
   ]
 }

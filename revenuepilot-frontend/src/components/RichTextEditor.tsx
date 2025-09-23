@@ -299,6 +299,113 @@ export function RichTextEditor({ disabled = false, complianceIssues = [], onDism
   const lastInitialContentRef = useRef<string | undefined>(initialContent)
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined
+    }
+
+    const highlightEvidence = (event: Event) => {
+      const textarea = textareaRef.current
+      if (!textarea) {
+        return
+      }
+
+      const detail = (event as CustomEvent<{ evidence?: unknown }>).detail
+      const segments = Array.isArray(detail?.evidence)
+        ? detail.evidence
+            .map((entry) => {
+              if (typeof entry === "string") {
+                return entry.trim()
+              }
+              if (entry == null) {
+                return ""
+              }
+              return String(entry).trim()
+            })
+            .filter((entry) => entry.length > 0)
+        : []
+
+      if (segments.length === 0) {
+        return
+      }
+
+      const value = textarea.value ?? ""
+      if (!value) {
+        return
+      }
+
+      const lowerValue = value.toLowerCase()
+      let selectionStart: number | null = null
+      let selectionEnd: number | null = null
+
+      for (const segment of segments) {
+        let startIndex = value.indexOf(segment)
+        if (startIndex === -1) {
+          startIndex = lowerValue.indexOf(segment.toLowerCase())
+        }
+        if (startIndex === -1) {
+          continue
+        }
+        const endIndex = startIndex + segment.length
+        if (selectionStart === null || startIndex < selectionStart) {
+          selectionStart = startIndex
+        }
+        if (selectionEnd === null || endIndex > selectionEnd) {
+          selectionEnd = endIndex
+        }
+      }
+
+      if (selectionStart === null || selectionEnd === null) {
+        return
+      }
+
+      const highlightStart = selectionStart
+      const highlightEnd = selectionEnd
+
+      const focusAndSelect = () => {
+        const target = textareaRef.current
+        if (!target) {
+          return
+        }
+
+        const targetValue = target.value ?? ""
+        const targetLength = targetValue.length
+        const clampedStart = Math.max(0, Math.min(highlightStart, targetLength))
+        const clampedEnd = Math.max(clampedStart, Math.min(highlightEnd, targetLength))
+
+        target.focus({ preventScroll: true })
+        target.setSelectionRange(clampedStart, clampedEnd, "forward")
+
+        const totalLines = targetValue.length > 0 ? targetValue.split(/\n/).length : 1
+        const averageLineHeight = totalLines > 0 ? target.scrollHeight / totalLines : target.scrollHeight
+        if (Number.isFinite(averageLineHeight)) {
+          const precedingText = targetValue.slice(0, clampedStart)
+          const newlineCount = (precedingText.match(/\n/g) ?? []).length
+          const scrollPosition = Math.max(0, newlineCount * averageLineHeight - target.clientHeight / 2)
+          if (!Number.isNaN(scrollPosition)) {
+            target.scrollTop = scrollPosition
+          }
+        }
+
+        window.requestAnimationFrame(() => {
+          const activeTarget = textareaRef.current
+          if (!activeTarget) {
+            return
+          }
+          activeTarget.setSelectionRange(clampedStart, clampedEnd, "forward")
+        })
+      }
+
+      window.requestAnimationFrame(focusAndSelect)
+    }
+
+    window.addEventListener("note-evidence-highlight", highlightEvidence as EventListener)
+
+    return () => {
+      window.removeEventListener("note-evidence-highlight", highlightEvidence as EventListener)
+    }
+  }, [])
+
+  useEffect(() => {
     return () => {
       isMountedRef.current = false
       if (autoSaveTimerRef.current) {

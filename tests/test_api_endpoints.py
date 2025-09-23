@@ -635,6 +635,7 @@ def test_suggest_and_fallback(client, monkeypatch):
     assert data["publicHealth"][0]["recommendation"] == "p"
     assert data["publicHealth"][0]["source"] == "CDC"
     assert data["differentials"][0]["diagnosis"] == "d"
+    assert "questions" in data
 
 
 def test_suggest_logs_confidence_scores(client, monkeypatch):
@@ -877,3 +878,43 @@ def test_pre_finalize_detects_issues(client):
     assert data2["missingDocumentation"]
     assert data2["stepValidation"]["contentReview"]["passed"] is False
     assert data2["issues"]["codes"]
+
+
+def test_codes_suggest_gating_blocks_redundant_requests(client, monkeypatch):
+    monkeypatch.setattr(main, "USE_OFFLINE_MODEL", True)
+    monkeypatch.setattr(main, "_MIN_SECONDS_BETWEEN_REQUESTS", 0.0)
+    main._SUGGESTION_GATE_STATES.clear()
+    token = main.create_token("gate", "user")
+    payload = {
+        "content": "HPI: Patient stable with chronic issues documented thoroughly for testing.",
+        "useOfflineMode": True,
+    }
+    resp1 = client.post("/api/ai/codes/suggest", json=payload, headers=auth_header(token))
+    assert resp1.status_code == 200
+    assert "questions" in resp1.json()
+    resp2 = client.post("/api/ai/codes/suggest", json=payload, headers=auth_header(token))
+    assert resp2.status_code == 409
+    assert resp2.json()["message"] == main._NO_MEANINGFUL_CHANGES_MESSAGE
+    slight = {**payload, "content": payload["content"] + "!"}
+    resp3 = client.post("/api/ai/codes/suggest", json=slight, headers=auth_header(token))
+    assert resp3.status_code == 409
+
+
+def test_codes_suggest_gating_allows_new_section(client, monkeypatch):
+    monkeypatch.setattr(main, "USE_OFFLINE_MODEL", True)
+    monkeypatch.setattr(main, "_MIN_SECONDS_BETWEEN_REQUESTS", 0.0)
+    main._SUGGESTION_GATE_STATES.clear()
+    token = main.create_token("gate2", "user")
+    base_content = "HPI: Patient with cough responding to therapy. Assessment: Continue management per plan."
+    first = client.post(
+        "/api/ai/codes/suggest",
+        json={"content": base_content, "useOfflineMode": True},
+        headers=auth_header(token),
+    )
+    assert first.status_code == 200
+    follow_up = client.post(
+        "/api/ai/codes/suggest",
+        json={"content": base_content + "\nPLAN:\nReassess in clinic.", "useOfflineMode": True},
+        headers=auth_header(token),
+    )
+    assert follow_up.status_code == 200

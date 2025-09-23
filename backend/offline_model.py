@@ -183,6 +183,15 @@ def suggest(
                 "rationale": "offline",
                 "upgrade_to": "00001",
                 "upgrade_path": "00000 → 00001 for demo",
+                "evidence": ["Patient visit documented"],
+            }
+        ],
+        "questions": [
+            {
+                "prompt": "Document key exam findings",
+                "why": "Ensures accurate offline suggestion coverage.",
+                "confidence": 0.5,
+                "evidence": ["offline"],
             }
         ],
         "compliance": ["offline compliance"],
