@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { FinalizationWizard, type FinalizeRequest, type FinalizeResult, type PatientMetadata, type WizardCodeItem, type WizardComplianceItem, type WizardStepOverride } from "../features/finalization"
+import {
+  FinalizationWizard,
+  type CodeClassification,
+  type FinalizeRequest,
+  type FinalizeResult,
+  type PatientMetadata,
+  type WizardCodeItem,
+  type WizardComplianceItem,
+  type WizardStepOverride,
+} from "../features/finalization"
 import { useSession } from "../contexts/SessionContext"
 import type { LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
 import { Badge } from "./ui/badge"
@@ -186,6 +195,450 @@ const sanitizeString = (value: unknown): string | undefined => {
   }
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : undefined
+}
+
+const sanitizeStringList = (value: unknown): string[] => {
+  if (!value) {
+    return []
+  }
+
+  const processEntry = (entry: unknown): string | undefined => {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim()
+      return trimmed.length > 0 ? trimmed : undefined
+    }
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      const asString = String(entry).trim()
+      return asString.length > 0 ? asString : undefined
+    }
+    return undefined
+  }
+
+  const unique = new Set<string>()
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => {
+      const processed = processEntry(entry)
+      if (processed) {
+        unique.add(processed)
+      }
+    })
+  } else if (value instanceof Set) {
+    value.forEach((entry) => {
+      const processed = processEntry(entry)
+      if (processed) {
+        unique.add(processed)
+      }
+    })
+  } else {
+    const processed = processEntry(value)
+    if (processed) {
+      unique.add(processed)
+    }
+  }
+
+  return Array.from(unique.values())
+}
+
+const normalizeConfidenceValue = (value: unknown): number | undefined => {
+  if (value === null || value === undefined) {
+    return undefined
+  }
+  const numeric = typeof value === "string" ? Number.parseFloat(value) : typeof value === "number" ? value : Number(value)
+  if (!Number.isFinite(numeric)) {
+    return undefined
+  }
+  if (numeric <= 1 && numeric >= 0) {
+    return Math.round(Math.max(0, Math.min(1, numeric)) * 100)
+  }
+  return Math.round(Math.max(0, Math.min(100, numeric)))
+}
+
+const SUGGESTION_CLASSIFICATION_ALIASES: Record<string, CodeClassification> = {
+  code: "code",
+  codes: "code",
+  procedure: "code",
+  procedures: "code",
+  cpt: "code",
+  "cpt code": "code",
+  prevention: "prevention",
+  preventive: "prevention",
+  screening: "prevention",
+  wellness: "prevention",
+  immunization: "prevention",
+  immunisation: "prevention",
+  vaccine: "prevention",
+  vaccination: "prevention",
+  diagnosis: "diagnosis",
+  diagnoses: "diagnosis",
+  "icd": "diagnosis",
+  "icd-10": "diagnosis",
+  differential: "differential",
+  differentials: "differential",
+}
+
+const SUGGESTION_KEYWORD_TAGS: Array<{ pattern: RegExp; tag: string }> = [
+  { pattern: /cardio|ecg|ekg|arrhythm|ischemi|myocardi/i, tag: "cardiac" },
+  { pattern: /obes|bmi|weight/i, tag: "obesity" },
+  { pattern: /diabet/i, tag: "diabetes" },
+  { pattern: /hypertens|blood pressure/i, tag: "hypertension" },
+  { pattern: /smok|tobacco|cessation/i, tag: "tobacco" },
+  { pattern: /counsel/i, tag: "counseling" },
+  { pattern: /screen/i, tag: "screening" },
+  { pattern: /behavior|mental|depress|anxiety/i, tag: "behavioral" },
+]
+
+const formatListForSentence = (list: string[]): string => {
+  const unique = Array.from(new Set(list.map((entry) => entry.replace(/\s+/g, " ").trim()).filter(Boolean)))
+  if (!unique.length) {
+    return ""
+  }
+  if (unique.length === 1) {
+    return unique[0]
+  }
+  if (unique.length === 2) {
+    return `${unique[0]} and ${unique[1]}`
+  }
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`
+}
+
+const confidenceLabel = (confidence?: number): string | undefined => {
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) {
+    return undefined
+  }
+  if (confidence >= 80) {
+    return "Ranked high"
+  }
+  if (confidence >= 60) {
+    return "Ranked medium"
+  }
+  if (confidence > 0) {
+    return "Ranked low"
+  }
+  return undefined
+}
+
+const buildSuggestionDetails = ({
+  confidence,
+  reasoning,
+  reasons,
+  usage,
+  concerns,
+  evidence,
+  fallbackTitle,
+}: {
+  confidence?: number
+  reasoning?: string
+  reasons: string[]
+  usage: string[]
+  concerns: string[]
+  evidence: string[]
+  fallbackTitle: string
+}): string => {
+  const parts: string[] = []
+  const normalizedReason = reasoning?.replace(/\s+/g, " ").trim()
+  const label = confidenceLabel(confidence)
+
+  if (label && normalizedReason) {
+    parts.push(`${label}: ${normalizedReason}`)
+  } else if (label) {
+    parts.push(`${label} confidence suggestion.`)
+  } else if (normalizedReason) {
+    parts.push(normalizedReason)
+  }
+
+  const supporting = evidence.length ? evidence : reasons
+  if (supporting.length) {
+    parts.push(`Evidence: ${formatListForSentence(supporting.slice(0, 3))}.`)
+  }
+
+  if (usage.length) {
+    parts.push(`Documentation: ${formatListForSentence(usage.slice(0, 2))}.`)
+  }
+
+  if (concerns.length) {
+    parts.push(`Watch: ${formatListForSentence(concerns.slice(0, 2))}.`)
+  }
+
+  if (!parts.length) {
+    parts.push(`AI recommendation pending clinician review for ${fallbackTitle}.`)
+  }
+
+  return parts.join(" ").trim()
+}
+
+const normalizeClause = (value: string): string => {
+  const cleaned = value.replace(/\s+/g, " ").trim()
+  if (!cleaned) {
+    return ""
+  }
+  if (/^(document|ensure|confirm|verify|record|include|obtain)/i.test(cleaned)) {
+    return /[.!?]$/.test(cleaned) ? cleaned : `${cleaned}.`
+  }
+  return `Confirm ${cleaned.replace(/[.!?]+$/u, "")}.`
+}
+
+const buildSuggestionGaps = ({
+  usage,
+  concerns,
+  classification,
+  fallbackTitle,
+}: {
+  usage: string[]
+  concerns: string[]
+  classification: CodeClassification[]
+  fallbackTitle: string
+}): string[] => {
+  const entries = new Set<string>()
+  usage.forEach((item) => {
+    const clause = normalizeClause(item)
+    if (clause) {
+      entries.add(clause)
+    }
+  })
+  concerns.forEach((item) => {
+    const clause = normalizeClause(item)
+    if (clause) {
+      entries.add(clause)
+    }
+  })
+
+  if (!entries.size) {
+    if (classification.includes("prevention")) {
+      entries.add(`Document patient eligibility and counseling details for ${fallbackTitle}.`)
+    } else if (classification.includes("code")) {
+      entries.add(`Document indication and order specifics for ${fallbackTitle}.`)
+    } else {
+      entries.add(`Clarify documentation supporting ${fallbackTitle}.`)
+    }
+  }
+
+  return Array.from(entries.values())
+}
+
+const registerClassification = (value: string | undefined, target: Set<CodeClassification>) => {
+  if (!value) {
+    return
+  }
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) {
+    return
+  }
+  const mapped = SUGGESTION_CLASSIFICATION_ALIASES[normalized]
+  if (mapped) {
+    target.add(mapped)
+  }
+}
+
+const inferClassifications = ({
+  type,
+  category,
+  code,
+  description,
+  reasons,
+  tags,
+  reasoning,
+}: {
+  type?: string
+  category?: string
+  code?: string
+  description?: string
+  reasons: string[]
+  tags: string[]
+  reasoning?: string
+}): CodeClassification[] => {
+  const set = new Set<CodeClassification>()
+  registerClassification(type, set)
+  registerClassification(category, set)
+
+  const combinedText = `${code ?? ""} ${description ?? ""} ${reasons.join(" ")} ${tags.join(" ")} ${reasoning ?? ""}`.toLowerCase()
+  if (/(prevent|screen|counsel|wellness|immuni|vaccine|bmi|obes|cessation|smok)/.test(combinedText)) {
+    set.add("prevention")
+  }
+  if (/(differential|rule out|consider)/.test(combinedText)) {
+    set.add("differential")
+  }
+
+  const normalizedType = type?.trim().toUpperCase()
+  if (!set.size) {
+    if (normalizedType === "ICD-10" || normalizedType === "ICD10" || normalizedType === "ICD_10") {
+      set.add("diagnosis")
+    } else if (normalizedType === "CPT") {
+      set.add("code")
+    } else if (normalizedType === "HCPCS") {
+      set.add("prevention")
+    }
+  }
+
+  if (!set.size && code) {
+    if (/^\d{4,5}$/.test(code)) {
+      set.add("code")
+    } else if (/^[A-Z]/i.test(code)) {
+      set.add("diagnosis")
+    }
+  }
+
+  if (!set.size) {
+    set.add("diagnosis")
+  }
+
+  return Array.from(set.values())
+}
+
+const deriveSuggestionTags = (
+  classifications: CodeClassification[],
+  baseText: string,
+  explicit: string[],
+): string[] => {
+  const tags = new Set<string>()
+  classifications.forEach((classification) => tags.add(classification))
+  explicit.forEach((tag) => {
+    const normalized = tag.toLowerCase()
+    if (normalized) {
+      tags.add(normalized)
+    }
+  })
+
+  const lowerText = baseText.toLowerCase()
+  SUGGESTION_KEYWORD_TAGS.forEach(({ pattern, tag }) => {
+    if (pattern.test(lowerText)) {
+      tags.add(tag)
+    }
+  })
+
+  return Array.from(tags.values())
+}
+
+const inferSuggestedBy = (classifications: CodeClassification[], explicit?: string): string | undefined => {
+  const normalized = sanitizeString(explicit)?.toLowerCase()
+  if (normalized) {
+    return normalized
+  }
+  if (classifications.includes("prevention")) {
+    return "documentation-ai"
+  }
+  return "clinical-ai"
+}
+
+const normalizeCodeTypeLabel = (type?: string): string | undefined => {
+  const normalized = sanitizeString(type)?.toUpperCase()
+  if (!normalized) {
+    return undefined
+  }
+  if (normalized === "ICD10" || normalized === "ICD-10" || normalized === "ICD_10") {
+    return "ICD-10"
+  }
+  if (normalized === "HCPCS") {
+    return "CPT"
+  }
+  return normalized
+}
+
+const buildSuggestionKey = (item: WizardCodeItem): string => {
+  const candidates = [item.code, item.title, item.id]
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim().toUpperCase()
+    }
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return String(candidate)
+    }
+  }
+  return ""
+}
+
+const createWizardSuggestion = (
+  raw: Record<string, unknown>,
+  index: number,
+  selectedCodes: Set<string>,
+): WizardCodeItem | null => {
+  const code = sanitizeString(raw.code)
+  const description = sanitizeString(raw.description ?? raw.title)
+  const rationale = sanitizeString(raw.reasoning ?? raw.rationale)
+  const type = normalizeCodeTypeLabel(sanitizeString(raw.type) ?? sanitizeString(raw.codeType))
+  const category = sanitizeString(raw.category)
+  const usageRules = sanitizeStringList(raw.usageRules)
+  const reasonsSuggested = sanitizeStringList(raw.reasonsSuggested ?? raw.supportingFactors)
+  const potentialConcerns = sanitizeStringList(raw.potentialConcerns ?? raw.contradictingFactors)
+  const evidenceList = sanitizeStringList(raw.evidence)
+  const explicitTags = sanitizeStringList(raw.tags)
+  const explicitClassification = sanitizeStringList(raw.classification)
+  const confidence = normalizeConfidenceValue(raw.confidence)
+  const identifierSource = sanitizeString(raw.id) ?? sanitizeString(raw.identifier)
+  const source = sanitizeString((raw as { source?: string }).source ?? (raw as { suggestedBy?: string }).suggestedBy)
+
+  const baseTitle = (() => {
+    if (code && description) {
+      return `${code} · ${description}`
+    }
+    return description || code || `Suggested Code ${index + 1}`
+  })()
+
+  const dedupeCandidates = [code, description, baseTitle]
+  if (identifierSource) {
+    dedupeCandidates.push(identifierSource)
+  }
+  const hasConflict = dedupeCandidates
+    .filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0)
+    .some((candidate) => selectedCodes.has(candidate.trim().toUpperCase()))
+  if (hasConflict) {
+    return null
+  }
+
+  const classificationSet = new Set<CodeClassification>()
+  explicitClassification.forEach((entry) => registerClassification(entry, classificationSet))
+  const inferredClassifications = inferClassifications({
+    type,
+    category,
+    code,
+    description,
+    reasons: reasonsSuggested,
+    tags: explicitTags,
+    reasoning: rationale,
+  })
+  inferredClassifications.forEach((entry) => classificationSet.add(entry))
+  const classifications = Array.from(classificationSet.values())
+
+  const combinedEvidence = Array.from(new Set([...evidenceList, ...reasonsSuggested]))
+  const tags = deriveSuggestionTags(
+    classifications,
+    `${baseTitle} ${rationale ?? ""} ${reasonsSuggested.join(" ")} ${usageRules.join(" ")} ${potentialConcerns.join(" ")}`,
+    explicitTags,
+  )
+
+  const gaps = buildSuggestionGaps({ usage: usageRules, concerns: potentialConcerns, classification: classifications, fallbackTitle: baseTitle })
+  const details = buildSuggestionDetails({
+    confidence,
+    reasoning: rationale,
+    reasons: reasonsSuggested,
+    usage: usageRules,
+    concerns: potentialConcerns,
+    evidence: combinedEvidence,
+    fallbackTitle: baseTitle,
+  })
+
+  const suggestedBy = inferSuggestedBy(classifications, source)
+
+  const idValue = identifierSource || code || description || `suggestion-${index + 1}`
+
+  const suggestion: WizardCodeItem = {
+    id: idValue,
+    code: code ?? undefined,
+    title: baseTitle,
+    description: description ?? undefined,
+    status: "pending",
+    details,
+    codeType: type ?? undefined,
+    aiReasoning: rationale ?? undefined,
+    confidence: confidence ?? undefined,
+    evidence: combinedEvidence.length ? combinedEvidence : undefined,
+    gaps: gaps.length ? gaps : undefined,
+    classification: classifications,
+    tags: tags.length ? tags : undefined,
+    suggestedBy,
+  }
+
+  return suggestion
 }
 
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
@@ -735,28 +1188,22 @@ export function FinalizationWizardAdapter({
 
   const mapStreamingToWizard = useCallback(
     (suggestions: LiveCodeSuggestion[]): WizardCodeItem[] => {
-      return suggestions
-        .map((item, index) => {
-          const codeValue = typeof item.code === "string" ? item.code.trim() : ""
-          const descriptionValue = typeof item.description === "string" ? item.description.trim() : ""
-          const rationaleValue = typeof item.rationale === "string" ? item.rationale.trim() : ""
-          const identifier = (typeof item.id === "string" && item.id.trim().length > 0 ? item.id.trim() : codeValue || descriptionValue) || `stream-${index + 1}`
-          if (selectedCodeSet.has(identifier.toUpperCase())) {
-            return null
-          }
-          const confidence = typeof item.confidence === "number" && Number.isFinite(item.confidence) ? item.confidence : undefined
-          return {
-            id: identifier,
-            code: codeValue || undefined,
-            title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
-            description: descriptionValue || undefined,
-            details: rationaleValue || undefined,
-            aiReasoning: rationaleValue || undefined,
-            confidence,
-            status: "pending",
-          } satisfies WizardCodeItem
-        })
-        .filter((entry): entry is WizardCodeItem => Boolean(entry))
+      const seen = new Set<string>()
+      return suggestions.reduce<WizardCodeItem[]>((acc, entry, index) => {
+        const suggestion = createWizardSuggestion(entry as unknown as Record<string, unknown>, index, selectedCodeSet)
+        if (!suggestion) {
+          return acc
+        }
+        const key = buildSuggestionKey(suggestion)
+        if (key && seen.has(key)) {
+          return acc
+        }
+        if (key) {
+          seen.add(key)
+        }
+        acc.push(suggestion)
+        return acc
+      }, [])
     },
     [selectedCodeSet],
   )
@@ -958,30 +1405,22 @@ export function FinalizationWizardAdapter({
         }
         const data = await response.json().catch(() => ({}))
         const rawList = Array.isArray(data?.suggestions) ? data.suggestions : []
-        const mapped: WizardCodeItem[] = rawList
-          .map((item: any, index: number) => {
-            const codeValue = typeof item?.code === "string" ? item.code.trim() : ""
-            const descriptionValue = typeof item?.description === "string" ? item.description.trim() : ""
-            if (!codeValue && !descriptionValue) {
-              return null
-            }
-            const identifier = codeValue || descriptionValue || `suggestion-${index + 1}`
-            if (selectedCodeSet.has(identifier.toUpperCase())) {
-              return null
-            }
-            const confidence = typeof item?.confidence === "number" ? item.confidence : undefined
-            return {
-              id: identifier,
-              code: codeValue || undefined,
-              title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
-              description: descriptionValue || undefined,
-              details: typeof item?.reasoning === "string" ? item.reasoning : undefined,
-              aiReasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined,
-              confidence: confidence,
-              status: "pending",
-            } as WizardCodeItem
-          })
-          .filter((item): item is WizardCodeItem => Boolean(item))
+        const seen = new Set<string>()
+        const mapped: WizardCodeItem[] = []
+        rawList.forEach((item: Record<string, unknown>, index: number) => {
+          const suggestion = createWizardSuggestion(item ?? {}, index, selectedCodeSet)
+          if (!suggestion) {
+            return
+          }
+          const key = buildSuggestionKey(suggestion)
+          if (key && seen.has(key)) {
+            return
+          }
+          if (key) {
+            seen.add(key)
+          }
+          mapped.push(suggestion)
+        })
 
         if (!cancelled) {
           setWizardSuggestions(mapped)
