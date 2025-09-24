@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import {
   ChevronLeft,
@@ -6,26 +6,19 @@ import {
   Check,
   Circle,
   AlertCircle,
-  AlertTriangle,
   Target,
   Lightbulb,
   Settings,
   Eye,
   EyeOff,
   Filter,
-  Heart,
   FileText,
-  Users,
   ClipboardCheck,
   Highlighter,
   HelpCircle,
   MessageSquare,
-  TrendingUp,
   Shield,
-  Zap,
-  Code,
   Activity,
-  User,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -84,6 +77,63 @@ interface StepContentProps {
   onInsertToNote?: (text: string) => void
 }
 
+const formatList = (values: string[], limit = 3): string | undefined => {
+  if (!values || !values.length) return undefined
+  const items = values.filter((value) => typeof value === "string" && value.trim().length > 0)
+  if (!items.length) return undefined
+  const slice = items.slice(0, limit)
+  if (slice.length === 1) return slice[0]
+  if (slice.length === 2) return `${slice[0]} and ${slice[1]}`
+  const head = slice.slice(0, -1).join(", ")
+  const tail = slice[slice.length - 1]
+  return `${head}, and ${tail}`
+}
+
+const buildNarrative = (
+  stepId: number,
+  title: string,
+  detailText: string | undefined,
+  evidence: string[],
+  gaps: string[],
+): { why: string; how: string; what: string } => {
+  const safeTitle = title || "This code"
+  const safeDetail = detailText && detailText.length ? detailText : `Review documentation supporting ${safeTitle}.`
+  const evidenceSummary = formatList(evidence)
+  const gapSummary = formatList(gaps)
+
+  if (stepId === 1) {
+    return {
+      why: safeDetail,
+      how: evidenceSummary
+        ? `Confirm the note references ${evidenceSummary} to justify ${safeTitle}.`
+        : `Review the note to ensure it clearly supports ${safeTitle}.`,
+      what: gapSummary
+        ? `Plan to document ${gapSummary} before finalizing.`
+        : `No outstanding documentation gaps identified for ${safeTitle}.`,
+    }
+  }
+
+  if (stepId === 2) {
+    return {
+      why: detailText
+        ? `Consider ${safeTitle}: ${safeDetail}`
+        : `Consider whether ${safeTitle} applies to this encounter.`,
+      how: evidenceSummary
+        ? `Accept the code if documentation already includes ${evidenceSummary}.`
+        : `Accept only when documentation clearly supports ${safeTitle}.`,
+      what: gapSummary
+        ? `If adopted, update the note to cover ${gapSummary}.`
+        : `No additional documentation is required if you accept ${safeTitle}.`,
+    }
+  }
+
+  return {
+    why: safeDetail,
+    how: evidenceSummary ? `Reference ${evidenceSummary}.` : `Review supporting documentation.`,
+    what: gapSummary ? `Address: ${gapSummary}.` : `No outstanding actions required.`,
+  }
+}
+
 // Enhanced items with step-specific properties
 const enhancedItems = (originalItems: any[], stepId: number) => {
   if (!originalItems || !Array.isArray(originalItems)) return []
@@ -104,36 +154,19 @@ const enhancedItems = (originalItems: any[], stepId: number) => {
         category = "ICD-10" // Default for ICD-10 and other diagnostic codes
       }
 
-      // Step-specific context
-      let why, how, what
-
-      switch (stepId) {
-        case 1: // Code Review
-          why = `Accurate diagnostic coding ensures proper billing, supports medical necessity, and provides clear communication with other healthcare providers about the patient's condition.`
-          how = `Verify the code against the patient's documented symptoms, examination findings, and diagnostic results. Confirm the code specificity and ensure it aligns with current ICD-10 guidelines.`
-          what = `${item.details || "No details available"} - This diagnostic code requires review to ensure accuracy and specificity for optimal patient care documentation and billing compliance.`
-          break
-
-        case 2: // Suggestion Review
-          why = `AI-suggested codes help ensure comprehensive diagnosis capture and may identify conditions that could be overlooked, improving both patient care and billing accuracy.`
-          how = `Evaluate each suggested code against the patient's presentation and documented findings. Accept codes that are clinically relevant and supported by documentation.`
-          what = `${item.details || "No details available"} - This AI recommendation should be evaluated for clinical relevance and documentation support before adding to the patient's diagnosis list.`
-          break
-
-        default:
-          why = `This item requires attention to ensure complete and accurate medical documentation that meets clinical and regulatory standards.`
-          how = `Follow established protocols to review and complete this documentation requirement systematically and thoroughly.`
-          what = `${item.details || "No details available"} - Complete this requirement to maintain documentation integrity and compliance.`
-      }
+      const detailText = typeof item.details === "string" ? item.details.trim() : ""
+      const evidence = Array.isArray(item.evidence) ? item.evidence : []
+      const gaps = Array.isArray(item.gaps) ? item.gaps : []
+      const narrative = buildNarrative(stepId, title, detailText || undefined, evidence, gaps)
 
       return {
         ...item,
         priority,
         category,
         codeType: item.codeType || "ICD-10", // Ensure codeType is preserved
-        why,
-        how,
-        what,
+        why: narrative.why,
+        how: narrative.how,
+        what: narrative.what,
       }
     })
     .filter(Boolean)
@@ -156,6 +189,7 @@ export function StepContent({
   const [hideCompleted, setHideCompleted] = useState(false)
   const [showItemsPanel, setShowItemsPanel] = useState(false)
   const [isCarouselHovered, setIsCarouselHovered] = useState(false)
+  const [isEvidenceActive, setIsEvidenceActive] = useState(false)
   // Use external control for patient tray if provided, otherwise use internal state
   const showPatientTray = externalShowPatientTray !== undefined ? externalShowPatientTray : false
   const setShowPatientTray = onShowPatientTray || (() => {})
@@ -170,6 +204,24 @@ export function StepContent({
   // Adjust activeItemIndex if current item is filtered out
   const adjustedActiveIndex = filteredItems.length > 0 ? Math.min(Math.max(0, activeItemIndex), filteredItems.length - 1) : 0
   const activeItem = filteredItems.length > 0 ? filteredItems[adjustedActiveIndex] : null
+  const activeEvidence = useMemo(() => {
+    if (!activeItem) return []
+    const evidence = (activeItem as any).evidence
+    if (!Array.isArray(evidence)) return []
+    return evidence.filter((entry: unknown): entry is string => typeof entry === "string" && entry.trim().length > 0)
+  }, [activeItem])
+  const activeGaps = useMemo(() => {
+    if (!activeItem) return []
+    const gaps = (activeItem as any).gaps
+    if (!Array.isArray(gaps)) return []
+    return gaps.filter((entry: unknown): entry is string => typeof entry === "string" && entry.trim().length > 0)
+  }, [activeItem])
+  const activeClassifications = useMemo(() => {
+    if (!activeItem) return []
+    const classifications = (activeItem as any).classifications
+    if (!Array.isArray(classifications)) return []
+    return classifications.filter((entry: unknown): entry is string => typeof entry === "string" && entry.trim().length > 0)
+  }, [activeItem])
 
   const hasContextEstablishedGap = Boolean(
     activeItem &&
@@ -185,6 +237,21 @@ export function StepContent({
       onActiveItemChange(activeItem)
     }
   }, [activeItem, onActiveItemChange])
+
+  useEffect(() => {
+    setIsEvidenceActive(false)
+  }, [activeItem?.id])
+
+  useEffect(() => {
+    if (onShowEvidence) {
+      onShowEvidence(isEvidenceActive)
+    }
+    return () => {
+      if (onShowEvidence) {
+        onShowEvidence(false)
+      }
+    }
+  }, [isEvidenceActive, onShowEvidence])
 
   const updateItemStatus = (itemId: number, status: Item["status"]) => {
     setItems((prev) => {
@@ -898,552 +965,151 @@ export function StepContent({
                 }}
               >
                 <div className={`space-y-4 pr-2 ${step.id === 1 || step.id === 2 ? "pt-2" : ""}`}>
-                  {/* Selected Code Information */}
-                  {step.stepType === "selected" && (
-                    <>
-                      {/* Code Validation Status */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-emerald-400 to-emerald-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Shield size={16} className="text-emerald-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Code Validation Status</h5>
-                            <div className="grid grid-cols-2 gap-3 mb-3">
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="text-xs text-slate-500 mb-1">Still Valid</div>
-                                <div className={`font-semibold ${(activeItem as any).stillValid ? "text-emerald-600" : "text-red-600"}`}>{(activeItem as any).stillValid ? "Yes" : "Needs Review"}</div>
-                              </div>
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="text-xs text-slate-500 mb-1">AI Confidence</div>
-                                <div
-                                  className={`font-semibold ${(activeItem as any).confidence >= 90 ? "text-emerald-600" : (activeItem as any).confidence >= 75 ? "text-amber-600" : "text-red-600"}`}
-                                >
-                                  {(activeItem as any).confidence}%
-                                </div>
-                              </div>
-                            </div>
-                            <div className="bg-slate-50 rounded-lg p-3 mb-3">
-                              <div className="text-xs text-slate-500 mb-1">Documentation Support</div>
-                              <div
-                                className={`font-semibold capitalize ${
-                                  (activeItem as any).docSupport === "strong" ? "text-emerald-600" : (activeItem as any).docSupport === "moderate" ? "text-amber-600" : "text-red-600"
-                                }`}
-                              >
-                                {(activeItem as any).docSupport} Evidence
-                              </div>
-                            </div>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                              <div className="text-xs text-slate-500 mb-1">Last Validation</div>
-                              <div className="font-medium text-blue-700 text-sm">Current encounter</div>
-                              <div className="text-xs text-blue-600 mt-1">Validated against ICD-10-CM guidelines and clinical documentation</div>
-                            </div>
-                          </div>
-                        </div>
+                  {(step.stepType === "selected" || step.stepType === "suggested") && activeItem && (
+                    <div className="space-y-6">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {(activeItem as any).code && (
+                          <Badge variant="outline" className="rounded-full border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700">
+                            {(activeItem as any).code}
+                          </Badge>
+                        )}
+                        <Badge variant="secondary" className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                          {(activeItem as any).codeType || "ICD-10"}
+                        </Badge>
+                        {typeof (activeItem as any).confidence === "number" && (
+                          <Badge
+                            className={`rounded-full px-3 py-1 text-xs font-medium ${
+                              (activeItem as any).confidence >= 90
+                                ? "bg-emerald-100 text-emerald-700"
+                                : (activeItem as any).confidence >= 75
+                                  ? "bg-amber-100 text-amber-700"
+                                  : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            Confidence {(activeItem as any).confidence}%
+                          </Badge>
+                        )}
+                        {(activeItem as any).docSupport && (
+                          <Badge
+                            className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${
+                              (activeItem as any).docSupport === "strong"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : (activeItem as any).docSupport === "moderate"
+                                  ? "bg-amber-100 text-amber-700"
+                                  : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {(activeItem as any).docSupport} support
+                          </Badge>
+                        )}
+                        {activeClassifications.map((classification) => (
+                          <Badge key={classification} variant="outline" className="rounded-full border-slate-200 bg-slate-50 px-3 py-1 text-xs capitalize text-slate-600">
+                            {classification}
+                          </Badge>
+                        ))}
                       </div>
 
-                      {/* Clinical Analysis */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-400 to-indigo-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Activity size={16} className="text-blue-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Clinical Analysis</h5>
-                            <div className="space-y-3">
-                              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                                <div className="font-medium text-blue-800 text-sm mb-1">Primary Diagnosis Rationale</div>
-                                <div className="text-xs text-blue-700 leading-relaxed">
-                                  {activeItem.title.includes("I25.10")
-                                    ? "Atherosclerotic heart disease is supported by patient's clinical presentation, risk factors including 30-year smoking history, and cardiac evaluation recommendations. This aligns with documented chest pain and cardiovascular risk assessment needs."
-                                    : activeItem.title.includes("Z87.891")
-                                      ? "Personal history of nicotine dependence is well-documented with specific smoking history (1 pack per day for 30 years) and smoking cessation counseling provided. This supports cardiovascular risk stratification."
-                                      : activeItem.title.includes("E78.5")
-                                        ? "Hyperlipidemia diagnosis is supported by planned lipid profile testing and basic metabolic panel. This condition commonly co-occurs with cardiovascular risk factors and requires ongoing monitoring."
-                                        : activeItem.title.includes("I10")
-                                          ? "Essential hypertension diagnosis is supported by cardiovascular examination findings including regular rate and rhythm assessment. Blood pressure monitoring is standard for cardiovascular risk evaluation."
-                                          : "Clinical presentation and documented findings support this diagnostic code selection."}
-                                </div>
-                              </div>
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="font-medium text-slate-700 text-sm mb-2">Supporting Clinical Indicators</div>
-                                <div className="space-y-1">
-                                  {activeItem.title.includes("I25.10") ? (
-                                    <>
-                                      <div className="text-xs text-slate-600">• Chest pain with characteristic presentation</div>
-                                      <div className="text-xs text-slate-600">• 30-year smoking history (major risk factor)</div>
-                                      <div className="text-xs text-slate-600">• Age-appropriate cardiovascular screening</div>
-                                      <div className="text-xs text-slate-600">• Planned cardiac evaluation and stress testing</div>
-                                    </>
-                                  ) : activeItem.title.includes("Z87.891") ? (
-                                    <>
-                                      <div className="text-xs text-slate-600">• Documented smoking history (1 pack/day × 30 years)</div>
-                                      <div className="text-xs text-slate-600">• Smoking cessation counseling provided</div>
-                                      <div className="text-xs text-slate-600">• Cardiovascular risk factor documentation</div>
-                                      <div className="text-xs text-slate-600">• Relevant to current chest pain evaluation</div>
-                                    </>
-                                  ) : activeItem.title.includes("E78.5") ? (
-                                    <>
-                                      <div className="text-xs text-slate-600">• Lipid profile testing ordered</div>
-                                      <div className="text-xs text-slate-600">• Basic metabolic panel planned</div>
-                                      <div className="text-xs text-slate-600">• Cardiovascular risk assessment indicated</div>
-                                      <div className="text-xs text-slate-600">• Common comorbidity with heart disease</div>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <div className="text-xs text-slate-600">• Cardiovascular examination documented</div>
-                                      <div className="text-xs text-slate-600">• Regular rate and rhythm noted</div>
-                                      <div className="text-xs text-slate-600">• No murmurs appreciated</div>
-                                      <div className="text-xs text-slate-600">• Appropriate for cardiovascular risk stratification</div>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Documentation Gaps */}
-                      {(activeItem as any).gaps && (activeItem as any).gaps.length > 0 && (
-                        <div className="relative pl-5">
-                          <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-amber-400 to-orange-300 rounded-full"></div>
-                          <div className="flex items-start gap-3">
-                            <AlertCircle size={16} className="text-amber-600 mt-1 flex-shrink-0" />
-                            <div className="flex-1">
-                              <h5 className="font-semibold text-slate-800 mb-2">Documentation Gaps</h5>
-                              <div className="space-y-2 mb-3">
-                                {(activeItem as any).gaps.map((gap: string, index: number) => (
-                                  <div key={index} className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                                    <div className="font-medium text-amber-800 text-sm mb-1">{gap}</div>
-                                    <div className="text-xs text-amber-600">Consider asking patient for clarification during encounter</div>
-                                  </div>
-                                ))}
-                              </div>
-                              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3">
-                                <div className="font-medium text-orange-800 text-sm mb-2">Recommended Actions</div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-orange-700">• Review patient questionnaire responses</div>
-                                  <div className="text-xs text-orange-700">• Verify smoking cessation timeline and current status</div>
-                                  <div className="text-xs text-orange-700">• Document specific pack-year calculation if available</div>
-                                  <div className="text-xs text-orange-700">• Consider social history documentation enhancement</div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
+                      {activeItem.details && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-sm text-slate-700 leading-relaxed">{activeItem.details}</p>
                         </div>
                       )}
 
-                      {/* Billing and Compliance */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-green-400 to-emerald-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <TrendingUp size={16} className="text-green-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Billing & Compliance Analysis</h5>
-                            <div className="space-y-3">
-                              <div className="grid grid-cols-2 gap-3">
-                                <div className="bg-green-50 rounded-lg p-3">
-                                  <div className="text-xs text-slate-500 mb-1">Billing Impact</div>
-                                  <div className="font-semibold text-green-700">{(activeItem as any).codeType === "CPT" ? "Billable" : "Diagnostic"}</div>
-                                  <div className="text-xs text-green-600 mt-1">Supports medical necessity</div>
-                                </div>
-                                <div className="bg-blue-50 rounded-lg p-3">
-                                  <div className="text-xs text-slate-500 mb-1">Risk Score</div>
-                                  <div className="font-semibold text-blue-700">{(activeItem as any).confidence >= 90 ? "Low" : (activeItem as any).confidence >= 75 ? "Medium" : "High"}</div>
-                                  <div className="text-xs text-blue-600 mt-1">Audit risk assessment</div>
-                                </div>
-                              </div>
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="font-medium text-slate-700 text-sm mb-2">Compliance Notes</div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-slate-600">• ICD-10-CM code validates against current guidelines</div>
-                                  <div className="text-xs text-slate-600">• Documentation supports medical necessity requirements</div>
-                                  <div className="text-xs text-slate-600">• Code specificity appropriate for reported symptoms</div>
-                                  <div className="text-xs text-slate-600">• No obvious coding conflicts identified</div>
-                                </div>
-                              </div>
-                            </div>
+                      <div className="grid gap-3 sm:grid-cols-3">
+                        <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                            <Target size={14} className="text-emerald-600" />
+                            Why it matters
                           </div>
+                          <p className="text-xs leading-relaxed text-slate-600">{activeItem.why || "Review this code to confirm it belongs on the chart."}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                            <ClipboardCheck size={14} className="text-blue-600" />
+                            How to validate
+                          </div>
+                          <p className="text-xs leading-relaxed text-slate-600">{activeItem.how || "Verify the documentation before finalizing."}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
+                          <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                            <Lightbulb size={14} className="text-amber-600" />
+                            What to document
+                          </div>
+                          <p className="text-xs leading-relaxed text-slate-600">{activeItem.what || "Document any remaining information needed."}</p>
                         </div>
                       </div>
 
-                      {/* Evidence Review */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-purple-400 to-violet-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <FileText size={16} className="text-purple-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Supporting Evidence Review</h5>
-                            <div className="space-y-3">
-                              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
-                                <div className="font-medium text-purple-800 text-sm mb-2">Documentation Evidence</div>
-                                <div className="space-y-1">
-                                  {(activeItem as any).evidence?.map((evidence: string, index: number) => (
-                                    <div key={index} className="text-xs text-purple-700 flex items-start gap-2">
-                                      <div className="w-1 h-1 bg-purple-500 rounded-full mt-1.5 flex-shrink-0"></div>
-                                      <span>"{evidence}" - Found in clinical documentation</span>
-                                    </div>
-                                  )) || <div className="text-xs text-purple-700">Multiple supporting elements found in clinical note</div>}
-                                </div>
-                              </div>
-                              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-                                <div className="font-medium text-indigo-800 text-sm mb-1">Quality Metrics</div>
-                                <div className="grid grid-cols-3 gap-2 mt-2">
-                                  <div className="text-center">
-                                    <div className="text-xs text-indigo-600">Specificity</div>
-                                    <div className="font-semibold text-indigo-800">{(activeItem as any).confidence >= 90 ? "High" : (activeItem as any).confidence >= 75 ? "Good" : "Fair"}</div>
-                                  </div>
-                                  <div className="text-center">
-                                    <div className="text-xs text-indigo-600">Accuracy</div>
-                                    <div className="font-semibold text-indigo-800">
-                                      {(activeItem as any).docSupport === "strong" ? "High" : (activeItem as any).docSupport === "moderate" ? "Good" : "Fair"}
-                                    </div>
-                                  </div>
-                                  <div className="text-center">
-                                    <div className="text-xs text-indigo-600">Completeness</div>
-                                    <div className="font-semibold text-indigo-800">{!(activeItem as any).gaps?.length ? "Complete" : "Partial"}</div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                            <FileText size={14} className="text-purple-600" />
+                            Supporting evidence
                           </div>
+                          {activeEvidence.length > 0 && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setIsEvidenceActive((prev) => !prev)}
+                              className="h-8 border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                            >
+                              <Highlighter size={12} className="mr-2 text-slate-500" />
+                              {isEvidenceActive ? "Hide note highlights" : "Highlight in note"}
+                            </Button>
+                          )}
                         </div>
+                        {activeEvidence.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {activeEvidence.map((evidence, index) => (
+                              <span
+                                key={`${evidence}-${index}`}
+                                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                                  isEvidenceActive ? "border-purple-300 bg-purple-50 text-purple-700" : "border-slate-200 bg-white text-slate-600"
+                                }`}
+                                title={evidence}
+                              >
+                                {evidence}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500">No structured evidence provided for this code.</p>
+                        )}
                       </div>
 
-                      {/* Clinical Decision Support */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-rose-400 to-pink-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Heart size={16} className="text-rose-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Clinical Decision Support</h5>
-                            <div className="space-y-3">
-                              <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
-                                <div className="font-medium text-rose-800 text-sm mb-1">Care Coordination Impact</div>
-                                <div className="text-xs text-rose-700 leading-relaxed">
-                                  This diagnostic code enhances care coordination by providing clear communication to consulting physicians, specialists, and other healthcare team members about the
-                                  patient's documented conditions and risk factors.
-                                </div>
-                              </div>
-                              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                                <div className="font-medium text-red-800 text-sm mb-2">Recommended Follow-up</div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-red-700">• Schedule cardiology consultation if symptoms persist</div>
-                                  <div className="text-xs text-red-700">• Monitor response to smoking cessation interventions</div>
-                                  <div className="text-xs text-red-700">• Review lipid management and cardiovascular risk factors</div>
-                                  <div className="text-xs text-red-700">• Consider cardiac stress testing based on clinical judgment</div>
-                                </div>
-                              </div>
-                            </div>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                            <Shield size={14} className="text-emerald-600" />
+                            Documentation gaps
                           </div>
+                          {patientQuestions && patientQuestions.length > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setShowPatientTray(true)}
+                              className="h-8 px-2 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                            >
+                              <MessageSquare size={12} className="mr-1" />
+                              Patient questions
+                            </Button>
+                          )}
                         </div>
+                        {activeGaps.length > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {activeGaps.map((gap, index) => (
+                              <span key={`${gap}-${index}`} className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700" title={gap}>
+                                {gap}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500">No outstanding documentation gaps captured for this code.</p>
+                        )}
                       </div>
-                    </>
+                    </div>
                   )}
 
-                  {/* AI Suggested Code Information */}
-                  {step.stepType === "suggested" && (
-                    <>
-                      {/* AI Recommendation Analysis */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-violet-400 to-purple-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Zap size={16} className="text-violet-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">AI Recommendation Analysis</h5>
-                            <div className="bg-violet-50 border border-violet-200 rounded-lg p-3 mb-3">
-                              <div className="text-sm text-violet-800 leading-relaxed mb-2">
-                                {(activeItem as any).aiReasoning || "AI analysis suggests this code based on documented clinical findings."}
-                              </div>
-                              <div className="text-xs text-violet-600 font-medium">
-                                Recommendation Strength: {(activeItem as any).confidence >= 90 ? "Very High" : (activeItem as any).confidence >= 75 ? "High" : "Moderate"}
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-3 mb-3">
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="text-xs text-slate-500 mb-1">Confidence Score</div>
-                                <div
-                                  className={`font-semibold ${(activeItem as any).confidence >= 90 ? "text-emerald-600" : (activeItem as any).confidence >= 75 ? "text-amber-600" : "text-red-600"}`}
-                                >
-                                  {(activeItem as any).confidence}%
-                                </div>
-                              </div>
-                              <div className="bg-slate-50 rounded-lg p-3">
-                                <div className="text-xs text-slate-500 mb-1">Suggested By</div>
-                                <div className="font-semibold text-violet-600 text-sm">{(activeItem as any).suggestedBy}</div>
-                              </div>
-                            </div>
-                            <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
-                              <div className="font-medium text-purple-800 text-sm mb-2">Algorithm Insights</div>
-                              <div className="space-y-1">
-                                <div className="text-xs text-purple-700">• Natural language processing identified key clinical indicators</div>
-                                <div className="text-xs text-purple-700">• Cross-referenced with established coding guidelines</div>
-                                <div className="text-xs text-purple-700">• Validated against similar patient presentations</div>
-                                <div className="text-xs text-purple-700">• Checked for documentation completeness requirements</div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Clinical Rationale */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-400 to-indigo-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Activity size={16} className="text-blue-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Clinical Rationale</h5>
-                            <div className="space-y-3">
-                              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                                <div className="font-medium text-blue-800 text-sm mb-1">Supporting Clinical Evidence</div>
-                                <div className="text-xs text-blue-700 leading-relaxed">
-                                  {activeItem.title.includes("Z13.6")
-                                    ? "Patient demographics (age 65) and documented cardiovascular risk factors indicate appropriate screening for cardiovascular disorders. Current chest pain presentation supports comprehensive cardiovascular assessment including screening protocols."
-                                    : activeItem.title.includes("F17.210")
-                                      ? "Documented current smoking behavior (1 pack per day for 30 years) meets criteria for active nicotine dependence rather than just historical documentation. This supports more specific coding for current addiction treatment and billing."
-                                      : activeItem.title.includes("Z68.36")
-                                        ? "BMI calculation from documented height and weight measurements falls within the specified range. BMI documentation supports cardiovascular risk stratification and enables quality measure reporting for population health management."
-                                        : activeItem.title.includes("99213")
-                                          ? "Documentation complexity analysis indicates moderate medical decision making with multiple diagnoses addressed, diagnostic testing ordered, and treatment plans established. This supports the suggested evaluation and management level."
-                                          : activeItem.title.includes("80061")
-                                            ? "Lipid panel testing is explicitly mentioned in the treatment plan and aligns with cardiovascular risk assessment protocols. This captures the diagnostic testing component for comprehensive billing."
-                                            : activeItem.title.includes("93000")
-                                              ? "ECG testing is specifically documented in the assessment and plan for cardiac evaluation. This diagnostic procedure should be coded to ensure complete capture of ordered services and proper billing documentation."
-                                              : "Clinical documentation supports the addition of this code based on documented findings and treatment plans."}
-                                </div>
-                              </div>
-                              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-                                <div className="font-medium text-indigo-800 text-sm mb-2">Risk-Benefit Analysis</div>
-                                <div className="grid grid-cols-2 gap-2">
-                                  <div>
-                                    <div className="text-xs text-indigo-600 font-medium mb-1">Benefits</div>
-                                    <div className="space-y-1">
-                                      <div className="text-xs text-indigo-700">• Improved diagnostic specificity</div>
-                                      <div className="text-xs text-indigo-700">• Enhanced billing accuracy</div>
-                                      <div className="text-xs text-indigo-700">• Better care coordination</div>
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="text-xs text-indigo-600 font-medium mb-1">Considerations</div>
-                                    <div className="space-y-1">
-                                      <div className="text-xs text-indigo-700">• Documentation review needed</div>
-                                      <div className="text-xs text-indigo-700">• Clinical judgment required</div>
-                                      <div className="text-xs text-indigo-700">• Coding guideline compliance</div>
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Impact Assessment */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-green-400 to-emerald-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <TrendingUp size={16} className="text-green-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Multi-Dimensional Impact Assessment</h5>
-                            <div className="space-y-3">
-                              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                                <div className="font-medium text-green-800 text-sm mb-1">Clinical Impact</div>
-                                <div className="text-xs text-green-700 leading-relaxed">
-                                  {(activeItem as any).category === "diagnosis"
-                                    ? "Improves diagnostic specificity and care planning by providing more precise condition documentation that guides treatment decisions and specialist referrals."
-                                    : (activeItem as any).category === "screening"
-                                      ? "Supports preventive care and risk assessment protocols while enabling population health management and quality measure reporting."
-                                      : (activeItem as any).category === "procedure"
-                                        ? "Ensures proper procedure billing and tracking while supporting quality metrics for procedural outcomes and follow-up care coordination."
-                                        : (activeItem as any).category === "evaluation"
-                                          ? "Accurately reflects the complexity of medical decision-making and time invested in patient care evaluation and management."
-                                          : "Enhances overall documentation quality and supports comprehensive patient care management."}
-                                </div>
-                              </div>
-                              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3">
-                                <div className="font-medium text-emerald-800 text-sm mb-1">Financial Impact</div>
-                                <div className="text-xs text-emerald-700 leading-relaxed">
-                                  {(activeItem as any).codeType === "CPT"
-                                    ? "Captures billable procedures and services that might otherwise go uncompensated, improving practice revenue while ensuring accurate documentation of services provided."
-                                    : "Supports medical necessity and accurate reimbursement by providing specific diagnostic justification for treatments, procedures, and follow-up care requirements."}
-                                </div>
-                              </div>
-                              <div className="bg-teal-50 border border-teal-200 rounded-lg p-3">
-                                <div className="font-medium text-teal-800 text-sm mb-1">Quality Metrics Impact</div>
-                                <div className="text-xs text-teal-700 leading-relaxed">
-                                  Supports quality reporting requirements, population health initiatives, and risk adjustment models used by payers and quality organizations for performance
-                                  measurement and benchmarking.
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Documentation Requirements */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-amber-400 to-yellow-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <FileText size={16} className="text-amber-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Documentation Requirements</h5>
-                            <div className="space-y-3">
-                              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
-                                <div className="font-medium text-amber-800 text-sm mb-2">Required Documentation Elements</div>
-                                <div className="space-y-1">
-                                  {activeItem.title.includes("Z13.6") ? (
-                                    <>
-                                      <div className="text-xs text-amber-700">• Patient age and cardiovascular risk factors documented</div>
-                                      <div className="text-xs text-amber-700">• Screening rationale clearly stated in assessment</div>
-                                      <div className="text-xs text-amber-700">• Preventive care context established</div>
-                                      <div className="text-xs text-amber-700">• Follow-up screening schedule documented</div>
-                                    </>
-                                  ) : activeItem.title.includes("F17.210") ? (
-                                    <>
-                                      <div className="text-xs text-amber-700">• Current smoking status and frequency documented</div>
-                                      <div className="text-xs text-amber-700">• Duration of smoking history specified</div>
-                                      <div className="text-xs text-amber-700">• Nicotine dependence symptoms or impact noted</div>
-                                      <div className="text-xs text-amber-700">• Treatment or counseling interventions documented</div>
-                                    </>
-                                  ) : activeItem.title.includes("Z68.36") ? (
-                                    <>
-                                      <div className="text-xs text-amber-700">• Height and weight measurements documented</div>
-                                      <div className="text-xs text-amber-700">• BMI calculation recorded (36.0-36.9 range)</div>
-                                      <div className="text-xs text-amber-700">• Adult age verification in documentation</div>
-                                      <div className="text-xs text-amber-700">• Clinical significance of BMI addressed</div>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <div className="text-xs text-amber-700">• Service complexity appropriately documented</div>
-                                      <div className="text-xs text-amber-700">• Medical decision-making rationale clear</div>
-                                      <div className="text-xs text-amber-700">• Time or complexity justification present</div>
-                                      <div className="text-xs text-amber-700">• Clinical indicators support code selection</div>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                                <div className="font-medium text-yellow-800 text-sm mb-2">Compliance Checklist</div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-yellow-700 flex items-center gap-2">
-                                    <div className="w-3 h-3 bg-green-500 rounded-sm flex items-center justify-center">
-                                      <Check size={8} className="text-white" />
-                                    </div>
-                                    Clinical documentation supports code selection
-                                  </div>
-                                  <div className="text-xs text-yellow-700 flex items-center gap-2">
-                                    <div className="w-3 h-3 bg-green-500 rounded-sm flex items-center justify-center">
-                                      <Check size={8} className="text-white" />
-                                    </div>
-                                    Code specificity matches documented findings
-                                  </div>
-                                  <div className="text-xs text-yellow-700 flex items-center gap-2">
-                                    <div className="w-3 h-3 bg-amber-500 rounded-sm flex items-center justify-center">
-                                      <AlertCircle size={8} className="text-white" />
-                                    </div>
-                                    Provider review and approval needed
-                                  </div>
-                                  <div className="text-xs text-yellow-700 flex items-center gap-2">
-                                    <div className="w-3 h-3 bg-blue-500 rounded-sm flex items-center justify-center">
-                                      <HelpCircle size={8} className="text-white" />
-                                    </div>
-                                    Consider additional supporting documentation
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Coding Guidelines Reference */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-purple-400 to-indigo-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Code size={16} className="text-purple-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Coding Guidelines Reference</h5>
-                            <div className="space-y-3">
-                              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
-                                <div className="font-medium text-purple-800 text-sm mb-2">Applicable Guidelines</div>
-                                <div className="space-y-1">
-                                  {(activeItem as any).codeType === "CPT" ? (
-                                    <>
-                                      <div className="text-xs text-purple-700">• CPT Professional Edition current year guidelines</div>
-                                      <div className="text-xs text-purple-700">• CMS Evaluation and Management documentation requirements</div>
-                                      <div className="text-xs text-purple-700">• Medical necessity and billing compliance standards</div>
-                                      <div className="text-xs text-purple-700">• Local coverage determination (LCD) requirements</div>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <div className="text-xs text-purple-700">• ICD-10-CM Official Guidelines for Coding and Reporting</div>
-                                      <div className="text-xs text-purple-700">• WHO International Classification of Diseases standards</div>
-                                      <div className="text-xs text-purple-700">• CMS ICD-10-CM and GEMs mapping requirements</div>
-                                      <div className="text-xs text-purple-700">• Official coding clinic guidance and updates</div>
-                                    </>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3">
-                                <div className="font-medium text-indigo-800 text-sm mb-2">Best Practice Recommendations</div>
-                                <div className="space-y-1">
-                                  <div className="text-xs text-indigo-700">• Review code selection with supervising physician</div>
-                                  <div className="text-xs text-indigo-700">• Verify documentation completeness before finalizing</div>
-                                  <div className="text-xs text-indigo-700">• Consider additional specificity if clinically supported</div>
-                                  <div className="text-xs text-indigo-700">• Document rationale for AI-suggested code acceptance</div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Quality Assurance */}
-                      <div className="relative pl-5">
-                        <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-gradient-to-b from-rose-400 to-pink-300 rounded-full"></div>
-                        <div className="flex items-start gap-3">
-                          <Shield size={16} className="text-rose-600 mt-1 flex-shrink-0" />
-                          <div className="flex-1">
-                            <h5 className="font-semibold text-slate-800 mb-2">Quality Assurance Review</h5>
-                            <div className="space-y-3">
-                              <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
-                                <div className="font-medium text-rose-800 text-sm mb-2">Audit Trail Information</div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div>
-                                    <div className="text-xs text-rose-600 mb-1">Suggestion Generated</div>
-                                    <div className="text-xs text-rose-700 font-medium">Current encounter</div>
-                                  </div>
-                                  <div>
-                                    <div className="text-xs text-rose-600 mb-1">Algorithm Version</div>
-                                    <div className="text-xs text-rose-700 font-medium">v2024.1.3</div>
-                                  </div>
-                                  <div>
-                                    <div className="text-xs text-rose-600 mb-1">Review Status</div>
-                                    <div className="text-xs text-rose-700 font-medium">Pending physician approval</div>
-                                  </div>
-                                  <div>
-                                    <div className="text-xs text-rose-600 mb-1">Risk Score</div>
-                                    <div className="text-xs text-rose-700 font-medium">{(activeItem as any).confidence >= 90 ? "Low" : (activeItem as any).confidence >= 75 ? "Medium" : "High"}</div>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="bg-pink-50 border border-pink-200 rounded-lg p-3">
-                                <div className="font-medium text-pink-800 text-sm mb-1">Final Recommendation</div>
-                                <div className="text-xs text-pink-700 leading-relaxed">
-                                  {(activeItem as any).confidence >= 90
-                                    ? "Strong recommendation for code inclusion based on comprehensive documentation analysis. Clinical review advised but code appears well-supported."
-                                    : (activeItem as any).confidence >= 75
-                                      ? "Moderate recommendation for code inclusion. Recommend clinical review to validate appropriateness and ensure documentation completeness."
-                                      : "Weak recommendation requires thorough clinical review. Consider if additional documentation or clarification is needed before code acceptance."}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </>
-                  )}
-
-                  {/* Standard sections for non-code steps */}
+                    {/* Standard sections for non-code steps */}
                   {!step.stepType && (
                     <>
                       {/* Why Section */}
