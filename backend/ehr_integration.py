@@ -15,8 +15,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-import requests
 import logging
+
+from backend.egress import secure_post
 
 FHIR_SERVER_URL = os.getenv("FHIR_SERVER_URL", "https://fhir.example.com")
 TOKEN_URL = os.getenv("EHR_TOKEN_URL")
@@ -51,7 +52,7 @@ def get_ehr_token() -> Optional[str]:
         return _token_cache["token"]
 
     try:
-        resp = requests.post(
+        resp = secure_post(
             TOKEN_URL,
             data={"grant_type": "client_credentials"},
             auth=(CLIENT_ID, CLIENT_SECRET),
@@ -344,7 +345,7 @@ def post_note_and_codes(
     url = f"{FHIR_SERVER_URL.rstrip('/')}/Bundle"
     headers = _auth_headers()
 
-    resp = requests.post(url, json=payload, headers=headers or None, timeout=10)
+    resp = secure_post(url, json=payload, headers=headers or None, timeout=10)
     status_code = resp.status_code
 
     if status_code in {401, 403}:

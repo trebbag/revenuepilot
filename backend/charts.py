@@ -6,6 +6,7 @@ from pathlib import Path
 import logging
 import os
 
+from backend.encryption import encrypt_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ def process_chart(filename: str, data: bytes) -> Path | None:
         raise ValueError("Resolved chart path escapes upload directory")
 
     try:
-        destination.write_bytes(data)
+        ciphertext = encrypt_artifact(data)
+        destination.write_bytes(ciphertext)
     except Exception as exc:  # pragma: no cover - filesystem dependent failures
         logger.warning(
             "chart_upload.write_failed sanitized=%s error=%s",
