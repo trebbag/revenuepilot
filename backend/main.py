@@ -132,7 +132,12 @@ if parent_dir not in sys.path:
 
 # Use absolute imports consistently for robustness across execution modes.
 from backend import prompts as prompt_utils  # type: ignore
-from backend.prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt  # type: ignore
+from backend.prompts import (
+    build_beautify_prompt,
+    build_plan_prompt,
+    build_suggest_prompt,
+    build_summary_prompt,
+)  # type: ignore
 from backend.openai_client import call_openai  # type: ignore
 from backend.key_manager import (
     APP_NAME,
@@ -2482,6 +2487,318 @@ def _log_confidence_scores(
         db_conn.commit()
     except sqlite3.Error as exc:  # pragma: no cover - defensive logging
         logger.warning("confidence_score_persist_failed", error=str(exc))
+
+
+def _sanitize_plan_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = sanitize_text(str(value))
+    cleaned = text.strip()
+    return cleaned or None
+
+
+def _sanitize_plan_mapping(value: Mapping[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    for key, val in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(val, dict):
+            nested = _sanitize_plan_mapping(val)
+            if nested:
+                result[key] = nested
+        elif isinstance(val, list):
+            items: List[Any] = []
+            for entry in val:
+                if isinstance(entry, dict):
+                    nested = _sanitize_plan_mapping(entry)
+                    if nested:
+                        items.append(nested)
+                elif isinstance(entry, (int, float)):
+                    items.append(entry)
+                else:
+                    text = _sanitize_plan_text(entry)
+                    if text is not None:
+                        items.append(text)
+            if items:
+                result[key] = items
+        elif isinstance(val, (int, float, bool)):
+            result[key] = val
+        else:
+            text = _sanitize_plan_text(val)
+            if text is not None:
+                result[key] = text
+    return result
+
+
+def _normalize_plan_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        iterable = value
+    else:
+        iterable = [value]
+    items: List[str] = []
+    for entry in iterable:
+        if isinstance(entry, dict):
+            text = _sanitize_plan_text(
+                entry.get("text")
+                or entry.get("value")
+                or entry.get("detail")
+                or entry.get("reason")
+                or entry.get("description")
+            )
+        else:
+            text = _sanitize_plan_text(entry)
+        if text:
+            items.append(text)
+    return items
+
+
+def _resolve_plan_confidence(value: Any, default: float = 0.5) -> float:
+    score = _normalise_confidence(value)
+    if score is None:
+        score = default
+    try:
+        score = float(score)
+    except (TypeError, ValueError):
+        score = default
+    return max(0.0, min(1.0, score))
+
+
+def _normalize_plan_risks(items: Any) -> List[PlanRisk]:
+    if isinstance(items, dict):
+        iterable = [items]
+    elif isinstance(items, (list, tuple, set)):
+        iterable = list(items)
+    else:
+        iterable = []
+    normalized: List[PlanRisk] = []
+    for entry in iterable:
+        if isinstance(entry, PlanRisk):
+            normalized.append(entry)
+            continue
+        if isinstance(entry, dict):
+            name = _sanitize_plan_text(
+                entry.get("name") or entry.get("title") or entry.get("risk")
+            )
+            if not name:
+                continue
+            rationale = _sanitize_plan_text(entry.get("rationale") or entry.get("reason"))
+            evidence = _normalize_plan_string_list(entry.get("evidence"))
+            confidence = _resolve_plan_confidence(entry.get("confidence"))
+            normalized.append(
+                PlanRisk(
+                    name=name,
+                    rationale=rationale,
+                    evidence=evidence,
+                    confidence=confidence,
+                )
+            )
+        else:
+            name = _sanitize_plan_text(entry)
+            if name:
+                normalized.append(PlanRisk(name=name, confidence=0.5))
+    return normalized
+
+
+def _normalize_plan_interventions(items: Any) -> List[PlanIntervention]:
+    if isinstance(items, dict):
+        iterable = [items]
+    elif isinstance(items, (list, tuple, set)):
+        iterable = list(items)
+    else:
+        iterable = []
+    normalized: List[PlanIntervention] = []
+    for entry in iterable:
+        if isinstance(entry, PlanIntervention):
+            normalized.append(entry)
+            continue
+        if isinstance(entry, dict):
+            name = _sanitize_plan_text(entry.get("name") or entry.get("title"))
+            if not name:
+                continue
+            steps = _normalize_plan_string_list(
+                entry.get("steps")
+                or entry.get("actions")
+                or entry.get("plan")
+                or entry.get("instructions")
+            )
+            monitoring = _normalize_plan_string_list(
+                entry.get("monitoring")
+                or entry.get("monitoringPlan")
+                or entry.get("followUp")
+            )
+            evidence = _normalize_plan_string_list(entry.get("evidence"))
+            confidence = _resolve_plan_confidence(entry.get("confidence"))
+            normalized.append(
+                PlanIntervention(
+                    name=name,
+                    steps=steps,
+                    monitoring=monitoring,
+                    evidence=evidence,
+                    confidence=confidence,
+                )
+            )
+        else:
+            name = _sanitize_plan_text(entry)
+            if name:
+                normalized.append(PlanIntervention(name=name))
+    return normalized
+
+
+def _normalize_plan_tasks(items: Any) -> List[PlanTask]:
+    if isinstance(items, dict):
+        iterable = [items]
+    elif isinstance(items, (list, tuple, set)):
+        iterable = list(items)
+    else:
+        iterable = []
+    normalized: List[PlanTask] = []
+    for entry in iterable:
+        if isinstance(entry, PlanTask):
+            normalized.append(entry)
+            continue
+        if isinstance(entry, dict):
+            title = _sanitize_plan_text(
+                entry.get("title") or entry.get("task") or entry.get("name")
+            )
+            if not title:
+                continue
+            assignee = _sanitize_plan_text(
+                entry.get("assignee") or entry.get("owner") or entry.get("responsible")
+            )
+            due = _sanitize_plan_text(entry.get("due") or entry.get("timeline") or entry.get("when"))
+            confidence = _resolve_plan_confidence(entry.get("confidence"))
+            normalized.append(
+                PlanTask(title=title, assignee=assignee, due=due, confidence=confidence)
+            )
+        else:
+            title = _sanitize_plan_text(entry)
+            if title:
+                normalized.append(PlanTask(title=title, confidence=0.5))
+    return normalized
+
+
+def _normalize_plan_payload(
+    data: Any,
+    fallback_reason: Optional[str] = None,
+) -> PlanResponse:
+    payload = data if isinstance(data, Mapping) else {}
+    risks = _normalize_plan_risks(payload.get("risks"))
+    interventions = _normalize_plan_interventions(payload.get("interventions"))
+    tasks = _normalize_plan_tasks(payload.get("tasks"))
+    overall = _sanitize_plan_text(
+        payload.get("overallRisk")
+        or payload.get("riskLevel")
+        or payload.get("riskRating")
+    )
+    summary = _sanitize_plan_text(payload.get("summary") or payload.get("planSummary"))
+    generated = _sanitize_plan_text(
+        payload.get("generatedAt")
+        or payload.get("generated_at")
+        or payload.get("timestamp")
+    )
+    response = PlanResponse(
+        risks=risks,
+        interventions=interventions,
+        tasks=tasks,
+        overallRisk=overall,
+        summary=summary,
+        generatedAt=generated or _utc_now_iso(),
+        fallbackReason=_sanitize_plan_text(fallback_reason)
+        or _sanitize_plan_text(payload.get("fallbackReason")),
+    )
+    return response
+
+
+def _normalize_selected_codes_for_plan(items: Iterable[Any]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for entry in items:
+        if isinstance(entry, dict):
+            code = _sanitize_plan_text(entry.get("code") or entry.get("id"))
+            description = _sanitize_plan_text(
+                entry.get("description") or entry.get("title") or entry.get("details")
+            )
+            category = _sanitize_plan_text(entry.get("category"))
+            payload: Dict[str, Any] = {}
+            if code:
+                payload["code"] = code
+            if description:
+                payload["description"] = description
+            if category:
+                payload["category"] = category
+            if payload:
+                normalized.append(payload)
+        else:
+            code = _sanitize_plan_text(entry)
+            if code:
+                normalized.append({"code": code})
+    return normalized
+
+
+def _truncate_transcript_for_plan(
+    entries: Iterable[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    truncated: List[Dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        text = _sanitize_plan_text(entry.get("text"))
+        if not text:
+            continue
+        record: Dict[str, Any] = {"text": text}
+        speaker = _sanitize_plan_text(entry.get("speaker"))
+        if speaker:
+            record["speaker"] = speaker
+        timestamp = entry.get("timestamp")
+        if isinstance(timestamp, (int, float)):
+            record["timestamp"] = timestamp
+        elif isinstance(timestamp, str):
+            ts_clean = _sanitize_plan_text(timestamp)
+            if ts_clean:
+                record["timestamp"] = ts_clean
+        confidence = entry.get("confidence")
+        confidence_val = _normalise_confidence(confidence)
+        if confidence_val is not None:
+            record["confidence"] = round(max(0.0, min(1.0, confidence_val)), 3)
+        truncated.append(record)
+        if len(truncated) >= 8:
+            break
+    return truncated
+
+
+def _build_plan_prompt_context(
+    req: PlanRequest, cleaned_note: str
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    codes = _normalize_selected_codes_for_plan(req.selectedCodes)
+    context: Dict[str, Any] = {}
+    if req.chart:
+        chart_text = _sanitize_plan_text(req.chart)
+        if chart_text:
+            context["chart"] = chart_text
+    patient_meta = _sanitize_plan_mapping(req.patientMetadata)
+    if patient_meta:
+        context["patient_metadata"] = patient_meta
+    workflow_ctx = _sanitize_plan_mapping(req.context)
+    if workflow_ctx:
+        context["workflow_context"] = workflow_ctx
+    transcript_entries = _truncate_transcript_for_plan(req.transcript)
+    if transcript_entries:
+        context["transcript"] = transcript_entries
+    if req.patientAge is not None:
+        context["patient_age"] = req.patientAge
+    if req.sex:
+        sex_value = _sanitize_plan_text(req.sex)
+        if sex_value:
+            context["sex"] = sex_value
+    if req.noteId:
+        note_id = _sanitize_plan_text(req.noteId)
+        if note_id:
+            context["note_id"] = note_id
+    context["note_character_count"] = len(cleaned_note)
+    return codes, context
 
 
 def _normalise_severity(value: str | None) -> str:
@@ -6114,6 +6431,15 @@ def _normalize_finalization_session(
         data["reimbursementSummary"] = _compute_reimbursement_summary(normalized_codes)
     data.setdefault("noteContent", "")
     data.setdefault("patientMetadata", {})
+    care_plan_payload = data.get("carePlan")
+    if isinstance(care_plan_payload, Mapping):
+        data["carePlan"] = _normalize_plan_payload(care_plan_payload).model_dump(
+            exclude_none=True
+        )
+    elif isinstance(care_plan_payload, PlanResponse):
+        data["carePlan"] = care_plan_payload.model_dump(exclude_none=True)
+    else:
+        data["carePlan"] = PlanResponse().model_dump(exclude_none=True)
     data.setdefault("blockingIssues", [])
     context_payload = data.get("context")
     if isinstance(context_payload, dict):
@@ -6368,6 +6694,7 @@ def _session_to_response(session: Dict[str, Any]) -> Dict[str, Any]:
         "reimbursementSummary": normalized.get("reimbursementSummary", {}),
         "auditTrail": normalized.get("auditTrail", []),
         "patientQuestions": normalized.get("patientQuestions", []),
+        "carePlan": normalized.get("carePlan", {}),
         "blockingIssues": normalized.get("blockingIssues", []),
         "sessionProgress": normalized.get("sessionProgress", {}),
         "transcriptEntries": normalized.get("transcriptEntries", []),
@@ -7358,6 +7685,75 @@ class NoteRequest(BaseModel):
 
 
 
+class PlanRequest(BaseModel):
+    text: str = Field(..., max_length=10000)
+    lang: str = "en"
+    specialty: Optional[str] = None
+    payer: Optional[str] = None
+    encounterType: Optional[str] = None
+    selectedCodes: List[Any] = Field(default_factory=list)
+    context: Dict[str, Any] = Field(default_factory=dict)
+    patientMetadata: Dict[str, Any] = Field(default_factory=dict)
+    transcript: List[Dict[str, Any]] = Field(default_factory=list)
+    chart: Optional[str] = None
+    patientAge: Optional[int] = Field(None, alias="patientAge")
+    sex: Optional[str] = None
+    useLocalModels: Optional[bool] = False
+    useOfflineMode: Optional[bool] = False
+    planModel: Optional[str] = None
+    noteId: Optional[str] = Field(None, alias="note_id")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _merge_transcript_aliases(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(values, dict):
+            if "transcriptEntries" in values and "transcript" not in values:
+                values["transcript"] = values.get("transcriptEntries")
+        return values
+
+    @field_validator("text")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        return sanitize_text(value)
+
+    @field_validator("encounterType", "chart", "sex")
+    @classmethod
+    def _sanitize_optional_string(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        cleaned = sanitize_text(value).strip()
+        return cleaned or None
+
+    @field_validator("selectedCodes", mode="before")
+    @classmethod
+    def _ensure_list(cls, value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    @field_validator("context", "patientMetadata")
+    @classmethod
+    def _ensure_dict(cls, value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        return {}
+
+    @field_validator("transcript", mode="before")
+    @classmethod
+    def _ensure_transcript_list(cls, value: Any) -> List[Dict[str, Any]]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            return [value]
+        return []
+
+
 class CodesSuggestRequest(BaseModel):
     content: str = Field(..., max_length=10000)
     codes: Optional[List[str]] = None
@@ -7553,6 +7949,40 @@ class SuggestionsResponse(BaseModel):
     followUp: Optional[FollowUp] = None
 
 
+class PlanRisk(BaseModel):
+    name: str
+    rationale: Optional[str] = None
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class PlanIntervention(BaseModel):
+    name: str
+    steps: List[str] = Field(default_factory=list)
+    monitoring: List[str] = Field(default_factory=list)
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+
+
+class PlanTask(BaseModel):
+    title: str
+    assignee: Optional[str] = None
+    due: Optional[str] = None
+    confidence: float = Field(0.5, ge=0.0, le=1.0)
+
+
+class PlanResponse(BaseModel):
+    risks: List[PlanRisk] = Field(default_factory=list)
+    interventions: List[PlanIntervention] = Field(default_factory=list)
+    tasks: List[PlanTask] = Field(default_factory=list)
+    overallRisk: Optional[str] = None
+    summary: Optional[str] = None
+    generatedAt: Optional[str] = None
+    fallbackReason: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 
 class PreFinalizeCheckRequest(BaseModel):
     """Payload for validating a note before finalization."""
@@ -7618,6 +8048,7 @@ class WorkflowSessionResponse(BaseModel):
     reimbursementSummary: Dict[str, Any] = Field(default_factory=dict)
     auditTrail: List[Dict[str, Any]] = Field(default_factory=list)
     patientQuestions: List[Dict[str, Any]] = Field(default_factory=list)
+    carePlan: Dict[str, Any] = Field(default_factory=dict)
     blockingIssues: List[str] = Field(default_factory=list)
     sessionProgress: Dict[str, Any] = Field(default_factory=dict)
     transcriptEntries: List[Dict[str, Any]] = Field(default_factory=list)
@@ -12154,6 +12585,97 @@ async def suggest(
             questions=[],
             followUp=follow_up,
         )
+
+
+@app.post("/ai/plan", response_model=PlanResponse, response_model_exclude_none=True)
+async def generate_plan(
+    req: PlanRequest, user=Depends(require_role("user"))
+) -> PlanResponse:
+    """Generate structured risks, interventions and tasks for a care plan."""
+
+    combined = req.text or ""
+    if req.chart:
+        combined += "\n\nChart Context:\n" + str(req.chart)
+    if req.transcript:
+        for entry in req.transcript:
+            if isinstance(entry, Mapping):
+                snippet = entry.get("text")
+                if snippet:
+                    speaker = entry.get("speaker") or "transcript"
+                    combined += f"\n\nTranscript ({speaker}): {snippet}"
+    cleaned = deidentify(combined)
+    codes_for_prompt, extra_context = _build_plan_prompt_context(req, cleaned)
+
+    offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
+    if not offline_active:
+        try:
+            row = db_conn.execute(
+                "SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                (user["sub"],),
+            ).fetchone()
+            if row:
+                offline_active = bool(row["use_offline_mode"])
+        except sqlite3.OperationalError:
+            pass
+
+    if offline_active or USE_OFFLINE_MODEL:
+        from backend.offline_model import plan as offline_plan
+
+        data = offline_plan(
+            cleaned,
+            req.encounterType,
+            codes_for_prompt,
+            extra_context,
+            use_local=req.useLocalModels,
+            model_path=req.planModel,
+        )
+        return _normalize_plan_payload(data)
+
+    try:
+        messages = build_plan_prompt(
+            cleaned,
+            req.encounterType,
+            codes_for_prompt,
+            extra_context,
+            lang=req.lang,
+            specialty=req.specialty,
+            payer=req.payer,
+        )
+        response_content = call_openai(messages)
+        data = _safe_json_loads(response_content)
+        if not isinstance(data, Mapping):
+            raise ValueError("Plan response was not a JSON object")
+        return _normalize_plan_payload(data)
+    except Exception as exc:
+        logger.error(
+            "plan_generation_failed",
+            error=str(exc),
+            encounter=req.encounterType,
+            log_event="ai_plan_failed",
+        )
+        from backend.offline_model import plan as offline_plan
+
+        fallback_data = offline_plan(
+            cleaned,
+            req.encounterType,
+            codes_for_prompt,
+            extra_context,
+            use_local=False,
+            model_path=req.planModel,
+        )
+        return _normalize_plan_payload(
+            fallback_data,
+            fallback_reason="LLM unavailable; offline planning heuristic used.",
+        )
+
+
+@app.post("/api/ai/plan", response_model=PlanResponse, response_model_exclude_none=True)
+async def generate_plan_alias(
+    req: PlanRequest, user=Depends(require_role("user"))
+) -> PlanResponse:
+    """Alias for ``/ai/plan`` supporting ``/api/ai/plan`` path."""
+
+    return await generate_plan(req, user)
 
 
 
