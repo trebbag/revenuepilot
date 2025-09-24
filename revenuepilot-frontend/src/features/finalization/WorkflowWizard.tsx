@@ -1,6 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { AlertTriangle, Check, Loader2, Settings, X } from "lucide-react"
+import {
+  AlertCircle,
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardList,
+  Loader2,
+  Settings,
+  X,
+} from "lucide-react"
+import { useTranslation } from "react-i18next"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { NoteEditor } from "./NoteEditor"
 import { StepContent } from "./StepContent"
@@ -99,7 +111,14 @@ export interface ComposeJobState {
   message?: string | null
 }
 
-export type WizardStepType = "selected-codes" | "suggested-codes" | "loading" | "dual-editor" | "placeholder" | "dispatch"
+export type WizardStepType =
+  | "selected-codes"
+  | "suggested-codes"
+  | "loading"
+  | "dual-editor"
+  | "attestation"
+  | "placeholder"
+  | "dispatch"
 
 interface NormalizedWizardCodeItem extends WizardCodeItem {
   id: number
@@ -164,6 +183,18 @@ export interface FinalizeResult {
   [key: string]: unknown
 }
 
+export interface AttestationFormPayload {
+  attestedBy: string
+  statement: string
+  ipAddress?: string
+  signature?: string
+}
+
+export interface AttestationSubmitResult {
+  attestation?: Record<string, unknown>
+  reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> }
+}
+
 export interface FinalizationWizardProps {
   selectedCodes?: WizardCodeItem[]
   suggestedCodes?: WizardCodeItem[]
@@ -173,11 +204,22 @@ export interface FinalizationWizardProps {
   reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> }
   transcriptEntries?: VisitTranscriptEntry[]
   blockingIssues?: string[]
+  attestationRecap?: Record<string, unknown>
   stepOverrides?: WizardStepOverride[]
   initialStep?: number
   canFinalize?: boolean
   onClose?: (result?: FinalizeResult) => void
   onFinalize?: (request: FinalizeRequest) => Promise<FinalizeResult | void> | FinalizeResult | void
+  onFinalizeAndDispatch?: (
+    request: FinalizeRequest,
+    dispatchForm: Record<string, unknown>,
+  ) =>
+    | Promise<{ finalizedNoteId?: string; result?: FinalizeResult } | void>
+    | { finalizedNoteId?: string; result?: FinalizeResult }
+    | void
+  onSubmitAttestation?:
+    | ((payload: AttestationFormPayload) => Promise<AttestationSubmitResult | void> | AttestationSubmitResult | void)
+    | undefined
   onStepChange?: (stepId: number, step: WizardStepData) => void
   composeJob?: ComposeJobState | null
   composeError?: string | null
@@ -657,6 +699,401 @@ function formatComplianceSummary(count: number): string {
   return `Review ${count} compliance items prior to attestation`
 }
 
+interface BillingAttestationStepProps {
+  step: WizardStepData
+  reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> }
+  blockingIssues: string[]
+  warnings: string[]
+  attestation?: Record<string, unknown> | null
+  onSubmit: (payload: AttestationFormPayload) => Promise<AttestationSubmitResult | void>
+  onPrevious: () => void
+  onNext: () => void
+  canFinalize: boolean
+}
+
+function BillingAttestationStep({
+  step,
+  reimbursementSummary,
+  blockingIssues,
+  warnings,
+  attestation,
+  onSubmit,
+  onPrevious,
+  onNext,
+  canFinalize,
+}: BillingAttestationStepProps) {
+  const { t } = useTranslation()
+  const attestationDetails = useMemo(() => {
+    if (!attestation || typeof attestation !== "object") {
+      return {
+        attestedBy: "",
+        statement: "",
+        estimated:
+          typeof reimbursementSummary?.total === "number" ? reimbursementSummary.total : undefined,
+      }
+    }
+
+    const record = attestation as Record<string, unknown>
+    const attestationNode =
+      record.attestation && typeof record.attestation === "object"
+        ? (record.attestation as Record<string, unknown>)
+        : record
+
+    const getString = (...keys: string[]): string | undefined => {
+      for (const key of keys) {
+        const value = attestationNode[key] ?? record[key]
+        if (typeof value === "string" && value.trim()) {
+          return value.trim()
+        }
+      }
+      return undefined
+    }
+
+    const attestedBy = getString("attestedBy", "attested_by") ?? ""
+    const statement = getString("attestationText", "attestation_text", "statement") ?? ""
+
+    const billingNode = (() => {
+      const direct = record.billingValidation
+      if (direct && typeof direct === "object") return direct as Record<string, unknown>
+      const snake = record.billing_validation
+      if (snake && typeof snake === "object") return snake as Record<string, unknown>
+      return undefined
+    })()
+
+    const estimatedRaw = billingNode
+      ? billingNode.estimatedReimbursement ?? billingNode.estimated_reimbursement ?? billingNode.estimated_payment
+      : undefined
+
+    let estimated: number | undefined
+    if (typeof estimatedRaw === "number" && Number.isFinite(estimatedRaw)) {
+      estimated = estimatedRaw
+    } else if (typeof estimatedRaw === "string") {
+      const parsed = Number(estimatedRaw)
+      if (Number.isFinite(parsed)) {
+        estimated = parsed
+      }
+    }
+
+    if (typeof estimated !== "number" && typeof reimbursementSummary?.total === "number") {
+      estimated = reimbursementSummary.total
+    }
+
+    return { attestedBy, statement, estimated }
+  }, [attestation, reimbursementSummary?.total])
+
+  const [form, setForm] = useState(() => ({
+    attestedBy: attestationDetails.attestedBy ?? "",
+    statement: attestationDetails.statement ?? "",
+    ipAddress: "",
+    signature: "",
+  }))
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submissionSucceeded, setSubmissionSucceeded] = useState(
+    Boolean(attestationDetails.attestedBy && attestationDetails.statement),
+  )
+
+  useEffect(() => {
+    setForm((prev) => ({
+      ...prev,
+      attestedBy: attestationDetails.attestedBy || prev.attestedBy,
+      statement: attestationDetails.statement || prev.statement,
+    }))
+  }, [attestationDetails.attestedBy, attestationDetails.statement])
+
+  useEffect(() => {
+    if (attestationDetails.attestedBy && attestationDetails.statement) {
+      setSubmissionSucceeded(true)
+    }
+  }, [attestationDetails.attestedBy, attestationDetails.statement])
+
+  const formattedEstimated = useMemo(() => {
+    if (typeof attestationDetails.estimated !== "number") {
+      return undefined
+    }
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 2,
+    }).format(Math.max(0, attestationDetails.estimated))
+  }, [attestationDetails.estimated])
+
+  const checklistItems = useMemo(() => {
+    const items: Array<{ id: string; label: string; status: "ready" | "warning" | "blocker" }> = []
+
+    if (Array.isArray(reimbursementSummary?.codes)) {
+      reimbursementSummary.codes.forEach((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          return
+        }
+        const record = entry as Record<string, unknown>
+        const code = typeof record.code === "string" && record.code.trim() ? record.code.trim() : undefined
+        const description =
+          typeof record.description === "string" && record.description.trim() ? record.description.trim() : undefined
+        const amountValue =
+          typeof record.amount === "number"
+            ? record.amount
+            : typeof record.amountFormatted === "string"
+              ? record.amountFormatted
+              : undefined
+        const labelParts = [code, description].filter((part): part is string => Boolean(part))
+        const baseLabel = labelParts.length ? labelParts.join(" – ") : code ?? `Code ${index + 1}`
+        const label =
+          typeof amountValue === "number"
+            ? `${baseLabel} (${new Intl.NumberFormat("en-US", {
+                style: "currency",
+                currency: "USD",
+                maximumFractionDigits: 2,
+              }).format(amountValue)})`
+            : typeof amountValue === "string"
+              ? `${baseLabel} (${amountValue})`
+              : baseLabel
+        items.push({ id: `code-${index}`, label, status: "ready" })
+      })
+    }
+
+    warnings.forEach((warning, index) => {
+      items.push({ id: `warning-${index}`, label: warning, status: "warning" })
+    })
+
+    blockingIssues.forEach((issue, index) => {
+      items.push({ id: `blocker-${index}`, label: issue, status: "blocker" })
+    })
+
+    return items
+  }, [reimbursementSummary?.codes, warnings, blockingIssues])
+
+  const handleChange = useCallback((field: keyof typeof form, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }))
+    setSubmissionSucceeded(false)
+  }, [])
+
+  const handleSubmit = useCallback(
+    async (event?: FormEvent<HTMLFormElement>) => {
+      event?.preventDefault()
+      if (submitting) {
+        return
+      }
+      setSubmitting(true)
+      setSubmitError(null)
+      try {
+        await onSubmit({
+          attestedBy: form.attestedBy,
+          statement: form.statement,
+          ipAddress: form.ipAddress,
+          signature: form.signature,
+        })
+        setSubmissionSucceeded(true)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to submit attestation."
+        setSubmitError(message || "Unable to submit attestation.")
+        setSubmissionSucceeded(false)
+      } finally {
+        setSubmitting(false)
+      }
+    },
+    [form.attestedBy, form.statement, form.ipAddress, form.signature, onSubmit, submitting],
+  )
+
+  const nextDisabled =
+    submitting || !form.attestedBy.trim() || !form.statement.trim() || !submissionSucceeded || !canFinalize
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      className="w-full h-full overflow-y-auto"
+      style={{
+        background: "linear-gradient(135deg, #fafcff 0%, #f3f7ff 45%, #f0f5ff 100%)",
+      }}
+    >
+      <div className="max-w-5xl mx-auto px-8 py-10 space-y-6">
+        <motion.div
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
+          className="bg-white/90 backdrop-blur-md border border-white/40 rounded-3xl shadow-xl shadow-slate-900/10 p-8 space-y-6"
+        >
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg">
+                <ClipboardList className="text-white" size={24} />
+              </div>
+              <div>
+                <h2 className="text-2xl font-semibold text-slate-800">{step.title}</h2>
+                <p className="text-sm text-slate-600">{step.description}</p>
+              </div>
+            </div>
+            {formattedEstimated && (
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 shadow-sm">
+                <div className="font-semibold">{t("workflow.estimatedReimbursement")}</div>
+                <div>{formattedEstimated}</div>
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="rounded-2xl border border-slate-200/60 bg-slate-50/80 p-6 shadow-inner">
+              <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-600">
+                <Check size={16} className="text-emerald-600" /> Payer checklist
+              </h3>
+              <ul className="mt-4 space-y-3">
+                {checklistItems.length === 0 ? (
+                  <li className="flex items-start gap-3 text-sm text-slate-500">
+                    <CheckCircle2 className="mt-0.5 text-emerald-500" size={16} />
+                    {"No payer warnings or blockers detected."}
+                  </li>
+                ) : (
+                  checklistItems.map((item) => {
+                    const icon =
+                      item.status === "ready" ? (
+                        <CheckCircle2 className="text-emerald-600" size={18} />
+                      ) : item.status === "warning" ? (
+                        <AlertTriangle className="text-amber-500" size={18} />
+                      ) : (
+                        <AlertCircle className="text-red-500" size={18} />
+                      )
+                    return (
+                      <li key={item.id} className="flex items-start gap-3 text-sm text-slate-700">
+                        {icon}
+                        <span>{item.label}</span>
+                      </li>
+                    )
+                  })
+                )}
+              </ul>
+            </div>
+
+            <form className="rounded-2xl border border-slate-200/60 bg-white/90 p-6 shadow" onSubmit={handleSubmit}>
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-600">
+                {t("workflow.attestationHeading")}
+              </h3>
+              <div className="mt-4 space-y-4">
+                <label className="block text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">{t("workflow.attestedByLabel")}</span>
+                  <input
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    value={form.attestedBy}
+                    onChange={(event) => handleChange("attestedBy", event.target.value)}
+                    placeholder={t("workflow.attestedByPlaceholder") ?? ""}
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="mb-1 block font-medium text-slate-700">{t("workflow.statementLabel")}</span>
+                  <textarea
+                    className="min-h-[96px] w-full rounded-lg border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    value={form.statement}
+                    onChange={(event) => handleChange("statement", event.target.value)}
+                    placeholder={t("workflow.statementPlaceholder") ?? ""}
+                  />
+                </label>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block text-sm">
+                    <span className="mb-1 block font-medium text-slate-700">{t("workflow.ipLabel")}</span>
+                    <input
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      value={form.ipAddress}
+                      onChange={(event) => handleChange("ipAddress", event.target.value)}
+                      placeholder="203.0.113.1"
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="mb-1 block font-medium text-slate-700">{t("workflow.signatureLabel")}</span>
+                    <input
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                      value={form.signature}
+                      onChange={(event) => handleChange("signature", event.target.value)}
+                      placeholder="sig-123"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="mt-6 flex items-center justify-between">
+                <div className="text-xs text-slate-500">
+                  {submissionSucceeded
+                    ? t("workflow.attestationSummary")
+                    : t("workflow.submitAttestation")}
+                </div>
+                <button
+                  type="submit"
+                  className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white shadow transition ${
+                    submitting
+                      ? "cursor-not-allowed bg-slate-400"
+                      : "bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+                  }`}
+                  disabled={submitting}
+                >
+                  {submitting ? t("workflow.submitting") : t("workflow.submitAttestation")}
+                </button>
+              </div>
+              {submitError && <p className="mt-3 text-sm text-red-600">{submitError}</p>}
+            </form>
+          </div>
+
+          {attestationDetails.attestedBy || attestationDetails.statement ? (
+            <div className="rounded-2xl border border-slate-200/60 bg-slate-50/80 p-6">
+              <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-slate-600">
+                <CheckCircle2 className="text-emerald-600" size={18} /> {t("workflow.attestationSummary")}
+              </h3>
+              <ul className="space-y-2 text-sm text-slate-700">
+                <li>
+                  <span className="font-medium text-slate-600">{t("workflow.attestedByLabel")}:</span>{" "}
+                  {attestationDetails.attestedBy || t("workflow.unknown")}
+                </li>
+                <li>
+                  <span className="font-medium text-slate-600">{t("workflow.statementLabel")}:</span>{" "}
+                  {attestationDetails.statement || t("workflow.unknown")}
+                </li>
+                {formattedEstimated && (
+                  <li>
+                    <span className="font-medium text-slate-600">{t("workflow.estimatedReimbursement")}:</span>{" "}
+                    {formattedEstimated}
+                  </li>
+                )}
+              </ul>
+            </div>
+          ) : null}
+
+          {!canFinalize && (
+            <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {"Resolve validation blockers before continuing to dispatch."}
+            </div>
+          )}
+        </motion.div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <button
+            type="button"
+            onClick={onPrevious}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-800"
+          >
+            <ChevronLeft size={16} />
+            Previous Step
+          </button>
+          <div className="text-xs text-slate-500">Step {step.id} of 6</div>
+          <button
+            type="button"
+            onClick={() => {
+              if (nextDisabled) {
+                return
+              }
+              onNext()
+            }}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white shadow transition ${
+              nextDisabled
+                ? "cursor-not-allowed bg-slate-400"
+                : "bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+            }`}
+            disabled={nextDisabled}
+          >
+            Next Step <ChevronRight size={16} />
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
 export function FinalizationWizard({
   selectedCodes = [],
   suggestedCodes = [],
@@ -666,11 +1103,14 @@ export function FinalizationWizard({
   reimbursementSummary,
   transcriptEntries,
   blockingIssues,
+  attestationRecap: incomingAttestationRecap,
   stepOverrides,
   initialStep = 1,
   canFinalize = true,
   onClose,
   onFinalize,
+  onFinalizeAndDispatch,
+  onSubmitAttestation,
   onStepChange,
   composeJob,
   composeError,
@@ -711,6 +1151,39 @@ export function FinalizationWizard({
       .filter((entry): entry is VisitTranscriptEntry => Boolean(entry))
   }, [transcriptEntries])
   const overridesMap = useMemo(() => createOverridesMap(stepOverrides), [stepOverrides])
+  const payerWarnings = useMemo(() => {
+    const warnings = new Set<string>()
+
+    const register = (value: unknown) => {
+      if (typeof value !== "string") return
+      const trimmed = value.trim()
+      if (trimmed) {
+        warnings.add(trimmed)
+      }
+    }
+
+    const collectWarnings = (item: NormalizedWizardCodeItem) => {
+      if (!item) return
+      if (Array.isArray(item.gaps)) {
+        item.gaps.forEach(register)
+      }
+      const extras = item as unknown as {
+        warnings?: unknown
+        validationFlags?: { warnings?: unknown }
+      }
+      if (Array.isArray(extras?.warnings)) {
+        extras.warnings.forEach(register)
+      }
+      if (Array.isArray(extras?.validationFlags?.warnings)) {
+        extras.validationFlags.warnings.forEach(register)
+      }
+    }
+
+    normalizedSelected.forEach(collectWarnings)
+    normalizedSuggested.forEach(collectWarnings)
+
+    return Array.from(warnings)
+  }, [normalizedSelected, normalizedSuggested])
 
   const defaultNoteRef = useRef(incomingNoteContent || getDefaultNoteContent(patientMetadata))
   const [noteContent, setNoteContent] = useState<string>(defaultNoteRef.current)
@@ -730,6 +1203,19 @@ export function FinalizationWizard({
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null)
+  const [finalizeStage, setFinalizeStage] = useState<"idle" | "processing" | "completed">("idle")
+  const [composeProgress, setComposeProgress] = useState<WizardProgressStep[]>(() => createComposeProgressState())
+  const [composeComplete, setComposeComplete] = useState(false)
+  const [composeError, setComposeError] = useState<string | null>(null)
+  const [isComposeRunning, setIsComposeRunning] = useState(false)
+  const [composeRetryKey, setComposeRetryKey] = useState(0)
+  const composeRunRef = useRef(0)
+  const [attestationSnapshot, setAttestationSnapshot] = useState<Record<string, unknown> | null>(() =>
+    incomingAttestationRecap && typeof incomingAttestationRecap === "object"
+      ? { ...(incomingAttestationRecap as Record<string, unknown>) }
+      : null,
+  )
+
   useEffect(() => {
     const nextInitial = Number.isFinite(initialStep) && initialStep >= 1 ? Math.floor(initialStep) : 1
     if (lastInitialStepRef.current !== nextInitial) {
@@ -764,6 +1250,7 @@ export function FinalizationWizard({
 
     setFinalizeResult(null)
     setFinalizeError(null)
+    setFinalizeStage("idle")
   }, [finalizeResult, normalizedSelected, normalizedSuggested, normalizedCompliance, noteContent])
 
   useEffect(() => {
@@ -783,6 +1270,18 @@ export function FinalizationWizard({
       setSummaryContent((prev) => (prev === artifacts.patientSummary ? prev : artifacts.patientSummary))
     }
   }, [composeResult, noteContent, patientMetadata, normalizedSelected, normalizedTranscript])
+
+  useEffect(() => {
+    if (incomingAttestationRecap && typeof incomingAttestationRecap === "object") {
+      setAttestationSnapshot((prev) => {
+        const next = incomingAttestationRecap as Record<string, unknown>
+        if (prev && JSON.stringify(prev) === JSON.stringify(next)) {
+          return prev
+        }
+        return { ...next }
+      })
+    }
+  }, [incomingAttestationRecap])
 
   useEffect(() => {
     if (!normalizedSelected.length && !normalizedSuggested.length && currentStep < 3) {
@@ -876,7 +1375,7 @@ export function FinalizationWizard({
   const steps = useMemo<WizardStepData[]>(() => {
     const complianceDescription = formatComplianceSummary(normalizedCompliance.length)
     const outstandingBlocking = blockingIssues?.filter((issue) => typeof issue === "string" && issue.trim().length > 0) ?? []
-    const finalizeDescription = isFinalizing
+    const finalizeDescription = finalizeStage === "processing"
       ? "Finalizing note and preparing export package..."
       : finalizeResult
         ? finalizeResult.exportReady
@@ -949,7 +1448,7 @@ export function FinalizationWizard({
         id: 5,
         title: "Billing & Attest",
         description: complianceDescription,
-        type: "placeholder",
+        type: "attestation",
         status: defaultStatusForStep(5),
       },
       {
@@ -1008,11 +1507,15 @@ export function FinalizationWizard({
           return
         }
       }
+      if (stepId === 6 && !canFinalize) {
+        return
+      }
       const fallback = steps[0]
       const target = steps.find((step) => step.id === stepId) || fallback
       setCurrentStep(target.id)
     },
-    [steps, currentStep, isComposeRunning, composeReady],
+
+    [steps, currentStep, isComposeRunning, composeComplete, canFinalize],
   )
 
   useEffect(() => {
@@ -1190,33 +1693,129 @@ export function FinalizationWizard({
     }
   }, [noteContent, normalizedSelected, normalizedSuggested, normalizedCompliance, patientMetadata])
 
-  const handleFinalize = useCallback(async () => {
-    const request = buildFinalizeRequest()
-    setIsFinalizing(true)
-    setFinalizeError(null)
-    try {
-      const result = await Promise.resolve(onFinalize?.(request))
-      if (result) {
-        setFinalizeResult(result)
-      } else {
-        setFinalizeResult({
-          finalizedContent: request.content.trim(),
-          codesSummary: request.codes.map((code) => ({ code })),
-          reimbursementSummary: { total: 0, codes: [] },
-          exportReady: true,
-          issues: {},
+  const buildDispatchForm = useCallback((): Record<string, unknown> => {
+    const timestamp = new Date().toISOString()
+    return {
+      destination: "ehr",
+      deliveryMethod: "internal",
+      timestamp,
+      final_review: {
+        all_steps_completed: true,
+        physician_final_approval: true,
+        quality_review_passed: true,
+        compliance_verified: true,
+        ready_for_dispatch: true,
+      },
+      dispatch_options: {
+        send_to_emr: true,
+        generate_patient_summary: true,
+        schedule_followup: false,
+        send_to_billing: true,
+        notify_referrals: false,
+      },
+      dispatch_status: {
+        dispatch_initiated: true,
+        dispatch_completed: false,
+        dispatch_timestamp: timestamp,
+      },
+      post_dispatch_actions: [],
+    }
+  }, [])
+  const handleAttestationSubmit = useCallback(
+    async (form: AttestationFormPayload) => {
+      const payload: AttestationFormPayload = {
+        attestedBy: form.attestedBy.trim(),
+        statement: form.statement.trim(),
+        ipAddress: form.ipAddress?.trim() || undefined,
+        signature: form.signature?.trim() || undefined,
+      }
+
+      if (!payload.attestedBy || !payload.statement) {
+        throw new Error("Attestation requires name and statement")
+      }
+
+      const result = await Promise.resolve(onSubmitAttestation?.(payload))
+
+      if (result && result.attestation && typeof result.attestation === "object") {
+        setAttestationSnapshot({ ...(result.attestation as Record<string, unknown>) })
+      } else if (!onSubmitAttestation) {
+        setAttestationSnapshot({
+          attestation: {
+            attestedBy: payload.attestedBy,
+            attestationText: payload.statement,
+          },
+          billingValidation: {
+            estimatedReimbursement: reimbursementSummary?.total,
+          },
         })
       }
+
+      return result
+    },
+    [onSubmitAttestation, reimbursementSummary?.total],
+  )
+
+  const handleFinalize = useCallback(async () => {
+    const request = buildFinalizeRequest()
+    const dispatchPayload = buildDispatchForm()
+    setIsFinalizing(true)
+    setFinalizeError(null)
+    setFinalizeStage("processing")
+    try {
+      if (onFinalizeAndDispatch) {
+        const response = await Promise.resolve(onFinalizeAndDispatch(request, dispatchPayload))
+        if (response && typeof response === "object" && "result" in response && response.result) {
+          setFinalizeResult(response.result)
+        } else if (!finalizeResult) {
+          setFinalizeResult({
+            finalizedContent: request.content.trim(),
+            codesSummary: request.codes.map((code) => ({ code })),
+            reimbursementSummary: {
+              total: reimbursementSummary?.total ?? 0,
+              codes: reimbursementSummary?.codes ?? [],
+            },
+            exportReady: true,
+            issues: {},
+          })
+        }
+      } else {
+        const result = await Promise.resolve(onFinalize?.(request))
+        if (result) {
+          setFinalizeResult(result)
+        } else {
+          setFinalizeResult({
+            finalizedContent: request.content.trim(),
+            codesSummary: request.codes.map((code) => ({ code })),
+            reimbursementSummary: { total: 0, codes: [] },
+            exportReady: true,
+            issues: {},
+          })
+        }
+      }
+      setFinalizeStage("completed")
     } catch (error) {
       setFinalizeError(error instanceof Error ? error.message : "Failed to finalize note. Please try again.")
+      setFinalizeStage("idle")
     } finally {
       setIsFinalizing(false)
     }
-  }, [buildFinalizeRequest, onFinalize])
+  }, [
+    buildDispatchForm,
+    buildFinalizeRequest,
+    finalizeResult,
+    onFinalize,
+    onFinalizeAndDispatch,
+    reimbursementSummary?.codes,
+    reimbursementSummary?.total,
+  ])
 
   const finalizeDisabled = isFinalizing || !canFinalize
 
-  const dispatchButtonLabel = isFinalizing ? "Finalizing..." : finalizeResult ? "Dispatch Finalized Note" : "Finalize & Dispatch"
+  const dispatchButtonLabel = isFinalizing
+    ? "Finalizing & Dispatching..."
+    : finalizeResult
+      ? "Dispatch Finalized Note"
+      : "Finalize & Dispatch"
 
   return (
     <div className="h-screen bg-white flex flex-col overflow-hidden relative">
@@ -1423,6 +2022,18 @@ export function FinalizationWizard({
               onNavigatePrevious={() => {
                 goToStep(3)
               }}
+            />
+          ) : currentStepData?.type === "attestation" ? (
+            <BillingAttestationStep
+              step={currentStepData}
+              reimbursementSummary={reimbursementSummary}
+              blockingIssues={blockingIssues ?? []}
+              warnings={payerWarnings}
+              attestation={attestationSnapshot}
+              onSubmit={handleAttestationSubmit}
+              onPrevious={() => goToStep(4)}
+              onNext={() => goToStep(6)}
+              canFinalize={canFinalize}
             />
           ) : currentStepData?.type === "placeholder" || currentStepData?.type === "dispatch" ? (
             <motion.div
