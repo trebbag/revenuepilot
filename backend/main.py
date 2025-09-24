@@ -11033,7 +11033,7 @@ async def get_status_observability(
 ) -> Dict[str, Any]:
     """Return AI route and queue telemetry for the observability dashboard."""
 
-    dashboard = build_observability_dashboard(hours=hours, route=route, failure_limit=limit)
+    dashboard = build_observability_dashboard(hours=hours, route=route, limit=limit)
     return dashboard
 
 
