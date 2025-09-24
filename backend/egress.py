@@ -39,6 +39,7 @@ def _allowed_hosts() -> set[str]:
         "EHR_TOKEN_URL",
         "EHR_FHIR_BASE_URL",
         "EHR_EXPORT_BASE_URL",
+        "SIEM_WEBHOOK_URL",
     ):
         value = os.getenv(env_var)
         if not value:

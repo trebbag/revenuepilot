@@ -140,7 +140,12 @@ from backend.prompts import (
 )  # type: ignore
 from backend.openai_client import call_openai  # type: ignore
 from backend.encryption import encrypt_artifact
-from backend.security import PromptPrivacyGuard, hash_identifier, redact_value
+from backend.security import (
+    PromptPrivacyGuard,
+    hash_identifier,
+    redact_value,
+    DEID_POLICY,
+)
 from backend.key_manager import (
     APP_NAME,
     SecretError,
@@ -263,6 +268,7 @@ from backend.auth import (  # type: ignore
 from backend import deid as deid_module  # type: ignore
 from backend import compliance as compliance_engine  # type: ignore
 from backend.sanitizer import sanitize_text
+from backend.egress import secure_post
 from backend import worker  # type: ignore
 from backend.observability import (
     ObservabilityRecorder,
@@ -311,6 +317,9 @@ AI_GATE_MIN_SECS = max(0.1, _env_float("AI_GATE_MIN_SECS", 0.7))
 AI_GATE_COOLDOWN_FULL = max(0.0, _env_float("AI_GATE_4O_COOLDOWN", 7.0))
 AI_GATE_COOLDOWN_MINI = max(0.0, _env_float("AI_GATE_MINI_COOLDOWN", 2.0))
 
+SIEM_WEBHOOK_URL = os.getenv("SIEM_WEBHOOK_URL", "").strip()
+SIEM_WEBHOOK_TIMEOUT = max(1.0, _env_float("SIEM_WEBHOOK_TIMEOUT", 3.0))
+
 # Expose engine/hash flags so existing tests that monkeypatch backend.main still work.
 _DEID_ENGINE = os.getenv("DEID_ENGINE", "regex").lower()
 _HASH_TOKENS = os.getenv("DEID_HASH_TOKENS", "true").lower() in {"1", "true", "yes"}
@@ -322,9 +331,12 @@ _SCRUBBER_AVAILABLE = getattr(deid_module, "_SCRUBBER_AVAILABLE", False)
 _analyzer = getattr(deid_module, "_analyzer", None)  # type: ignore
 _philter = getattr(deid_module, "_philter", None)  # type: ignore
 
+# Ensure the shared policy honours the configured engine.
+DEID_POLICY.set_engine(_DEID_ENGINE)
+
 # Wrapper used throughout main; propagates any monkeypatched flags to the modular implementation.
 def deidentify(text: str) -> str:  # pragma: no cover - thin wrapper
-    return deid_module.deidentify(
+    return DEID_POLICY.apply(
         text,
         engine=_DEID_ENGINE,
         hash_tokens=_HASH_TOKENS,
@@ -2261,6 +2273,43 @@ def _serialise_audit_details(details: Any | None) -> str | None:
         return str(details)
 
 
+def _emit_siem_event(
+    *,
+    row_id: int | None,
+    timestamp: float,
+    username: str | None,
+    user_id: int | None,
+    clinic_id: str | None,
+    action: str,
+    details: str | None,
+    ip_address: str | None,
+    user_agent: str | None,
+    success: bool | None,
+) -> None:
+    if not SIEM_WEBHOOK_URL:
+        return
+    try:
+        event = {
+            "id": row_id,
+            "timestamp": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat(),
+            "username": username,
+            "user_id": user_id,
+            "clinic_id": clinic_id,
+            "action": action,
+            "details": details,
+            "ip_address": ip_address,
+            "user_agent": user_agent,
+            "success": None if success is None else bool(success),
+        }
+        secure_post(
+            SIEM_WEBHOOK_URL,
+            json=event,
+            timeout=SIEM_WEBHOOK_TIMEOUT,
+        )
+    except Exception as exc:  # pragma: no cover - network/egress failures
+        logger.warning("audit_log_stream_failed", error=str(exc))
+
+
 def _deserialise_audit_details(details: Any) -> Any:
     """Best-effort conversion of stored audit detail payloads back to rich types."""
 
@@ -2320,7 +2369,7 @@ def _insert_audit_log(
         success_value = 1 if success else 0
 
     try:
-        db_conn.execute(
+        cursor = db_conn.execute(
             """
             INSERT INTO audit_log (
                 timestamp,
@@ -2348,13 +2397,25 @@ def _insert_audit_log(
             ),
         )
         db_conn.commit()
+        _emit_siem_event(
+            row_id=getattr(cursor, "lastrowid", None),
+            timestamp=timestamp,
+            username=username,
+            user_id=user_id,
+            clinic_id=resolved_clinic,
+            action=action,
+            details=payload,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            success=success,
+        )
     except sqlite3.OperationalError as exc:
         if "no such table: audit_log" not in str(exc):
             logger.exception("audit_log_write_failed", error=str(exc))
             return
         ensure_audit_log_table(db_conn)
         try:
-            db_conn.execute(
+            cursor = db_conn.execute(
                 """
                 INSERT INTO audit_log (
                     timestamp,
@@ -2382,6 +2443,18 @@ def _insert_audit_log(
                 ),
             )
             db_conn.commit()
+            _emit_siem_event(
+                row_id=getattr(cursor, "lastrowid", None),
+                timestamp=timestamp,
+                username=username,
+                user_id=user_id,
+                clinic_id=resolved_clinic,
+                action=action,
+                details=payload,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                success=success,
+            )
         except Exception:
             logger.exception("audit_log_write_failed")
     except Exception as exc:
@@ -12442,75 +12515,85 @@ async def suggest(
             model_path=req.suggestModel,
         )
         # Ensure evidenceLevel is preserved regardless of key style.
-        public_health = [
-            PublicHealthSuggestion(
-                recommendation=p.get("recommendation"),
-                reason=p.get("reason"),
-                source=p.get("source"),
-                evidenceLevel=p.get("evidenceLevel") or p.get("evidence_level"),
-
-            )
-            public_health = [
-                PublicHealthSuggestion(
-                    recommendation=p.get("recommendation"),
-                    reason=p.get("reason"),
-                    source=p.get("source"),
-                    evidenceLevel=p.get("evidenceLevel") or p.get("evidence_level"),
-                )
-                for p in data.get("publicHealth", [])
-            ]
-            try:
-                extra_ph = public_health_api.get_public_health_suggestions(
-                    req.age, req.sex, req.region, req.agencies
-                )
-            except Exception as exc:  # pragma: no cover - network errors
-                logger.warning("public_health_fetch_failed", error=str(exc))
-                extra_ph = []
-            if extra_ph:
-                existing = {p.recommendation for p in public_health}
-                for rec in extra_ph:
-                    rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
-                    if rec_name and rec_name not in existing:
-                        if isinstance(rec, dict):
-                            public_health.append(PublicHealthSuggestion(**rec))
-                        else:
-                            public_health.append(
-                                PublicHealthSuggestion(recommendation=str(rec))
-                            )
-            code_items = data.get("codes", [])
-            codes = [CodeSuggestion(**item) for item in code_items]
-            _log_confidence_scores(
-                user,
-                req.noteId,
-                [
-                    (
-                        item.get("code") or item.get("Code"),
-                        _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+        public_health: List[PublicHealthSuggestion] = []
+        for item in data.get("publicHealth", []):
+            if isinstance(item, Mapping):
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation=item.get("recommendation"),
+                        reason=item.get("reason"),
+                        source=item.get("source"),
+                        evidenceLevel=item.get("evidenceLevel")
+                        or item.get("evidence_level"),
                     )
-                    for item in code_items
-                ],
+                )
+            elif item:
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation=str(item),
+                        reason=None,
+                    )
+                )
+        try:
+            extra_ph = public_health_api.get_public_health_suggestions(
+                req.age, req.sex, req.region, req.agencies
             )
-            follow_up = recommend_follow_up(
-                [c.code for c in codes],
-                [
-                    entry.get("diagnosis")
-                    for entry in data.get("differentials", [])
-                    if isinstance(entry, dict)
-                ],
-                req.specialty,
-                req.payer,
-            )
-            questions_payload = data.get("questions") if isinstance(data, dict) else None
-            if not isinstance(questions_payload, list):
-                questions_payload = []
-            return SuggestionsResponse(
-                codes=codes,
-                compliance=data.get("compliance", []),
-                publicHealth=public_health,
-                differentials=[DifferentialSuggestion(**d) for d in data.get("differentials", [])],
-                questions=questions_payload,
-                followUp=follow_up,
-            )
+        except Exception as exc:  # pragma: no cover - network errors
+            logger.warning("public_health_fetch_failed", error=str(exc))
+            extra_ph = []
+        if extra_ph:
+            existing = {p.recommendation for p in public_health if p.recommendation}
+            for rec in extra_ph:
+                if isinstance(rec, Mapping):
+                    rec_name = rec.get("recommendation")
+                    if rec_name and rec_name not in existing:
+                        public_health.append(PublicHealthSuggestion(**rec))
+                        existing.add(rec_name)
+                else:
+                    rec_name = str(rec)
+                    if rec_name and rec_name not in existing:
+                        public_health.append(
+                            PublicHealthSuggestion(recommendation=rec_name)
+                        )
+                        existing.add(rec_name)
+        code_items = data.get("codes", [])
+        codes = [CodeSuggestion(**item) for item in code_items]
+        _log_confidence_scores(
+            user,
+            req.noteId,
+            [
+                (
+                    item.get("code") or item.get("Code"),
+                    _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+                )
+                for item in code_items
+            ],
+        )
+        follow_up = recommend_follow_up(
+            [c.code for c in codes],
+            [
+                entry.get("diagnosis")
+                for entry in data.get("differentials", [])
+                if isinstance(entry, Mapping) and entry.get("diagnosis")
+            ],
+            req.specialty,
+            req.payer,
+        )
+        questions_payload = data.get("questions") if isinstance(data, Mapping) else None
+        if not isinstance(questions_payload, list):
+            questions_payload = []
+        return SuggestionsResponse(
+            codes=codes,
+            compliance=data.get("compliance", []),
+            publicHealth=public_health,
+            differentials=[
+                DifferentialSuggestion(**d)
+                for d in data.get("differentials", [])
+                if isinstance(d, Mapping)
+            ],
+            questions=questions_payload,
+            followUp=follow_up,
+        )
 
         try:
             messages = build_suggest_prompt(
@@ -12622,9 +12705,7 @@ async def suggest(
                 [d.diagnosis for d in diffs],
                 req.specialty,
                 req.payer,
-
-                for item in code_items
-            ],
+            )
         )
         questions_payload = data.get("questions") if isinstance(data, dict) else None
         if not isinstance(questions_payload, list):
