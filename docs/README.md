@@ -381,8 +381,10 @@ statements triggered by `STATEMENT_TIMEOUT_MS` are visible to operators.
 For HIPAA-aligned auditing, stream the `audit_log` table to a write-once
 store or SIEM, retaining username, IP address, user agent and success
 metadata captured by the backend whenever a privileged action occurs.
-Admins can also retrieve the audit history through the `/audit`
-endpoint exposed by the FastAPI service.【F:backend/main.py†L1849-L1950】【F:backend/main.py†L4492-L4519】
+Set `SIEM_WEBHOOK_URL` (and optionally `SIEM_WEBHOOK_TIMEOUT`) to have
+the backend forward each audit event to an external collector after the
+database write succeeds. Admins can also retrieve the audit history
+through the `/audit` endpoint exposed by the FastAPI service.【F:backend/main.py†L2287-L2388】【F:backend/main.py†L4492-L4519】
 
 ### Production database expectations
 

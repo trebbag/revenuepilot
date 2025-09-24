@@ -7,9 +7,67 @@ import os
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Mapping, Optional
 
+import structlog
 from prometheus_client import Counter
 
-from backend.deid import deidentify
+from backend import deid as deid_module
+
+
+logger = structlog.get_logger(__name__)
+
+
+_ALLOWED_ENGINES = {"regex", "presidio", "philter", "scrubadub"}
+
+
+class DeidentificationPolicy:
+    """Resolve and apply de-identification settings across the backend."""
+
+    def __init__(self) -> None:
+        self._engine = self._normalise(os.getenv("DEID_ENGINE", "regex"))
+
+    @staticmethod
+    def _availability() -> dict[str, bool]:
+        return {
+            "presidio": getattr(deid_module, "_PRESIDIO_AVAILABLE", False),
+            "philter": getattr(deid_module, "_PHILTER_AVAILABLE", False),
+            "scrubadub": getattr(deid_module, "_SCRUBBER_AVAILABLE", False),
+        }
+
+    def _normalise(self, value: str | None) -> str:
+        candidate = (value or "regex").strip().lower()
+        if candidate not in _ALLOWED_ENGINES:
+            logger.warning("deid_engine_invalid", requested=value, fallback="regex")
+            return "regex"
+        return candidate
+
+    @property
+    def engine(self) -> str:
+        return self._engine
+
+    def set_engine(self, value: str) -> None:
+        self._engine = self._normalise(value)
+
+    def apply(
+        self,
+        text: str,
+        *,
+        engine: str | None = None,
+        hash_tokens: bool = True,
+        availability_overrides: dict[str, bool] | None = None,
+    ) -> str:
+        resolved = self._normalise(engine) if engine is not None else self._engine
+        overrides = self._availability()
+        if availability_overrides:
+            overrides.update(availability_overrides)
+        return deid_module.deidentify(
+            text,
+            engine=resolved,
+            hash_tokens=hash_tokens,
+            availability_overrides=overrides,
+        )
+
+
+DEID_POLICY = DeidentificationPolicy()
 
 
 PROMPT_REDACTIONS_TOTAL = Counter(
@@ -38,7 +96,7 @@ def redact_value(value: Any) -> Any:
     """Redact string values using :func:`deidentify` recursively."""
 
     if isinstance(value, str):
-        return deidentify(value)
+        return DEID_POLICY.apply(value)
     if isinstance(value, Mapping):
         return {key: redact_value(sub_value) for key, sub_value in value.items()}
     if isinstance(value, Iterable) and not isinstance(value, (bytes, bytearray)):
@@ -101,12 +159,16 @@ class PromptPrivacyGuard:
             parts.append(str(request.chart))
         if profile.include_audio and getattr(request, "audio", None):
             parts.append(str(request.audio))
-        sanitized = [deidentify(p) for p in parts if p]
+        sanitized = [DEID_POLICY.apply(p) for p in parts if p]
         combined = "\n\n".join(sanitized)
 
         rules: Optional[List[str]] = None
         if profile.include_rules and getattr(request, "rules", None):
-            rules = [deidentify(r) for r in request.rules if isinstance(r, str) and r]
+            rules = [
+                DEID_POLICY.apply(r)
+                for r in request.rules
+                if isinstance(r, str) and r
+            ]
             if not rules:
                 rules = None
 
@@ -124,8 +186,12 @@ class PromptPrivacyGuard:
         if getattr(request, "audio", None):
             parts.append(str(request.audio))
         combined = "\n\n".join(parts)
-        cleaned = deidentify(combined)
-        rules = [deidentify(r) for r in getattr(request, "rules", []) if isinstance(r, str) and r]
+        cleaned = DEID_POLICY.apply(combined)
+        rules = [
+            DEID_POLICY.apply(r)
+            for r in getattr(request, "rules", [])
+            if isinstance(r, str) and r
+        ]
         if not rules:
             rules = None
         return PromptContext(
@@ -140,6 +206,8 @@ class PromptPrivacyGuard:
 __all__ = [
     "PromptContext",
     "PromptPrivacyGuard",
+    "DeidentificationPolicy",
+    "DEID_POLICY",
     "hash_identifier",
     "redact_value",
     "PROMPT_REDACTIONS_TOTAL",

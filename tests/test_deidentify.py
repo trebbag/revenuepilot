@@ -1,5 +1,8 @@
 import pytest
+from types import SimpleNamespace
+
 import backend.main as bm
+import backend.security as security
 
 if bm._SCRUBBER_AVAILABLE:  # pragma: no cover - optional import for tests
     import scrubadub  # type: ignore
@@ -61,6 +64,32 @@ def test_deidentify_handles_complex_phi(monkeypatch):
     assert "[PHONE:" in cleaned
     assert "[EMAIL:" in cleaned
     assert "[SSN:" in cleaned
+
+
+def test_prompt_guard_applies_deid_policy(monkeypatch):
+    monkeypatch.setattr(security.DEID_POLICY, "_engine", "regex")
+    request = SimpleNamespace(
+        text="Patient John Doe with MRN 1234567.",
+        chart="DOB 01/23/2020 and lives at 789 Oak Avenue.",
+        audio="Call (555) 111-2222 for follow up.",
+        rules=["Contact at (555) 987-6543"],
+        age=42,
+        sex="F",
+        region="CA",
+    )
+    guard = security.PromptPrivacyGuard()
+    context = guard.prepare("summary", request)
+    assert "[NAME:" in context.text
+    assert "John Doe" not in context.text
+    assert "[MRN:" in context.text
+    assert "1234567" not in context.text
+    assert "[DATE:" in context.text
+    assert "01/23/2020" not in context.text
+    assert "[PHONE:" in context.text or "[PHONE:" in (context.rules[0] if context.rules else "")
+    if context.rules:
+        combined_rules = " ".join(context.rules)
+        assert "[PHONE:" in combined_rules
+        assert "555-987-6543" not in combined_rules
 
 
 def test_deidentify_combined_entities(monkeypatch):
