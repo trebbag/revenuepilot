@@ -529,7 +529,7 @@ const normalizeCodeTypeLabel = (type?: string): string | undefined => {
     return "ICD-10"
   }
   if (normalized === "HCPCS") {
-    return "CPT"
+    return "HCPCS"
   }
   return normalized
 }
