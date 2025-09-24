@@ -244,7 +244,14 @@ const normalizeConfidenceValue = (value: unknown): number | undefined => {
   if (value === null || value === undefined) {
     return undefined
   }
-  const numeric = typeof value === "string" ? Number.parseFloat(value) : typeof value === "number" ? value : Number(value)
+  let numeric: number;
+  if (typeof value === "string") {
+    numeric = Number.parseFloat(value);
+  } else if (typeof value === "number") {
+    numeric = value;
+  } else {
+    numeric = Number(value);
+  }
   if (!Number.isFinite(numeric)) {
     return undefined
   }
