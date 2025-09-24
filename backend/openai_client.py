@@ -23,6 +23,7 @@ import hashlib
 # dependency in offline/local deterministic modes.
 
 from backend.embedding import HashingVectorizerEmbedding
+from backend.observability import capture_openai_usage, capture_prompt_estimate
 from backend.key_manager import get_api_key
 
 # Cached llama.cpp model instance
@@ -109,6 +110,7 @@ def call_openai(messages: List[Dict[str, str]], model: str = "gpt-4o", temperatu
     """
     # 1. Pure offline deterministic mode
     if _use_offline():
+        capture_prompt_estimate(messages, model="offline")
         return _deterministic_placeholder(messages)
 
     # 2. Local model mode
@@ -126,6 +128,7 @@ def call_openai(messages: List[Dict[str, str]], model: str = "gpt-4o", temperatu
             text = out["choices"][0]["text"].strip()
             if not text:
                 raise RuntimeError("Empty local model response")
+            capture_prompt_estimate(messages, model=f"local:{model}")
             return text
         except Exception as exc:
             # Surface as runtime error so caller fallback logic triggers.
@@ -144,6 +147,26 @@ def call_openai(messages: List[Dict[str, str]], model: str = "gpt-4o", temperatu
             messages=messages,
             temperature=temperature,
         )
+        usage = getattr(response, "usage", None)
+        prompt_tokens = 0
+        completion_tokens = 0
+        if usage:
+            prompt_tokens = getattr(usage, "prompt_tokens", None) or 0
+            completion_tokens = getattr(usage, "completion_tokens", None) or 0
+            # OpenAI responses sometimes expose totals through mapping access
+            if isinstance(usage, dict):
+                prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens) or 0)
+                completion_tokens = int(usage.get("completion_tokens", completion_tokens) or 0)
+            else:
+                try:
+                    prompt_tokens = int(prompt_tokens)
+                except (TypeError, ValueError):
+                    prompt_tokens = 0
+                try:
+                    completion_tokens = int(completion_tokens)
+                except (TypeError, ValueError):
+                    completion_tokens = 0
+        capture_openai_usage(prompt_tokens, completion_tokens, model=model)
         return response.choices[0].message["content"]
     except Exception as exc:  # pragma: no cover - network errors / SDK issues
         raise RuntimeError(f"Error calling OpenAI: {exc}") from exc

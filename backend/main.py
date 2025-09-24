@@ -264,6 +264,15 @@ from backend import deid as deid_module  # type: ignore
 from backend import compliance as compliance_engine  # type: ignore
 from backend.sanitizer import sanitize_text
 from backend import worker  # type: ignore
+from backend.observability import (
+    ObservabilityRecorder,
+    configure_recorder,
+    observe_ai_route,
+    build_observability_dashboard,
+    get_observability_trace,
+    reset_observability_for_tests,
+    RouteObservation,
+)
 
 
 # When ``USE_OFFLINE_MODEL`` is set, endpoints will return deterministic
@@ -559,7 +568,14 @@ _export_worker_lock: Optional[asyncio.Lock] = None
 _ALERT_SUMMARY: Dict[str, Any] = {
     "workflow": {"total": 0, "byDestination": {}, "lastCompletion": None},
     "exports": {"failures": 0, "bySystem": {}, "lastFailure": None},
-    "ai": {"errors": 0, "byRoute": {}, "lastError": None},
+    "ai": {
+        "errors": 0,
+        "byRoute": {},
+        "lastError": None,
+        "latencyBreaches": 0,
+        "breachByRoute": {},
+        "lastLatencyBreach": None,
+    },
     "updatedAt": None,
 }
 _ALERT_LOCK = threading.Lock()
@@ -582,8 +598,16 @@ def reset_alert_summary_for_tests() -> None:
     with _ALERT_LOCK:
         _ALERT_SUMMARY["workflow"] = {"total": 0, "byDestination": {}, "lastCompletion": None}
         _ALERT_SUMMARY["exports"] = {"failures": 0, "bySystem": {}, "lastFailure": None}
-        _ALERT_SUMMARY["ai"] = {"errors": 0, "byRoute": {}, "lastError": None}
+        _ALERT_SUMMARY["ai"] = {
+            "errors": 0,
+            "byRoute": {},
+            "lastError": None,
+            "latencyBreaches": 0,
+            "breachByRoute": {},
+            "lastLatencyBreach": None,
+        }
         _ALERT_SUMMARY["updatedAt"] = None
+    reset_observability_for_tests()
 
 
 def _record_workflow_completion(
@@ -636,6 +660,7 @@ def _record_ai_error(route: str, detail: Any, trace_id: str | None = None) -> No
     with _ALERT_LOCK:
         ai_state = _ALERT_SUMMARY["ai"]
         by_route = ai_state.setdefault("byRoute", {})
+        ai_state.setdefault("breachByRoute", {})
         ai_state["errors"] = ai_state.get("errors", 0) + 1
         by_route[route] = by_route.get(route, 0) + 1
         ai_state["lastError"] = {
@@ -645,6 +670,46 @@ def _record_ai_error(route: str, detail: Any, trace_id: str | None = None) -> No
             "timestamp": now,
         }
         _ALERT_SUMMARY["updatedAt"] = now
+
+
+def _observability_alert_handler(event: Dict[str, Any]) -> None:
+    if not event:
+        return
+    if event.get("type") != "latency_breach":
+        return
+    route = str(event.get("route") or "unknown")
+    now = datetime.now(timezone.utc).isoformat()
+    with _ALERT_LOCK:
+        ai_state = _ALERT_SUMMARY["ai"]
+        breaches = ai_state.setdefault("breachByRoute", {})
+        ai_state["latencyBreaches"] = ai_state.get("latencyBreaches", 0) + 1
+        breaches[route] = breaches.get(route, 0) + 1
+        ai_state["lastLatencyBreach"] = {
+            "route": route,
+            "traceId": event.get("traceId"),
+            "durationMs": event.get("duration_ms"),
+            "timestamp": now,
+        }
+        _ALERT_SUMMARY["updatedAt"] = now
+
+
+def _observability_metrics_callback(observation: "RouteObservation") -> None:
+    route_tag = f"route:{observation.route}"
+    status_tag = f"status:{observation.status}"
+    statsd_histogram(
+        "revenuepilot_ai_route_latency_ms",
+        observation.duration_ms,
+        tags=[route_tag, status_tag],
+    )
+    statsd_histogram(
+        "revenuepilot_ai_route_tokens_total",
+        observation.total_tokens,
+        tags=[route_tag],
+    )
+    if observation.status == "success":
+        statsd_increment("revenuepilot_ai_route_success_total", tags=[route_tag])
+    else:
+        statsd_increment("revenuepilot_ai_route_errors_total", tags=[route_tag])
 
 
 _PATH_PARAM_RE = re.compile(r"/(?:[0-9]+|[0-9a-fA-F]{8,})")
@@ -1803,6 +1868,13 @@ context_pipeline = ChartContextPipeline(
     default_profile=os.getenv("PROFILE", "balanced"),
     upload_dir=lambda: UPLOAD_DIR,
 )
+
+_observability_recorder = ObservabilityRecorder(
+    lambda: db_conn,
+    alert_callback=_observability_alert_handler,
+    metrics_callback=_observability_metrics_callback,
+)
+configure_recorder(_observability_recorder)
 
 
 
@@ -10952,6 +11024,31 @@ async def get_metrics(
     }
 
 
+@app.get("/status/observability")
+async def get_status_observability(
+    hours: int = Query(24, ge=1, le=168),
+    route: Optional[str] = Query(None, max_length=64),
+    limit: int = Query(20, ge=1, le=200),
+    user=Depends(require_roles("analyst")),
+) -> Dict[str, Any]:
+    """Return AI route and queue telemetry for the observability dashboard."""
+
+    dashboard = build_observability_dashboard(hours=hours, route=route, limit=limit)
+    return dashboard
+
+
+@app.get("/status/observability/trace/{trace_id}")
+async def get_status_observability_trace(
+    trace_id: str, user=Depends(require_roles("analyst"))
+) -> Dict[str, Any]:
+    """Return details for a specific AI route invocation."""
+
+    detail = get_observability_trace(trace_id)
+    if detail is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trace not found")
+    return detail
+
+
 @app.get("/status/alerts")
 async def get_status_alerts(user=Depends(require_roles("analyst"))) -> Dict[str, Any]:
     """Return a snapshot of operational alert metrics for administrators."""
@@ -11975,14 +12072,46 @@ async def summarize(
     cleaned = prompt_context.text or ""
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
-        # check user stored preference (table may not exist in some test fixtures)
         try:
-            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            row = db_conn.execute(
+                "SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                (user["sub"],),
+            ).fetchone()
             if row:
                 offline_active = bool(row["use_offline_mode"])
         except sqlite3.OperationalError:
-            # settings table not present; ignore
             pass
+
+    mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
+    cache_state = "warm" if mode == "offline" else "cold"
+    model_name = req.summarizeModel or ("offline" if mode == "offline" else "gpt-4o")
+    trace_id = current_trace_id()
+    with observe_ai_route(
+        route="summary",
+        note_id=req.noteId,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata={"mode": mode, "lang": req.lang or "en"},
+    ) as observation:
+        if mode == "offline":
+            from backend.offline_model import summarize as offline_summarize
+
+            observation.set_cache_state("warm")
+            data = offline_summarize(
+                cleaned,
+                req.lang,
+                req.specialty,
+                req.payer,
+                req.age,
+                use_local=req.useLocalModels,
+                model_path=req.summarizeModel,
+            )
+            if "patient_friendly" not in data:
+                data["patient_friendly"] = data.get("summary", "")
+            return data
+
+
     if offline_active or USE_OFFLINE_MODEL:
         from backend.offline_model import summarize as offline_summarize
 
@@ -12009,27 +12138,26 @@ async def summarize(
             )
             response_content = call_openai(messages)
             data = json.loads(response_content)
-            # If model returns only summary, mirror into patient_friendly
             if "patient_friendly" not in data and "summary" in data:
                 data["patient_friendly"] = data["summary"]
+            return data
         except Exception as exc:
-            trace_id = current_trace_id()
             logger.error(
                 "Error during summary LLM call",
                 log_event="ai_summary_failed",
                 error=str(exc),
             )
+            observation.mark_failure(exc, trace_id=trace_id)
             _record_ai_error("summary", exc, trace_id)
             summary = cleaned[:200]
             if len(cleaned) > 200:
                 summary += "..."
-            data = {
+            return {
                 "summary": summary,
                 "patient_friendly": summary,
                 "recommendations": [],
                 "warnings": [],
             }
-    return data
 
 
 @app.post("/transcribe")
@@ -12163,50 +12291,57 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
     cleaned = prompt_context.text or ""
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
-        # check user stored preference (table may not exist in some test fixtures)
         try:
-            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            row = db_conn.execute(
+                "SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                (user["sub"],),
+            ).fetchone()
             if row:
                 offline_active = bool(row["use_offline_mode"])
         except sqlite3.OperationalError:
             pass
-    if offline_active or USE_OFFLINE_MODEL:
-        from backend.offline_model import beautify as offline_beautify
+    mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
+    cache_state = "warm" if mode == "offline" else "cold"
+    model_name = req.beautifyModel or ("offline" if mode == "offline" else "gpt-4o")
+    trace_id = current_trace_id()
+    with observe_ai_route(
+        route="beautify",
+        note_id=req.noteId,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata={"mode": mode, "lang": req.lang or "en"},
+    ) as observation:
+        if mode == "offline":
+            from backend.offline_model import beautify as offline_beautify
 
-        beautified = offline_beautify(
-            cleaned,
-            req.lang,
-            req.specialty,
-            req.payer,
-            use_local=req.useLocalModels,
-            model_path=req.beautifyModel,
-        )
-        return {"beautified": beautified}
+            observation.set_cache_state("warm")
+            beautified = offline_beautify(
+                cleaned,
+                req.lang,
+                req.specialty,
+                req.payer,
+                use_local=req.useLocalModels,
+                model_path=req.beautifyModel,
+            )
+            return {"beautified": beautified}
 
-    # Attempt to call the LLM to beautify the note. If the call
-    # fails for any reason (e.g., missing API key, network error), fall
-    # back to returning the trimmed note with only the first letter of
-    # each sentence capitalised so the endpoint still returns something useful.
-    try:
-        messages = build_beautify_prompt(cleaned, req.lang, req.specialty, req.payer)
-        response_content = call_openai(messages)
-        # The assistant's reply is expected to contain only the
-        # beautified note text. We strip any leading/trailing
-        # whitespace to tidy the result.
-        beautified = response_content.strip()
-        return {"beautified": beautified}
-    except Exception as exc:
-        # Log the exception and fall back to a basic transformation.
-        trace_id = current_trace_id()
-        logger.error(
-            "Error during beautify LLM call",
-            log_event="ai_beautify_failed",
-            error=str(exc),
-        )
-        _record_ai_error("beautify", exc, trace_id)
-        sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
-        beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
-        return {"beautified": beautified, "error": str(exc)}
+        try:
+            messages = build_beautify_prompt(cleaned, req.lang, req.specialty, req.payer)
+            response_content = call_openai(messages)
+            beautified = response_content.strip()
+            return {"beautified": beautified}
+        except Exception as exc:
+            logger.error(
+                "Error during beautify LLM call",
+                log_event="ai_beautify_failed",
+                error=str(exc),
+            )
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("beautify", exc, trace_id)
+            sentences = re.split(r"(?<=[.!?])\s+", cleaned.strip())
+            beautified = " ".join(s[:1].upper() + s[1:] for s in sentences if s)
+            return {"beautified": beautified, "error": str(exc)}
 
 
 @app.post("/api/ai/beautify")
@@ -12221,7 +12356,7 @@ async def suggest(
 ) -> SuggestionsResponse:
     """
     Generate coding and compliance suggestions for a clinical note.  This
-    endpoint de‑identifies the text and then calls an AI model to
+    endpoint de-identifies the text and then calls an AI model to
     determine relevant CPT/ICD codes, compliance prompts, public health
     reminders, and differential diagnoses.  Falls back to rule-based
     suggestions if the model call fails.
@@ -12231,6 +12366,17 @@ async def suggest(
     Returns:
         SuggestionsResponse with four categories of suggestions.
     """
+
+    combined = req.text or ""
+    if req.chart:
+        combined += "\n" + str(req.chart)
+    if req.audio:
+        combined += "\n" + str(req.audio)
+    cleaned = deidentify(combined)
+    if req.rules:
+        rules_section = "\n\nUser-defined rules:\n" + "\n".join(
+            f"- {r}" for r in req.rules
+
     # Combine the main note with any optional chart text or audio transcript
     prompt_context = PROMPT_GUARD.prepare("suggest", req)
     cleaned = prompt_context.text or ""
@@ -12243,13 +12389,44 @@ async def suggest(
         cleaned_for_prompt = cleaned
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
-        # check user stored preference (table may not exist in some test fixtures)
         try:
-            row = db_conn.execute("SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)", (user["sub"],)).fetchone()
+            row = db_conn.execute(
+                "SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                (user["sub"],),
+            ).fetchone()
             if row:
                 offline_active = bool(row["use_offline_mode"])
         except sqlite3.OperationalError:
             pass
+
+    mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
+    cache_state = "warm" if mode == "offline" else "cold"
+    model_name = req.suggestModel or ("offline" if mode == "offline" else "gpt-4o")
+    trace_id = current_trace_id()
+    metadata = {"mode": mode, "lang": req.lang or "en"}
+    with observe_ai_route(
+        route="suggest",
+        note_id=req.noteId,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if mode == "offline":
+            from backend.offline_model import suggest as offline_suggest
+
+            observation.set_cache_state("warm")
+            data = offline_suggest(
+                cleaned_for_prompt,
+                req.lang,
+                req.specialty,
+                req.payer,
+                req.age,
+                req.sex,
+                req.region,
+                use_local=req.useLocalModels,
+                model_path=req.suggestModel,
+
     if offline_active or USE_OFFLINE_MODEL:
         from backend.offline_model import suggest as offline_suggest
 
@@ -12271,37 +12448,181 @@ async def suggest(
                 reason=p.get("reason"),
                 source=p.get("source"),
                 evidenceLevel=p.get("evidenceLevel") or p.get("evidence_level"),
+
             )
-            for p in data["publicHealth"]
-        ]
-        try:
-            extra_ph = public_health_api.get_public_health_suggestions(
-                req.age, req.sex, req.region, req.agencies
-            )
-        except Exception as exc:  # pragma: no cover - network errors
-            logger.warning("public_health_fetch_failed", error=str(exc))
-            extra_ph = []
-        if extra_ph:
-            existing = {p.recommendation for p in public_health}
-            for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
-                if rec_name and rec_name not in existing:
-                    if isinstance(rec, dict):
-                        public_health.append(PublicHealthSuggestion(**rec))
-                    else:
-                        public_health.append(
-                            PublicHealthSuggestion(recommendation=str(rec))
-                        )
-        code_items = data.get("codes", [])
-        codes = [CodeSuggestion(**c) for c in code_items]
-        _log_confidence_scores(
-            user,
-            req.noteId,
-            [
-                (
-                    item.get("code") or item.get("Code"),
-                    _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+            public_health = [
+                PublicHealthSuggestion(
+                    recommendation=p.get("recommendation"),
+                    reason=p.get("reason"),
+                    source=p.get("source"),
+                    evidenceLevel=p.get("evidenceLevel") or p.get("evidence_level"),
                 )
+                for p in data.get("publicHealth", [])
+            ]
+            try:
+                extra_ph = public_health_api.get_public_health_suggestions(
+                    req.age, req.sex, req.region, req.agencies
+                )
+            except Exception as exc:  # pragma: no cover - network errors
+                logger.warning("public_health_fetch_failed", error=str(exc))
+                extra_ph = []
+            if extra_ph:
+                existing = {p.recommendation for p in public_health}
+                for rec in extra_ph:
+                    rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                    if rec_name and rec_name not in existing:
+                        if isinstance(rec, dict):
+                            public_health.append(PublicHealthSuggestion(**rec))
+                        else:
+                            public_health.append(
+                                PublicHealthSuggestion(recommendation=str(rec))
+                            )
+            code_items = data.get("codes", [])
+            codes = [CodeSuggestion(**item) for item in code_items]
+            _log_confidence_scores(
+                user,
+                req.noteId,
+                [
+                    (
+                        item.get("code") or item.get("Code"),
+                        _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+                    )
+                    for item in code_items
+                ],
+            )
+            follow_up = recommend_follow_up(
+                [c.code for c in codes],
+                [
+                    entry.get("diagnosis")
+                    for entry in data.get("differentials", [])
+                    if isinstance(entry, dict)
+                ],
+                req.specialty,
+                req.payer,
+            )
+            questions_payload = data.get("questions") if isinstance(data, dict) else None
+            if not isinstance(questions_payload, list):
+                questions_payload = []
+            return SuggestionsResponse(
+                codes=codes,
+                compliance=data.get("compliance", []),
+                publicHealth=public_health,
+                differentials=[DifferentialSuggestion(**d) for d in data.get("differentials", [])],
+                questions=questions_payload,
+                followUp=follow_up,
+            )
+
+        try:
+            messages = build_suggest_prompt(
+                cleaned_for_prompt,
+                req.lang,
+                req.specialty,
+                req.payer,
+                req.age,
+                req.sex,
+                req.region,
+            )
+            response_content = call_openai(messages)
+            data = json.loads(response_content)
+            codes_list: List[CodeSuggestion] = []
+            logged_codes: List[Tuple[str, Optional[float]]] = []
+            for item in data.get("codes", []):
+                code_str = item.get("code") or item.get("Code") or ""
+                rationale = item.get("rationale") or item.get("Rationale") or None
+                upgrade = item.get("upgrade_to") or item.get("upgradeTo") or None
+                upgrade_path = item.get("upgrade_path") or item.get("upgradePath") or None
+                confidence_val = _normalise_confidence(
+                    item.get("confidence") or item.get("Confidence")
+                )
+                if code_str:
+                    logged_codes.append((code_str, confidence_val))
+                    codes_list.append(
+                        CodeSuggestion(
+                            code=code_str,
+                            rationale=rationale,
+                            upgrade_to=upgrade,
+                            upgradePath=upgrade_path,
+                        )
+                    )
+            compliance = [str(x) for x in data.get("compliance", [])]
+            public_health: List[PublicHealthSuggestion] = []
+            for item in data.get("publicHealth", data.get("public_health", [])):
+                if isinstance(item, dict):
+                    rec = item.get("recommendation") or item.get("Recommendation") or ""
+                    reason = item.get("reason") or item.get("Reason") or None
+                    source = item.get("source") or item.get("Source")
+                    evidence = (
+                        item.get("evidenceLevel")
+                        or item.get("evidence_level")
+                        or item.get("evidence")
+                    )
+                    if rec:
+                        public_health.append(
+                            PublicHealthSuggestion(
+                                recommendation=rec,
+                                reason=reason,
+                                source=source,
+                                evidenceLevel=evidence,
+                            )
+                        )
+                else:
+                    public_health.append(
+                        PublicHealthSuggestion(recommendation=str(item), reason=None)
+                    )
+            diffs: List[DifferentialSuggestion] = []
+            for item in data.get("differentials", []):
+                if isinstance(item, dict):
+                    diag = item.get("diagnosis") or item.get("Diagnosis") or ""
+                    raw_score = item.get("score")
+                    score_val: Optional[float] = None
+                    if isinstance(raw_score, (int, float)):
+                        score_val = float(raw_score)
+                        if score_val > 1:
+                            score_val /= 100.0
+                        if not 0 <= score_val <= 1:
+                            score_val = None
+                    elif isinstance(raw_score, str):
+                        try:
+                            score_val = float(raw_score.strip().rstrip("%"))
+                            if score_val > 1:
+                                score_val /= 100.0
+                            if not 0 <= score_val <= 1:
+                                score_val = None
+                        except Exception:
+                            score_val = None
+                    if diag:
+                        diffs.append(
+                            DifferentialSuggestion(diagnosis=diag, score=score_val)
+                        )
+                else:
+                    diffs.append(DifferentialSuggestion(diagnosis=str(item), score=None))
+            try:
+                extra_ph = public_health_api.get_public_health_suggestions(
+                    req.age, req.sex, req.region, req.agencies
+                )
+
+            except Exception as exc:  # pragma: no cover - network errors
+                logger.warning("public_health_fetch_failed", error=str(exc))
+                extra_ph = []
+            if extra_ph:
+                existing = {p.recommendation for p in public_health}
+                for rec in extra_ph:
+                    rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                    if rec_name and rec_name not in existing:
+                        if isinstance(rec, dict):
+                            public_health.append(PublicHealthSuggestion(**rec))
+                        else:
+                            public_health.append(
+                                PublicHealthSuggestion(recommendation=str(rec))
+                            )
+            if not (codes_list or compliance or public_health or diffs):
+                raise ValueError("No suggestions returned from LLM")
+            follow_up = recommend_follow_up(
+                [c.code for c in codes_list],
+                [d.diagnosis for d in diffs],
+                req.specialty,
+                req.payer,
+
                 for item in code_items
             ],
         )
@@ -12344,283 +12665,182 @@ async def suggest(
             upgrade_path = item.get("upgrade_path") or item.get("upgradePath") or None
             confidence_val = _normalise_confidence(
                 item.get("confidence") or item.get("Confidence")
-            )
-            if code_str:
-                logged_codes.append((code_str, confidence_val))
-                codes_list.append(
-                    CodeSuggestion(
-                        code=code_str,
-                        rationale=rationale,
-                        upgrade_to=upgrade,
-                        upgradePath=upgrade_path,
-                    )
-                )
-        # Extract compliance as list of strings
-        compliance = [str(x) for x in data.get("compliance", [])]
-        # Public health objects
-        public_health: List[PublicHealthSuggestion] = []
-        for item in data.get("publicHealth", data.get("public_health", [])):
-            if isinstance(item, dict):
-                rec = item.get("recommendation") or item.get("Recommendation") or ""
-                reason = item.get("reason") or item.get("Reason") or None
-                source = item.get("source") or item.get("Source")
-                evidence = (
-                    item.get("evidenceLevel")
-                    or item.get("evidence_level")
-                    or item.get("evidence")
-                )
-                if rec:
-                    public_health.append(
-                        PublicHealthSuggestion(
-                            recommendation=rec,
-                            reason=reason,
-                            source=source,
-                            evidenceLevel=evidence,
-                        )
-                    )
-            else:
-                public_health.append(
-                    PublicHealthSuggestion(recommendation=str(item), reason=None)
-                )
-        # Differential diagnoses with scores
-        diffs: List[DifferentialSuggestion] = []
-        for item in data.get("differentials", []):
-            if isinstance(item, dict):
-                diag = item.get("diagnosis") or item.get("Diagnosis") or ""
-                raw_score = item.get("score")
-                score_val: Optional[float] = None
-                if isinstance(raw_score, (int, float)):
-                    score_val = float(raw_score)
-                    if score_val > 1:
-                        score_val /= 100.0
-                    if not 0 <= score_val <= 1:
-                        score_val = None
-                elif isinstance(raw_score, str):
-                    try:
-                        score_val = float(raw_score.strip().rstrip("%"))
-                        if score_val > 1:
-                            score_val /= 100.0
-                        if not 0 <= score_val <= 1:
-                            score_val = None
-                    except Exception:
-                        score_val = None
-                if diag:
-                    diffs.append(
-                        DifferentialSuggestion(diagnosis=diag, score=score_val)
-                    )
-            else:
-                diffs.append(DifferentialSuggestion(diagnosis=str(item), score=None))
-        # Augment public health suggestions with external guidelines
-        try:
-            extra_ph = public_health_api.get_public_health_suggestions(
-                req.age, req.sex, req.region, req.agencies
-            )
-        except Exception as exc:  # pragma: no cover - network errors
-            logger.warning("public_health_fetch_failed", error=str(exc))
-            extra_ph = []
-        if extra_ph:
-            existing = {p.recommendation for p in public_health}
-            for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
-                if rec_name and rec_name not in existing:
-                    if isinstance(rec, dict):
-                        public_health.append(PublicHealthSuggestion(**rec))
-                    else:
-                        public_health.append(
-                            PublicHealthSuggestion(recommendation=str(rec))
-                        )
-        # If all categories are empty, raise an error to fall back to rule-based suggestions.
-        if not (codes_list or compliance or public_health or diffs):
-            raise ValueError("No suggestions returned from LLM")
-        follow_up = recommend_follow_up(
-            [c.code for c in codes_list],
-            [d.diagnosis for d in diffs],
-            req.specialty,
-            req.payer,
-        )
-        _log_confidence_scores(user, req.noteId, logged_codes)
-        questions_payload = data.get("questions") if isinstance(data, dict) else None
-        if not isinstance(questions_payload, list):
-            questions_payload = []
-        return SuggestionsResponse(
-            codes=codes_list,
-            compliance=compliance,
-            publicHealth=public_health,
-            differentials=diffs,
-            questions=questions_payload,
-            followUp=follow_up,
-        )
-    except Exception as exc:
-        # Log error and use rule-based fallback suggestions.
-        trace_id = current_trace_id()
-        logger.error("ai_suggest_failed", error=str(exc))
-        _record_ai_error("suggest", exc, trace_id)
-        codes: List[CodeSuggestion] = []  # fixed invalid generic syntax
-        compliance: List[str] = []
-        public_health: List[PublicHealthSuggestion] = []
-        diffs: List[DifferentialSuggestion] = []
-        # Respiratory symptoms
-        if any(
-            keyword in cleaned.lower() for keyword in ["cough", "fever", "cold", "sore throat"]
-        ):
-            codes.append(
-                CodeSuggestion(
-                    code="99213",
-                    rationale="Established patient with respiratory symptoms",
-                )
-            )
-            codes.append(
-                CodeSuggestion(
-                    code="J06.9", rationale="Upper respiratory infection, unspecified"
-                )
-            )
-            compliance.append("Document duration of fever and associated symptoms")
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Consider influenza vaccine", reason=None
-                )
-            )
-            diffs.extend(
-                [
-                    DifferentialSuggestion(diagnosis="Common cold"),
-                    DifferentialSuggestion(diagnosis="COVID-19"),
-                    DifferentialSuggestion(diagnosis="Influenza"),
-                ]
-            )
-        # Diabetes management
-        if "diabetes" in cleaned.lower():
-            codes.append(
-                CodeSuggestion(
-                    code="E11.9",
-                    rationale="Type 2 diabetes mellitus without complications",
-                )
-            )
-            compliance.append("Include latest HbA1c results and medication list")
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Remind patient about foot and eye exams",
-                    reason=None,
-                )
-            )
-            diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
-        # Hypertension
-        if "hypertension" in cleaned.lower() or "high blood pressure" in cleaned.lower():
-            codes.append(
-                CodeSuggestion(code="I10", rationale="Essential (primary) hypertension")
-            )
-            compliance.append(
-                "Document blood pressure readings and lifestyle counselling"
-            )
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Discuss sodium restriction and exercise",
-                    reason=None,
-                )
-            )
-            diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
-        # Preventive visit
-        if "annual" in cleaned.lower() or "wellness" in cleaned.lower():
-            codes.append(
-                CodeSuggestion(
-                    code="99395", rationale="Periodic comprehensive preventive visit"
-                )
-            )
-            compliance.append("Ensure all preventive screenings are up to date")
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Screen for depression and alcohol use", reason=None
-                )
-            )
-            diffs.append(DifferentialSuggestion(diagnosis="–"))
-        # Mental health
-        if any(word in cleaned.lower() for word in ["depression", "anxiety", "sad", "depressed"]):
-            codes.append(
-                CodeSuggestion(
-                    code="F32.9", rationale="Major depressive disorder, unspecified"
-                )
-            )
-            compliance.append(
-                "Assess severity and suicidal ideation; document mental status exam"
-            )
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Offer referral to counselling or psychotherapy",
-                    reason=None,
-                )
-            )
-            diffs.append(DifferentialSuggestion(diagnosis="Adjustment disorder"))
-        # Musculoskeletal pain
-        if any(
-            word in cleaned.lower()
-            for word in [
-                "back pain",
-                "low back",
-                "joint pain",
-                "knee pain",
-                "shoulder pain",
-            ]
-        ):
-            codes.append(CodeSuggestion(code="M54.5", rationale="Low back pain"))
-            compliance.append(
-                "Document onset, aggravating/relieving factors, and functional limitations"
-            )
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Recommend stretching and physical therapy",
-                    reason=None,
-                )
-            )
-            diffs.append(DifferentialSuggestion(diagnosis="Lumbar strain"))
-        # Default suggestions if nothing matched
-        if not codes:
-            codes.append(
-                CodeSuggestion(
-                    code="99212", rationale="Established patient, straightforward"
-                )
-            )
-        if not compliance:
-            compliance.append("Ensure chief complaint and history are complete")
-        if not public_health:
-            public_health.append(
-                PublicHealthSuggestion(
-                    recommendation="Consider influenza vaccine", reason=None
-                )
-            )
-        if not diffs:
-            diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
-        try:
-            extra_ph = public_health_api.get_public_health_suggestions(
-                req.age, req.sex, req.region, req.agencies
-            )
-        except Exception as exc:  # pragma: no cover - network errors
-            logger.warning("public_health_fetch_failed", error=str(exc))
-            extra_ph = []
-        if extra_ph:
-            existing = {p.recommendation for p in public_health}
-            for rec in extra_ph:
-                rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
-                if rec_name and rec_name not in existing:
-                    if isinstance(rec, dict):
-                        public_health.append(PublicHealthSuggestion(**rec))
-                    else:
-                        public_health.append(
-                            PublicHealthSuggestion(recommendation=str(rec))
-                        )
-        follow_up = recommend_follow_up(
-            [c.code for c in codes],
-            [d.diagnosis for d in diffs],
-            req.specialty,
-            req.payer,
-        )
 
-        return SuggestionsResponse(
-            codes=codes,
-            compliance=compliance,
-            publicHealth=public_health,
-            differentials=diffs,
-            questions=[],
-            followUp=follow_up,
-        )
+            )
+            _log_confidence_scores(user, req.noteId, logged_codes)
+            questions_payload = data.get("questions") if isinstance(data, dict) else None
+            if not isinstance(questions_payload, list):
+                questions_payload = []
+            return SuggestionsResponse(
+                codes=codes_list,
+                compliance=compliance,
+                publicHealth=public_health,
+                differentials=diffs,
+                questions=questions_payload,
+                followUp=follow_up,
+            )
+        except Exception as exc:
+            logger.error("ai_suggest_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("suggest", exc, trace_id)
+            codes: List[CodeSuggestion] = []
+            compliance: List[str] = []
+            public_health: List[PublicHealthSuggestion] = []
+            diffs: List[DifferentialSuggestion] = []
+            if any(
+                keyword in cleaned.lower() for keyword in ["cough", "fever", "cold", "sore throat"]
+            ):
+                codes.append(
+                    CodeSuggestion(
+                        code="99213",
+                        rationale="Established patient with respiratory symptoms",
+                    )
+                )
+                codes.append(
+                    CodeSuggestion(
+                        code="J06.9", rationale="Upper respiratory infection, unspecified"
+                    )
+                )
+                compliance.append("Document duration of fever and associated symptoms")
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Consider influenza vaccine", reason=None
+                    )
+                )
+                diffs.extend(
+                    [
+                        DifferentialSuggestion(diagnosis="Common cold"),
+                        DifferentialSuggestion(diagnosis="COVID-19"),
+                        DifferentialSuggestion(diagnosis="Influenza"),
+                    ]
+                )
+            if "diabetes" in cleaned.lower():
+                codes.append(
+                    CodeSuggestion(
+                        code="E11.9",
+                        rationale="Type 2 diabetes mellitus without complications",
+                    )
+                )
+                compliance.append("Include latest HbA1c results and medication list")
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Remind patient about foot and eye exams",
+                        reason=None,
+                    )
+                )
+                diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
+            if "hypertension" in cleaned.lower() or "high blood pressure" in cleaned.lower():
+                codes.append(
+                    CodeSuggestion(code="I10", rationale="Essential (primary) hypertension")
+                )
+                compliance.append(
+                    "Document blood pressure readings and lifestyle counselling"
+                )
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Discuss sodium restriction and exercise",
+                        reason=None,
+                    )
+                )
+                diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
+            if "annual" in cleaned.lower() or "wellness" in cleaned.lower():
+                codes.append(
+                    CodeSuggestion(
+                        code="99395", rationale="Periodic comprehensive preventive visit"
+                    )
+                )
+                compliance.append("Ensure all preventive screenings are up to date")
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Screen for depression and alcohol use", reason=None
+                    )
+                )
+                diffs.append(DifferentialSuggestion(diagnosis="–"))
+            if any(word in cleaned.lower() for word in ["depression", "anxiety", "sad", "depressed"]):
+                codes.append(
+                    CodeSuggestion(
+                        code="F32.9", rationale="Major depressive disorder, unspecified"
+                    )
+                )
+                compliance.append(
+                    "Assess severity and suicidal ideation; document mental status exam"
+                )
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Offer referral to counselling or psychotherapy",
+                        reason=None,
+                    )
+                )
+                diffs.append(DifferentialSuggestion(diagnosis="Adjustment disorder"))
+            if any(
+                word in cleaned.lower()
+                for word in [
+                    "back pain",
+                    "low back",
+                    "joint pain",
+                    "knee pain",
+                    "shoulder pain",
+                ]
+            ):
+                codes.append(CodeSuggestion(code="M54.5", rationale="Low back pain"))
+                compliance.append(
+                    "Document onset, aggravating/relieving factors, and functional limitations"
+                )
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Recommend stretching and physical therapy",
+                        reason=None,
+                    )
+                )
+                diffs.append(DifferentialSuggestion(diagnosis="Lumbar strain"))
+            if not codes:
+                codes.append(
+                    CodeSuggestion(
+                        code="99212", rationale="Established patient, straightforward"
+                    )
+                )
+            if not compliance:
+                compliance.append("Ensure chief complaint and history are complete")
+            if not public_health:
+                public_health.append(
+                    PublicHealthSuggestion(
+                        recommendation="Consider influenza vaccine", reason=None
+                    )
+                )
+            if not diffs:
+                diffs.append(DifferentialSuggestion(diagnosis="Routine follow-up"))
+            try:
+                extra_ph = public_health_api.get_public_health_suggestions(
+                    req.age, req.sex, req.region, req.agencies
+                )
+            except Exception as exc:  # pragma: no cover - network errors
+                logger.warning("public_health_fetch_failed", error=str(exc))
+                extra_ph = []
+            if extra_ph:
+                existing = {p.recommendation for p in public_health}
+                for rec in extra_ph:
+                    rec_name = rec.get("recommendation") if isinstance(rec, dict) else rec
+                    if rec_name and rec_name not in existing:
+                        if isinstance(rec, dict):
+                            public_health.append(PublicHealthSuggestion(**rec))
+                        else:
+                            public_health.append(
+                                PublicHealthSuggestion(recommendation=str(rec))
+                            )
+            follow_up = recommend_follow_up(
+                [c.code for c in codes],
+                [d.diagnosis for d in diffs],
+                req.specialty,
+                req.payer,
+            )
+            return SuggestionsResponse(
+                codes=codes,
+                compliance=compliance,
+                publicHealth=public_health,
+                differentials=diffs,
+                questions=[],
+                followUp=follow_up,
+            )
 
 
 @app.post("/ai/plan", response_model=PlanResponse, response_model_exclude_none=True)
@@ -13938,6 +14158,7 @@ async def finalize_note(
     }
 
 
+
 async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
@@ -13953,55 +14174,72 @@ async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
         context_lines.append("Rich patient context is available; incorporate relevant details when grounded.")
     context_block = "\n".join(context_lines)
     selected_codes_json = json.dumps(req.codes or [])
+    cache_state = "warm" if offline else "cold"
+    model_name = "offline" if offline else "gpt-4o"
+    trace_id = current_trace_id()
+    metadata = {"mode": "offline" if offline else "remote", "stage": context_stage}
+    with observe_ai_route(
+        route="codes_suggest",
+        note_id=None,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if offline:
+            from backend.offline_model import suggest as offline_suggest
 
-    if offline:
-        from backend.offline_model import suggest as offline_suggest
+            observation.set_cache_state("warm")
+            data = offline_suggest(cleaned)
+            raw_items = data.get("codes", []) if isinstance(data, dict) else []
+            normalised = _normalize_code_suggestions(raw_items)
+            deduped = _dedupe_code_suggestions(normalised, req.codes)
+            questions = (
+                _normalize_gap_questions(data.get("questions", []))
+                if isinstance(data, dict)
+                else []
+            )
+            return CodesSuggestResponse(suggestions=deduped, questions=questions)
+        try:
+            stage_hint = (
+                "Patient context is superficial; focus on explicit documentation."
+                if context_stage == "superficial"
+                else "Deep patient context is available; prefer context-aligned codes."
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert medical coder. Respond strictly with JSON in the form "
+                        "{\"suggestions\":[{\"code\":\"\",\"type\":\"\",\"description\":\"\","
+                        "\"rationale\":\"\",\"reasoning\":\"\",\"confidence\":0,\"whatItIs\":\"\","
+                        "\"usageRules\":[],\"reasonsSuggested\":[],\"potentialConcerns\":[],\"evidence\":[]}]},"
+                        "\"questions\":[{\"prompt\":\"\",\"why\":\"\",\"confidence\":0,\"evidence\":[]}]}. "
+                        "Confidence must be an integer from 0 to 100. Always include every property even when data is"
+                        " unavailable (use empty strings or arrays). Do not repeat or suggest any codes listed under "
+                        "'Selected codes'."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Note:\n{cleaned}\nSelected codes:{selected_codes_json}\n"
+                        f"Context details:\n{context_block}\n{stage_hint}"
+                    ),
+                },
+            ]
+            resp = call_openai(messages)
+            data = json.loads(resp)
+            normalised = _normalize_code_suggestions(data.get("suggestions", []))
+            deduped = _dedupe_code_suggestions(normalised, req.codes)
+            questions = _normalize_gap_questions(data.get("questions", []))
+            return CodesSuggestResponse(suggestions=deduped, questions=questions)
+        except Exception as exc:
+            logger.error("ai_codes_suggest_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("codes_suggest", exc, trace_id)
+            return CodesSuggestResponse(suggestions=[], questions=[])
 
-        data = offline_suggest(cleaned)
-        raw_items = data.get("codes", []) if isinstance(data, dict) else []
-        normalised = _normalize_code_suggestions(raw_items)
-        deduped = _dedupe_code_suggestions(normalised, req.codes)
-        questions = _normalize_gap_questions(data.get("questions", [])) if isinstance(data, dict) else []
-        return CodesSuggestResponse(suggestions=deduped, questions=questions)
-    try:
-        stage_hint = (
-            "Patient context is superficial; focus on explicit documentation."
-            if context_stage == "superficial"
-            else "Deep patient context is available; prefer context-aligned codes."
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert medical coder. Respond strictly with JSON in the form "
-                    "{\"suggestions\":[{\"code\":\"\",\"type\":\"\",\"description\":\"\","
-                    "\"rationale\":\"\",\"reasoning\":\"\",\"confidence\":0,\"whatItIs\":\"\","
-                    "\"usageRules\":[],\"reasonsSuggested\":[],\"potentialConcerns\":[],\"evidence\":[]}]},"
-                    "\"questions\":[{\"prompt\":\"\",\"why\":\"\",\"confidence\":0,\"evidence\":[]}]}. "
-                    "Confidence must be an integer from 0 to 100. Always include every property even when data is"
-                    " unavailable (use empty strings or arrays). Do not repeat or suggest any codes listed under "
-                    "'Selected codes'."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Note:\n{cleaned}\nSelected codes:{selected_codes_json}\n"
-                    f"Context details:\n{context_block}\n{stage_hint}"
-                ),
-            },
-        ]
-        resp = call_openai(messages)
-        data = json.loads(resp)
-        normalised = _normalize_code_suggestions(data.get("suggestions", []))
-        deduped = _dedupe_code_suggestions(normalised, req.codes)
-        questions = _normalize_gap_questions(data.get("questions", []))
-        return CodesSuggestResponse(suggestions=deduped, questions=questions)
-    except Exception as exc:
-        trace_id = current_trace_id()
-        logger.error("ai_codes_suggest_failed", error=str(exc))
-        _record_ai_error("codes_suggest", exc, trace_id)
-        return CodesSuggestResponse(suggestions=[], questions=[])
 
 
 @app.post("/api/ai/codes/suggest", response_model=CodesSuggestResponse)
@@ -14170,48 +14408,63 @@ def _build_compliance_response(
     return ComplianceCheckResponse(alerts=enriched_alerts, ruleReferences=aggregated_list)
 
 
+
 async def _compliance_check(
     req: ComplianceCheckRequest, db: sqlite3.Connection | None = None
 ) -> ComplianceCheckResponse:
     conn = db or db_conn
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
-    if offline:
-        from backend.offline_model import suggest as offline_suggest
+    cache_state = "warm" if offline else "cold"
+    model_name = "offline" if offline else "gpt-4o"
+    trace_id = current_trace_id()
+    metadata = {"mode": "offline" if offline else "remote"}
+    with observe_ai_route(
+        route="compliance_check",
+        note_id=None,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if offline:
+            from backend.offline_model import suggest as offline_suggest
 
-        data = offline_suggest(cleaned)
-        alerts = [
-            ComplianceAlert(
-                text=str(item),
-                confidence=1.0,
-                reasoning=str(item),
-            )
-            for item in data.get("compliance", [])
-        ]
-        return _build_compliance_response(alerts, conn)
-    try:
-        codes = json.dumps(req.codes or [])
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Note:\n{cleaned}\nCodes:{codes}",
-            },
-        ]
-        resp = call_openai(messages)
-        data = json.loads(resp)
-        alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
-        return _build_compliance_response(alerts, conn)
-    except Exception as exc:
-        trace_id = current_trace_id()
-        logger.error("ai_compliance_check_failed", error=str(exc))
-        _record_ai_error("compliance_check", exc, trace_id)
-        return ComplianceCheckResponse(alerts=[], ruleReferences=[])
+            observation.set_cache_state("warm")
+            data = offline_suggest(cleaned)
+            alerts = [
+                ComplianceAlert(
+                    text=str(item),
+                    confidence=1.0,
+                    reasoning=str(item),
+                )
+                for item in data.get("compliance", [])
+            ]
+            return _build_compliance_response(alerts, conn)
+        try:
+            codes = json.dumps(req.codes or [])
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Note:\n{cleaned}\nCodes:{codes}",
+                },
+            ]
+            resp = call_openai(messages)
+            data = json.loads(resp)
+            alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
+            return _build_compliance_response(alerts, conn)
+        except Exception as exc:
+            logger.error("ai_compliance_check_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("compliance_check", exc, trace_id)
+            return ComplianceCheckResponse(alerts=[], ruleReferences=[])
+
 
 
 @app.post("/api/ai/compliance/check", response_model=ComplianceCheckResponse)
@@ -14478,6 +14731,7 @@ async def compliance_resources(
     return {"resources": resources, "count": len(resources)}
 
 
+
 async def _differentials_generate(
     req: DifferentialsGenerateRequest,
 ) -> DifferentialsResponse:
@@ -14504,74 +14758,88 @@ async def _differentials_generate(
         )
 
     skipped_messages: list[str] = []
-    if offline:
-        from backend.offline_model import suggest as offline_suggest
+    diffs: List[DifferentialSuggestion]
+    cache_state = "warm" if offline else "cold"
+    model_name = "offline" if offline else "gpt-4o"
+    trace_id = current_trace_id()
+    metadata = {"mode": "offline" if offline else "remote", "stage": req.context_stage or ""}
+    with observe_ai_route(
+        route="differentials_generate",
+        note_id=req.noteId if hasattr(req, "noteId") else None,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if offline:
+            from backend.offline_model import suggest as offline_suggest
 
-        data = offline_suggest(cleaned)
-        diffs = _normalize_differentials(data.get("differentials", []), skipped_messages)
-        for msg in _coerce_string_list(data.get("potentialConcerns")):
-            add_concern(msg)
-    else:
-        try:
-            context_lines = []
-            if req.context_stage:
-                context_lines.append(f"Context stage: {req.context_stage}")
-            if req.correlation_id:
-                context_lines.append(f"Correlation ID: {req.correlation_id}")
-            if req.context_generated_at:
-                context_lines.append(f"Context generated at: {req.context_generated_at}")
-            context_block = "\n".join(context_lines) or "None provided"
-            stage_hint = (
-                "Superficial context; rely primarily on the documented presentation."
-                if (req.context_stage or "").lower() == "superficial"
-                else "Deep or indexed context available; cross-check against longitudinal data."
-            )
-            context_payload = {
-                "note": cleaned,
-                "contextDetails": {
-                    "stage": req.context_stage,
-                    "correlationId": req.correlation_id,
-                    "generatedAt": req.context_generated_at,
-                    "summary": context_block,
-                    "stageHint": stage_hint,
-                },
-                "vitalsLatest": req.vitalsLatest,
-                "labsRecent": req.labsRecent,
-            }
-            system_prompt = (
-                "You are a clinical decision support system. Respond strictly with JSON matching this schema: "
-                "{\"differentials\":[{\"dx\":\"\",\"whatItIs\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],\"testsToConfirm\":[],\"testsToExclude\":[],\"evidence\":[]}],\"potentialConcerns\":[]}\n"
-                "Each differential must provide at least one supporting or contradicting factor and at least one confirmatory or exclusion test. "
-                "Evidence entries should be direct snippets or quotes from the provided note or context. "
-                "Prefer normalized test identifiers such as LOINC or CPT codes when available. "
-                "Do not add commentary outside of the JSON."
-            )
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(context_payload, ensure_ascii=False, indent=2),
-                },
-            ]
-            resp = call_openai(messages)
-            data = json.loads(resp)
+            observation.set_cache_state("warm")
+            data = offline_suggest(cleaned)
             diffs = _normalize_differentials(data.get("differentials", []), skipped_messages)
             for msg in _coerce_string_list(data.get("potentialConcerns")):
                 add_concern(msg)
-        except Exception as exc:
-            trace_id = current_trace_id()
-            logger.error("ai_differentials_failed", error=str(exc))
-            _record_ai_error("differentials_generate", exc, trace_id)
-            return DifferentialsResponse(
-                differentials=[],
-                potentialConcerns=potential_concerns
-                + [
-                    "Differential generation failed; refer to clinical judgment and manual review."
-                ],
-            )
+        else:
+            try:
+                context_lines = []
+                if req.context_stage:
+                    context_lines.append(f"Context stage: {req.context_stage}")
+                if req.correlation_id:
+                    context_lines.append(f"Correlation ID: {req.correlation_id}")
+                if req.context_generated_at:
+                    context_lines.append(f"Context generated at: {req.context_generated_at}")
+                context_block = "\n".join(context_lines) or "None provided"
+                stage_hint = (
+                    "Superficial context; rely primarily on the documented presentation."
+                    if (req.context_stage or "").lower() == "superficial"
+                    else "Deep or indexed context available; cross-check against longitudinal data."
+                )
+                context_payload = {
+                    "note": cleaned,
+                    "contextDetails": {
+                        "stage": req.context_stage,
+                        "correlationId": req.correlation_id,
+                        "generatedAt": req.context_generated_at,
+                        "summary": context_block,
+                        "stageHint": stage_hint,
+                    },
+                    "vitalsLatest": req.vitalsLatest,
+                    "labsRecent": req.labsRecent,
+                }
+                system_prompt = (
+                    "You are a clinical decision support system. Respond strictly with JSON matching this schema: "
+                    "{\"differentials\":[{\"dx\":\"\",\"whatItIs\":\"\",\"supportingFactors\":[],\"contradictingFactors\":[],\"testsToConfirm\":[],\"testsToExclude\":[],\"evidence\":[]}],\"potentialConcerns\":[]}"
+                    "Each differential must provide at least one supporting or contradicting factor and at least one confirmatory or exclusion test. "
+                    "Evidence entries should be direct snippets or quotes from the provided note or context. "
+                    "Prefer normalized test identifiers such as LOINC or CPT codes when available. "
+                    "Do not add commentary outside of the JSON."
+                )
+                messages = [
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": json.dumps(context_payload, ensure_ascii=False, indent=2),
+                    },
+                ]
+                resp = call_openai(messages)
+                data = json.loads(resp)
+                diffs = _normalize_differentials(data.get("differentials", []), skipped_messages)
+                for msg in _coerce_string_list(data.get("potentialConcerns")):
+                    add_concern(msg)
+            except Exception as exc:
+                logger.error("ai_differentials_failed", error=str(exc))
+                observation.mark_failure(exc, trace_id=trace_id)
+                _record_ai_error("differentials_generate", exc, trace_id)
+                return DifferentialsResponse(
+                    differentials=[],
+                    potentialConcerns=potential_concerns
+                    + [
+                        "Differential generation failed; refer to clinical judgment and manual review."
+                    ],
+                )
 
     for msg in skipped_messages:
         add_concern(msg)
@@ -14584,6 +14852,7 @@ async def _differentials_generate(
         differentials=diffs,
         potentialConcerns=potential_concerns,
     )
+
 
 
 @app.post("/api/ai/differentials/generate", response_model=DifferentialsResponse)
@@ -14614,57 +14883,70 @@ async def ws_differentials_generate(websocket: WebSocket):
     await websocket.close()
 
 
+
 async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionResponse:
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
-    if offline:
-        from backend.offline_model import suggest as offline_suggest
+    cache_state = "warm" if offline else "cold"
+    model_name = "offline" if offline else "gpt-4o"
+    trace_id = current_trace_id()
+    metadata = {"mode": "offline" if offline else "remote", "stage": req.context_stage or ""}
+    with observe_ai_route(
+        route="prevention_suggest",
+        note_id=None,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if offline:
+            from backend.offline_model import suggest as offline_suggest
 
-        data = offline_suggest("")
-        recs = _normalize_prevention_items(data.get("publicHealth", []))
-        return PreventionResponse(recommendations=recs)
-    try:
-        demographics = json.dumps(req.demographics or {})
-        context_lines = []
-        if req.context_stage:
-            context_lines.append(f"Context stage: {req.context_stage}")
-        if req.correlation_id:
-            context_lines.append(f"Correlation ID: {req.correlation_id}")
-        if req.context_generated_at:
-            context_lines.append(f"Context generated at: {req.context_generated_at}")
-        context_block = "\n".join(context_lines) or "None provided"
-        stage_hint = (
-            "Superficial context; base prevention guidance on demographics and general guidelines."
-            if (req.context_stage or "").lower() == "superficial"
-            else "Deep context available; tailor prevention guidance using the enriched record when appropriate."
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a preventative care assistant. Respond strictly with JSON in the form "
-                    "{\"recommendations\":[{\"id\":\"\",\"code\":\"\",\"type\":\"PREVENTION\","
-                    "\"category\":\"prevention\",\"recommendation\":\"\",\"priority\":\"\","
-                    "\"source\":\"\",\"confidence\":0,\"reasoning\":\"\",\"ageRelevant\":false,"
-                    "\"description\":\"\",\"rationale\":\"\"}]}. Always include every property, even when unknown. "
-                    "Confidence must be an integer 0-100."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Demographics:{demographics}\nContext details:\n{context_block}\n{stage_hint}"
-                ),
-            },
-        ]
-        resp = call_openai(messages)
-        data = json.loads(resp)
-        recs = _normalize_prevention_items(data.get("recommendations", []))
-        return PreventionResponse(recommendations=recs)
-    except Exception as exc:
-        trace_id = current_trace_id()
-        logger.error("ai_prevention_failed", error=str(exc))
-        _record_ai_error("prevention_suggest", exc, trace_id)
-        return PreventionResponse(recommendations=[])
+            observation.set_cache_state("warm")
+            data = offline_suggest("")
+            recs = _normalize_prevention_items(data.get("publicHealth", []))
+            return PreventionResponse(recommendations=recs)
+        try:
+            demographics = json.dumps(req.demographics or {})
+            context_lines = []
+            if req.context_stage:
+                context_lines.append(f"Context stage: {req.context_stage}")
+            if req.correlation_id:
+                context_lines.append(f"Correlation ID: {req.correlation_id}")
+            if req.context_generated_at:
+                context_lines.append(f"Context generated at: {req.context_generated_at}")
+            context_block = "\n".join(context_lines) or "None provided"
+            stage_hint = (
+                "Superficial context; base prevention guidance on demographics and general guidelines."
+                if (req.context_stage or "").lower() == "superficial"
+                else "Deep context available; tailor prevention guidance using the enriched record when appropriate."
+            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a preventative care assistant. Respond strictly with JSON in the form "
+                        "{\"recommendations\":[{\"id\":\"\",\"code\":\"\",\"type\":\"PREVENTION\",""
+                        "\"title\":\"\",\"rationale\":\"\",\"confidence\":0,\"nextSteps\":[],\"evidence\":[]}]}. "
+                        "Confidence must be an integer from 0 to 100. Include at least one recommendation when possible."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Demographics:\n{demographics}\nContext:\n{context_block}\n{stage_hint}"
+                    ),
+                },
+            ]
+            resp = call_openai(messages)
+            data = json.loads(resp)
+            recs = _normalize_prevention_items(data.get("recommendations", []))
+            return PreventionResponse(recommendations=recs)
+        except Exception as exc:
+            logger.error("ai_prevention_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("prevention_suggest", exc, trace_id)
+            return PreventionResponse(recommendations=[])
+
 
 
 @app.post("/api/ai/prevention/suggest", response_model=PreventionResponse)
@@ -14684,49 +14966,64 @@ async def ws_prevention_suggest(websocket: WebSocket):
     await websocket.close()
 
 
+
 async def _realtime_analyze(req: RealtimeAnalyzeRequest) -> RealtimeAnalysisResponse:
     cleaned = deidentify(req.content or "")
     offline = req.useOfflineMode or USE_OFFLINE_MODEL
-    if offline:
-        return RealtimeAnalysisResponse(
-            analysisId="offline",
-            extractedSymptoms=[],
-            medicalHistory=[],
-            currentMedications=[],
-            confidence=1.0,
-            reasoning="offline",
-        )
-    try:
-        context = json.dumps(req.patientContext or {})
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You analyse clinical text. Return JSON with keys analysisId (string), extractedSymptoms (array), medicalHistory (array), currentMedications (array), confidence (0-1), reasoning (string)."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Content:\n{cleaned}\nContext:{context}",
-            },
-        ]
-        resp = call_openai(messages)
-        data = json.loads(resp)
-        if not data.get("analysisId"):
-            data["analysisId"] = str(uuid4())
-        return RealtimeAnalysisResponse(**data)
-    except Exception as exc:
-        trace_id = current_trace_id()
-        logger.error("ai_realtime_analysis_failed", error=str(exc))
-        _record_ai_error("realtime_analysis", exc, trace_id)
-        return RealtimeAnalysisResponse(
-            analysisId=str(uuid4()),
-            extractedSymptoms=[],
-            medicalHistory=[],
-            currentMedications=[],
-            confidence=None,
-            reasoning=str(exc),
-        )
+    cache_state = "warm" if offline else "cold"
+    model_name = "offline" if offline else "gpt-4o"
+    trace_id = current_trace_id()
+    metadata = {"mode": "offline" if offline else "remote"}
+    with observe_ai_route(
+        route="realtime_analysis",
+        note_id=None,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata=metadata,
+    ) as observation:
+        if offline:
+            observation.set_cache_state("warm")
+            return RealtimeAnalysisResponse(
+                analysisId="offline",
+                extractedSymptoms=[],
+                medicalHistory=[],
+                currentMedications=[],
+                confidence=1.0,
+                reasoning="offline",
+            )
+        try:
+            context = json.dumps(req.patientContext or {})
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You analyse clinical text. Return JSON with keys analysisId (string), extractedSymptoms (array), medicalHistory (array), currentMedications (array), confidence (0-1), reasoning (string)."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Content:\n{cleaned}\nContext:{context}",
+                },
+            ]
+            resp = call_openai(messages)
+            data = json.loads(resp)
+            if not data.get("analysisId"):
+                data["analysisId"] = str(uuid4())
+            return RealtimeAnalysisResponse(**data)
+        except Exception as exc:
+            logger.error("ai_realtime_analysis_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("realtime_analysis", exc, trace_id)
+            return RealtimeAnalysisResponse(
+                analysisId=str(uuid4()),
+                extractedSymptoms=[],
+                medicalHistory=[],
+                currentMedications=[],
+                confidence=None,
+                reasoning=str(exc),
+            )
+
 
 
 @app.post("/api/ai/analyze/realtime", response_model=RealtimeAnalysisResponse)
@@ -14753,36 +15050,72 @@ async def analyze_compliance(
     """Analyze compliance issues in a note using an AI model."""
 
     cleaned = deidentify(req.text or "")
-    messages = [
-        {
-            "role": "system",
-            "content": "Return JSON with key 'compliance' listing documentation issues.",
-        },
-        {"role": "user", "content": cleaned},
-    ]
-    try:
-        response_content = call_openai(messages)
-        data = json.loads(response_content)
-        compliance = [str(x) for x in data.get("compliance", [])]
-    except Exception:
-        try:
-            from backend.offline_model import suggest as offline_suggest
+    offline = USE_OFFLINE_MODEL
+    cache_state = "warm" if offline else "cold"
+    model_name = req.suggestModel or ("offline" if offline else "gpt-4o")
+    trace_id = current_trace_id()
+    with observe_ai_route(
+        route="compliance_analyze",
+        note_id=req.noteId,
+        cache_state=cache_state,
+        model=model_name,
+        trace_id=trace_id,
+        metadata={"mode": "offline" if offline else "remote"},
+    ) as observation:
+        if offline:
+            observation.set_cache_state("warm")
+            try:
+                from backend.offline_model import suggest as offline_suggest
 
-            data = offline_suggest(
-                cleaned,
-                req.lang,
-                req.specialty,
-                req.payer,
-                req.age,
-                req.sex,
-                req.region,
-                use_local=req.useLocalModels,
-                model_path=req.suggestModel,
-            )
+                data = offline_suggest(
+                    cleaned,
+                    req.lang,
+                    req.specialty,
+                    req.payer,
+                    req.age,
+                    req.sex,
+                    req.region,
+                    use_local=req.useLocalModels,
+                    model_path=req.suggestModel,
+                )
+                compliance = [str(x) for x in data.get("compliance", [])]
+            except Exception:
+                compliance = ["offline compliance"]
+            return {"compliance": compliance}
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Return JSON with key 'compliance' listing documentation issues.",
+            },
+            {"role": "user", "content": cleaned},
+        ]
+        try:
+            response_content = call_openai(messages)
+            data = json.loads(response_content)
             compliance = [str(x) for x in data.get("compliance", [])]
-        except Exception:
-            compliance = ["offline compliance"]
-    return {"compliance": compliance}
+        except Exception as exc:
+            logger.error("ai_compliance_analyze_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("compliance_analyze", exc, trace_id)
+            try:
+                from backend.offline_model import suggest as offline_suggest
+
+                data = offline_suggest(
+                    cleaned,
+                    req.lang,
+                    req.specialty,
+                    req.payer,
+                    req.age,
+                    req.sex,
+                    req.region,
+                    use_local=req.useLocalModels,
+                    model_path=req.suggestModel,
+                )
+                compliance = [str(x) for x in data.get("compliance", [])]
+            except Exception:
+                compliance = ["offline compliance"]
+        return {"compliance": compliance}
 
 
 @app.put("/api/notes/auto-save")  # pragma: no cover - not exercised in tests
@@ -14808,24 +15141,39 @@ async def finalize_check(req: NoteRequest, user=Depends(require_role("user"))):
     """Use an AI model to check if a note is ready for finalization."""
 
     cleaned = deidentify(req.text or "")
-    if USE_OFFLINE_MODEL:
-        return {"ok": True, "issues": []}
-    messages = [
-        {
-            "role": "system",
-            "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
-        },
-        {"role": "user", "content": cleaned},
-    ]
-    try:
-        response_content = call_openai(messages)
-        data = json.loads(response_content)
-        ok = bool(data.get("ok", True))
-        issues = [str(x) for x in data.get("issues", [])]
-    except Exception:
-        ok = True
-        issues = []
-    return {"ok": ok, "issues": issues}
+    offline = USE_OFFLINE_MODEL
+    cache_state = "warm" if offline else "cold"
+    trace_id = current_trace_id()
+    with observe_ai_route(
+        route="finalize_check",
+        note_id=req.noteId,
+        cache_state=cache_state,
+        model="offline" if offline else "gpt-4o",
+        trace_id=trace_id,
+        metadata={"mode": "offline" if offline else "remote"},
+    ) as observation:
+        if offline:
+            observation.set_cache_state("warm")
+            return {"ok": True, "issues": []}
+        messages = [
+            {
+                "role": "system",
+                "content": "Return JSON {\"ok\": bool, \"issues\": []} indicating remaining problems.",
+            },
+            {"role": "user", "content": cleaned},
+        ]
+        try:
+            response_content = call_openai(messages)
+            data = json.loads(response_content)
+            ok = bool(data.get("ok", True))
+            issues = [str(x) for x in data.get("issues", [])]
+        except Exception as exc:
+            logger.error("ai_finalize_check_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("finalize_check", exc, trace_id)
+            ok = True
+            issues = []
+        return {"ok": ok, "issues": issues}
 
 
 class AnalyzeRequest(BaseModel):
@@ -14840,21 +15188,36 @@ async def analyze_note(
     """Extract structured content from a note via the LLM."""
 
     cleaned = deidentify(req.text or "")
-    if USE_OFFLINE_MODEL:
-        return {"analysis": {}}
-    messages = [
-        {
-            "role": "system",
-            "content": "Extract key medical facts as JSON with any fields you find relevant.",
-        },
-        {"role": "user", "content": cleaned},
-    ]
-    try:
-        response_content = call_openai(messages)
-        data = json.loads(response_content)
-    except Exception:
-        data = {}
-    return {"analysis": data}
+    offline = USE_OFFLINE_MODEL
+    cache_state = "warm" if offline else "cold"
+    trace_id = current_trace_id()
+    with observe_ai_route(
+        route="note_analyze",
+        note_id=None,
+        cache_state=cache_state,
+        model=req.model or ("offline" if offline else "gpt-4o"),
+        trace_id=trace_id,
+        metadata={"mode": "offline" if offline else "remote"},
+    ) as observation:
+        if offline:
+            observation.set_cache_state("warm")
+            return {"analysis": {}}
+        messages = [
+            {
+                "role": "system",
+                "content": "Extract key medical facts as JSON with any fields you find relevant.",
+            },
+            {"role": "user", "content": cleaned},
+        ]
+        try:
+            response_content = call_openai(messages)
+            data = json.loads(response_content)
+        except Exception as exc:
+            logger.error("ai_analyze_note_failed", error=str(exc))
+            observation.mark_failure(exc, trace_id=trace_id)
+            _record_ai_error("note_analyze", exc, trace_id)
+            data = {}
+        return {"analysis": data}
 
 
 
