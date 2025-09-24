@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(rootDir, 'src'),
+      '@core/api-client': resolve(rootDir, '../src/api/client.ts'),
     },
     extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
   },

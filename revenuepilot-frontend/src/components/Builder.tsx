@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { motion, AnimatePresence } from "motion/react"
 import {
   Calendar as CalendarIcon,
@@ -38,6 +38,9 @@ import { Label } from "./ui/label"
 import { Textarea } from "./ui/textarea"
 import { Switch } from "./ui/switch"
 import { Alert, AlertDescription } from "./ui/alert"
+import { useChartUpload, useUploadStatuses } from "../hooks/useChartUpload"
+import { useContextStage } from "../hooks/useContextStage"
+import { createAppointment } from "@core/api-client"
 
 interface CurrentUser {
   id: string
@@ -69,6 +72,7 @@ interface AppointmentTemplate {
   patientAddress?: string
   hasChart?: boolean
   chartFiles?: string[]
+  chartCorrelationId?: string | null
   medicalHistory?: string
   currentMedications?: string
   allergies?: string
@@ -81,16 +85,21 @@ interface BuilderProps {
   currentUser?: CurrentUser
   appointments?: AppointmentTemplate[]
   onAppointmentsChange?: (appointments: AppointmentTemplate[]) => void
+  onScheduleRefresh?: () => void
 }
 
-export function Builder({ currentUser, appointments: propAppointments, onAppointmentsChange }: BuilderProps) {
+export function Builder({ currentUser, appointments: propAppointments, onAppointmentsChange, onScheduleRefresh }: BuilderProps) {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<"day" | "week">("day")
   const [selectedProvider, setSelectedProvider] = useState(currentUser?.name || "Dr. Johnson")
   const [calendarView, setCalendarView] = useState<"grid" | "list">("grid")
   const [showNewAppointmentDialog, setShowNewAppointmentDialog] = useState(false)
   const [editingAppointment, setEditingAppointment] = useState<AppointmentTemplate | null>(null)
-  const [showChartUpload, setShowChartUpload] = useState<string | null>(null)
+  const uploadStatuses = useUploadStatuses()
+  const { openFilePickerAndUpload } = useChartUpload()
+  const [creatingAppointment, setCreatingAppointment] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   // Available providers
   const providers = ["Dr. Johnson", "Dr. Smith", "NP Williams", "Dr. Brown"]
@@ -102,32 +111,82 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
     onAppointmentsChange?.(appointments)
   }
 
-  // New appointment form state
-  const [newAppointment, setNewAppointment] = useState<Partial<AppointmentTemplate>>({
-    patientName: "",
-    patientPhone: "",
-    patientEmail: "",
-    patientDOB: "",
-    patientAddress: "",
-    appointmentTime: "",
-    duration: 30,
-    appointmentType: "New Patient",
-    provider: selectedProvider,
-    location: "Room 101",
-    status: "Scheduled",
-    notes: "",
-    priority: "medium",
-    isVirtual: false,
-    hasChart: false,
-    chartFiles: [],
-    medicalHistory: "",
-    currentMedications: "",
-    allergies: "",
-    chiefComplaint: "",
-    insuranceInfo: "",
-    referralNotes: "",
-  })
+  const buildDefaultAppointment = useCallback(
+    (): Partial<AppointmentTemplate> => ({
+      patientId: "",
+      encounterId: "",
+      patientName: "",
+      patientPhone: "",
+      patientEmail: "",
+      patientDOB: "",
+      patientAddress: "",
+      appointmentTime: "",
+      duration: 30,
+      appointmentType: "New Patient",
+      provider: selectedProvider,
+      location: "Room 101",
+      status: "Scheduled",
+      notes: "",
+      priority: "medium",
+      isVirtual: false,
+      hasChart: false,
+      chartFiles: [],
+      chartCorrelationId: null,
+      medicalHistory: "",
+      currentMedications: "",
+      allergies: "",
+      chiefComplaint: "",
+      insuranceInfo: "",
+      referralNotes: "",
+    }),
+    [selectedProvider],
+  )
 
+  const [newAppointment, setNewAppointment] = useState<Partial<AppointmentTemplate>>(() => buildDefaultAppointment())
+
+  const patientIdForContext = (editingAppointment?.patientId || newAppointment.patientId || "").trim()
+  const contextStageState = useContextStage(null, { patientId: patientIdForContext || undefined })
+  const contextStageDisplay = useMemo(() => {
+    const stages: Record<string, string> = {}
+    ;(["superficial", "deep", "indexed"] as const).forEach((stage) => {
+      const info = contextStageState.stages[stage]
+      if (!info || !info.state) {
+        stages[stage] = "⧗"
+      } else if (info.state === "completed") {
+        stages[stage] = "✓"
+      } else if (info.state === "running") {
+        const pct = Number.isFinite(info.percent) ? Math.round((info.percent ?? 0) as number) : null
+        stages[stage] = pct != null ? `${pct}%` : "…"
+      } else if (info.state === "failed") {
+        stages[stage] = "⚠"
+      } else {
+        stages[stage] = "⧗"
+      }
+    })
+    return stages
+  }, [contextStageState.stages])
+
+  const uploadStatusForPatient = patientIdForContext ? uploadStatuses[patientIdForContext] : undefined
+  const currentChartFiles = editingAppointment?.chartFiles ?? newAppointment.chartFiles ?? []
+  const uploadStatusMessage = useMemo(() => {
+    if (!uploadStatusForPatient) {
+      return null
+    }
+    if (uploadStatusForPatient.status === "uploading") {
+      return uploadStatusForPatient.progress != null
+        ? `Uploading ${uploadStatusForPatient.progress}%…`
+        : "Uploading…"
+    }
+    if (uploadStatusForPatient.status === "error") {
+      return uploadStatusForPatient.error ?? "Upload failed"
+    }
+    if (uploadStatusForPatient.status === "success") {
+      return `Uploaded ${uploadStatusForPatient.fileName ?? "chart"}.`
+    }
+    return null
+  }, [uploadStatusForPatient])
+
+  // New appointment form state
   // Filter appointments based on current filters and view mode
   const filteredAppointments = useMemo(() => {
     return appointmentTemplates.filter((apt) => {
@@ -233,58 +292,86 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
     setCurrentDate(new Date())
   }
 
-  const handleSaveAppointment = () => {
+  const handleCreateAppointment = useCallback(async () => {
+    setCreateError(null)
+
     if (editingAppointment) {
-      // Update existing appointment
       setAppointmentTemplates((prev) => prev.map((apt) => (apt.id === editingAppointment.id ? editingAppointment : apt)))
       setEditingAppointment(null)
-    } else {
-      // Create new appointment
-      const newId = `template-${Date.now()}`
-      const encounterId = `ENC-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Math.floor(Math.random() * 1000)
-        .toString()
-        .padStart(3, "0")}`
-      const patientId = `PT-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000)
-        .toString()
-        .padStart(4, "0")}`
-
-      const appointment: AppointmentTemplate = {
-        ...(newAppointment as AppointmentTemplate),
-        id: newId,
-        encounterId,
-        patientId,
-        status: "Scheduled", // Set to Scheduled so it appears in the Schedule view
-      }
-
-      setAppointmentTemplates((prev) => [...prev, appointment])
-      setNewAppointment({
-        patientName: "",
-        patientPhone: "",
-        patientEmail: "",
-        patientDOB: "",
-        patientAddress: "",
-        appointmentTime: "",
-        duration: 30,
-        appointmentType: "New Patient",
-        provider: selectedProvider,
-        location: "Room 101",
-        status: "Scheduled",
-        notes: "",
-        priority: "medium",
-        isVirtual: false,
-        fileUpToDate: false,
-        hasChart: false,
-        chartFiles: [],
-        medicalHistory: "",
-        currentMedications: "",
-        allergies: "",
-        chiefComplaint: "",
-        insuranceInfo: "",
-        referralNotes: "",
-      })
       setShowNewAppointmentDialog(false)
+      return
     }
-  }
+
+    const patientName = newAppointment.patientName?.trim()
+    if (!patientName) {
+      setCreateError("Patient name is required.")
+      return
+    }
+
+    const appointmentTime = newAppointment.appointmentTime
+    if (!appointmentTime) {
+      setCreateError("Appointment date and time are required.")
+      return
+    }
+
+    const start = new Date(appointmentTime)
+    if (Number.isNaN(start.getTime())) {
+      setCreateError("Invalid appointment date or time.")
+      return
+    }
+
+    const durationMinutes = Number.isFinite(newAppointment.duration) ? Number(newAppointment.duration) : 30
+    const end = new Date(start.getTime() + durationMinutes * 60 * 1000)
+    const patientId = (newAppointment.patientId || "").trim() || patientName
+    const encounterId = newAppointment.encounterId?.trim() || undefined
+    const reason =
+      newAppointment.chiefComplaint?.trim() || newAppointment.notes?.trim() || newAppointment.appointmentType || "Scheduled visit"
+    const chartCorrelationId = newAppointment.chartCorrelationId || null
+
+    setCreatingAppointment(true)
+    try {
+      await createAppointment({
+        patient: patientName,
+        patientId,
+        encounterId,
+        reason,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        provider: (newAppointment.provider || selectedProvider || "").trim() || undefined,
+        location: newAppointment.location?.trim() || undefined,
+        notes: newAppointment.notes?.trim() || reason,
+        type: newAppointment.appointmentType,
+        chart: chartCorrelationId ? { correlationId: chartCorrelationId } : undefined,
+      })
+
+      setNewAppointment(buildDefaultAppointment())
+      setShowNewAppointmentDialog(false)
+      setCreateError(null)
+      setCreatingAppointment(false)
+      setEditingAppointment(null)
+      onScheduleRefresh?.()
+    } catch (error) {
+      setCreatingAppointment(false)
+      setCreateError(error instanceof Error ? error.message : "Unable to create appointment.")
+    }
+  }, [
+    buildDefaultAppointment,
+    editingAppointment,
+    newAppointment.appointmentTime,
+    newAppointment.appointmentType,
+    newAppointment.chartCorrelationId,
+    newAppointment.chiefComplaint,
+    newAppointment.encounterId,
+    newAppointment.location,
+    newAppointment.notes,
+    newAppointment.patientId,
+    newAppointment.patientName,
+    newAppointment.duration,
+    newAppointment.provider,
+    onScheduleRefresh,
+    selectedProvider,
+    setAppointmentTemplates,
+  ])
 
   const handleDeleteAppointment = (appointmentId: string) => {
     setAppointmentTemplates((prev) => prev.filter((apt) => apt.id !== appointmentId))
@@ -299,11 +386,6 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
       appointmentTime: new Date(new Date(appointment.appointmentTime).getTime() + 60 * 60 * 1000).toISOString(), // Add 1 hour
     }
     setAppointmentTemplates((prev) => [...prev, newAppointment])
-  }
-
-  const handleChartUpload = (appointmentId: string, files: string[]) => {
-    setAppointmentTemplates((prev) => prev.map((apt) => (apt.id === appointmentId ? { ...apt, hasChart: files.length > 0, chartFiles: files, fileUpToDate: files.length > 0 } : apt)))
-    setShowChartUpload(null)
   }
 
   const generateTimeSlots = () => {
@@ -351,12 +433,25 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
   }
 
   // Appointment Card Component
-  const AppointmentCard = ({ appointment, compact = false }: { appointment: AppointmentTemplate; compact?: boolean }) => (
-    <Card
-      className={`hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30 border-l-4 ${getPriorityColor(appointment.priority)} ${compact ? "p-2" : ""}`}
-    >
-      <CardContent className={compact ? "p-3" : "p-6"}>
-        <div className={`flex items-center ${compact ? "gap-2" : "gap-4"} ${compact ? "flex-col sm:flex-row" : ""}`}>
+  const AppointmentCard = ({ appointment, compact = false }: { appointment: AppointmentTemplate; compact?: boolean }) => {
+    const uploadState = appointment.patientId ? uploadStatuses[appointment.patientId] : undefined
+    const isUploading = uploadState?.status === "uploading"
+    const uploadStatusLabel = uploadState
+      ? uploadState.status === "uploading"
+        ? `Uploading ${uploadState.progress ?? 0}%…`
+        : uploadState.status === "error"
+          ? uploadState.error ?? "Upload failed"
+          : uploadState.status === "success"
+            ? `Uploaded ${uploadState.fileName ?? "chart"}.`
+            : null
+      : null
+
+    return (
+      <Card
+        className={`hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30 border-l-4 ${getPriorityColor(appointment.priority)} ${compact ? "p-2" : ""}`}
+      >
+        <CardContent className={compact ? "p-3" : "p-6"}>
+          <div className={`flex items-center ${compact ? "gap-2" : "gap-4"} ${compact ? "flex-col sm:flex-row" : ""}`}>
           <div className="flex items-center gap-2">
             <Avatar className={`${compact ? "w-8 h-8" : "w-12 h-12"} ring-2 ring-white shadow-sm`}>
               <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium text-xs">
@@ -401,10 +496,30 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
             <Badge className={`text-xs font-medium ${getAppointmentTypeColor(appointment.appointmentType)}`}>{appointment.appointmentType}</Badge>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setShowChartUpload(appointment.id)}>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!appointment.patientId || isUploading}
+              onClick={() => {
+                if (!appointment.patientId) {
+                  return
+                }
+                void openFilePickerAndUpload({ patientId: appointment.patientId }).then((result) => {
+                  if (result) {
+                    onScheduleRefresh?.()
+                  }
+                })
+              }}
+            >
               <Upload className="w-4 h-4" />
             </Button>
+
+            {uploadStatusLabel && (
+              <span className={`text-xs ${uploadState?.status === "error" ? "text-destructive" : "text-muted-foreground"}`}>
+                {uploadStatusLabel}
+              </span>
+            )}
 
             <Button variant="ghost" size="sm" onClick={() => setEditingAppointment(appointment)}>
               <Edit3 className="w-4 h-4" />
@@ -421,7 +536,8 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
         </div>
       </CardContent>
     </Card>
-  )
+    )
+  }
 
   // Day View Component
   const DayView = () => {
@@ -690,6 +806,63 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
                   </div>
 
                   <div className="space-y-2">
+                    <Label htmlFor="patientId">Patient ID / MRN</Label>
+                    <Input
+                      id="patientId"
+                      value={editingAppointment?.patientId || newAppointment.patientId || ""}
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (editingAppointment) {
+                          setEditingAppointment({ ...editingAppointment, patientId: value })
+                        } else {
+                          setNewAppointment((prev) => ({ ...prev, patientId: value }))
+                        }
+                      }}
+                      placeholder="PT-1001"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="appointmentTime">Appointment Date &amp; Time *</Label>
+                    <Input
+                      id="appointmentTime"
+                      type="datetime-local"
+                      value={
+                        editingAppointment?.appointmentTime
+                          ? new Date(editingAppointment.appointmentTime).toISOString().slice(0, 16)
+                          : newAppointment.appointmentTime
+                              ? new Date(newAppointment.appointmentTime).toISOString().slice(0, 16)
+                              : ""
+                      }
+                      onChange={(e) => {
+                        const isoString = new Date(e.target.value).toISOString()
+                        if (editingAppointment) {
+                          setEditingAppointment({ ...editingAppointment, appointmentTime: isoString })
+                        } else {
+                          setNewAppointment({ ...newAppointment, appointmentTime: isoString })
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="chiefComplaint">Chief Complaint</Label>
+                    <Textarea
+                      id="chiefComplaint"
+                      value={editingAppointment?.chiefComplaint || newAppointment.chiefComplaint}
+                      onChange={(e) => {
+                        if (editingAppointment) {
+                          setEditingAppointment({ ...editingAppointment, chiefComplaint: e.target.value })
+                        } else {
+                          setNewAppointment({ ...newAppointment, chiefComplaint: e.target.value })
+                        }
+                      }}
+                      placeholder="Patient's primary concern or reason for visit"
+                      rows={2}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
                     <Label htmlFor="patientDOB">Date of Birth</Label>
                     <Input
                       id="patientDOB"
@@ -775,29 +948,6 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
               <TabsContent value="appointment" className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="appointmentTime">Appointment Date & Time *</Label>
-                    <Input
-                      id="appointmentTime"
-                      type="datetime-local"
-                      value={
-                        editingAppointment?.appointmentTime
-                          ? new Date(editingAppointment.appointmentTime).toISOString().slice(0, 16)
-                          : newAppointment.appointmentTime
-                            ? new Date(newAppointment.appointmentTime).toISOString().slice(0, 16)
-                            : ""
-                      }
-                      onChange={(e) => {
-                        const isoString = new Date(e.target.value).toISOString()
-                        if (editingAppointment) {
-                          setEditingAppointment({ ...editingAppointment, appointmentTime: isoString })
-                        } else {
-                          setNewAppointment({ ...newAppointment, appointmentTime: isoString })
-                        }
-                      }}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
                     <Label htmlFor="duration">Duration (minutes)</Label>
                     <Select
                       value={(editingAppointment?.duration || newAppointment.duration || 30).toString()}
@@ -820,7 +970,7 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
                         <SelectItem value="90">90 minutes</SelectItem>
                       </SelectContent>
                     </Select>
-                  </div>
+                    </div>
 
                   <div className="space-y-2">
                     <Label htmlFor="appointmentType">Appointment Type</Label>
@@ -896,6 +1046,22 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
                   </div>
 
                   <div className="space-y-2">
+                    <Label htmlFor="encounterId">Encounter ID</Label>
+                    <Input
+                      id="encounterId"
+                      value={editingAppointment?.encounterId || newAppointment.encounterId || ""}
+                      onChange={(e) => {
+                        if (editingAppointment) {
+                          setEditingAppointment({ ...editingAppointment, encounterId: e.target.value })
+                        } else {
+                          setNewAppointment((prev) => ({ ...prev, encounterId: e.target.value }))
+                        }
+                      }}
+                      placeholder="ENC-2024-001"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
                     <Label htmlFor="location">Location</Label>
                     <Input
                       id="location"
@@ -930,23 +1096,6 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
 
               <TabsContent value="medical" className="space-y-4">
                 <div className="grid grid-cols-1 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="chiefComplaint">Chief Complaint</Label>
-                    <Textarea
-                      id="chiefComplaint"
-                      value={editingAppointment?.chiefComplaint || newAppointment.chiefComplaint}
-                      onChange={(e) => {
-                        if (editingAppointment) {
-                          setEditingAppointment({ ...editingAppointment, chiefComplaint: e.target.value })
-                        } else {
-                          setNewAppointment({ ...newAppointment, chiefComplaint: e.target.value })
-                        }
-                      }}
-                      placeholder="Patient's primary concern or reason for visit"
-                      rows={2}
-                    />
-                  </div>
-
                   <div className="space-y-2">
                     <Label htmlFor="medicalHistory">Medical History</Label>
                     <Textarea
@@ -1038,37 +1187,83 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
 
                   <div className="space-y-3">
                     <Label>Medical Chart Files</Label>
-                    <div className="flex items-center justify-between p-4 border rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-5 h-5 text-muted-foreground" />
-                        <span className="text-sm">
-                          {(editingAppointment?.chartFiles?.length || newAppointment.chartFiles?.length || 0) === 0
-                            ? "No files uploaded"
-                            : `${editingAppointment?.chartFiles?.length || newAppointment.chartFiles?.length} file(s) uploaded`}
-                        </span>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <FileText className="w-5 h-5 text-muted-foreground" />
+                          <span className="text-sm">
+                            {currentChartFiles.length === 0 ? "No files uploaded" : `${currentChartFiles.length} file(s) uploaded`}
+                          </span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const activePatientId = (editingAppointment?.patientId || newAppointment.patientId || "").trim()
+                            if (!activePatientId) {
+                              setUploadError("Enter a patient ID before uploading chart files.")
+                              return
+                            }
+                            setUploadError(null)
+                            void openFilePickerAndUpload({ patientId: activePatientId })
+                              .then((result) => {
+                                if (!result) {
+                                  return
+                                }
+                                const uploadedFiles = (result.files || [])
+                                  .map((entry) => (entry?.name ? String(entry.name) : null))
+                                  .filter((name): name is string => Boolean(name))
+
+                                if (editingAppointment) {
+                                  setEditingAppointment((prev) => {
+                                    if (!prev) {
+                                      return prev
+                                    }
+                                    const nextCorrelation = result.correlationId ?? prev.chartCorrelationId ?? null
+                                    const hasChart = uploadedFiles.length > 0 || Boolean(nextCorrelation)
+                                    return {
+                                      ...prev,
+                                      hasChart,
+                                      chartFiles: uploadedFiles,
+                                      chartCorrelationId: nextCorrelation,
+                                    }
+                                  })
+                                } else {
+                                  setNewAppointment((prev) => {
+                                    const nextCorrelation = result.correlationId ?? null
+                                    const hasChart = uploadedFiles.length > 0 || Boolean(nextCorrelation)
+                                    return {
+                                      ...prev,
+                                      hasChart,
+                                      chartFiles: uploadedFiles,
+                                      chartCorrelationId: nextCorrelation,
+                                    }
+                                  })
+                                }
+                              })
+                              .catch((error) => {
+                                console.error("Failed to upload chart", error)
+                                setUploadError(error instanceof Error ? error.message : "Unable to upload chart.")
+                              })
+                          }}
+                        >
+                          <Upload className="w-4 h-4 mr-2" />
+                          Upload Files
+                        </Button>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          // Simulate file upload
-                          const files = ["medical_history.pdf", "lab_results.pdf", "previous_visit_notes.pdf"]
-                          if (editingAppointment) {
-                            setEditingAppointment({ ...editingAppointment, hasChart: true, chartFiles: files })
-                          } else {
-                            setNewAppointment({ ...newAppointment, hasChart: true, chartFiles: files })
-                          }
-                        }}
-                      >
-                        <Upload className="w-4 h-4 mr-2" />
-                        Upload Files
-                      </Button>
+                      {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
+                      {uploadStatusMessage && <p className="text-xs text-muted-foreground">{uploadStatusMessage}</p>}
+                      {patientIdForContext && (
+                        <p className="text-xs text-muted-foreground">
+                          Chart: {contextStageDisplay.superficial} superficial · {contextStageDisplay.deep} deep · {contextStageDisplay.indexed} indexed
+                        </p>
+                      )}
                     </div>
 
-                    {(editingAppointment?.chartFiles?.length || newAppointment.chartFiles?.length || 0) > 0 && (
+                    {currentChartFiles.length > 0 && (
                       <div className="space-y-2">
-                        {(editingAppointment?.chartFiles || newAppointment.chartFiles || []).map((file, index) => (
-                          <div key={index} className="flex items-center justify-between p-2 bg-slate-50 rounded">
+                        {currentChartFiles.map((file, index) => (
+                          <div key={file + index} className="flex items-center justify-between p-2 bg-slate-50 rounded">
                             <div className="flex items-center gap-2">
                               <FileText className="w-4 h-4 text-blue-600" />
                               <span className="text-sm">{file}</span>
@@ -1077,11 +1272,29 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
                               variant="ghost"
                               size="sm"
                               onClick={() => {
-                                const updatedFiles = (editingAppointment?.chartFiles || newAppointment.chartFiles || []).filter((_, i) => i !== index)
                                 if (editingAppointment) {
-                                  setEditingAppointment({ ...editingAppointment, chartFiles: updatedFiles, hasChart: updatedFiles.length > 0 })
+                                  setEditingAppointment((prev) => {
+                                    if (!prev) {
+                                      return prev
+                                    }
+                                    const nextFiles = (prev.chartFiles || []).filter((_, i) => i !== index)
+                                    return {
+                                      ...prev,
+                                      chartFiles: nextFiles,
+                                      hasChart: nextFiles.length > 0,
+                                      chartCorrelationId: nextFiles.length > 0 ? prev.chartCorrelationId ?? null : null,
+                                    }
+                                  })
                                 } else {
-                                  setNewAppointment({ ...newAppointment, chartFiles: updatedFiles, hasChart: updatedFiles.length > 0 })
+                                  setNewAppointment((prev) => {
+                                    const nextFiles = (prev.chartFiles || []).filter((_, i) => i !== index)
+                                    return {
+                                      ...prev,
+                                      chartFiles: nextFiles,
+                                      hasChart: nextFiles.length > 0,
+                                      chartCorrelationId: nextFiles.length > 0 ? prev.chartCorrelationId ?? null : null,
+                                    }
+                                  })
                                 }
                               }}
                             >
@@ -1097,64 +1310,33 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
             </Tabs>
           </div>
 
+          {createError && (
+            <Alert variant="destructive">
+              <AlertDescription>{createError}</AlertDescription>
+            </Alert>
+          )}
+
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => {
                 setShowNewAppointmentDialog(false)
                 setEditingAppointment(null)
+                setCreateError(null)
+                setUploadError(null)
+                setNewAppointment(buildDefaultAppointment())
               }}
             >
               Cancel
             </Button>
-            <Button onClick={handleSaveAppointment}>
+            <Button onClick={handleCreateAppointment} disabled={creatingAppointment}>
               <Save className="w-4 h-4 mr-2" />
-              {editingAppointment ? "Update" : "Create"} Appointment
+              {creatingAppointment ? "Creating..." : editingAppointment ? "Update" : "Create"} Appointment
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Chart Upload Dialog */}
-      <Dialog open={showChartUpload !== null} onOpenChange={(open) => !open && setShowChartUpload(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Upload Medical Chart</DialogTitle>
-            <DialogDescription>Upload medical chart files for this appointment template.</DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <Alert>
-              <FileText className="h-4 w-4" />
-              <AlertDescription>You can upload multiple files including medical history, lab results, imaging, and previous visit notes.</AlertDescription>
-            </Alert>
-
-            <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center">
-              <Upload className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-              <p className="text-sm text-muted-foreground mb-4">Drag and drop files here, or click to select files</p>
-              <Button variant="outline">Select Files</Button>
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowChartUpload(null)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                // Simulate successful upload
-                const files = ["medical_history.pdf", "lab_results.pdf", "imaging_results.pdf"]
-                if (showChartUpload) {
-                  handleChartUpload(showChartUpload, files)
-                }
-              }}
-            >
-              <Upload className="w-4 h-4 mr-2" />
-              Upload Files
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

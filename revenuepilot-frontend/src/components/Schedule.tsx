@@ -35,13 +35,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { Label } from "./ui/label"
 import { Switch } from "./ui/switch"
-
-export interface ScheduleChartUploadStatus {
-  status: "idle" | "uploading" | "success" | "error"
-  progress: number
-  error?: string
-  fileName?: string
-}
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip"
+import type { ChartUploadStatus } from "../hooks/useChartUpload"
 
 interface CurrentUser {
   id: string
@@ -68,13 +63,14 @@ interface Appointment {
   fileUpToDate: boolean
   priority: "low" | "medium" | "high"
   isVirtual: boolean
+  contextStages?: Record<string, { state?: string | null; status?: string | null; percent?: number | null }> | null
 }
 
 interface ScheduleProps {
   currentUser?: CurrentUser
   onStartVisit?: (appointmentId: string, patientId: string, encounterId: string) => void
   onUploadChart?: (patientId: string) => void
-  uploadStatuses?: Record<string, ScheduleChartUploadStatus>
+  uploadStatuses?: Record<string, ChartUploadStatus>
   appointments?: Appointment[]
   loading?: boolean
   error?: string | null
@@ -364,6 +360,14 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatu
     const isUploading = uploadState?.status === "uploading"
     const isError = uploadState?.status === "error"
     const progressValue = typeof uploadState?.progress === "number" ? Math.max(0, Math.min(100, Math.round(uploadState.progress))) : null
+    const indexedStage = appointment.contextStages?.indexed
+    const indexedStageState =
+      typeof indexedStage?.state === "string"
+        ? indexedStage.state
+        : typeof indexedStage?.status === "string"
+          ? indexedStage.status
+          : null
+    const contextPipelineComplete = indexedStageState ? indexedStageState.toLowerCase() === "completed" : false
 
     return (
       <Card
@@ -408,10 +412,22 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatu
 
             <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
               {appointment.fileUpToDate ? (
-                <Badge variant="secondary" className="flex items-center gap-1 text-xs">
-                  <CheckCircle className="w-3 h-3" />
-                  Chart up to date
-                </Badge>
+                contextPipelineComplete ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="secondary" className="flex items-center gap-1 text-xs">
+                        <CheckCircle className="w-3 h-3" />
+                        Chart up to date
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>Based on chart context pipeline</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Badge variant="secondary" className="flex items-center gap-1 text-xs">
+                    <CheckCircle className="w-3 h-3" />
+                    Chart up to date
+                  </Badge>
+                )
               ) : (
                 <Button variant="outline" size="sm" disabled={isUploading} onClick={() => onUploadChart?.(appointment.patientId)}>
                   {isUploading ? (

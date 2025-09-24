@@ -323,6 +323,8 @@ export async function scheduleBulkOperations(request: ScheduleBulkRequest): Prom
     failed: typeof data?.failed === 'number' ? data.failed : 0,
   };
 
+}
+
 export async function createWorkflowSession(payload: Record<string, unknown>): Promise<WorkflowSessionData> {
   return createWorkflowSessionRaw(payload);
 }
