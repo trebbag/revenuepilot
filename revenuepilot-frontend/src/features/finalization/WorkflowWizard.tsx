@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
-import { Check, Loader2, Settings, X } from "lucide-react"
+import { AlertTriangle, Check, Loader2, Settings, X } from "lucide-react"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { NoteEditor } from "./NoteEditor"
 import { StepContent } from "./StepContent"
@@ -73,7 +73,30 @@ export interface WizardPatientQuestion {
 export interface WizardProgressStep {
   id: number
   title: string
-  status: "pending" | "in-progress" | "completed"
+  status: "pending" | "in-progress" | "completed" | "blocked"
+}
+
+export interface ComposeJobStep {
+  id?: number
+  stage?: string | null
+  status?: string | null
+  progress?: number | null
+}
+
+export interface ComposeJobState {
+  composeId: number
+  status: string
+  stage?: string | null
+  progress?: number | null
+  steps?: ComposeJobStep[]
+  result?: Record<string, unknown> | null
+  validation?: {
+    ok?: boolean
+    issues?: Record<string, unknown>
+    detail?: Record<string, unknown>
+    [key: string]: unknown
+  } | null
+  message?: string | null
 }
 
 export type WizardStepType = "selected-codes" | "suggested-codes" | "loading" | "dual-editor" | "placeholder" | "dispatch"
@@ -156,6 +179,9 @@ export interface FinalizationWizardProps {
   onClose?: (result?: FinalizeResult) => void
   onFinalize?: (request: FinalizeRequest) => Promise<FinalizeResult | void> | FinalizeResult | void
   onStepChange?: (stepId: number, step: WizardStepData) => void
+  composeJob?: ComposeJobState | null
+  composeError?: string | null
+  onRequestCompose?: (options?: { force?: boolean }) => void
 }
 
 const COMPOSE_PROGRESS_SEQUENCE: Array<Pick<WizardProgressStep, "id" | "title">> = [
@@ -164,6 +190,13 @@ const COMPOSE_PROGRESS_SEQUENCE: Array<Pick<WizardProgressStep, "id" | "title">>
   { id: 3, title: "Beautifying Language" },
   { id: 4, title: "Final Review" },
 ]
+
+const COMPOSE_STAGE_TITLE_MAP: Record<string, string> = {
+  analyzing: "Analyzing Content",
+  enhancing_structure: "Enhancing Structure",
+  beautifying_language: "Beautifying Language",
+  final_review: "Final Review",
+}
 
 const STATUS_ORDER: CodeStatus[] = ["pending", "in-progress", "confirmed", "completed"]
 
@@ -639,6 +672,9 @@ export function FinalizationWizard({
   onClose,
   onFinalize,
   onStepChange,
+  composeJob,
+  composeError,
+  onRequestCompose,
 }: FinalizationWizardProps) {
   const normalizedSelected = useMemo(() => normalizeCodeItems(selectedCodes), [selectedCodes])
   const normalizedSuggested = useMemo(() => normalizeCodeItems(suggestedCodes), [suggestedCodes])
@@ -694,13 +730,6 @@ export function FinalizationWizard({
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null)
-  const [composeProgress, setComposeProgress] = useState<WizardProgressStep[]>(() => createComposeProgressState())
-  const [composeComplete, setComposeComplete] = useState(false)
-  const [composeError, setComposeError] = useState<string | null>(null)
-  const [isComposeRunning, setIsComposeRunning] = useState(false)
-  const [composeRetryKey, setComposeRetryKey] = useState(0)
-  const composeRunRef = useRef(0)
-
   useEffect(() => {
     const nextInitial = Number.isFinite(initialStep) && initialStep >= 1 ? Math.floor(initialStep) : 1
     if (lastInitialStepRef.current !== nextInitial) {
@@ -708,6 +737,25 @@ export function FinalizationWizard({
       setCurrentStep(nextInitial)
     }
   }, [initialStep])
+
+  const composeJobState = composeJob ?? null
+  const composeStatus = (composeJobState?.status ?? "").toLowerCase()
+  const composeValidation = composeJobState?.validation ?? null
+  const composeResult = composeJobState?.result ?? null
+
+  useEffect(() => {
+    if (!composeResult || typeof composeResult !== "object") {
+      return
+    }
+    const beautified = typeof composeResult.beautifiedNote === "string" ? composeResult.beautifiedNote : undefined
+    if (beautified && beautified !== beautifiedContent) {
+      setBeautifiedContent(beautified)
+    }
+    const summary = typeof composeResult.patientSummary === "string" ? composeResult.patientSummary : undefined
+    if (summary && summary !== summaryContent) {
+      setSummaryContent(summary)
+    }
+  }, [beautifiedContent, composeResult, summaryContent])
 
   useEffect(() => {
     if (finalizeResult) {
@@ -730,9 +778,11 @@ export function FinalizationWizard({
 
   useEffect(() => {
     const artifacts = composeEnhancedArtifacts(noteContent, patientMetadata, normalizedSelected, normalizedTranscript)
-    setBeautifiedContent((prev) => (prev === artifacts.professionalNote ? prev : artifacts.professionalNote))
-    setSummaryContent((prev) => (prev === artifacts.patientSummary ? prev : artifacts.patientSummary))
-  }, [noteContent, patientMetadata, normalizedSelected, normalizedTranscript])
+    if (!composeResult || typeof composeResult !== "object") {
+      setBeautifiedContent((prev) => (prev === artifacts.professionalNote ? prev : artifacts.professionalNote))
+      setSummaryContent((prev) => (prev === artifacts.patientSummary ? prev : artifacts.patientSummary))
+    }
+  }, [composeResult, noteContent, patientMetadata, normalizedSelected, normalizedTranscript])
 
   useEffect(() => {
     if (!normalizedSelected.length && !normalizedSuggested.length && currentStep < 3) {
@@ -740,105 +790,88 @@ export function FinalizationWizard({
     }
   }, [currentStep, normalizedSelected.length, normalizedSuggested.length])
 
-  useEffect(() => {
-    if (currentStep !== 3) {
-      return
+  const fallbackValidationOk = useMemo(
+    () => performFinalValidation(noteContent, beautifiedContent, summaryContent),
+    [noteContent, beautifiedContent, summaryContent],
+  )
+
+  const isComposeRunning =
+    composeStatus === "queued" || composeStatus === "in_progress" || composeStatus === "in-progress"
+
+  const composeBlocked =
+    composeStatus === "failed" || composeStatus === "blocked" || composeValidation?.ok === false
+
+  const composeErrorMessage = useMemo(() => {
+    if (composeError) {
+      return composeError
     }
-
-    composeRunRef.current += 1
-    const runId = composeRunRef.current
-    let cancelled = false
-
-    setComposeError(null)
-    setComposeComplete(false)
-    setIsComposeRunning(true)
-    setComposeProgress(createComposeProgressState(1))
-
-    const noteSnapshot = noteContent && noteContent.trim().length > 0 ? noteContent : getDefaultNoteContent(patientMetadata)
-    const codesSnapshot = normalizedSelected
-    const transcriptSnapshot = normalizedTranscript
-
-    const updateProgress = (updates: Array<[number, WizardProgressStep["status"]]>) => {
-      setComposeProgress((prev) =>
-        prev.map((step) => {
-          const match = updates.find(([id]) => id === step.id)
-          return match ? { ...step, status: match[1] } : step
-        }),
-      )
-    }
-
-    const guard = () => cancelled || composeRunRef.current !== runId
-
-    const run = async () => {
-      try {
-        await delay(140)
-        if (guard()) return
-        updateProgress([
-          [1, "completed"],
-          [2, "in-progress"],
-        ])
-
-        await delay(100)
-        if (guard()) return
-        updateProgress([
-          [2, "completed"],
-          [3, "in-progress"],
-        ])
-
-        const aiResult = await runComposeEnhancement({
-          note: noteSnapshot,
-          metadata: patientMetadata,
-          codes: codesSnapshot,
-          transcripts: transcriptSnapshot,
-        })
-        if (guard()) return
-
-        setBeautifiedContent((prev) => (prev === aiResult.professionalNote ? prev : aiResult.professionalNote))
-        setSummaryContent((prev) => (prev === aiResult.patientSummary ? prev : aiResult.patientSummary))
-
-        updateProgress([
-          [3, "completed"],
-          [4, "in-progress"],
-        ])
-
-        const validationPassed = performFinalValidation(noteSnapshot, aiResult.professionalNote, aiResult.patientSummary)
-        if (guard()) return
-
-        if (!validationPassed) {
-          throw new Error("AI enhancement failed validation. Please retry.")
-        }
-
-        await delay(120)
-        if (guard()) return
-
-        updateProgress([[4, "completed"]])
-        setComposeComplete(true)
-      } catch (error) {
-        if (guard()) {
-          return
-        }
-        const message = error instanceof Error ? error.message : "Unable to enhance the note. Please try again."
-        setComposeError(message)
-        updateProgress([[4, "pending"]])
-      } finally {
-        if (!guard()) {
-          setIsComposeRunning(false)
+    if (composeValidation && composeValidation.ok === false) {
+      const issues = composeValidation.issues as Record<string, unknown> | undefined
+      if (issues) {
+        const messages = Object.values(issues)
+          .flat()
+          .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        if (messages.length) {
+          return messages.join(" • ")
         }
       }
+      return composeJobState?.message ?? "Validation identified blocking issues."
     }
-
-    void run()
-
-    return () => {
-      cancelled = true
+    if (composeBlocked) {
+      return composeJobState?.message ?? "AI enhancement was unable to complete. Please review and retry."
     }
-  }, [currentStep, noteContent, normalizedSelected, normalizedTranscript, patientMetadata, composeRetryKey])
+    return null
+  }, [composeBlocked, composeError, composeJobState?.message, composeValidation])
 
-  useEffect(() => {
-    if (currentStep !== 3) {
-      setIsComposeRunning(false)
+  let composeReady = false
+  if (!composeJobState) {
+    composeReady = fallbackValidationOk
+  } else if (composeValidation?.ok === true) {
+    composeReady = true
+  } else if (composeValidation?.ok === false) {
+    composeReady = false
+  } else if (composeStatus === "completed") {
+    composeReady = fallbackValidationOk
+  }
+
+  const composeProgress = useMemo<WizardProgressStep[]>(() => {
+    if (Array.isArray(composeJobState?.steps) && composeJobState.steps.length) {
+      return composeJobState.steps.map((step, index) => {
+        const id = Number.isFinite(step?.id as number) ? Number(step?.id) : index + 1
+        const stageKey = typeof step?.stage === "string" ? step.stage : ""
+        const title =
+          COMPOSE_STAGE_TITLE_MAP[stageKey] ?? COMPOSE_PROGRESS_SEQUENCE[index]?.title ?? `Stage ${id}`
+        const rawStatus = typeof step?.status === "string" ? step.status.toLowerCase() : ""
+        let status: WizardProgressStep["status"] = "pending"
+        if (rawStatus === "completed") {
+          status = "completed"
+        } else if (rawStatus === "in_progress" || rawStatus === "in-progress") {
+          status = "in-progress"
+        } else if (rawStatus === "blocked" || rawStatus === "failed") {
+          status = "blocked"
+        }
+        return { id, title, status }
+      })
     }
-  }, [currentStep])
+    if (composeStatus === "completed") {
+      return COMPOSE_PROGRESS_SEQUENCE.map((step) => ({ ...step, status: "completed" as const }))
+    }
+    if (composeBlocked) {
+      return COMPOSE_PROGRESS_SEQUENCE.map((step, index) => ({
+        ...step,
+        status: index + 1 === COMPOSE_PROGRESS_SEQUENCE.length ? "blocked" : "completed",
+      }))
+    }
+    if (isComposeRunning) {
+      const stageKey = composeJobState?.stage
+      const stageIndex = stageKey ? Object.keys(COMPOSE_STAGE_TITLE_MAP).indexOf(stageKey) + 1 : undefined
+      return createComposeProgressState(stageIndex)
+    }
+    if (composeJobState) {
+      return createComposeProgressState()
+    }
+    return createComposeProgressState(currentStep === 3 ? 1 : undefined)
+  }, [composeBlocked, composeJobState, composeStatus, currentStep, isComposeRunning])
 
   const steps = useMemo<WizardStepData[]>(() => {
     const complianceDescription = formatComplianceSummary(normalizedCompliance.length)
@@ -894,7 +927,13 @@ export function FinalizationWizard({
         description: "AI beautification and enhancement",
         type: "loading",
         progressSteps: composeProgress,
-        status: composeError ? "blocked" : composeComplete ? "completed" : defaultStatusForStep(3),
+        status: composeErrorMessage
+          ? "blocked"
+          : composeReady
+            ? "completed"
+            : isComposeRunning
+              ? "in-progress"
+              : defaultStatusForStep(3),
       },
       {
         id: 4,
@@ -944,8 +983,8 @@ export function FinalizationWizard({
     blockingIssues,
     currentStep,
     composeProgress,
-    composeComplete,
-    composeError,
+    composeReady,
+    composeErrorMessage,
   ])
 
   useEffect(() => {
@@ -965,7 +1004,7 @@ export function FinalizationWizard({
         if (isComposeRunning) {
           return
         }
-        if (!composeComplete && stepId !== 3) {
+        if (!composeReady && stepId !== 3) {
           return
         }
       }
@@ -973,7 +1012,7 @@ export function FinalizationWizard({
       const target = steps.find((step) => step.id === stepId) || fallback
       setCurrentStep(target.id)
     },
-    [steps, currentStep, isComposeRunning, composeComplete],
+    [steps, currentStep, isComposeRunning, composeReady],
   )
 
   useEffect(() => {
@@ -1230,12 +1269,16 @@ export function FinalizationWizard({
                   </motion.div>
                 </div>
                 <h2 className="text-xl font-semibold text-slate-800 mb-2">
-                  {composeError ? "Enhancement Paused" : composeComplete ? "Enhancement Ready" : "AI Enhancement in Progress"}
+                  {composeErrorMessage
+                    ? "Enhancement Paused"
+                    : composeReady
+                      ? "Enhancement Ready"
+                      : "AI Enhancement in Progress"}
                 </h2>
                 <p className="text-slate-600 mb-8">
-                  {composeError
+                  {composeErrorMessage
                     ? "We ran into a validation issue. Review the details below to retry the enhancement."
-                    : composeComplete
+                    : composeReady
                       ? "All steps are complete. Review the enhancements, then continue to compare and edit."
                       : "Analyzing your draft, transcripts, and codes to produce polished documentation."}
                 </p>
@@ -1252,7 +1295,9 @@ export function FinalizationWizard({
                           ? "bg-emerald-50 border border-emerald-200"
                           : step.status === "in-progress"
                             ? "bg-blue-50 border border-blue-200"
-                            : "bg-slate-50 border border-slate-200"
+                            : step.status === "blocked"
+                              ? "bg-red-50 border border-red-200"
+                              : "bg-slate-50 border border-slate-200"
                       }`}
                     >
                       <div
@@ -1272,6 +1317,8 @@ export function FinalizationWizard({
                             }}
                             className="w-3 h-3 border-2 border-white border-t-transparent rounded-full"
                           />
+                        ) : step.status === "blocked" ? (
+                          <AlertTriangle size={14} className="text-red-600" />
                         ) : (
                           <div className="w-2 h-2 bg-white rounded-full" />
                         )}
@@ -1281,19 +1328,19 @@ export function FinalizationWizard({
                   ))}
                 </div>
 
-                {isComposeRunning && !composeError && (
+                {isComposeRunning && !composeErrorMessage && (
                   <div className="mt-6 flex items-center justify-center gap-2 text-blue-600">
                     <Loader2 className="h-5 w-5 animate-spin" />
                     <span className="text-sm font-medium">Working with the latest note, transcript, and selected codes…</span>
                   </div>
                 )}
 
-                {composeError && (
+                {composeErrorMessage && (
                   <div className="mt-6 space-y-3">
-                    <p className="text-sm text-red-600">{composeError}</p>
+                    <p className="text-sm text-red-600">{composeErrorMessage}</p>
                     <motion.button
                       type="button"
-                      onClick={() => setComposeRetryKey((key) => key + 1)}
+                      onClick={() => onRequestCompose?.({ force: true })}
                       disabled={isComposeRunning}
                       className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
                       whileHover={isComposeRunning ? undefined : { scale: 1.03 }}
@@ -1304,7 +1351,7 @@ export function FinalizationWizard({
                   </div>
                 )}
 
-                {composeComplete && !composeError && (
+                {composeReady && !composeErrorMessage && (
                   <p className="mt-6 text-sm font-medium text-emerald-600">
                     Enhancement complete. Final review passed and your comparison is ready.
                   </p>
@@ -1312,22 +1359,22 @@ export function FinalizationWizard({
 
                 <motion.button
                   onClick={() => {
-                    if (!composeComplete || isComposeRunning || composeError) {
+                    if (!composeReady || isComposeRunning || composeErrorMessage) {
                       return
                     }
                     goToStep(4)
                   }}
-                  disabled={!composeComplete || isComposeRunning || Boolean(composeError)}
+                  disabled={!composeReady || isComposeRunning || Boolean(composeErrorMessage)}
                   className={`mt-8 px-6 py-3 rounded-lg font-medium text-white transition-all ${
-                    !composeComplete || isComposeRunning || composeError
+                    !composeReady || isComposeRunning || composeErrorMessage
                       ? "bg-slate-300 cursor-not-allowed"
                       : "bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
                   }`}
                   whileHover={
-                    !composeComplete || isComposeRunning || composeError ? undefined : { scale: 1.05 }
+                    !composeReady || isComposeRunning || composeErrorMessage ? undefined : { scale: 1.05 }
                   }
                   whileTap={
-                    !composeComplete || isComposeRunning || composeError ? undefined : { scale: 0.95 }
+                    !composeReady || isComposeRunning || composeErrorMessage ? undefined : { scale: 0.95 }
                   }
                 >
                   Continue to Compare & Edit
@@ -1348,7 +1395,16 @@ export function FinalizationWizard({
                 handleNoteChange(beautifiedContent)
               }}
               onReBeautify={() => {
-                const refreshed = composeEnhancedArtifacts(noteContent, patientMetadata, normalizedSelected, normalizedTranscript)
+                if (onRequestCompose) {
+                  onRequestCompose({ force: true })
+                  return
+                }
+                const refreshed = composeEnhancedArtifacts(
+                  noteContent,
+                  patientMetadata,
+                  normalizedSelected,
+                  normalizedTranscript,
+                )
                 setBeautifiedContent(refreshed.professionalNote)
                 setSummaryContent(refreshed.patientSummary)
               }}

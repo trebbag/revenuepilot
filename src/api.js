@@ -1618,6 +1618,52 @@ export async function createNote({
   return await resp.json();
 }
 
+export async function startComposeJob(payload = {}) {
+  const { sessionId, ...rest } = payload || {}
+  if (!sessionId) {
+    throw new Error("sessionId is required to start a compose job")
+  }
+  const baseUrl = resolveBaseUrl()
+  const headers = {
+    "Content-Type": "application/json",
+    ...getAuthHeader(),
+  }
+  const body = JSON.stringify({ sessionId, ...rest })
+  const resp = await rawFetch(`${baseUrl}/api/compose/start`, {
+    method: "POST",
+    headers,
+    body,
+  })
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error("Unauthorized")
+  }
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}))
+    throw new Error(detail?.detail || "Failed to start compose job")
+  }
+  return await resp.json()
+}
+
+export async function pollComposeJob(composeId) {
+  if (composeId == null) {
+    throw new Error("composeId is required to poll compose job")
+  }
+  const baseUrl = resolveBaseUrl()
+  const headers = getAuthHeader()
+  const resp = await rawFetch(`${baseUrl}/api/compose/${encodeURIComponent(String(composeId))}`, {
+    method: "GET",
+    headers,
+  })
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error("Unauthorized")
+  }
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => ({}))
+    throw new Error(detail?.detail || "Failed to fetch compose job status")
+  }
+  return await resp.json()
+}
+
 export async function autoSaveNote(noteId, content, version) {
   if (!noteId) return;
   const resolvedId = String(noteId);

@@ -51,6 +51,17 @@ type TranscriptEntryLike = {
   [key: string]: unknown
 }
 
+interface ComposeJobLike {
+  composeId: number
+  status: string
+  stage?: string | null
+  progress?: number | null
+  steps?: Array<Record<string, unknown>>
+  result?: Record<string, unknown> | null
+  validation?: Record<string, unknown> | null
+  message?: string | null
+}
+
 interface PatientInfoInput {
   patientId?: string | null
   encounterId?: string | null
@@ -281,8 +292,7 @@ const toClassification = (value: unknown): CodeClassification | null => {
   return SUGGESTION_CLASSIFICATION_ALIASES[normalized] ?? null;
 };
 
-// ... rest of the codex branch code continues here unchanged ...
-}
+// Additional utilities continue below.
 
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
   if (!Array.isArray(list)) {
@@ -308,7 +318,12 @@ const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
     const category = sanitizeString(item.category)
     const classificationKey = (category ?? "codes") as CodeCategory
     const mappedClassification = CODE_CLASSIFICATION_MAP[classificationKey] ?? CODE_CLASSIFICATION_MAP.codes
-    const identifier = typeof item.id === "number" || typeof item.id === "string" ? item.id : code ? `${code}-${index}` : `code-${index + 1}`
+    const identifier =
+      typeof item.id === "number" || typeof item.id === "string"
+        ? item.id
+        : code
+        ? `${code}-${index}`
+        : `code-${index + 1}`
 
     const evidence = toTrimmedStringArray(extras.evidence ?? extras.evidenceText)
     const gaps = toTrimmedStringArray(extras.gaps)
@@ -681,6 +696,18 @@ export function FinalizationWizardAdapter({
   const preFinalizeResultRef = useRef<PreFinalizeCheckResponse | null>(initialPreFinalizeResult)
   const preFinalizeFingerprintRef = useRef<string | null>(null)
   const lastFinalizeResultRef = useRef<FinalizeResult | null>(initialSessionSnapshot?.lastFinalizeResult ?? null)
+  const [composeJob, setComposeJob] = useState<ComposeJobLike | null>(
+    (initialSessionSnapshot?.composeJob as ComposeJobLike | undefined) ?? null,
+  )
+  const [composeError, setComposeError] = useState<string | null>(null)
+  const composeJobIdRef = useRef<number | null>(
+    typeof (initialSessionSnapshot?.composeJob as ComposeJobLike | undefined)?.composeId === "number"
+      ? (initialSessionSnapshot?.composeJob as ComposeJobLike).composeId
+      : null,
+  )
+  const composePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const composeFingerprintRef = useRef<string | null>(null)
+  const composeActiveRef = useRef<boolean>(false)
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId ?? initialSessionSnapshot?.encounterId
@@ -838,6 +865,83 @@ export function FinalizationWizardAdapter({
       .filter((entry): entry is { id: string | number; text: string; speaker?: string; timestamp?: number | string; confidence?: number } => Boolean(entry))
   }, [transcriptEntries])
 
+  const composeSelectedCodes = useMemo(() => {
+    if (Array.isArray(sessionData?.selectedCodes) && sessionData.selectedCodes.length) {
+      return sessionData.selectedCodes as Array<Record<string, unknown>>
+    }
+    if (Array.isArray(selectedCodesList) && selectedCodesList.length) {
+      return selectedCodesList
+    }
+    return [] as Array<Record<string, unknown>>
+  }, [selectedCodesList, sessionData?.selectedCodes])
+
+  const composePatientMetadata = useMemo(() => {
+    const base =
+      sessionData?.patientMetadata && typeof sessionData.patientMetadata === "object"
+        ? { ...(sessionData.patientMetadata as Record<string, unknown>) }
+        : {}
+    return { ...base, ...patientMetadataPayload }
+  }, [patientMetadataPayload, sessionData?.patientMetadata])
+
+  const composeSnapshot = useMemo(() => {
+    const sessionId = sessionData?.sessionId ?? initialSessionSnapshot?.sessionId ?? null
+    const encounterId =
+      sessionData?.encounterId ?? initialSessionSnapshot?.encounterId ?? patientInfo?.encounterId ?? null
+    const noteIdentifier = sessionData?.noteId ?? initialSessionSnapshot?.noteId ?? noteId ?? null
+    const sourceContent = sessionData?.noteContent ?? noteContent ?? ""
+    const trimmed = typeof sourceContent === "string" ? sourceContent.trim() : ""
+
+    return {
+      sessionId,
+      encounterId,
+      noteId: noteIdentifier,
+      noteContent: trimmed,
+      patientMetadata: composePatientMetadata,
+      selectedCodes: composeSelectedCodes,
+      transcript: sanitizedTranscripts,
+      context: (sessionData?.context ?? initialSessionSnapshot?.context ?? {}) as Record<string, unknown>,
+    }
+  }, [
+    composePatientMetadata,
+    composeSelectedCodes,
+    initialSessionSnapshot?.context,
+    initialSessionSnapshot?.encounterId,
+    initialSessionSnapshot?.noteId,
+    initialSessionSnapshot?.sessionId,
+    noteContent,
+    noteId,
+    patientInfo?.encounterId,
+    sanitizedTranscripts,
+    sessionData?.context,
+    sessionData?.encounterId,
+    sessionData?.noteContent,
+    sessionData?.noteId,
+    sessionData?.sessionId,
+  ])
+
+  const composeSnapshotFingerprint = useMemo(() => JSON.stringify(composeSnapshot), [composeSnapshot])
+
+  const clearComposePollTimer = useCallback(() => {
+    if (composePollTimerRef.current !== null) {
+      clearTimeout(composePollTimerRef.current)
+      composePollTimerRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      clearComposePollTimer()
+      composeActiveRef.current = false
+    }
+  }, [clearComposePollTimer])
+
+  useEffect(() => {
+    if (!isOpen) {
+      composeActiveRef.current = false
+      clearComposePollTimer()
+    }
+  }, [clearComposePollTimer, isOpen])
+
   const persistSession = useCallback(
     (session: WorkflowSessionResponsePayload | null | undefined, extras?: Partial<StoredFinalizationSession>) => {
       const base = session ?? sessionDataRef.current
@@ -853,6 +957,162 @@ export function FinalizationWizardAdapter({
       sessionActions.storeFinalizationSession(base.sessionId, snapshot)
     },
     [sanitizedTranscripts, sessionActions, sessionState.finalizationSessions],
+  )
+
+  const pollComposeJobStatus = useCallback(async () => {
+    const composeId = composeJobIdRef.current
+    if (!composeId) {
+      composeActiveRef.current = false
+      return
+    }
+
+    try {
+      const response = await fetchWithAuth(`/api/compose/${encodeURIComponent(String(composeId))}`)
+      if (!response.ok) {
+        throw new Error(`Compose status check failed (${response.status})`)
+      }
+
+      const data = (await response.json()) as ComposeJobLike
+      setComposeJob(data)
+      setComposeError(null)
+      setSessionData((prev) => {
+        if (!prev) {
+          persistSession(sessionDataRef.current, {
+            composeJob: data,
+            composeResult: data.result,
+            composeValidation: data.validation,
+          })
+          return prev
+        }
+
+        const next: WorkflowSessionResponsePayload = {
+          ...prev,
+          composeJob: data,
+        }
+        persistSession(next, {
+          composeJob: data,
+          composeResult: data.result,
+          composeValidation: data.validation,
+        })
+        sessionDataRef.current = next
+        return next
+      })
+
+      const normalizedStatus = typeof data.status === "string" ? data.status.toLowerCase() : ""
+      if (["completed", "failed", "blocked", "cancelled"].includes(normalizedStatus)) {
+        composeActiveRef.current = false
+        clearComposePollTimer()
+      } else {
+        clearComposePollTimer()
+        composePollTimerRef.current = window.setTimeout(() => {
+          void pollComposeJobStatus()
+        }, 650)
+      }
+    } catch (error) {
+      composeActiveRef.current = false
+      clearComposePollTimer()
+      const message = error instanceof Error ? error.message : "Unable to poll compose job"
+      setComposeError(message)
+      onError?.(message, error)
+    }
+  }, [clearComposePollTimer, fetchWithAuth, onError, persistSession])
+
+  const handleComposeRequest = useCallback(
+    (options?: { force?: boolean }) => {
+      if (!sessionData?.sessionId) {
+        setComposeError("Session not ready for compose job")
+        return
+      }
+
+      const fingerprint = composeSnapshotFingerprint
+      const shouldForce = Boolean(options?.force)
+      if (!shouldForce && composeActiveRef.current && composeFingerprintRef.current === fingerprint) {
+        return
+      }
+
+      composeFingerprintRef.current = fingerprint
+      composeActiveRef.current = true
+      setComposeError(null)
+
+      const payload: Record<string, unknown> = {
+        sessionId: sessionData.sessionId,
+        noteContent: composeSnapshot.noteContent,
+        patientMetadata: composeSnapshot.patientMetadata,
+        selectedCodes: composeSnapshot.selectedCodes,
+        transcript: composeSnapshot.transcript,
+      }
+      if (composeSnapshot.encounterId) {
+        payload.encounterId = composeSnapshot.encounterId
+      }
+      if (composeSnapshot.noteId) {
+        payload.noteId = composeSnapshot.noteId
+      }
+
+      const preferences = (composeSnapshot.context?.preferences ?? composeSnapshot.context?.settings) as
+        | Record<string, unknown>
+        | undefined
+      if (preferences) {
+        if (typeof preferences.useOfflineMode === "boolean") {
+          payload.useOfflineMode = preferences.useOfflineMode
+        }
+        if (typeof preferences.useLocalModels === "boolean") {
+          payload.useLocalModels = preferences.useLocalModels
+        }
+      }
+
+      const start = async () => {
+        try {
+          const response = await fetchWithAuth("/api/compose/start", {
+            method: "POST",
+            jsonBody: payload,
+          })
+          if (!response.ok) {
+            throw new Error(`Compose start failed (${response.status})`)
+          }
+          const data = (await response.json()) as ComposeJobLike
+          composeJobIdRef.current = data.composeId
+          setComposeJob(data)
+          setSessionData((prev) => {
+            if (!prev) {
+              persistSession(sessionDataRef.current, { composeJob: data })
+              return prev
+            }
+            const next: WorkflowSessionResponsePayload = { ...prev, composeJob: data }
+            persistSession(next, { composeJob: data })
+            sessionDataRef.current = next
+            return next
+          })
+          clearComposePollTimer()
+          composePollTimerRef.current = window.setTimeout(() => {
+            void pollComposeJobStatus()
+          }, 650)
+        } catch (error) {
+          composeActiveRef.current = false
+          clearComposePollTimer()
+          const message = error instanceof Error ? error.message : "Unable to start compose job"
+          setComposeError(message)
+          onError?.(message, error)
+        }
+      }
+
+      void start()
+    },
+    [
+      clearComposePollTimer,
+      composeSnapshot.context,
+      composeSnapshot.encounterId,
+      composeSnapshot.noteContent,
+      composeSnapshot.noteId,
+      composeSnapshot.patientMetadata,
+      composeSnapshot.selectedCodes,
+      composeSnapshot.transcript,
+      composeSnapshotFingerprint,
+      fetchWithAuth,
+      onError,
+      persistSession,
+      pollComposeJobStatus,
+      sessionData?.sessionId,
+    ],
   )
 
   const selectedCodeSet = useMemo(() => {
@@ -1465,6 +1725,31 @@ export function FinalizationWizardAdapter({
     return 1
   }, [sessionData?.currentStep, validationState.firstOpenStep])
 
+  const [activeWizardStep, setActiveWizardStep] = useState<number>(() =>
+    Number.isFinite(derivedCurrentStep) ? derivedCurrentStep : 1,
+  )
+
+  useEffect(() => {
+    if (Number.isFinite(derivedCurrentStep)) {
+      setActiveWizardStep((prev) => (prev === derivedCurrentStep ? prev : derivedCurrentStep))
+    }
+  }, [derivedCurrentStep])
+
+  useEffect(() => {
+    if (!isOpen || !sessionData?.sessionId) {
+      return
+    }
+    if (activeWizardStep !== 3) {
+      return
+    }
+    if (!composeSnapshotFingerprint) {
+      return
+    }
+    if (composeFingerprintRef.current !== composeSnapshotFingerprint || !composeActiveRef.current) {
+      handleComposeRequest()
+    }
+  }, [activeWizardStep, composeSnapshotFingerprint, handleComposeRequest, isOpen, sessionData?.sessionId])
+
   const handleFinalize = useCallback(
     async (request: FinalizeRequest): Promise<FinalizeResult> => {
       const payload = toFinalizeRequestPayload(request, finalizeRequestSnapshot)
@@ -1523,6 +1808,7 @@ export function FinalizationWizardAdapter({
 
   const handleWizardStepChange = useCallback(
     (stepId: number) => {
+      setActiveWizardStep(stepId)
       setSessionData((prev) => {
         if (!prev) {
           return prev
@@ -1594,6 +1880,9 @@ export function FinalizationWizardAdapter({
         stepOverrides={mergedStepOverrides.length ? mergedStepOverrides : undefined}
         initialStep={derivedCurrentStep}
         canFinalize={validationState.canFinalize}
+        composeJob={composeJob ?? undefined}
+        composeError={composeError ?? undefined}
+        onRequestCompose={handleComposeRequest}
         onFinalize={handleFinalize}
         onStepChange={handleWizardStepChange}
         onClose={handleClose}
