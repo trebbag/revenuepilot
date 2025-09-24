@@ -158,11 +158,11 @@ export interface FinalizationWizardProps {
   onStepChange?: (stepId: number, step: WizardStepData) => void
 }
 
-const composeProgressSteps: WizardProgressStep[] = [
-  { id: 1, title: "Analyzing Content", status: "completed" },
-  { id: 2, title: "Enhancing Structure", status: "completed" },
-  { id: 3, title: "Beautifying Language", status: "in-progress" },
-  { id: 4, title: "Final Review", status: "pending" },
+const COMPOSE_PROGRESS_SEQUENCE: Array<Pick<WizardProgressStep, "id" | "title">> = [
+  { id: 1, title: "Analyzing Content" },
+  { id: 2, title: "Enhancing Structure" },
+  { id: 3, title: "Beautifying Language" },
+  { id: 4, title: "Final Review" },
 ]
 
 const STATUS_ORDER: CodeStatus[] = ["pending", "in-progress", "confirmed", "completed"]
@@ -332,28 +332,284 @@ function getDefaultNoteContent(metadata?: PatientMetadata): string {
   return `PATIENT: ${name}\nDATE: ${date}\n\nCHIEF COMPLAINT:\nChest pain for 2 days.\n\nHISTORY OF PRESENT ILLNESS:\nPatient reports chest pain. Started 2 days ago. Pain is sharp. Located in precordial region. Intermittent. Worsens with activity. Smoking history 1 pack per day for 30 years.\n\nPHYSICAL EXAMINATION:\nGENERAL: Alert, oriented, comfortable at rest\nCARDIOVASCULAR: Regular rate and rhythm, no murmurs, no peripheral edema\nRESPIRATORY: Clear to auscultation bilaterally\nEXTREMITIES: No cyanosis, clubbing, or edema\n\nASSESSMENT:\nChest pain, likely musculoskeletal. Given smoking history and age, cardiac evaluation warranted.\n\nPLAN:\n1. EKG to rule out cardiac abnormalities\n2. Basic metabolic panel and lipid profile\n3. Consider stress testing if symptoms persist\n4. Smoking cessation counseling provided`
 }
 
-function buildBeautifiedContent(note: string, metadata?: PatientMetadata): string {
-  const content = note && note.trim() ? note : getDefaultNoteContent(metadata)
-  return content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.charAt(0).toUpperCase() + line.slice(1))
-    .join("\n")
+function createComposeProgressState(activeId?: number | null): WizardProgressStep[] {
+  return COMPOSE_PROGRESS_SEQUENCE.map((step) => ({
+    ...step,
+    status: activeId === step.id ? "in-progress" : "pending",
+  }))
 }
 
-function buildPatientSummary(note: string, metadata?: PatientMetadata): string {
+function normalizeBulletSentence(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim()
+  if (!collapsed) {
+    return ""
+  }
+
+  if (/^[-•]/.test(collapsed)) {
+    const content = collapsed.replace(/^[-•]\s*/, "").trim()
+    if (!content) {
+      return "•"
+    }
+    const formatted = /^[A-Za-z]/.test(content)
+      ? content.charAt(0).toUpperCase() + content.slice(1)
+      : content
+    return `• ${formatted}`
+  }
+
+  if (/^\d+\./.test(collapsed)) {
+    const match = collapsed.match(/^(\d+\.)\s*(.*)$/)
+    if (match) {
+      const body = match[2]
+      const formatted = body ? body.charAt(0).toUpperCase() + body.slice(1) : ""
+      return `${match[1]} ${formatted}`.trim()
+    }
+    return collapsed
+  }
+
+  if (!/^[A-Za-z]/.test(collapsed)) {
+    return collapsed
+  }
+
+  return collapsed.charAt(0).toUpperCase() + collapsed.slice(1)
+}
+
+function normalizeSentence(line: string): string {
+  const collapsed = line.replace(/\s+/g, " ").trim()
+  if (!collapsed) {
+    return ""
+  }
+
+  if (/^[-•]/.test(collapsed) || /^\d+\./.test(collapsed)) {
+    return normalizeBulletSentence(collapsed)
+  }
+
+  if (!/^[A-Za-z]/.test(collapsed)) {
+    return collapsed
+  }
+
+  return collapsed.charAt(0).toUpperCase() + collapsed.slice(1)
+}
+
+function formatNoteForEnhancement(note: string): string {
+  const lines = note.split(/\r?\n/)
+  const formatted: string[] = []
+  let previousWasHeading = false
+
+  lines.forEach((rawLine) => {
+    const trimmed = rawLine.trim()
+    if (!trimmed) {
+      return
+    }
+
+    const isHeading = /^[A-Za-z][A-Za-z\s\/]+:$/.test(trimmed)
+
+    if (isHeading) {
+      const normalizedHeading = trimmed.replace(/\s+/g, " ").toUpperCase()
+      if (formatted.length && formatted[formatted.length - 1] !== "") {
+        formatted.push("")
+      }
+      formatted.push(normalizedHeading)
+      previousWasHeading = true
+      return
+    }
+
+    const normalized = normalizeSentence(trimmed)
+    if (previousWasHeading) {
+      formatted.push(normalized)
+      previousWasHeading = false
+      return
+    }
+
+    formatted.push(normalized)
+    previousWasHeading = false
+  })
+
+  return formatted.join("\n")
+}
+
+function cleanSentence(text: string): string {
+  const trimmed = text.replace(/\s+/g, " ").trim()
+  if (!trimmed) {
+    return ""
+  }
+
+  const capitalized = /^[A-Za-z]/.test(trimmed)
+    ? trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+    : trimmed
+
+  if (/[.!?:;)]$/.test(capitalized)) {
+    return capitalized
+  }
+
+  return `${capitalized}.`
+}
+
+function buildCodeJustifications(
+  codes: NormalizedWizardCodeItem[],
+  metadata?: PatientMetadata,
+): string[] {
+  if (!codes.length) {
+    return ["• No billing codes were selected during this workflow."]
+  }
+
+  const seen = new Set<string>()
+  const patientName = getPatientName(metadata)
+
+  return codes.reduce<string[]>((acc, item, index) => {
+    const identifier = item.code ? item.code.trim() : ""
+    const key = (identifier || item.title || String(item.id)).toLowerCase()
+    if (seen.has(key)) {
+      return acc
+    }
+    seen.add(key)
+
+    const descriptorParts = []
+    if (identifier) {
+      descriptorParts.push(identifier)
+    }
+    if (item.title && (!identifier || item.title.toLowerCase() !== identifier.toLowerCase())) {
+      descriptorParts.push(item.title)
+    }
+    const descriptor = descriptorParts.length ? descriptorParts.join(" – ") : item.title || `Code ${index + 1}`
+
+    const evidenceSources = [
+      typeof item.docSupport === "string" ? item.docSupport : undefined,
+      typeof item.details === "string" ? item.details : undefined,
+      typeof item.description === "string" ? item.description : undefined,
+      typeof item.aiReasoning === "string" ? item.aiReasoning : undefined,
+      Array.isArray(item.evidence) && item.evidence.length ? item.evidence.join("; ") : undefined,
+      Array.isArray(item.gaps) && item.gaps.length ? item.gaps[0] : undefined,
+    ]
+
+    const rawReason = evidenceSources.find((entry) => typeof entry === "string" && entry.trim().length > 0)
+    const reason = rawReason
+      ? cleanSentence(rawReason)
+      : `Documented findings for ${patientName} support this selection.`
+
+    acc.push(`• ${descriptor}: ${reason}`)
+    return acc
+  }, [])
+}
+
+function deriveTranscriptHighlights(transcripts: VisitTranscriptEntry[]): string[] {
+  if (!Array.isArray(transcripts) || !transcripts.length) {
+    return []
+  }
+
+  return transcripts
+    .filter((entry) => typeof entry?.text === "string" && entry.text.trim().length > 0)
+    .slice(0, 3)
+    .map((entry) => {
+      const speaker = entry.speaker && entry.speaker.trim().length > 0 ? `${entry.speaker.trim()}: ` : ""
+      return `• ${speaker}${entry.text.trim()}`
+    })
+}
+
+function buildPatientSummaryDocument(
+  note: string,
+  metadata: PatientMetadata | undefined,
+  codeJustifications: string[],
+  transcripts: VisitTranscriptEntry[],
+): string {
   const name = getPatientName(metadata)
   const date = metadata?.encounterDate || new Date().toLocaleDateString()
-  const lines = note
-    .split("\n")
+  const paragraphs = note
+    .split(/\n{2,}/)
+    .map((block) => block.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+
+  const keyPoints = paragraphs.slice(0, 6).map((block) => `• ${block}`)
+  const highlights = deriveTranscriptHighlights(transcripts)
+  const billingPoints = codeJustifications.map((entry) => `• ${entry.replace(/^•\s*/, "")}`)
+
+  let summary = `VISIT SUMMARY FOR: ${name}\nDATE: ${date}`
+  summary += "\n\nWHAT WE DISCUSSED:\n"
+  summary += keyPoints.length ? keyPoints.join("\n") : "• Please review the clinical note for visit details."
+
+  if (highlights.length) {
+    summary += "\n\nCONVERSATION HIGHLIGHTS:\n"
+    summary += highlights.join("\n")
+  }
+
+  if (billingPoints.length) {
+    summary += "\n\nBILLING CODES & REASONS:\n"
+    summary += billingPoints.join("\n")
+  }
+
+  summary += "\n\nNEXT STEPS:\n• Follow the care plan outlined above.\n• Contact the clinic if symptoms change or new concerns arise."
+
+  return summary
+}
+
+function composeEnhancedArtifacts(
+  note: string,
+  metadata: PatientMetadata | undefined,
+  codes: NormalizedWizardCodeItem[],
+  transcripts: VisitTranscriptEntry[],
+): { professionalNote: string; patientSummary: string; codeJustifications: string[] } {
+  const baseNote = note && note.trim().length > 0 ? note : getDefaultNoteContent(metadata)
+  const formatted = formatNoteForEnhancement(baseNote)
+  const codeJustifications = buildCodeJustifications(codes, metadata)
+  const professionalNote = `${formatted}\n\nCODING JUSTIFICATION:\n${codeJustifications.join("\n")}`
+  const patientSummary = buildPatientSummaryDocument(formatted, metadata, codeJustifications, transcripts)
+
+  return { professionalNote, patientSummary, codeJustifications }
+}
+
+function buildBeautifiedContent(
+  note: string,
+  metadata: PatientMetadata | undefined,
+  codes: NormalizedWizardCodeItem[] = [],
+  transcripts: VisitTranscriptEntry[] = [],
+): string {
+  return composeEnhancedArtifacts(note, metadata, codes, transcripts).professionalNote
+}
+
+function buildPatientSummary(
+  note: string,
+  metadata: PatientMetadata | undefined,
+  codes: NormalizedWizardCodeItem[] = [],
+  transcripts: VisitTranscriptEntry[] = [],
+): string {
+  return composeEnhancedArtifacts(note, metadata, codes, transcripts).patientSummary
+}
+
+function performFinalValidation(original: string, enhanced: string, summary: string): boolean {
+  if (!enhanced || !summary) {
+    return false
+  }
+
+  const normalizedOriginal = formatNoteForEnhancement(original)
+  const originalSegments = normalizedOriginal
+    .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(0, 6)
+  const enhancedLower = enhanced.toLowerCase()
 
-  const summary = lines.length ? lines.map((line) => `• ${line}`).join("\n") : "• Documentation not yet available. Please review the clinical note for details."
+  const preservesContent = originalSegments.every((segment) => enhancedLower.includes(segment.toLowerCase()))
 
-  return `VISIT SUMMARY FOR: ${name}\nDATE: ${date}\n\nKEY POINTS:\n${summary}`
+  return preservesContent && summary.trim().length > 0
+}
+
+async function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+async function runComposeEnhancement({
+  note,
+  metadata,
+  codes,
+  transcripts,
+}: {
+  note: string
+  metadata: PatientMetadata | undefined
+  codes: NormalizedWizardCodeItem[]
+  transcripts: VisitTranscriptEntry[]
+}): Promise<{ professionalNote: string; patientSummary: string; codeJustifications: string[] }> {
+  await delay(160)
+  return composeEnhancedArtifacts(note, metadata, codes, transcripts)
 }
 
 function formatComplianceSummary(count: number): string {
@@ -422,8 +678,12 @@ export function FinalizationWizard({
 
   const defaultNoteRef = useRef(incomingNoteContent || getDefaultNoteContent(patientMetadata))
   const [noteContent, setNoteContent] = useState<string>(defaultNoteRef.current)
-  const [beautifiedContent, setBeautifiedContent] = useState<string>(() => buildBeautifiedContent(defaultNoteRef.current, patientMetadata))
-  const [summaryContent, setSummaryContent] = useState<string>(() => buildPatientSummary(defaultNoteRef.current, patientMetadata))
+  const [beautifiedContent, setBeautifiedContent] = useState<string>(() =>
+    buildBeautifiedContent(defaultNoteRef.current, patientMetadata, normalizedSelected, normalizedTranscript),
+  )
+  const [summaryContent, setSummaryContent] = useState<string>(() =>
+    buildPatientSummary(defaultNoteRef.current, patientMetadata, normalizedSelected, normalizedTranscript),
+  )
   const sanitizedInitialStep = Number.isFinite(initialStep) && initialStep >= 1 ? Math.floor(initialStep) : 1
   const [currentStep, setCurrentStep] = useState<number>(() => sanitizedInitialStep)
   const lastInitialStepRef = useRef<number>(sanitizedInitialStep)
@@ -434,6 +694,12 @@ export function FinalizationWizard({
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null)
+  const [composeProgress, setComposeProgress] = useState<WizardProgressStep[]>(() => createComposeProgressState())
+  const [composeComplete, setComposeComplete] = useState(false)
+  const [composeError, setComposeError] = useState<string | null>(null)
+  const [isComposeRunning, setIsComposeRunning] = useState(false)
+  const [composeRetryKey, setComposeRetryKey] = useState(0)
+  const composeRunRef = useRef(0)
 
   useEffect(() => {
     const nextInitial = Number.isFinite(initialStep) && initialStep >= 1 ? Math.floor(initialStep) : 1
@@ -456,21 +722,123 @@ export function FinalizationWizard({
     const nextDefault = incomingNoteContent || getDefaultNoteContent(patientMetadata)
     if (incomingNoteContent && incomingNoteContent !== noteContent) {
       setNoteContent(incomingNoteContent)
-      setBeautifiedContent(buildBeautifiedContent(incomingNoteContent, patientMetadata))
-      setSummaryContent(buildPatientSummary(incomingNoteContent, patientMetadata))
     } else if (!incomingNoteContent && noteContent === defaultNoteRef.current) {
       setNoteContent(nextDefault)
-      setBeautifiedContent(buildBeautifiedContent(nextDefault, patientMetadata))
-      setSummaryContent(buildPatientSummary(nextDefault, patientMetadata))
     }
     defaultNoteRef.current = nextDefault
   }, [incomingNoteContent, patientMetadata, noteContent])
+
+  useEffect(() => {
+    const artifacts = composeEnhancedArtifacts(noteContent, patientMetadata, normalizedSelected, normalizedTranscript)
+    setBeautifiedContent((prev) => (prev === artifacts.professionalNote ? prev : artifacts.professionalNote))
+    setSummaryContent((prev) => (prev === artifacts.patientSummary ? prev : artifacts.patientSummary))
+  }, [noteContent, patientMetadata, normalizedSelected, normalizedTranscript])
 
   useEffect(() => {
     if (!normalizedSelected.length && !normalizedSuggested.length && currentStep < 3) {
       setCurrentStep(3)
     }
   }, [currentStep, normalizedSelected.length, normalizedSuggested.length])
+
+  useEffect(() => {
+    if (currentStep !== 3) {
+      return
+    }
+
+    composeRunRef.current += 1
+    const runId = composeRunRef.current
+    let cancelled = false
+
+    setComposeError(null)
+    setComposeComplete(false)
+    setIsComposeRunning(true)
+    setComposeProgress(createComposeProgressState(1))
+
+    const noteSnapshot = noteContent && noteContent.trim().length > 0 ? noteContent : getDefaultNoteContent(patientMetadata)
+    const codesSnapshot = normalizedSelected
+    const transcriptSnapshot = normalizedTranscript
+
+    const updateProgress = (updates: Array<[number, WizardProgressStep["status"]]>) => {
+      setComposeProgress((prev) =>
+        prev.map((step) => {
+          const match = updates.find(([id]) => id === step.id)
+          return match ? { ...step, status: match[1] } : step
+        }),
+      )
+    }
+
+    const guard = () => cancelled || composeRunRef.current !== runId
+
+    const run = async () => {
+      try {
+        await delay(140)
+        if (guard()) return
+        updateProgress([
+          [1, "completed"],
+          [2, "in-progress"],
+        ])
+
+        await delay(100)
+        if (guard()) return
+        updateProgress([
+          [2, "completed"],
+          [3, "in-progress"],
+        ])
+
+        const aiResult = await runComposeEnhancement({
+          note: noteSnapshot,
+          metadata: patientMetadata,
+          codes: codesSnapshot,
+          transcripts: transcriptSnapshot,
+        })
+        if (guard()) return
+
+        setBeautifiedContent((prev) => (prev === aiResult.professionalNote ? prev : aiResult.professionalNote))
+        setSummaryContent((prev) => (prev === aiResult.patientSummary ? prev : aiResult.patientSummary))
+
+        updateProgress([
+          [3, "completed"],
+          [4, "in-progress"],
+        ])
+
+        const validationPassed = performFinalValidation(noteSnapshot, aiResult.professionalNote, aiResult.patientSummary)
+        if (guard()) return
+
+        if (!validationPassed) {
+          throw new Error("AI enhancement failed validation. Please retry.")
+        }
+
+        await delay(120)
+        if (guard()) return
+
+        updateProgress([[4, "completed"]])
+        setComposeComplete(true)
+      } catch (error) {
+        if (guard()) {
+          return
+        }
+        const message = error instanceof Error ? error.message : "Unable to enhance the note. Please try again."
+        setComposeError(message)
+        updateProgress([[4, "pending"]])
+      } finally {
+        if (!guard()) {
+          setIsComposeRunning(false)
+        }
+      }
+    }
+
+    void run()
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentStep, noteContent, normalizedSelected, normalizedTranscript, patientMetadata, composeRetryKey])
+
+  useEffect(() => {
+    if (currentStep !== 3) {
+      setIsComposeRunning(false)
+    }
+  }, [currentStep])
 
   const steps = useMemo<WizardStepData[]>(() => {
     const complianceDescription = formatComplianceSummary(normalizedCompliance.length)
@@ -525,8 +893,8 @@ export function FinalizationWizard({
         title: "Compose",
         description: "AI beautification and enhancement",
         type: "loading",
-        progressSteps: composeProgressSteps,
-        status: defaultStatusForStep(3),
+        progressSteps: composeProgress,
+        status: composeError ? "blocked" : composeComplete ? "completed" : defaultStatusForStep(3),
       },
       {
         id: 4,
@@ -575,6 +943,9 @@ export function FinalizationWizard({
     canFinalize,
     blockingIssues,
     currentStep,
+    composeProgress,
+    composeComplete,
+    composeError,
   ])
 
   useEffect(() => {
@@ -590,11 +961,19 @@ export function FinalizationWizard({
   const goToStep = useCallback(
     (stepId: number) => {
       if (!steps.length) return
+      if (currentStep === 3) {
+        if (isComposeRunning) {
+          return
+        }
+        if (!composeComplete && stepId !== 3) {
+          return
+        }
+      }
       const fallback = steps[0]
       const target = steps.find((step) => step.id === stepId) || fallback
       setCurrentStep(target.id)
     },
-    [steps],
+    [steps, currentStep, isComposeRunning, composeComplete],
   )
 
   useEffect(() => {
@@ -651,10 +1030,8 @@ export function FinalizationWizard({
   const handleNoteChange = useCallback(
     (value: string) => {
       setNoteContent(value)
-      setBeautifiedContent(buildBeautifiedContent(value, patientMetadata))
-      setSummaryContent(buildPatientSummary(value, patientMetadata))
     },
-    [patientMetadata],
+    [],
   )
 
   const handleInsertTextToNote = useCallback(
@@ -852,8 +1229,16 @@ export function FinalizationWizard({
                     <Settings size={32} className="text-white" />
                   </motion.div>
                 </div>
-                <h2 className="text-xl font-semibold text-slate-800 mb-2">AI Enhancement in Progress</h2>
-                <p className="text-slate-600 mb-8">Analyzing and beautifying your medical documentation...</p>
+                <h2 className="text-xl font-semibold text-slate-800 mb-2">
+                  {composeError ? "Enhancement Paused" : composeComplete ? "Enhancement Ready" : "AI Enhancement in Progress"}
+                </h2>
+                <p className="text-slate-600 mb-8">
+                  {composeError
+                    ? "We ran into a validation issue. Review the details below to retry the enhancement."
+                    : composeComplete
+                      ? "All steps are complete. Review the enhancements, then continue to compare and edit."
+                      : "Analyzing your draft, transcripts, and codes to produce polished documentation."}
+                </p>
 
                 <div className="space-y-4">
                   {currentStepData.progressSteps?.map((step, index) => (
@@ -896,11 +1281,54 @@ export function FinalizationWizard({
                   ))}
                 </div>
 
+                {isComposeRunning && !composeError && (
+                  <div className="mt-6 flex items-center justify-center gap-2 text-blue-600">
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                    <span className="text-sm font-medium">Working with the latest note, transcript, and selected codes…</span>
+                  </div>
+                )}
+
+                {composeError && (
+                  <div className="mt-6 space-y-3">
+                    <p className="text-sm text-red-600">{composeError}</p>
+                    <motion.button
+                      type="button"
+                      onClick={() => setComposeRetryKey((key) => key + 1)}
+                      disabled={isComposeRunning}
+                      className="inline-flex items-center justify-center rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-medium text-red-600 shadow-sm transition hover:border-red-300 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      whileHover={isComposeRunning ? undefined : { scale: 1.03 }}
+                      whileTap={isComposeRunning ? undefined : { scale: 0.97 }}
+                    >
+                      Retry Enhancement
+                    </motion.button>
+                  </div>
+                )}
+
+                {composeComplete && !composeError && (
+                  <p className="mt-6 text-sm font-medium text-emerald-600">
+                    Enhancement complete. Final review passed and your comparison is ready.
+                  </p>
+                )}
+
                 <motion.button
-                  onClick={() => goToStep(4)}
-                  className="mt-8 px-6 py-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg font-medium hover:from-blue-600 hover:to-indigo-700 transition-all"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  onClick={() => {
+                    if (!composeComplete || isComposeRunning || composeError) {
+                      return
+                    }
+                    goToStep(4)
+                  }}
+                  disabled={!composeComplete || isComposeRunning || Boolean(composeError)}
+                  className={`mt-8 px-6 py-3 rounded-lg font-medium text-white transition-all ${
+                    !composeComplete || isComposeRunning || composeError
+                      ? "bg-slate-300 cursor-not-allowed"
+                      : "bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700"
+                  }`}
+                  whileHover={
+                    !composeComplete || isComposeRunning || composeError ? undefined : { scale: 1.05 }
+                  }
+                  whileTap={
+                    !composeComplete || isComposeRunning || composeError ? undefined : { scale: 0.95 }
+                  }
                 >
                   Continue to Compare & Edit
                 </motion.button>
@@ -920,9 +1348,9 @@ export function FinalizationWizard({
                 handleNoteChange(beautifiedContent)
               }}
               onReBeautify={() => {
-                const refreshed = buildBeautifiedContent(noteContent, patientMetadata)
-                setBeautifiedContent(refreshed)
-                setSummaryContent(buildPatientSummary(noteContent, patientMetadata))
+                const refreshed = composeEnhancedArtifacts(noteContent, patientMetadata, normalizedSelected, normalizedTranscript)
+                setBeautifiedContent(refreshed.professionalNote)
+                setSummaryContent(refreshed.patientSummary)
               }}
               onContentChange={(content, version) => {
                 if (version === "original") {
