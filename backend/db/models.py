@@ -1265,6 +1265,31 @@ class AIClinicianAggregate(Base):
     )
 
 
+class AIRouteInvocation(Base):
+    __tablename__ = "ai_route_invocations"
+
+    invocation_id = sa.Column(String, primary_key=True)
+    route = sa.Column(String, nullable=False, index=True)
+    status = sa.Column(String, nullable=False)
+    cache_state = sa.Column(String, nullable=False, default="cold")
+    model = sa.Column(String, nullable=True)
+    prompt_tokens = sa.Column(Integer, nullable=True)
+    completion_tokens = sa.Column(Integer, nullable=True)
+    total_tokens = sa.Column(Integer, nullable=True)
+    duration_ms = sa.Column(Float, nullable=False)
+    price_usd = sa.Column(Float, nullable=True)
+    note_hash = sa.Column(String, nullable=True, index=True)
+    trace_id = sa.Column(String, nullable=True, index=True)
+    error_detail = sa.Column(Text, nullable=True)
+    metadata_payload = sa.Column("metadata", sa.JSON, nullable=True)
+    started_at = sa.Column(DateTime(timezone=True), nullable=False, default=_utcnow, index=True)
+    finished_at = sa.Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        sa.Index("idx_ai_route_invocations_route_time", "route", "started_at"),
+    )
+
+
 class ChartParseJob(Base):
     __tablename__ = "chart_parse_jobs"
 

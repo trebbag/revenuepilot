@@ -1286,6 +1286,47 @@ export async function getAlertSummary() {
   return await resp.json();
 }
 
+export async function getObservabilityStatus(filters = {}) {
+  const baseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    window.__BACKEND_URL__ ||
+    window.location.origin;
+  const nowIso = new Date().toISOString();
+  if (!baseUrl) {
+    return {
+      generatedAt: nowIso,
+      window: {
+        start: new Date(Date.now() - (filters.hours || 24) * 60 * 60 * 1000).toISOString(),
+        end: nowIso,
+      },
+      routes: [],
+      trends: {},
+      recentFailures: [],
+      availableRoutes: [],
+      queue: { stages: [] },
+    };
+  }
+  const params = new URLSearchParams();
+  if (filters.hours) params.append('hours', filters.hours);
+  if (filters.route) params.append('route', filters.route);
+  if (filters.limit) params.append('limit', filters.limit);
+  const query = params.toString();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const url = query
+    ? `${baseUrl}/status/observability?${query}`
+    : `${baseUrl}/status/observability`;
+  const resp = await fetch(url, { headers });
+  if (resp.status === 401 || resp.status === 403) {
+    throw new Error('Unauthorized');
+  }
+  if (!resp.ok) {
+    throw new Error('Failed to fetch observability metrics');
+  }
+  return await resp.json();
+}
+
 /**
  * Retrieve persisted backend settings such as the advanced scrubber toggle.
  * Returns an empty object if the backend is unreachable.

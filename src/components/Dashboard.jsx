@@ -1,7 +1,7 @@
 // Admin dashboard placeholder.  Displays key metrics for the pilot.
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { getMetrics, getAlertSummary } from '../api.js';
+import { getMetrics, getAlertSummary, getObservabilityStatus } from '../api.js';
 import { Line, Bar } from 'react-chartjs-2';
 import jsPDF from 'jspdf';
 import {
@@ -55,8 +55,28 @@ function Dashboard() {
   const [error, setError] = useState(null);
   const [alerts, setAlerts] = useState(null);
   const [alertError, setAlertError] = useState(null);
+  const [observability, setObservability] = useState(null);
+  const [observabilityError, setObservabilityError] = useState(null);
+  const [observabilityFilters, setObservabilityFilters] = useState({
+    hours: 24,
+    route: '',
+    limit: 20,
+  });
+  const [observabilityInputs, setObservabilityInputs] = useState({
+    hours: '24',
+    route: '',
+    limit: '20',
+  });
   const revenueBarRef = useRef(null);
   const denialRateRef = useRef(null);
+
+  const handleUnauthorized = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      alert(t('dashboard.accessDenied'));
+      localStorage.removeItem('token');
+      window.location.href = '/';
+    }
+  }, [t]);
 
   const applyFilters = () => {
     let { start, end, clinician, range } = inputs;
@@ -70,6 +90,24 @@ function Dashboard() {
     setFilters({ start, end, clinician });
   };
 
+  const applyObservabilityFilters = () => {
+    const hours = Math.min(
+      168,
+      Math.max(1, parseInt(observabilityInputs.hours, 10) || 24),
+    );
+    const limit = Math.min(
+      200,
+      Math.max(1, parseInt(observabilityInputs.limit, 10) || 20),
+    );
+    const route = observabilityInputs.route || '';
+    setObservabilityFilters({ hours, route, limit });
+  };
+
+  const resetObservabilityFilters = () => {
+    setObservabilityInputs({ hours: '24', route: '', limit: '20' });
+    setObservabilityFilters({ hours: 24, route: '', limit: 20 });
+  };
+
   const formatTimestamp = (value) => {
     if (!value) return '–';
     try {
@@ -79,6 +117,39 @@ function Dashboard() {
     } catch {
       return value || '–';
     }
+  };
+
+  const formatNumber = (value, digits = 0) => {
+    if (value === null || value === undefined) return '–';
+    const num = Number(value);
+    if (Number.isNaN(num)) return '–';
+    return num.toLocaleString(undefined, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+  };
+
+  const formatCurrency = (value, digits = 4) => {
+    if (value === null || value === undefined) return '–';
+    const num = Number(value);
+    if (Number.isNaN(num)) return '–';
+    return num.toLocaleString(undefined, {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    });
+  };
+
+  const formatStateSummary = (states) => {
+    if (!states) return '–';
+    const entries = Object.entries(states).filter(
+      ([, count]) => typeof count === 'number' && !Number.isNaN(count),
+    );
+    if (!entries.length) return '–';
+    return entries
+      .map(([state, count]) => `${state}: ${count}`)
+      .join(', ');
   };
 
   const summarizeBreakdown = (mapping) => {
@@ -182,16 +253,119 @@ function Dashboard() {
       ]
     : [];
 
+  const observabilityRoutes = observability?.routes || [];
+  const availableRouteOptions = observability?.availableRoutes || [];
+  const activeHoursWindow = observabilityFilters.hours || 24;
+  const activeTrendRoute =
+    observabilityFilters.route ||
+    (observabilityRoutes.length ? observabilityRoutes[0].route : '');
+  const trendPoints =
+    activeTrendRoute && observability?.trends
+      ? observability.trends[activeTrendRoute] || []
+      : [];
+  const trendLabels = trendPoints.map((pt) => formatTimestamp(pt.bucket));
+  const trendChartData = {
+    labels: trendLabels,
+    datasets: [
+      {
+        label: t('dashboard.observability.trendRuns', {
+          defaultValue: 'Runs',
+        }),
+        data: trendPoints.map((pt) => pt.runs || 0),
+        borderColor: 'rgba(37,99,235,1)',
+        backgroundColor: 'rgba(37,99,235,0.2)',
+        yAxisID: 'y',
+        tension: 0.3,
+        fill: false,
+      },
+      {
+        label: t('dashboard.observability.trendErrors', {
+          defaultValue: 'Errors',
+        }),
+        data: trendPoints.map((pt) => pt.errors || 0),
+        borderColor: 'rgba(220,38,38,1)',
+        backgroundColor: 'rgba(220,38,38,0.15)',
+        borderDash: [6, 4],
+        yAxisID: 'y',
+        tension: 0.3,
+        fill: false,
+      },
+      {
+        label: t('dashboard.observability.trendLatency', {
+          defaultValue: 'P95 latency (ms)',
+        }),
+        data: trendPoints.map((pt) => pt.p95_latency_ms || 0),
+        borderColor: 'rgba(16,185,129,1)',
+        backgroundColor: 'rgba(16,185,129,0.1)',
+        yAxisID: 'y1',
+        tension: 0.3,
+        fill: false,
+      },
+    ],
+  };
+  const trendChartOptions = {
+    plugins: { tooltip: { enabled: true }, legend: { display: true } },
+    scales: {
+      y: {
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: t('dashboard.observability.trendCountAxis', {
+            defaultValue: 'Runs/errors',
+          }),
+        },
+      },
+      y1: {
+        beginAtZero: true,
+        position: 'right',
+        grid: { drawOnChartArea: false },
+        title: {
+          display: true,
+          text: t('dashboard.observability.trendLatencyAxis', {
+            defaultValue: 'Latency (ms)',
+          }),
+        },
+      },
+    },
+  };
+  const queueStages = observability?.queue?.stages || [];
+  const recentFailures = observability?.recentFailures || [];
+  const backendBaseUrl =
+    import.meta?.env?.VITE_API_URL ||
+    (typeof window !== 'undefined' && window.__BACKEND_URL__) ||
+    (typeof window !== 'undefined' && window.location
+      ? window.location.origin
+      : '');
+  const observabilityWindowStart = observability?.window?.start
+    ? formatTimestamp(observability.window.start)
+    : null;
+  const observabilityWindowEnd = observability?.window?.end
+    ? formatTimestamp(observability.window.end)
+    : null;
+  const observabilityGeneratedAt = observability?.generatedAt
+    ? formatTimestamp(observability.generatedAt)
+    : null;
+  const observabilityDescription = t('dashboard.observability.description', {
+    hours: activeHoursWindow,
+    defaultValue: 'Performance for the last {{hours}} hours.',
+  });
+  const observabilityWindowText =
+    observabilityWindowStart && observabilityWindowEnd
+      ? t('dashboard.observability.window', {
+          defaultValue: 'Window: {{start}} → {{end}}',
+          start: observabilityWindowStart,
+          end: observabilityWindowEnd,
+        })
+      : null;
+  const observabilityGeneratedText = observabilityGeneratedAt
+    ? t('dashboard.observability.generatedAt', {
+        defaultValue: 'Generated at {{ts}}',
+        ts: observabilityGeneratedAt,
+      })
+    : null;
+
   useEffect(() => {
     let active = true;
-
-    const handleUnauthorized = () => {
-      if (typeof window !== 'undefined') {
-        alert(t('dashboard.accessDenied'));
-        localStorage.removeItem('token');
-        window.location.href = '/';
-      }
-    };
 
     getMetrics(filters)
       .then((data) => {
@@ -226,7 +400,30 @@ function Dashboard() {
     return () => {
       active = false;
     };
-  }, [filters, t]);
+  }, [filters, handleUnauthorized]);
+
+  useEffect(() => {
+    let active = true;
+
+    getObservabilityStatus(observabilityFilters)
+      .then((data) => {
+        if (!active) return;
+        setObservability(data);
+        setObservabilityError(null);
+      })
+      .catch((err) => {
+        if (!active) return;
+        if (err.message === 'Unauthorized') {
+          handleUnauthorized();
+        } else {
+          setObservabilityError(err.message);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [observabilityFilters, handleUnauthorized]);
 
   // Define display cards using the fetched metrics.  Missing values will
   // default to zero.  When numeric metrics are present, format them to
@@ -942,6 +1139,398 @@ function Dashboard() {
           </div>
         </section>
       )}
+      {observabilityError && (
+        <p style={{ color: '#dc2626' }}>{observabilityError}</p>
+      )}
+      <section
+        className="dashboard-observability"
+        style={{
+          marginBottom: '1.5rem',
+          border: '1px solid #d1d5db',
+          borderRadius: '0.5rem',
+          padding: '1rem',
+          background: '#fff',
+        }}
+      >
+        <h3>
+          {t('dashboard.observability.title', {
+            defaultValue: 'AI observability',
+          })}
+        </h3>
+        <p style={{ marginTop: 0 }}>{observabilityDescription}</p>
+        {observabilityGeneratedText && (
+          <p style={{ margin: 0 }}>{observabilityGeneratedText}</p>
+        )}
+        {observabilityWindowText && (
+          <p style={{ marginTop: '0.25rem' }}>{observabilityWindowText}</p>
+        )}
+        <div
+          className="dashboard-observability-filters"
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '0.75rem',
+            marginTop: '1rem',
+            marginBottom: '1rem',
+          }}
+        >
+          <label>
+            {t('dashboard.observability.filters.hours', {
+              defaultValue: 'Window (hours)',
+            })}
+            <input
+              type="number"
+              min="1"
+              max="168"
+              value={observabilityInputs.hours}
+              onChange={(e) =>
+                setObservabilityInputs({
+                  ...observabilityInputs,
+                  hours: e.target.value,
+                })
+              }
+              style={{ marginLeft: '0.35rem', width: '5.5rem' }}
+            />
+          </label>
+          <label>
+            {t('dashboard.observability.filters.route', {
+              defaultValue: 'Route',
+            })}
+            <select
+              value={observabilityInputs.route}
+              onChange={(e) =>
+                setObservabilityInputs({
+                  ...observabilityInputs,
+                  route: e.target.value,
+                })
+              }
+              style={{ marginLeft: '0.35rem' }}
+            >
+              <option value="">
+                {t('dashboard.allRoutes', { defaultValue: 'All routes' })}
+              </option>
+              {availableRouteOptions.map((routeOption) => (
+                <option key={routeOption} value={routeOption}>
+                  {routeOption}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            {t('dashboard.observability.filters.limit', {
+              defaultValue: 'Failure limit',
+            })}
+            <input
+              type="number"
+              min="1"
+              max="200"
+              value={observabilityInputs.limit}
+              onChange={(e) =>
+                setObservabilityInputs({
+                  ...observabilityInputs,
+                  limit: e.target.value,
+                })
+              }
+              style={{ marginLeft: '0.35rem', width: '5.5rem' }}
+            />
+          </label>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <button type="button" onClick={applyObservabilityFilters}>
+              {t('dashboard.observability.filters.apply', {
+                defaultValue: 'Apply observability filters',
+              })}
+            </button>
+            <button type="button" onClick={resetObservabilityFilters}>
+              {t('dashboard.observability.filters.reset', {
+                defaultValue: 'Reset',
+              })}
+            </button>
+          </div>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          {observabilityRoutes.length ? (
+            <table
+              className="observability-table"
+              style={{ width: '100%', borderCollapse: 'collapse' }}
+            >
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.route', {
+                      defaultValue: 'Route',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.runs', {
+                      defaultValue: 'Runs',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.successes', {
+                      defaultValue: 'Successes',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.errors', {
+                      defaultValue: 'Errors',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.successRate', {
+                      defaultValue: 'Success rate',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.p50', {
+                      defaultValue: 'P50 latency (ms)',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.p95', {
+                      defaultValue: 'P95 latency (ms)',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.avgTokens', {
+                      defaultValue: 'Avg tokens',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.totalTokens', {
+                      defaultValue: 'Total tokens',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.cacheWarm', {
+                      defaultValue: 'Warm hits',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.cacheCold', {
+                      defaultValue: 'Cold hits',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.cacheOther', {
+                      defaultValue: 'Other hits',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.totalCost', {
+                      defaultValue: 'Total cost (USD)',
+                    })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.observability.routes.costPerNote', {
+                      defaultValue: 'Cost per note (USD)',
+                    })}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {observabilityRoutes.map((routeRow, index) => {
+                  const successRate =
+                    routeRow.runs > 0
+                      ? (routeRow.successes / routeRow.runs) * 100
+                      : null;
+                  return (
+                    <tr
+                      key={`${routeRow.route || 'route'}-${index}`}
+                      style={{ borderTop: '1px solid #e5e7eb' }}
+                    >
+                      <td style={{ padding: '0.5rem' }}>{routeRow.route}</td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.runs)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.successes)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.errors)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {successRate !== null
+                          ? `${formatNumber(successRate, 1)}%`
+                          : '–'}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.latency?.p50_ms, 1)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.latency?.p95_ms, 1)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.tokens?.avg_total, 2)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.tokens?.total)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.cache?.warm)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.cache?.cold)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(routeRow.cache?.other)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatCurrency(routeRow.cost?.total_usd, 4)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatCurrency(routeRow.cost?.per_note_usd, 4)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <p>
+              {t('dashboard.observability.noRoutes', {
+                defaultValue: 'No AI route activity recorded in this window.',
+              })}
+            </p>
+          )}
+        </div>
+        {activeTrendRoute && trendPoints.length > 0 && (
+          <div style={{ marginTop: '1.5rem' }}>
+            <h4>
+              {t('dashboard.observability.trendTitle', {
+                defaultValue: 'Route trend',
+              })}
+            </h4>
+            <p style={{ marginTop: 0 }}>
+              {t('dashboard.observability.trendDescription', {
+                defaultValue: 'Hourly performance for {{route}}',
+                route: activeTrendRoute,
+              })}
+            </p>
+            <Line data={trendChartData} options={trendChartOptions} />
+          </div>
+        )}
+        <div style={{ marginTop: '1.5rem' }}>
+          <h4>
+            {t('dashboard.observability.queueTitle', {
+              defaultValue: 'Ingestion queue health',
+            })}
+          </h4>
+          {queueStages.length ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                      {t('dashboard.observability.queueStage', {
+                        defaultValue: 'Stage',
+                      })}
+                    </th>
+                    <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                      {t('dashboard.observability.queueStates', {
+                        defaultValue: 'States',
+                      })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.observability.queueWait', {
+                        defaultValue: 'P95 wait (ms)',
+                      })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.observability.queueRun', {
+                        defaultValue: 'P95 run (ms)',
+                      })}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueStages.map((stage) => (
+                    <tr key={stage.stage} style={{ borderTop: '1px solid #e5e7eb' }}>
+                      <td style={{ padding: '0.5rem' }}>{stage.stage}</td>
+                      <td style={{ padding: '0.5rem' }}>
+                        {formatStateSummary(stage.states)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(stage.latency?.p95_wait_ms, 1)}
+                      </td>
+                      <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                        {formatNumber(stage.latency?.p95_run_ms, 1)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p>
+              {t('dashboard.observability.queueEmpty', {
+                defaultValue: 'No queue activity during this window.',
+              })}
+            </p>
+          )}
+        </div>
+        <div style={{ marginTop: '1.5rem' }}>
+          <h4>
+            {t('dashboard.observability.recentFailures', {
+              defaultValue: 'Recent failures',
+            })}
+          </h4>
+          {recentFailures.length ? (
+            <ul style={{ paddingLeft: '1.25rem' }}>
+              {recentFailures.map((failure, index) => {
+                const traceLink =
+                  failure.traceUrl && backendBaseUrl
+                    ? `${backendBaseUrl}${failure.traceUrl}`
+                    : null;
+                return (
+                  <li
+                    key={`${failure.traceId || failure.route || 'failure'}-${index}`}
+                    style={{ marginBottom: '0.75rem' }}
+                  >
+                    <div>
+                      <strong>
+                        {failure.route ||
+                          t('dashboard.observability.routes.route', {
+                            defaultValue: 'Route',
+                          })}
+                      </strong>
+                    </div>
+                    {failure.occurredAt && (
+                      <div>{formatTimestamp(failure.occurredAt)}</div>
+                    )}
+                    <div>
+                      {t('dashboard.observability.errorDetail', {
+                        defaultValue: 'Detail',
+                      })}
+                      : {failure.detail || '–'}
+                    </div>
+                    {failure.traceId && (
+                      <div>
+                        {t('dashboard.observability.traceId', {
+                          defaultValue: 'Trace ID',
+                        })}
+                        : {failure.traceId}{' '}
+                        {traceLink && (
+                          <a href={traceLink} target="_blank" rel="noreferrer">
+                            {t('dashboard.observability.traceLink', {
+                              defaultValue: 'View trace',
+                            })}
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p>
+              {t('dashboard.observability.recentNone', {
+                defaultValue: 'No failures in this window.',
+              })}
+            </p>
+          )}
+        </div>
+      </section>
       <table className="metrics-table">
         <thead>
           <tr>
