@@ -424,6 +424,8 @@ details and enforce the following controls:
 - [SOP.md](SOP.md) – Day-to-day development process and CI expectations.
 - [RDS_OPERATIONS.md](RDS_OPERATIONS.md) – Production database provisioning,
   credential rotation, and migration runbook.
+- [RUNBOOK_KEY_ROTATION.md](RUNBOOK_KEY_ROTATION.md) – Broken-glass steps for
+  encrypting artifacts/AI payloads and rotating managed secrets safely.
 - [`docs/archive/`](archive/README.md) – Historical planning documents kept
   for context.
 

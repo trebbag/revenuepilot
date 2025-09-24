@@ -313,6 +313,79 @@ def build_summary_prompt(
     return messages
 
 
+def _format_plan_context(payload: Dict[str, Any]) -> str:
+    """Serialize planning context for the LLM prompt."""
+
+    def scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {k: scrub(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [scrub(item) for item in value if item is not None]
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        return None
+
+    cleaned = scrub(payload)
+    try:
+        return json.dumps(cleaned, ensure_ascii=False, indent=2)
+    except TypeError:
+        return json.dumps({}, ensure_ascii=False)
+
+
+def build_plan_prompt(
+    text: str,
+    encounter_type: Optional[str] = None,
+    selected_codes: Optional[List[Dict[str, Any]]] = None,
+    extra_context: Optional[Dict[str, Any]] = None,
+    *,
+    lang: str = "en",
+    specialty: Optional[str] = None,
+    payer: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Build a care-planning prompt with encounter context."""
+
+    instructions = (
+        "You are an experienced clinical planner helping a clinician finalise a visit. "
+        "Review the supplied encounter material and produce a JSON object with the keys "
+        "'risks', 'interventions' and 'tasks'. Each risk must include 'name', 'rationale', "
+        "'confidence' as a 0-1 float, and an 'evidence' array with text snippets or sources. "
+        "Each intervention must include 'name', a 'steps' array, a 'monitoring' array, a 'confidence' 0-1 float, "
+        "and an 'evidence' array. Tasks must include 'title', 'assignee' (use roles if names are missing), "
+        "'due' (relative timing or explicit date if provided) and 'confidence' as a 0-1 float. "
+        "Use only information contained in the provided material. Do not invent diagnoses or orders. "
+        "If something is not available, omit it rather than guessing."
+    )
+
+    extra = _get_custom_instruction("plan", lang, specialty, payer)
+    if extra:
+        instructions = f"{instructions} {extra}"
+
+    context_payload: Dict[str, Any] = {
+        "encounter_type": encounter_type or "unspecified",
+        "selected_codes": selected_codes or [],
+        "clinical_note": text,
+    }
+    if extra_context:
+        context_payload["context"] = extra_context
+
+    serialized_context = _format_plan_context(context_payload)
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": instructions},
+    ]
+    messages.extend(_get_custom_examples("plan", lang, specialty, payer))
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Please analyse the following encounter material and reply with JSON only.\n"  # noqa: E501
+                f"```json\n{serialized_context}\n```"
+            ),
+        }
+    )
+    return messages
+
+
 def build_template_prompt(
     text: str,
     lang: str = "en",

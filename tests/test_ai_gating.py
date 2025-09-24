@@ -16,6 +16,7 @@ from backend.ai_gating import (
     EMBED_SENTINEL_OLD,
 )
 from backend.migrations import create_all_tables
+from backend.encryption import decrypt_ai_payload
 
 
 
@@ -318,7 +319,8 @@ def test_reconcile_json_merges_small_divergence(gating_service_state):
         assert state.last_accepted_json_hash == meta["currentHash"]
         snapshot = session.get(AIJsonSnapshot, state.last_accepted_json_hash)
         assert snapshot is not None
-        assert snapshot.payload["reimbursementSummary"] == baseline["reimbursementSummary"]
+        payload = decrypt_ai_payload(snapshot.payload)
+        assert payload["reimbursementSummary"] == baseline["reimbursementSummary"]
 
 
 def test_reconcile_json_skips_merge_for_large_divergence(gating_service_state):
@@ -349,7 +351,8 @@ def test_reconcile_json_skips_merge_for_large_divergence(gating_service_state):
         assert state.last_accepted_json_hash == meta["currentHash"]
         snapshot = session.get(AIJsonSnapshot, state.last_accepted_json_hash)
         assert snapshot is not None
-        assert snapshot.payload == merged
+        payload = decrypt_ai_payload(snapshot.payload)
+        assert payload == merged
 
 def _make_service(db, embed_client):
     create_all_tables(db)

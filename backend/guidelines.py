@@ -6,7 +6,8 @@ do not trigger additional network requests.
 """
 from functools import lru_cache
 from typing import Dict, List, Tuple
-import requests
+
+from backend.egress import secure_get
 
 CDC_VACCINES_URL = "https://www.cdc.gov/vaccines/schedules/schedule.json"
 USPSTF_SCREENINGS_URL = "https://api.uspreventiveservicestaskforce.org/v1/recommendations"
@@ -15,8 +16,7 @@ USPSTF_SCREENINGS_URL = "https://api.uspreventiveservicestaskforce.org/v1/recomm
 @lru_cache(maxsize=2)
 def _download(url: str) -> List[dict]:
     """Download JSON data from ``url`` and cache the result."""
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
+    resp = secure_get(url)
     data = resp.json()
     if isinstance(data, dict) and "recommendations" in data:
         return data["recommendations"]  # type: ignore[return-value]
