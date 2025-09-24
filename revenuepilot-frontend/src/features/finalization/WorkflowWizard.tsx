@@ -155,6 +155,13 @@ export interface FinalizationWizardProps {
   canFinalize?: boolean
   onClose?: (result?: FinalizeResult) => void
   onFinalize?: (request: FinalizeRequest) => Promise<FinalizeResult | void> | FinalizeResult | void
+  onFinalizeAndDispatch?: (
+    request: FinalizeRequest,
+    dispatchForm: Record<string, unknown>,
+  ) =>
+    | Promise<{ finalizedNoteId?: string; result?: FinalizeResult } | void>
+    | { finalizedNoteId?: string; result?: FinalizeResult }
+    | void
   onStepChange?: (stepId: number, step: WizardStepData) => void
 }
 
@@ -638,6 +645,7 @@ export function FinalizationWizard({
   canFinalize = true,
   onClose,
   onFinalize,
+  onFinalizeAndDispatch,
   onStepChange,
 }: FinalizationWizardProps) {
   const normalizedSelected = useMemo(() => normalizeCodeItems(selectedCodes), [selectedCodes])
@@ -694,6 +702,7 @@ export function FinalizationWizard({
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null)
+  const [finalizeStage, setFinalizeStage] = useState<"idle" | "processing" | "completed">("idle")
   const [composeProgress, setComposeProgress] = useState<WizardProgressStep[]>(() => createComposeProgressState())
   const [composeComplete, setComposeComplete] = useState(false)
   const [composeError, setComposeError] = useState<string | null>(null)
@@ -716,6 +725,7 @@ export function FinalizationWizard({
 
     setFinalizeResult(null)
     setFinalizeError(null)
+    setFinalizeStage("idle")
   }, [finalizeResult, normalizedSelected, normalizedSuggested, normalizedCompliance, noteContent])
 
   useEffect(() => {
@@ -843,7 +853,7 @@ export function FinalizationWizard({
   const steps = useMemo<WizardStepData[]>(() => {
     const complianceDescription = formatComplianceSummary(normalizedCompliance.length)
     const outstandingBlocking = blockingIssues?.filter((issue) => typeof issue === "string" && issue.trim().length > 0) ?? []
-    const finalizeDescription = isFinalizing
+    const finalizeDescription = finalizeStage === "processing"
       ? "Finalizing note and preparing export package..."
       : finalizeResult
         ? finalizeResult.exportReady
@@ -1151,33 +1161,96 @@ export function FinalizationWizard({
     }
   }, [noteContent, normalizedSelected, normalizedSuggested, normalizedCompliance, patientMetadata])
 
+  const buildDispatchForm = useCallback((): Record<string, unknown> => {
+    const timestamp = new Date().toISOString()
+    return {
+      destination: "ehr",
+      deliveryMethod: "internal",
+      timestamp,
+      final_review: {
+        all_steps_completed: true,
+        physician_final_approval: true,
+        quality_review_passed: true,
+        compliance_verified: true,
+        ready_for_dispatch: true,
+      },
+      dispatch_options: {
+        send_to_emr: true,
+        generate_patient_summary: true,
+        schedule_followup: false,
+        send_to_billing: true,
+        notify_referrals: false,
+      },
+      dispatch_status: {
+        dispatch_initiated: true,
+        dispatch_completed: false,
+        dispatch_timestamp: timestamp,
+      },
+      post_dispatch_actions: [],
+    }
+  }, [])
+
   const handleFinalize = useCallback(async () => {
     const request = buildFinalizeRequest()
+    const dispatchPayload = buildDispatchForm()
     setIsFinalizing(true)
     setFinalizeError(null)
+    setFinalizeStage("processing")
     try {
-      const result = await Promise.resolve(onFinalize?.(request))
-      if (result) {
-        setFinalizeResult(result)
+      if (onFinalizeAndDispatch) {
+        const response = await Promise.resolve(onFinalizeAndDispatch(request, dispatchPayload))
+        if (response && typeof response === "object" && "result" in response && response.result) {
+          setFinalizeResult(response.result)
+        } else if (!finalizeResult) {
+          setFinalizeResult({
+            finalizedContent: request.content.trim(),
+            codesSummary: request.codes.map((code) => ({ code })),
+            reimbursementSummary: {
+              total: reimbursementSummary?.total ?? 0,
+              codes: reimbursementSummary?.codes ?? [],
+            },
+            exportReady: true,
+            issues: {},
+          })
+        }
       } else {
-        setFinalizeResult({
-          finalizedContent: request.content.trim(),
-          codesSummary: request.codes.map((code) => ({ code })),
-          reimbursementSummary: { total: 0, codes: [] },
-          exportReady: true,
-          issues: {},
-        })
+        const result = await Promise.resolve(onFinalize?.(request))
+        if (result) {
+          setFinalizeResult(result)
+        } else {
+          setFinalizeResult({
+            finalizedContent: request.content.trim(),
+            codesSummary: request.codes.map((code) => ({ code })),
+            reimbursementSummary: { total: 0, codes: [] },
+            exportReady: true,
+            issues: {},
+          })
+        }
       }
+      setFinalizeStage("completed")
     } catch (error) {
       setFinalizeError(error instanceof Error ? error.message : "Failed to finalize note. Please try again.")
+      setFinalizeStage("idle")
     } finally {
       setIsFinalizing(false)
     }
-  }, [buildFinalizeRequest, onFinalize])
+  }, [
+    buildDispatchForm,
+    buildFinalizeRequest,
+    finalizeResult,
+    onFinalize,
+    onFinalizeAndDispatch,
+    reimbursementSummary?.codes,
+    reimbursementSummary?.total,
+  ])
 
   const finalizeDisabled = isFinalizing || !canFinalize
 
-  const dispatchButtonLabel = isFinalizing ? "Finalizing..." : finalizeResult ? "Dispatch Finalized Note" : "Finalize & Dispatch"
+  const dispatchButtonLabel = isFinalizing
+    ? "Finalizing & Dispatching..."
+    : finalizeResult
+      ? "Dispatch Finalized Note"
+      : "Finalize & Dispatch"
 
   return (
     <div className="h-screen bg-white flex flex-col overflow-hidden relative">
