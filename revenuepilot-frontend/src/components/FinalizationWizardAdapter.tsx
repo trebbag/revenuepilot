@@ -572,7 +572,13 @@ const createWizardSuggestion = (
   const explicitClassification = sanitizeStringList(raw.classification)
   const confidence = normalizeConfidenceValue(raw.confidence)
   const identifierSource = sanitizeString(raw.id) ?? sanitizeString(raw.identifier)
-  const source = sanitizeString((raw as { source?: string }).source ?? (raw as { suggestedBy?: string }).suggestedBy)
+  const source = sanitizeString(
+    typeof raw.source === "string"
+      ? raw.source
+      : typeof raw.suggestedBy === "string"
+        ? raw.suggestedBy
+        : undefined
+  )
 
   const baseTitle = (() => {
     if (code && description) {
