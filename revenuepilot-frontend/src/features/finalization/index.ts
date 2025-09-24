@@ -1,6 +1,8 @@
 export { FinalizationWizard, WorkflowWizard } from "./WorkflowWizard"
 
 export type {
+  AttestationFormPayload,
+  AttestationSubmitResult,
   FinalizationWizardProps,
   FinalizeRequest,
   FinalizeResult,
