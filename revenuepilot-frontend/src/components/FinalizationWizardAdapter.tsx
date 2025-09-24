@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
-import { FinalizationWizard, type FinalizeRequest, type FinalizeResult, type PatientMetadata, type WizardCodeItem, type WizardComplianceItem, type WizardStepOverride } from "../features/finalization"
+import {
+  FinalizationWizard,
+  type CodeClassification,
+  type FinalizeRequest,
+  type FinalizeResult,
+  type PatientMetadata,
+  type WizardCodeItem,
+  type WizardComplianceItem,
+  type WizardStepOverride,
+} from "../features/finalization"
 import { useSession } from "../contexts/SessionContext"
 import type { LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
 import { Badge } from "./ui/badge"
@@ -188,6 +197,87 @@ const sanitizeString = (value: unknown): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
+const toTrimmedStringArray = (value: unknown): string[] => {
+  if (value == null) {
+    return []
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim()
+    return text ? [text] : []
+  }
+
+  if (Array.isArray(value)) {
+    const seen = new Set<string>()
+    const results: string[] = []
+    value.forEach((entry) => {
+      if (entry == null) return
+      if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+        const text = String(entry).trim()
+        if (text && !seen.has(text)) {
+          seen.add(text)
+          results.push(text)
+        }
+      }
+    })
+    return results
+  }
+
+  return []
+}
+
+const normalizeDocSupport = (value: unknown): string | undefined => {
+  const [candidate] = toTrimmedStringArray(value)
+  if (!candidate) {
+    return undefined
+  }
+
+  const normalized = candidate.toLowerCase()
+  if (["strong", "high", "definitive", "robust", "clear", "solid", "comprehensive"].includes(normalized)) {
+    return "strong"
+  }
+  if (["moderate", "medium", "adequate", "partial", "supportive", "good", "documented", "fair"].includes(normalized)) {
+    return "moderate"
+  }
+  if (["weak", "low", "limited", "minimal", "insufficient", "poor", "uncertain"].includes(normalized)) {
+    return "weak"
+  }
+
+  return undefined
+}
+
+const normalizeConfidence = (value: unknown): number | undefined => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined
+  }
+  const scaled = value > 1 ? value : value * 100
+  const bounded = Math.min(100, Math.max(0, scaled))
+  return Math.round(bounded)
+}
+
+const toClassification = (value: unknown): CodeClassification | null => {
+  if (typeof value !== "string") {
+    return null
+  }
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) {
+    return null
+  }
+  if (normalized.includes("differential")) {
+    return "differential"
+  }
+  if (normalized.includes("prevent")) {
+    return "prevention"
+  }
+  if (normalized.includes("diagn")) {
+    return "diagnosis"
+  }
+  if (normalized.includes("code") || normalized.includes("procedure")) {
+    return "code"
+  }
+  return null
+}
+
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
   if (!Array.isArray(list)) {
     return []
@@ -197,12 +287,51 @@ const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
     const code = sanitizeString(item.code)
     const description = sanitizeString(item.description)
     const rationale = sanitizeString(item.rationale)
+    const extras = item as {
+      details?: unknown
+      evidence?: unknown
+      evidenceText?: unknown
+      gaps?: unknown
+      tags?: unknown
+      docSupport?: unknown
+      aiReasoning?: unknown
+      classification?: unknown
+    }
+    const detail = sanitizeString(extras.details as string | undefined)
     const type = sanitizeString(item.type)
     const category = sanitizeString(item.category)
     const classificationKey = (category ?? "codes") as CodeCategory
-    const classification = CODE_CLASSIFICATION_MAP[classificationKey] ?? CODE_CLASSIFICATION_MAP.codes
-
+    const mappedClassification = CODE_CLASSIFICATION_MAP[classificationKey] ?? CODE_CLASSIFICATION_MAP.codes
     const identifier = typeof item.id === "number" || typeof item.id === "string" ? item.id : code ? `${code}-${index}` : `code-${index + 1}`
+
+    const evidence = toTrimmedStringArray(extras.evidence ?? extras.evidenceText)
+    const gaps = toTrimmedStringArray(extras.gaps)
+    const existingTags = toTrimmedStringArray(extras.tags)
+    const docSupport = normalizeDocSupport(extras.docSupport)
+    const confidence = normalizeConfidence(item.confidence)
+    const aiReasoning = sanitizeString(extras.aiReasoning as string | undefined) ?? rationale ?? undefined
+
+    const classificationSet = new Set<CodeClassification>()
+    if (mappedClassification) {
+      classificationSet.add(mappedClassification as CodeClassification)
+    }
+    const rawClassification = extras.classification
+    if (Array.isArray(rawClassification)) {
+      rawClassification.forEach((entry) => {
+        const normalized = toClassification(entry)
+        if (normalized) {
+          classificationSet.add(normalized)
+        }
+      })
+    } else {
+      const normalized = toClassification(rawClassification)
+      if (normalized) {
+        classificationSet.add(normalized)
+      }
+    }
+
+    const classification = Array.from(classificationSet.values())
+    const tags = Array.from(new Set([...existingTags, ...classification]))
 
     const base: WizardCodeItem = {
       id: identifier,
@@ -210,21 +339,22 @@ const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
       title: description ?? code ?? `Code ${index + 1}`,
       description: description ?? undefined,
       status: sanitizeString(item.status as string | undefined) ?? "pending",
-      details: description ?? rationale ?? undefined,
+      details: detail ?? description ?? rationale ?? undefined,
       codeType: type ?? undefined,
-      docSupport: sanitizeString(item.docSupport as string | undefined),
+      category: category ?? classificationKey,
+      docSupport,
       stillValid: item.stillValid as boolean | undefined,
-      confidence: typeof item.confidence === "number" ? item.confidence : undefined,
-      aiReasoning: rationale ?? undefined,
-      evidence: Array.isArray(item.evidence) ? item.evidence.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : undefined,
-      gaps: Array.isArray(item.gaps) ? item.gaps.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : undefined,
-      tags: Array.isArray(item.tags) ? item.tags.filter((entry) => typeof entry === "string" && entry.trim().length > 0) : undefined,
+      confidence,
+      aiReasoning,
+      evidence: evidence.length ? evidence : undefined,
+      gaps: gaps.length ? gaps : undefined,
+      tags: tags.length ? tags : undefined,
       reimbursement: sanitizeString(item.reimbursement),
       rvu: sanitizeString(item.rvu),
     }
 
-    if (classification) {
-      base.tags = [classification]
+    if (classification.length) {
+      base.classification = classification
     }
 
     return base
