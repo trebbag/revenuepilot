@@ -218,6 +218,7 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     raw_connection.row_factory = sqlite3.Row
 
     previous = getattr(main, 'db_conn', None)
+    main.reset_compose_workers_for_tests()
     if isinstance(previous, sqlite3.Connection):
         try:
             previous.close()

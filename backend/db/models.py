@@ -1159,6 +1159,9 @@ class SharedWorkflowSession(Base):
     session_id = sa.Column(String, primary_key=True)
     owner_username = sa.Column(String, nullable=True, index=True)
     data = sa.Column(sa.JSON, nullable=False)
+    updated_at = sa.Column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
 
 
 class ChartDocument(Base):

@@ -138,6 +138,13 @@ from backend.prompts import (
     build_suggest_prompt,
     build_summary_prompt,
 )  # type: ignore
+from backend.compose_job import (
+    ComposeJobCancelled,
+    ComposeJobPayload,
+    ComposePipeline,
+    STAGE_PROGRESS as COMPOSE_STAGE_PROGRESS,
+    STAGE_SEQUENCE as COMPOSE_STAGE_SEQUENCE,
+)
 from backend.openai_client import call_openai  # type: ignore
 from backend.encryption import encrypt_artifact
 from backend.security import (
@@ -576,6 +583,17 @@ _EXPORT_QUEUE: Optional[asyncio.Queue["ExportJob"]] = None
 _EXPORT_WORKERS: List[asyncio.Task[None]] = []
 _EXPORT_RETRY_TASKS: Set[asyncio.Task[None]] = set()
 _export_worker_lock: Optional[asyncio.Lock] = None
+
+try:
+    _COMPOSE_WORKER_COUNT = max(1, int(os.getenv("COMPOSE_WORKERS", "1")))
+except (TypeError, ValueError):  # pragma: no cover - defensive parsing
+    _COMPOSE_WORKER_COUNT = 1
+
+_COMPOSE_QUEUE: Optional[asyncio.Queue[ComposeJobPayload]] = None
+_COMPOSE_WORKERS: List[asyncio.Task[None]] = []
+_COMPOSE_WORKER_LOCK: Optional[asyncio.Lock] = None
+_COMPOSE_CANCELLATIONS: Set[int] = set()
+_COMPOSE_PIPELINE: Optional[ComposePipeline] = None
 
 _ALERT_SUMMARY: Dict[str, Any] = {
     "workflow": {"total": 0, "byDestination": {}, "lastCompletion": None},
@@ -1933,6 +1951,31 @@ def _prune_analytics_if_needed():  # pragma: no cover - size dependent
 _prune_analytics_if_needed()
 
 
+def _ensure_shared_workflow_session_columns(conn: sqlite3.Connection) -> None:
+    """Ensure the shared workflow table includes the updated_at column."""
+
+    try:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(shared_workflow_sessions)")}
+    except sqlite3.OperationalError:
+        return
+
+    if "updated_at" in columns:
+        return
+
+    try:
+        conn.execute(
+            "ALTER TABLE shared_workflow_sessions "
+            "ADD COLUMN updated_at REAL DEFAULT (CAST(strftime('%s','now') AS REAL))"
+        )
+        conn.execute(
+            "UPDATE shared_workflow_sessions "
+            "SET updated_at = COALESCE(updated_at, CAST(strftime('%s','now') AS REAL))"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        logger.exception("shared_workflow_sessions_alter_failed")
+
+
 
 # Helper to (re)initialise core tables when db_conn is swapped in tests.
 def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
@@ -2050,6 +2093,7 @@ def _init_core_tables(conn):  # pragma: no cover - invoked in tests indirectly
     ensure_note_auto_saves_table(conn)
     ensure_session_state_table(conn)
     ensure_shared_workflow_sessions_table(conn)
+    _ensure_shared_workflow_session_columns(conn)
     ensure_compliance_issues_table(conn)
     ensure_compliance_issue_history_table(conn)
     ensure_compliance_rules_table(conn)
@@ -8254,6 +8298,34 @@ class NoteContentUpdateResponse(BaseModel):
     session: WorkflowSessionResponse
 
 
+class ComposeStartRequest(BaseModel):
+    sessionId: str
+    encounterId: Optional[str] = None
+    noteContent: Optional[str] = None
+    patientMetadata: Dict[str, Any] = Field(default_factory=dict)
+    selectedCodes: List[Dict[str, Any]] = Field(default_factory=list)
+    transcript: List[Dict[str, Any]] = Field(default_factory=list)
+    lang: Optional[str] = None
+    specialty: Optional[str] = None
+    payer: Optional[str] = None
+    useOfflineMode: Optional[bool] = None
+    useLocalModels: Optional[bool] = None
+    beautifyModel: Optional[str] = None
+    noteId: Optional[str] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class ComposeJobResponse(BaseModel):
+    composeId: int
+    status: str
+    stage: Optional[str] = None
+    progress: float = 0.0
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+    result: Optional[Dict[str, Any]] = None
+    validation: Optional[Dict[str, Any]] = None
+
+
 class AIGateJobMetadata(BaseModel):
     jobId: str
     model: str
@@ -10440,11 +10512,13 @@ async def _stop_export_workers() -> None:
 @app.on_event("startup")
 async def _startup_export_workers() -> None:  # pragma: no cover - FastAPI hook
     await _ensure_export_workers()
+    await _ensure_compose_workers()
 
 
 @app.on_event("shutdown")
 async def _shutdown_export_workers() -> None:  # pragma: no cover - FastAPI hook
     await _stop_export_workers()
+    await _stop_compose_workers()
 
 
 def reset_export_workers_for_tests() -> None:
@@ -10455,6 +10529,17 @@ def reset_export_workers_for_tests() -> None:
     global _EXPORT_QUEUE, _export_worker_lock
     _EXPORT_QUEUE = None
     _export_worker_lock = None
+
+
+def reset_compose_workers_for_tests() -> None:
+    """Reset compose worker state for isolated unit tests."""
+
+    _COMPOSE_WORKERS.clear()
+    _COMPOSE_CANCELLATIONS.clear()
+    global _COMPOSE_QUEUE, _COMPOSE_WORKER_LOCK, _COMPOSE_PIPELINE
+    _COMPOSE_QUEUE = None
+    _COMPOSE_WORKER_LOCK = None
+    _COMPOSE_PIPELINE = None
 
 
 async def _perform_ehr_export(req: ExportRequest) -> Dict[str, Any]:
@@ -12446,10 +12531,6 @@ async def suggest(
     if req.audio:
         combined += "\n" + str(req.audio)
     cleaned = deidentify(combined)
-    if req.rules:
-        rules_section = "\n\nUser-defined rules:\n" + "\n".join(
-            f"- {r}" for r in req.rules
-
     # Combine the main note with any optional chart text or audio transcript
     prompt_context = PROMPT_GUARD.prepare("suggest", req)
     cleaned = prompt_context.text or ""
@@ -12494,106 +12575,92 @@ async def suggest(
                 req.lang,
                 req.specialty,
                 req.payer,
-                req.age,
-                req.sex,
-                req.region,
+                prompt_context.age,
+                prompt_context.sex,
+                prompt_context.region,
                 use_local=req.useLocalModels,
                 model_path=req.suggestModel,
-
-    if offline_active or USE_OFFLINE_MODEL:
-        from backend.offline_model import suggest as offline_suggest
-
-        data = offline_suggest(
-            cleaned_for_prompt,
-            req.lang,
-            req.specialty,
-            req.payer,
-            prompt_context.age,
-            prompt_context.sex,
-            prompt_context.region,
-            use_local=req.useLocalModels,
-            model_path=req.suggestModel,
-        )
-        # Ensure evidenceLevel is preserved regardless of key style.
-        public_health: List[PublicHealthSuggestion] = []
-        for item in data.get("publicHealth", []):
-            if isinstance(item, Mapping):
-                public_health.append(
-                    PublicHealthSuggestion(
-                        recommendation=item.get("recommendation"),
-                        reason=item.get("reason"),
-                        source=item.get("source"),
-                        evidenceLevel=item.get("evidenceLevel")
-                        or item.get("evidence_level"),
-                    )
-                )
-            elif item:
-                public_health.append(
-                    PublicHealthSuggestion(
-                        recommendation=str(item),
-                        reason=None,
-                    )
-                )
-        try:
-            extra_ph = public_health_api.get_public_health_suggestions(
-                req.age, req.sex, req.region, req.agencies
             )
-        except Exception as exc:  # pragma: no cover - network errors
-            logger.warning("public_health_fetch_failed", error=str(exc))
-            extra_ph = []
-        if extra_ph:
-            existing = {p.recommendation for p in public_health if p.recommendation}
-            for rec in extra_ph:
-                if isinstance(rec, Mapping):
-                    rec_name = rec.get("recommendation")
-                    if rec_name and rec_name not in existing:
-                        public_health.append(PublicHealthSuggestion(**rec))
-                        existing.add(rec_name)
-                else:
-                    rec_name = str(rec)
-                    if rec_name and rec_name not in existing:
-                        public_health.append(
-                            PublicHealthSuggestion(recommendation=rec_name)
+
+            public_health: List[PublicHealthSuggestion] = []
+            for item in data.get("publicHealth", []):
+                if isinstance(item, Mapping):
+                    public_health.append(
+                        PublicHealthSuggestion(
+                            recommendation=item.get("recommendation"),
+                            reason=item.get("reason"),
+                            source=item.get("source"),
+                            evidenceLevel=item.get("evidenceLevel")
+                            or item.get("evidence_level"),
                         )
-                        existing.add(rec_name)
-        code_items = data.get("codes", [])
-        codes = [CodeSuggestion(**item) for item in code_items]
-        _log_confidence_scores(
-            user,
-            req.noteId,
-            [
-                (
-                    item.get("code") or item.get("Code"),
-                    _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+                    )
+                elif item:
+                    public_health.append(
+                        PublicHealthSuggestion(
+                            recommendation=str(item),
+                            reason=None,
+                        )
+                    )
+            try:
+                extra_ph = public_health_api.get_public_health_suggestions(
+                    req.age, req.sex, req.region, req.agencies
                 )
-                for item in code_items
-            ],
-        )
-        follow_up = recommend_follow_up(
-            [c.code for c in codes],
-            [
-                entry.get("diagnosis")
-                for entry in data.get("differentials", [])
-                if isinstance(entry, Mapping) and entry.get("diagnosis")
-            ],
-            req.specialty,
-            req.payer,
-        )
-        questions_payload = data.get("questions") if isinstance(data, Mapping) else None
-        if not isinstance(questions_payload, list):
-            questions_payload = []
-        return SuggestionsResponse(
-            codes=codes,
-            compliance=data.get("compliance", []),
-            publicHealth=public_health,
-            differentials=[
-                DifferentialSuggestion(**d)
-                for d in data.get("differentials", [])
-                if isinstance(d, Mapping)
-            ],
-            questions=questions_payload,
-            followUp=follow_up,
-        )
+            except Exception as exc:  # pragma: no cover - network errors
+                logger.warning("public_health_fetch_failed", error=str(exc))
+                extra_ph = []
+            if extra_ph:
+                existing = {p.recommendation for p in public_health if p.recommendation}
+                for rec in extra_ph:
+                    if isinstance(rec, Mapping):
+                        rec_name = rec.get("recommendation")
+                        if rec_name and rec_name not in existing:
+                            public_health.append(PublicHealthSuggestion(**rec))
+                            existing.add(rec_name)
+                    else:
+                        rec_name = str(rec)
+                        if rec_name and rec_name not in existing:
+                            public_health.append(
+                                PublicHealthSuggestion(recommendation=rec_name)
+                            )
+                            existing.add(rec_name)
+            code_items = data.get("codes", [])
+            codes = [CodeSuggestion(**item) for item in code_items]
+            _log_confidence_scores(
+                user,
+                req.noteId,
+                [
+                    (
+                        item.get("code") or item.get("Code"),
+                        _normalise_confidence(item.get("confidence") or item.get("Confidence")),
+                    )
+                    for item in code_items
+                ],
+            )
+            follow_up = recommend_follow_up(
+                [c.code for c in codes],
+                [
+                    entry.get("diagnosis")
+                    for entry in data.get("differentials", [])
+                    if isinstance(entry, Mapping) and entry.get("diagnosis")
+                ],
+                req.specialty,
+                req.payer,
+            )
+            questions_payload = data.get("questions") if isinstance(data, Mapping) else None
+            if not isinstance(questions_payload, list):
+                questions_payload = []
+            return SuggestionsResponse(
+                codes=codes,
+                compliance=data.get("compliance", []),
+                publicHealth=public_health,
+                differentials=[
+                    DifferentialSuggestion(**d)
+                    for d in data.get("differentials", [])
+                    if isinstance(d, Mapping)
+                ],
+                questions=questions_payload,
+                followUp=follow_up,
+            )
 
         try:
             messages = build_suggest_prompt(
@@ -12683,7 +12750,6 @@ async def suggest(
                 extra_ph = public_health_api.get_public_health_suggestions(
                     req.age, req.sex, req.region, req.agencies
                 )
-
             except Exception as exc:  # pragma: no cover - network errors
                 logger.warning("public_health_fetch_failed", error=str(exc))
                 extra_ph = []
@@ -12706,52 +12772,10 @@ async def suggest(
                 req.specialty,
                 req.payer,
             )
-        )
-        questions_payload = data.get("questions") if isinstance(data, dict) else None
-        if not isinstance(questions_payload, list):
-            questions_payload = []
-        return SuggestionsResponse(
-            codes=codes,
-            compliance=data["compliance"],
-            publicHealth=public_health,
-            differentials=[DifferentialSuggestion(**d) for d in data["differentials"]],
-            questions=questions_payload,
-        )
-    # Try to call the LLM to generate structured suggestions.  The prompt
-    # instructs the model to return JSON with keys codes, compliance,
-    # public_health and differentials.  We parse the JSON into the
-    # SuggestionsResponse schema.  If anything fails, we fall back to
-    # the simple rule-based engine defined previously.
-    try:
-        messages = build_suggest_prompt(
-            cleaned_for_prompt,
-            req.lang,
-            req.specialty,
-            req.payer,
-            prompt_context.age,
-            prompt_context.sex,
-            prompt_context.region,
-        )
-        response_content = call_openai(messages)
-        # The model should return raw JSON.  Parse it into a Python dict.
-        data = json.loads(response_content)
-        # Convert codes list of dicts into CodeSuggestion objects.  Provide
-        # defaults for missing fields.
-        codes_list: List[CodeSuggestion] = []
-        logged_codes: List[Tuple[str, Optional[float]]] = []
-        for item in data.get("codes", []):
-            code_str = item.get("code") or item.get("Code") or ""
-            rationale = item.get("rationale") or item.get("Rationale") or None
-            upgrade = item.get("upgrade_to") or item.get("upgradeTo") or None
-            upgrade_path = item.get("upgrade_path") or item.get("upgradePath") or None
-            confidence_val = _normalise_confidence(
-                item.get("confidence") or item.get("Confidence")
-
-            )
-            _log_confidence_scores(user, req.noteId, logged_codes)
-            questions_payload = data.get("questions") if isinstance(data, dict) else None
+            questions_payload = data.get("questions") if isinstance(data, Mapping) else None
             if not isinstance(questions_payload, list):
                 questions_payload = []
+            _log_confidence_scores(user, req.noteId, logged_codes)
             return SuggestionsResponse(
                 codes=codes_list,
                 compliance=compliance,
@@ -12769,7 +12793,8 @@ async def suggest(
             public_health: List[PublicHealthSuggestion] = []
             diffs: List[DifferentialSuggestion] = []
             if any(
-                keyword in cleaned.lower() for keyword in ["cough", "fever", "cold", "sore throat"]
+                keyword in cleaned.lower()
+                for keyword in ["cough", "fever", "cold", "sore throat"]
             ):
                 codes.append(
                     CodeSuggestion(
@@ -12779,7 +12804,8 @@ async def suggest(
                 )
                 codes.append(
                     CodeSuggestion(
-                        code="J06.9", rationale="Upper respiratory infection, unspecified"
+                        code="J06.9",
+                        rationale="Upper respiratory infection, unspecified",
                     )
                 )
                 compliance.append("Document duration of fever and associated symptoms")
@@ -12809,7 +12835,9 @@ async def suggest(
                         reason=None,
                     )
                 )
-                diffs.append(DifferentialSuggestion(diagnosis="Impaired glucose tolerance"))
+                diffs.append(
+                    DifferentialSuggestion(diagnosis="Impaired glucose tolerance")
+                )
             if "hypertension" in cleaned.lower() or "high blood pressure" in cleaned.lower():
                 codes.append(
                     CodeSuggestion(code="I10", rationale="Essential (primary) hypertension")
@@ -12823,21 +12851,27 @@ async def suggest(
                         reason=None,
                     )
                 )
-                diffs.append(DifferentialSuggestion(diagnosis="White coat hypertension"))
+                diffs.append(
+                    DifferentialSuggestion(diagnosis="White coat hypertension")
+                )
             if "annual" in cleaned.lower() or "wellness" in cleaned.lower():
                 codes.append(
                     CodeSuggestion(
-                        code="99395", rationale="Periodic comprehensive preventive visit"
+                        code="99395",
+                        rationale="Periodic comprehensive preventive visit",
                     )
                 )
                 compliance.append("Ensure all preventive screenings are up to date")
                 public_health.append(
                     PublicHealthSuggestion(
-                        recommendation="Screen for depression and alcohol use", reason=None
+                        recommendation="Screen for depression and alcohol use",
+                        reason=None,
                     )
                 )
                 diffs.append(DifferentialSuggestion(diagnosis="–"))
-            if any(word in cleaned.lower() for word in ["depression", "anxiety", "sad", "depressed"]):
+            if any(
+                word in cleaned.lower() for word in ["depression", "anxiety", "sad", "depressed"]
+            ):
                 codes.append(
                     CodeSuggestion(
                         code="F32.9", rationale="Major depressive disorder, unspecified"
@@ -12922,7 +12956,6 @@ async def suggest(
                 questions=[],
                 followUp=follow_up,
             )
-
 
 @app.post("/ai/plan", response_model=PlanResponse, response_model_exclude_none=True)
 async def generate_plan(
@@ -13167,6 +13200,424 @@ def _validate_note(req: PreFinalizeCheckRequest) -> Dict[str, Any]:
         "canFinalize": can_finalize,
     }
 
+
+def _compose_validator(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    content = str(payload.get("content") or "")
+
+    def _coerce_list(key: str) -> List[str]:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    request = PreFinalizeCheckRequest(
+        content=content,
+        codes=[str(code).strip() for code in payload.get("codes", []) if str(code).strip()],
+        prevention=_coerce_list("prevention"),
+        diagnoses=_coerce_list("diagnoses"),
+        differentials=_coerce_list("differentials"),
+        compliance=_coerce_list("compliance"),
+    )
+    return _validate_note(request)
+
+
+def _get_compose_pipeline() -> ComposePipeline:
+    global _COMPOSE_PIPELINE
+    if _COMPOSE_PIPELINE is None:
+        _COMPOSE_PIPELINE = ComposePipeline(validator=_compose_validator)
+    return _COMPOSE_PIPELINE
+
+
+def _compose_steps_template() -> List[Dict[str, Any]]:
+    return [
+        {"id": index + 1, "stage": stage, "status": "pending", "progress": 0.0}
+        for index, stage in enumerate(COMPOSE_STAGE_SEQUENCE)
+    ]
+
+
+def _compose_state_detail(
+    job: ComposeJobPayload, state: Mapping[str, Any]
+) -> Dict[str, Any]:
+    return {
+        "jobType": "compose",
+        "sessionId": job.session_id,
+        "encounterId": job.encounter_id,
+        "noteId": job.note_id,
+        "offline": job.offline,
+        "useLocalModels": job.use_local_models,
+        "status": state.get("status"),
+        "stage": state.get("stage"),
+        "progress": float(state.get("progress") or 0.0),
+        "steps": copy.deepcopy(state.get("steps") or []),
+        "result": copy.deepcopy(state.get("result")),
+        "validation": copy.deepcopy(state.get("validation")),
+        "message": state.get("message"),
+    }
+
+
+def _compose_response_from_detail(
+    compose_id: int, status: str, detail: Mapping[str, Any] | None
+) -> ComposeJobResponse:
+    detail = detail or {}
+    stage_value = detail.get("stage")
+    try:
+        progress_value = float(detail.get("progress") or 0.0)
+    except (TypeError, ValueError):
+        progress_value = 0.0
+    steps_value = detail.get("steps")
+    steps_list = list(steps_value) if isinstance(steps_value, list) else []
+    return ComposeJobResponse(
+        composeId=compose_id,
+        status=status,
+        stage=stage_value if isinstance(stage_value, str) and stage_value else None,
+        progress=progress_value,
+        steps=steps_list,
+        result=detail.get("result"),
+        validation=detail.get("validation"),
+    )
+
+
+def _compose_is_cancelled(compose_id: int) -> bool:
+    return compose_id in _COMPOSE_CANCELLATIONS
+
+
+def _compose_mark_cancelled(compose_id: int) -> None:
+    _COMPOSE_CANCELLATIONS.add(compose_id)
+
+
+def _compose_clear_cancelled(compose_id: int) -> None:
+    _COMPOSE_CANCELLATIONS.discard(compose_id)
+
+
+def _update_compose_record(
+    compose_id: int, status: str, detail: Mapping[str, Any]
+) -> None:
+    try:
+        db_conn.execute(
+            "UPDATE exports SET status=?, detail=?, timestamp=? WHERE id=?",
+            (status, json.dumps(detail, ensure_ascii=False), time.time(), compose_id),
+        )
+        db_conn.commit()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception(
+            "compose_status_update_failed", composeId=compose_id, status=status
+        )
+
+
+def _load_compose_record(
+    compose_id: int,
+) -> Tuple[str, Dict[str, Any]] | None:
+    try:
+        row = db_conn.execute(
+            "SELECT status, detail FROM exports WHERE id=?", (compose_id,)
+        ).fetchone()
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("compose_record_fetch_failed", composeId=compose_id)
+        return None
+    if not row:
+        return None
+    try:
+        detail = json.loads(row["detail"]) if row["detail"] else {}
+    except Exception:
+        detail = {}
+    return row["status"], detail
+
+
+def _record_compose_event(
+    event_type: str, compose_id: int, detail: Mapping[str, Any]
+) -> None:
+    payload = dict(detail)
+    payload["composeId"] = compose_id
+    sanitized = redact_value(payload)
+    if not isinstance(sanitized, dict):
+        sanitized = {"value": sanitized}
+    timestamp = time.time()
+    events.append({
+        "eventType": event_type,
+        "details": sanitized,
+        "timestamp": timestamp,
+    })
+    try:
+        db_conn.execute(
+            "INSERT INTO events (eventType, timestamp, details, revenue) VALUES (?, ?, ?, ?)",
+            (
+                event_type,
+                timestamp,
+                json.dumps(sanitized, ensure_ascii=False),
+                None,
+            ),
+        )
+        db_conn.commit()
+    except Exception:  # pragma: no cover - analytics persistence best effort
+        logger.exception(
+            "compose_event_persist_failed", composeId=compose_id, eventType=event_type
+        )
+
+
+def _resolve_offline_mode(
+    user: Mapping[str, Any], requested: Optional[bool] = None
+) -> bool:
+    offline_active = bool(requested) if requested is not None else False
+    if not offline_active:
+        try:
+            row = db_conn.execute(
+                "SELECT use_offline_mode FROM settings WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                (user.get("sub"),),
+            ).fetchone()
+            if row:
+                offline_active = bool(row["use_offline_mode"])
+        except sqlite3.OperationalError:
+            pass
+    if USE_OFFLINE_MODEL:
+        offline_active = True
+    return offline_active
+
+
+def _compose_update_session_state(
+    username: str, detail: Mapping[str, Any], status: str
+) -> None:
+    session_id = detail.get("sessionId")
+    if not session_id:
+        return
+    try:
+        (
+            user_id,
+            session_state,
+            sessions,
+            payload,
+        ) = _resolve_session_for_user(str(username), str(session_id))
+    except Exception:  # pragma: no cover - defensive logging
+        logger.exception("compose_session_lookup_failed", sessionId=session_id)
+        return
+    if payload is None:
+        return
+    session = copy.deepcopy(payload)
+    step_states = session.get("stepStates") or {}
+    compose_step = step_states.get("3") or _default_step_states()["3"]
+    try:
+        progress_raw = float(detail.get("progress") or 0.0)
+    except (TypeError, ValueError):
+        progress_raw = 0.0
+    progress_pct = max(0, min(100, int(round(progress_raw * 100))))
+    updated_at = _utc_now_iso()
+    compose_step["updatedAt"] = updated_at
+    if not compose_step.get("startedAt"):
+        compose_step["startedAt"] = updated_at
+    if status == "completed":
+        compose_step["status"] = "completed"
+        compose_step["progress"] = max(progress_pct, 100)
+        compose_step["completedAt"] = updated_at
+    elif status in {"failed", "blocked"}:
+        compose_step["status"] = "blocked"
+        compose_step["progress"] = progress_pct
+    elif status == "cancelled":
+        compose_step["status"] = "blocked"
+        compose_step["progress"] = progress_pct
+    else:
+        compose_step["status"] = "in_progress"
+        compose_step["progress"] = progress_pct
+    validation = detail.get("validation") if isinstance(detail, Mapping) else None
+    issues_map = {}
+    if isinstance(validation, Mapping):
+        issues_candidate = validation.get("issues")
+        if isinstance(issues_candidate, Mapping):
+            issues_map = issues_candidate
+    blocking = _collect_blocking_issues(issues_map) if issues_map else []
+    compose_step["blockingIssues"] = blocking
+    step_states["3"] = compose_step
+    session["stepStates"] = step_states
+    if blocking:
+        session["blockingIssues"] = blocking
+    if status == "completed" and detail.get("result"):
+        session["composeResult"] = copy.deepcopy(detail.get("result"))
+        session["composeValidation"] = copy.deepcopy(detail.get("validation"))
+    elif detail.get("validation"):
+        session["composeValidation"] = copy.deepcopy(detail.get("validation"))
+    session["updatedAt"] = updated_at
+    _recalculate_current_step(session)
+    _update_session_progress(session)
+    sessions[str(session_id)] = session
+    _persist_finalization_sessions(user_id, session_state, sessions)
+
+
+async def _compose_worker_loop() -> None:
+    while True:
+        queue = _COMPOSE_QUEUE
+        if queue is None:
+            await asyncio.sleep(0.25)
+            continue
+        job = await queue.get()
+        try:
+            if _compose_is_cancelled(job.compose_id):
+                logger.info("compose_job_skipped_cancelled", composeId=job.compose_id)
+                continue
+            await _process_compose_job(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception(
+                "compose_worker_error", composeId=job.compose_id, error=str(exc)
+            )
+        finally:
+            queue.task_done()
+
+
+async def _process_compose_job(job: ComposeJobPayload) -> None:
+    compose_id = job.compose_id
+    pipeline = _get_compose_pipeline()
+    last_event: Dict[str, Any] = {"stage": None, "status": None, "progress": None}
+
+    async def reporter(state: Any) -> None:
+        state_dict = state.as_dict() if hasattr(state, "as_dict") else dict(state)
+        detail = _compose_state_detail(job, state_dict)
+        status_value = state_dict.get("status") or "in_progress"
+        if status_value not in {"completed", "failed", "blocked", "cancelled"}:
+            status_value = "in_progress"
+        _update_compose_record(compose_id, status_value, detail)
+        stage = detail.get("stage")
+        progress = detail.get("progress")
+        if (
+            stage != last_event["stage"]
+            or status_value != last_event["status"]
+            or progress != last_event["progress"]
+        ):
+            event_detail = {
+                "stage": stage,
+                "status": status_value,
+                "progress": progress,
+                "sessionId": job.session_id,
+                "encounterId": job.encounter_id,
+            }
+            _record_compose_event("compose_progress", compose_id, event_detail)
+            last_event.update({"stage": stage, "status": status_value, "progress": progress})
+        if job.username:
+            _compose_update_session_state(job.username, detail, status_value)
+
+    try:
+        final_state = await pipeline.run(
+            job, reporter, is_cancelled=lambda: _compose_is_cancelled(compose_id)
+        )
+        final_detail = _compose_state_detail(job, final_state.as_dict())
+        final_status = final_state.status
+        _update_compose_record(compose_id, final_status, final_detail)
+        if job.username:
+            _compose_update_session_state(job.username, final_detail, final_status)
+        event_detail = {
+            "stage": final_detail.get("stage"),
+            "status": final_status,
+            "progress": final_detail.get("progress"),
+            "sessionId": job.session_id,
+            "encounterId": job.encounter_id,
+        }
+        if final_status == "completed":
+            event_detail["validationOk"] = True
+            _record_compose_event("compose_completed", compose_id, event_detail)
+        elif final_status in {"failed", "blocked"}:
+            event_detail["validationOk"] = False
+            _record_compose_event("compose_failed", compose_id, event_detail)
+    except ComposeJobCancelled:
+        record = _load_compose_record(compose_id)
+        if record is not None:
+            _, detail_payload = record
+        else:
+            detail_payload = _compose_state_detail(
+                job,
+                {
+                    "status": "cancelled",
+                    "stage": COMPOSE_STAGE_SEQUENCE[-1],
+                    "progress": COMPOSE_STAGE_PROGRESS.get(
+                        COMPOSE_STAGE_SEQUENCE[-1], 1.0
+                    ),
+                    "steps": _compose_steps_template(),
+                },
+            )
+            _update_compose_record(compose_id, "cancelled", detail_payload)
+        _record_compose_event(
+            "compose_cancelled",
+            compose_id,
+            {
+                "stage": detail_payload.get("stage"),
+                "status": "cancelled",
+                "progress": detail_payload.get("progress"),
+                "sessionId": job.session_id,
+                "encounterId": job.encounter_id,
+            },
+        )
+        if job.username:
+            _compose_update_session_state(job.username, detail_payload, "cancelled")
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception(
+            "compose_job_unexpected_exception", composeId=compose_id, error=str(exc)
+        )
+        fallback_detail = _compose_state_detail(
+            job,
+            {
+                "status": "failed",
+                "stage": COMPOSE_STAGE_SEQUENCE[-1],
+                "progress": COMPOSE_STAGE_PROGRESS.get(
+                    COMPOSE_STAGE_SEQUENCE[-1], 1.0
+                ),
+                "steps": _compose_steps_template(),
+                "message": str(exc),
+            },
+        )
+        _update_compose_record(compose_id, "failed", fallback_detail)
+        _record_compose_event(
+            "compose_failed",
+            compose_id,
+            {
+                "stage": fallback_detail.get("stage"),
+                "status": "failed",
+                "progress": fallback_detail.get("progress"),
+                "sessionId": job.session_id,
+                "encounterId": job.encounter_id,
+            },
+        )
+        if job.username:
+            _compose_update_session_state(job.username, fallback_detail, "failed")
+    finally:
+        _compose_clear_cancelled(compose_id)
+
+
+async def _ensure_compose_workers() -> None:
+    global _COMPOSE_QUEUE, _COMPOSE_WORKER_LOCK
+    if _COMPOSE_WORKER_LOCK is None:
+        _COMPOSE_WORKER_LOCK = asyncio.Lock()
+    async with _COMPOSE_WORKER_LOCK:
+        if _COMPOSE_QUEUE is None:
+            _COMPOSE_QUEUE = asyncio.Queue()
+        if _COMPOSE_WORKERS:
+            return
+        loop = asyncio.get_running_loop()
+        for _ in range(_COMPOSE_WORKER_COUNT):
+            task = loop.create_task(_compose_worker_loop())
+            _COMPOSE_WORKERS.append(task)
+
+
+async def _stop_compose_workers() -> None:
+    workers = list(_COMPOSE_WORKERS)
+    for task in workers:
+        task.cancel()
+    if workers:
+        await asyncio.gather(*workers, return_exceptions=True)
+    _COMPOSE_WORKERS.clear()
+    global _COMPOSE_QUEUE, _COMPOSE_WORKER_LOCK
+    _COMPOSE_QUEUE = None
+    _COMPOSE_WORKER_LOCK = None
+
+
+async def _enqueue_compose_job(job: ComposeJobPayload) -> None:
+    await _ensure_compose_workers()
+    queue = _COMPOSE_QUEUE
+    if queue is None:  # pragma: no cover - defensive
+        raise RuntimeError("compose queue unavailable")
+    await queue.put(job)
+    logger.info(
+        "compose_job_enqueued",
+        composeId=job.compose_id,
+        sessionId=job.session_id,
+        encounterId=job.encounter_id,
+    )
 
 @app.post("/api/v1/workflow/sessions", response_model=WorkflowSessionResponse)
 async def create_workflow_session_v1(
@@ -13630,6 +14081,204 @@ async def update_note_content_v1(
         session=WorkflowSessionResponse(**_session_to_response(normalized)),
     )
     return response_payload
+
+
+@app.post("/api/compose/start", response_model=ComposeJobResponse)
+async def start_compose_job(
+    req: ComposeStartRequest, user=Depends(require_role("user"))
+) -> ComposeJobResponse:
+    session_id = req.sessionId
+    user_id, session_state, sessions, payload = _resolve_session_for_user(
+        user["sub"], session_id
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = copy.deepcopy(payload)
+    note_content = (
+        req.noteContent
+        if req.noteContent is not None
+        else session.get("noteContent")
+        or ""
+    )
+    metadata_source = session.get("patientMetadata") if isinstance(session.get("patientMetadata"), dict) else {}
+    metadata = copy.deepcopy(metadata_source)
+    if req.patientMetadata:
+        metadata.update({k: v for k, v in req.patientMetadata.items() if v is not None})
+    codes_source = (
+        req.selectedCodes
+        or session.get("selectedCodes")
+        or session_state.get("selectedCodesList")
+        or []
+    )
+    if not isinstance(codes_source, list):
+        codes_source = list(codes_source) if isinstance(codes_source, tuple) else []
+    transcript_source: Any = req.transcript
+    if not transcript_source:
+        if isinstance(session.get("transcriptEntries"), list):
+            transcript_source = session.get("transcriptEntries")
+        else:
+            context_payload = (
+                session.get("context") if isinstance(session.get("context"), dict) else {}
+            )
+            transcript_source = context_payload.get("transcriptEntries")
+    transcripts = transcript_source if isinstance(transcript_source, list) else []
+    offline = _resolve_offline_mode(user, req.useOfflineMode)
+    encounter_id = req.encounterId or session.get("encounterId")
+    note_id = req.noteId or session.get("noteId")
+    context_payload = (
+        session.get("context") if isinstance(session.get("context"), dict) else {}
+    )
+    lang = req.lang or context_payload.get("lang") or metadata.get("lang") or "en"
+    specialty = req.specialty or context_payload.get("specialty") or metadata.get("specialty")
+    payer = req.payer or context_payload.get("payer") or metadata.get("payer")
+    initial_steps = _compose_steps_template()
+    if initial_steps:
+        initial_steps[0]["status"] = "in_progress"
+    initial_stage = initial_steps[0]["stage"] if initial_steps else COMPOSE_STAGE_SEQUENCE[0]
+    initial_detail: Dict[str, Any] = {
+        "jobType": "compose",
+        "status": "queued",
+        "stage": initial_stage,
+        "progress": 0.0,
+        "steps": initial_steps,
+        "result": None,
+        "validation": None,
+        "sessionId": session_id,
+        "encounterId": encounter_id,
+        "noteId": note_id,
+        "offline": offline,
+        "useLocalModels": bool(req.useLocalModels),
+    }
+    try:
+        cur = db_conn.cursor()
+        cur.execute(
+            "INSERT INTO exports (timestamp, ehr, note, status, detail) VALUES (?, ?, ?, ?, ?)",
+            (
+                time.time(),
+                "compose",
+                note_content,
+                "queued",
+                json.dumps(initial_detail, ensure_ascii=False),
+            ),
+        )
+        db_conn.commit()
+        compose_id = int(cur.lastrowid)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("compose_record_insert_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Unable to start compose job") from exc
+
+    job_payload = ComposeJobPayload(
+        compose_id=compose_id,
+        note=note_content,
+        metadata={str(k): v for k, v in metadata.items()},
+        codes=list(codes_source),
+        transcript=list(transcripts),
+        lang=str(lang or "en"),
+        specialty=specialty if isinstance(specialty, str) else None,
+        payer=payer if isinstance(payer, str) else None,
+        offline=offline,
+        use_local_models=bool(req.useLocalModels),
+        beautify_model=req.beautifyModel,
+        session_id=session_id,
+        encounter_id=encounter_id,
+        note_id=note_id,
+        username=user.get("sub"),
+    )
+    await _enqueue_compose_job(job_payload)
+    _record_compose_event(
+        "compose_started",
+        compose_id,
+        {
+            "stage": initial_detail.get("stage"),
+            "status": initial_detail.get("status"),
+            "progress": initial_detail.get("progress"),
+            "sessionId": session_id,
+            "encounterId": encounter_id,
+        },
+    )
+
+    step_states = session.get("stepStates") or {}
+    compose_step = step_states.get("3") or _default_step_states()["3"]
+    updated_at = _utc_now_iso()
+    compose_step.update(
+        {
+            "status": "in_progress",
+            "progress": 0,
+            "updatedAt": updated_at,
+            "blockingIssues": [],
+        }
+    )
+    if not compose_step.get("startedAt"):
+        compose_step["startedAt"] = updated_at
+    step_states["3"] = compose_step
+    session["stepStates"] = step_states
+    session["updatedAt"] = updated_at
+    _recalculate_current_step(session)
+    _update_session_progress(session)
+    sessions[session_id] = session
+    _persist_finalization_sessions(user_id, session_state, sessions)
+
+    return _compose_response_from_detail(compose_id, "queued", initial_detail)
+
+
+@app.get("/api/compose/{compose_id}", response_model=ComposeJobResponse)
+async def get_compose_job(
+    compose_id: int, user=Depends(require_role("user"))
+) -> ComposeJobResponse:
+    row = db_conn.execute(
+        "SELECT status, detail FROM exports WHERE id=? AND ehr=?",
+        (compose_id, "compose"),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Compose job not found")
+    detail = json.loads(row["detail"]) if row["detail"] else {}
+    response = _compose_response_from_detail(compose_id, row["status"], detail)
+    _compose_update_session_state(user.get("sub", ""), detail, row["status"])
+    return response
+
+
+@app.post("/api/compose/{compose_id}/cancel", response_model=ComposeJobResponse)
+async def cancel_compose_job(
+    compose_id: int, user=Depends(require_role("user"))
+) -> ComposeJobResponse:
+    row = db_conn.execute(
+        "SELECT status, detail FROM exports WHERE id=? AND ehr=?",
+        (compose_id, "compose"),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Compose job not found")
+    status = row["status"]
+    detail = json.loads(row["detail"]) if row["detail"] else {}
+    if status in {"completed", "cancelled"}:
+        _compose_update_session_state(user.get("sub", ""), detail, status)
+        return _compose_response_from_detail(compose_id, status, detail)
+    _compose_mark_cancelled(compose_id)
+    detail["status"] = "cancelled"
+    detail["stage"] = detail.get("stage") or "cancelled"
+    try:
+        detail["progress"] = float(detail.get("progress") or 0.0)
+    except (TypeError, ValueError):
+        detail["progress"] = 0.0
+    steps = detail.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict):
+                if step.get("stage") == detail["stage"] or step.get("status") == "in_progress":
+                    step["status"] = "cancelled"
+    _update_compose_record(compose_id, "cancelled", detail)
+    _record_compose_event(
+        "compose_cancelled",
+        compose_id,
+        {
+            "stage": detail.get("stage"),
+            "status": "cancelled",
+            "progress": detail.get("progress"),
+            "sessionId": detail.get("sessionId"),
+            "encounterId": detail.get("encounterId"),
+        },
+    )
+    _compose_update_session_state(user.get("sub", ""), detail, "cancelled")
+    return _compose_response_from_detail(compose_id, "cancelled", detail)
 
 
 @app.post(
@@ -15006,8 +15655,8 @@ async def _prevention_suggest(req: PreventionSuggestRequest) -> PreventionRespon
                     "role": "system",
                     "content": (
                         "You are a preventative care assistant. Respond strictly with JSON in the form "
-                        "{\"recommendations\":[{\"id\":\"\",\"code\":\"\",\"type\":\"PREVENTION\",""
-                        "\"title\":\"\",\"rationale\":\"\",\"confidence\":0,\"nextSteps\":[],\"evidence\":[]}]}. "
+                        "{\"recommendations\":[{\"id\":\"\",\"code\":\"\",\"type\":\"PREVENTION\",\"title\":\"\","
+                        "\"rationale\":\"\",\"confidence\":0,\"nextSteps\":[],\"evidence\":[]}]}. "
                         "Confidence must be an integer from 0 to 100. Include at least one recommendation when possible."
                     ),
                 },

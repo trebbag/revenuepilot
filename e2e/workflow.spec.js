@@ -53,6 +53,96 @@ test('workflow: create, validate, attest, dispatch', async () => {
     }
   });
 
+  const composeJobId = 501;
+  let composePollCount = 0;
+
+  const composeStepsBase = [
+    { id: 1, stage: 'analyzing', status: 'completed', progress: 0.15 },
+    { id: 2, stage: 'enhancing_structure', status: 'completed', progress: 0.35 },
+    { id: 3, stage: 'beautifying_language', status: 'completed', progress: 0.85 },
+    { id: 4, stage: 'final_review', status: 'pending', progress: 1.0 },
+  ];
+
+  await win.route('**/api/compose/start', (route) => {
+    composePollCount = 0;
+    route.fulfill({
+      json: {
+        composeId: composeJobId,
+        status: 'queued',
+        stage: 'analyzing',
+        progress: 0,
+        steps: [
+          { id: 1, stage: 'analyzing', status: 'in_progress', progress: 0.05 },
+          { id: 2, stage: 'enhancing_structure', status: 'pending', progress: 0 },
+          { id: 3, stage: 'beautifying_language', status: 'pending', progress: 0 },
+          { id: 4, stage: 'final_review', status: 'pending', progress: 0 },
+        ],
+        validation: null,
+        result: null,
+      },
+    });
+  });
+
+  await win.route(`**/api/compose/${composeJobId}`, (route) => {
+    composePollCount += 1;
+    if (composePollCount === 1) {
+      route.fulfill({
+        json: {
+          composeId: composeJobId,
+          status: 'in_progress',
+          stage: 'enhancing_structure',
+          progress: 0.35,
+          steps: [
+            { id: 1, stage: 'analyzing', status: 'completed', progress: 0.15 },
+            { id: 2, stage: 'enhancing_structure', status: 'in_progress', progress: 0.35 },
+            { id: 3, stage: 'beautifying_language', status: 'pending', progress: 0 },
+            { id: 4, stage: 'final_review', status: 'pending', progress: 0 },
+          ],
+          validation: null,
+          result: null,
+        },
+      });
+      return;
+    }
+    if (composePollCount === 2) {
+      route.fulfill({
+        json: {
+          composeId: composeJobId,
+          status: 'in_progress',
+          stage: 'beautifying_language',
+          progress: 0.85,
+          steps: [
+            { id: 1, stage: 'analyzing', status: 'completed', progress: 0.15 },
+            { id: 2, stage: 'enhancing_structure', status: 'completed', progress: 0.35 },
+            { id: 3, stage: 'beautifying_language', status: 'in_progress', progress: 0.85 },
+            { id: 4, stage: 'final_review', status: 'pending', progress: 0 },
+          ],
+          validation: null,
+          result: null,
+        },
+      });
+      return;
+    }
+
+    route.fulfill({
+      json: {
+        composeId: composeJobId,
+        status: 'completed',
+        stage: 'final_review',
+        progress: 1,
+        steps: composeStepsBase.map((step, index) =>
+          index === composeStepsBase.length - 1 ? { ...step, status: 'completed' } : step,
+        ),
+        validation: { ok: true, issues: {} },
+        result: {
+          beautifiedNote: 'Server enhanced documentation',
+          patientSummary: 'Server generated patient summary',
+          mode: 'remote',
+        },
+      },
+    });
+  });
+
   await win.route('**/api/v1/workflow/sessions/wf-100', (route) =>
     route.fulfill({
       json: {
@@ -135,7 +225,20 @@ test('workflow: create, validate, attest, dispatch', async () => {
   await expect(win.locator('text=Step 1')).toBeVisible();
 
   await win.click('button:has-text("Run validation")');
-  await expect(win.locator('text=Estimated reimbursement')).toBeVisible();
+  await expect(win.locator('text=AI Enhancement in Progress')).toBeVisible();
+  await expect(win.locator('text=Analyzing Content')).toBeVisible();
+  await expect(win.locator('text=Beautifying Language')).toBeVisible();
+
+  const continueButton = win.locator('button:has-text("Continue to Compare & Edit")');
+  await expect(continueButton).toBeDisabled();
+
+  await expect(continueButton).toBeEnabled({ timeout: 4000 });
+  await continueButton.click();
+
+  const enhancedTextarea = win.locator('textarea').nth(1);
+  await expect(enhancedTextarea).toHaveValue(/Server enhanced documentation/);
+  await win.click('button:has-text("Switch to Summary")');
+  await expect(enhancedTextarea).toHaveValue(/Server generated patient summary/);
 
   await win.fill('input[name="attestedBy"]', 'Dr. Demo');
   await win.fill('textarea[name="statement"]', 'Reviewed');

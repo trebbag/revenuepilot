@@ -4,7 +4,8 @@ const FRONTEND_PORT = Number(process.env.FRONTEND_DEV_PORT || 4173);
 const API_PORT = Number(process.env.FRONTEND_API_PORT || 4010);
 
 export default defineConfig({
-  testDir: 'tests/e2e',
+  testDir: '.',
+  testMatch: ['tests/e2e/**/*.spec.{ts,js}', 'e2e/**/*.spec.{ts,js}'],
   timeout: 5 * 60 * 1000,
   expect: {
     timeout: 15_000,
