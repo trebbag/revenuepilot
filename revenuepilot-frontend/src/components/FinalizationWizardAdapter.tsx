@@ -15,7 +15,12 @@ import {
 import { useSession } from "../contexts/SessionContext"
 import type { LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
 import { Badge } from "./ui/badge"
-import type { PreFinalizeCheckResponse, StoredFinalizationSession, WorkflowSessionResponsePayload } from "../features/finalization/workflowTypes"
+import type {
+  FinalizeNoteResponse,
+  PreFinalizeCheckResponse,
+  StoredFinalizationSession,
+  WorkflowSessionResponsePayload,
+} from "../features/finalization/workflowTypes"
 
 type FetchWithAuth = (input: RequestInfo | URL, init?: (RequestInit & { json?: boolean; jsonBody?: unknown }) | undefined) => Promise<Response>
 
@@ -283,8 +288,7 @@ const toClassification = (value: unknown): CodeClassification | null => {
   return SUGGESTION_CLASSIFICATION_ALIASES[normalized] ?? null;
 };
 
-// ... rest of the codex branch code continues here unchanged ...
-}
+// Additional utility helpers continue below for wizard mappings and normalization.
 
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
   if (!Array.isArray(list)) {
@@ -855,6 +859,67 @@ export function FinalizationWizardAdapter({
       sessionActions.storeFinalizationSession(base.sessionId, snapshot)
     },
     [sanitizedTranscripts, sessionActions, sessionState.finalizationSessions],
+  )
+
+  const applyValidationResult = useCallback(
+    (
+      data: PreFinalizeCheckResponse,
+      options?: {
+        finalizeResult?: FinalizeNoteResponse
+        finalizedNoteId?: string | null
+        dispatchSummary?: Record<string, unknown>
+        sessionOverride?: WorkflowSessionResponsePayload | null
+      },
+    ) => {
+      setPreFinalizeResult(data)
+      onPreFinalizeResult?.(data)
+
+      const normalizedFinalizedId =
+        typeof options?.finalizedNoteId === "string" && options.finalizedNoteId.trim().length > 0
+          ? options.finalizedNoteId.trim()
+          : undefined
+
+      const extras: Partial<StoredFinalizationSession> = {
+        lastPreFinalize: data,
+        ...(options?.finalizeResult ? { lastFinalizeResult: options.finalizeResult } : {}),
+        ...(normalizedFinalizedId ? { noteId: normalizedFinalizedId } : {}),
+        ...(options?.dispatchSummary ? { dispatch: options.dispatchSummary } : {}),
+      }
+
+      setSessionData((prev) => {
+        const base = options?.sessionOverride ?? prev
+        if (!base) {
+          persistSession(sessionDataRef.current, extras)
+          return base
+        }
+
+        const validationInfo = buildValidationState(data)
+        const existingBlocking = Array.isArray(base.blockingIssues)
+          ? base.blockingIssues
+              .map((issue) => sanitizeIssueText(issue))
+              .filter((issue): issue is string => Boolean(issue))
+          : []
+        const combinedBlocking = new Set(existingBlocking)
+        validationInfo.blockingIssues.forEach((issue) => combinedBlocking.add(issue))
+
+        const next: WorkflowSessionResponsePayload = {
+          ...base,
+          lastValidation: data,
+          ...(Array.isArray(data.complianceIssues)
+            ? { complianceIssues: data.complianceIssues as Array<Record<string, unknown>> }
+            : {}),
+          ...(data.reimbursementSummary ? { reimbursementSummary: data.reimbursementSummary } : {}),
+          blockingIssues: combinedBlocking.size ? Array.from(combinedBlocking) : base.blockingIssues,
+          ...(options?.finalizeResult ? { lastFinalizeResult: options.finalizeResult } : {}),
+          ...(normalizedFinalizedId ? { noteId: normalizedFinalizedId } : {}),
+          ...(options?.dispatchSummary ? { dispatch: options.dispatchSummary } : {}),
+        }
+
+        persistSession(next, extras)
+        return next
+      })
+    },
+    [onPreFinalizeResult, persistSession],
   )
 
   const selectedCodeSet = useMemo(() => {
@@ -1723,37 +1788,11 @@ export function FinalizationWizardAdapter({
           throw new Error(`Finalization failed (${response.status})`)
         }
 
-        const data = (await response.json()) as FinalizeResult & PreFinalizeCheckResponse
+        const data = (await response.json()) as FinalizeNoteResponse
         lastFinalizeResultRef.current = data
-        setPreFinalizeResult(data)
-        onPreFinalizeResult?.(data)
-        setSessionData((prev) => {
-          if (!prev) {
-            persistSession(sessionDataRef.current, {
-              lastPreFinalize: data,
-              lastFinalizeResult: data,
-            })
-            return prev
-          }
-
-          const validationInfo = buildValidationState(data)
-          const existingBlocking = Array.isArray(prev.blockingIssues) ? prev.blockingIssues.map((issue) => sanitizeIssueText(issue)).filter((issue): issue is string => Boolean(issue)) : []
-          const combinedBlocking = new Set<string>(existingBlocking)
-          validationInfo.blockingIssues.forEach((issue) => combinedBlocking.add(issue))
-
-          const next: WorkflowSessionResponsePayload = {
-            ...prev,
-            lastValidation: data,
-            ...(Array.isArray(data.complianceIssues) ? { complianceIssues: data.complianceIssues as Array<Record<string, unknown>> } : {}),
-            ...(data.reimbursementSummary ? { reimbursementSummary: data.reimbursementSummary } : {}),
-            blockingIssues: combinedBlocking.size ? Array.from(combinedBlocking) : prev.blockingIssues,
-          }
-
-          persistSession(next, {
-            lastPreFinalize: data,
-            lastFinalizeResult: data,
-          })
-          return next
+        applyValidationResult(data, {
+          finalizeResult: data,
+          finalizedNoteId: data.finalizedNoteId,
         })
         return data
       } catch (error) {
@@ -1762,7 +1801,113 @@ export function FinalizationWizardAdapter({
         throw error
       }
     },
-    [fetchWithAuth, finalizeRequestSnapshot, onError, onPreFinalizeResult, persistSession],
+    [applyValidationResult, fetchWithAuth, finalizeRequestSnapshot, onError],
+  )
+
+  const handleFinalizeAndDispatch = useCallback(
+    async (
+      request: FinalizeRequest,
+      dispatchForm: Record<string, unknown>,
+    ): Promise<{ finalizedNoteId?: string; result?: FinalizeResult }> => {
+      const payload = toFinalizeRequestPayload(request, finalizeRequestSnapshot)
+
+      try {
+        const preResponse = await fetchWithAuth("/api/notes/pre-finalize-check", {
+          method: "POST",
+          jsonBody: payload,
+        })
+        if (!preResponse.ok) {
+          throw new Error(`Pre-finalize check failed (${preResponse.status})`)
+        }
+        const preData = (await preResponse.json()) as PreFinalizeCheckResponse
+        applyValidationResult(preData)
+
+        if (preData.canFinalize === false) {
+          throw new Error("Resolve validation blockers before dispatching the note.")
+        }
+
+        const finalizeResponse = await fetchWithAuth("/api/notes/finalize", {
+          method: "POST",
+          jsonBody: payload,
+        })
+        if (!finalizeResponse.ok) {
+          throw new Error(`Finalization failed (${finalizeResponse.status})`)
+        }
+        const finalizeData = (await finalizeResponse.json()) as FinalizeNoteResponse
+        lastFinalizeResultRef.current = finalizeData
+        const finalizedNoteId =
+          typeof finalizeData.finalizedNoteId === "string" && finalizeData.finalizedNoteId.trim().length > 0
+            ? finalizeData.finalizedNoteId.trim()
+            : undefined
+        applyValidationResult(finalizeData, {
+          finalizeResult: finalizeData,
+          finalizedNoteId,
+        })
+
+        const sessionId = sessionDataRef.current?.sessionId ?? sessionSnapshot?.sessionId
+        if (!sessionId) {
+          throw new Error("Finalization session is not available for dispatch.")
+        }
+
+        const dispatchPayload =
+          dispatchForm && typeof dispatchForm === "object" ? { ...dispatchForm } : ({} as Record<string, unknown>)
+        if (!("sessionId" in dispatchPayload) || typeof dispatchPayload.sessionId !== "string") {
+          dispatchPayload.sessionId = sessionId
+        }
+        if (!("encounterId" in dispatchPayload) || typeof dispatchPayload.encounterId !== "string") {
+          const encounter = sessionDataRef.current?.encounterId ?? encounterId
+          if (encounter) {
+            dispatchPayload.encounterId = encounter
+          }
+        }
+        if (!("timestamp" in dispatchPayload)) {
+          dispatchPayload.timestamp = new Date().toISOString()
+        }
+
+        const dispatchResponse = await fetchWithAuth(
+          `/api/v1/workflow/${encodeURIComponent(sessionId)}/step6/dispatch`,
+          {
+            method: "POST",
+            jsonBody: dispatchPayload,
+          },
+        )
+        if (!dispatchResponse.ok) {
+          throw new Error(`Dispatch failed (${dispatchResponse.status})`)
+        }
+
+        const dispatchJson = (await dispatchResponse.json()) as {
+          session?: WorkflowSessionResponsePayload | null
+          result?: FinalizeResult | null
+        }
+        const dispatchSession = dispatchJson.session ?? null
+        const dispatchSummary =
+          (dispatchSession && typeof dispatchSession.dispatch === "object"
+            ? (dispatchSession.dispatch as Record<string, unknown>)
+            : undefined) ??
+          (typeof dispatchForm === "object" && dispatchForm ? dispatchForm : undefined)
+
+        applyValidationResult(finalizeData, {
+          finalizeResult: finalizeData,
+          finalizedNoteId,
+          dispatchSummary,
+          sessionOverride: dispatchSession,
+        })
+
+        if (dispatchJson.result) {
+          lastFinalizeResultRef.current = dispatchJson.result
+        }
+
+        return {
+          finalizedNoteId,
+          result: dispatchJson.result ?? finalizeData,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to finalize and dispatch the note."
+        onError?.(message, error)
+        throw error instanceof Error ? error : new Error(message)
+      }
+    },
+    [applyValidationResult, encounterId, fetchWithAuth, finalizeRequestSnapshot, onError, sessionSnapshot],
   )
 
   const handleWizardStepChange = useCallback(
@@ -1840,6 +1985,7 @@ export function FinalizationWizardAdapter({
         initialStep={derivedCurrentStep}
         canFinalize={validationState.canFinalize}
         onFinalize={handleFinalize}
+        onFinalizeAndDispatch={handleFinalizeAndDispatch}
         onSubmitAttestation={submitAttestation}
         onStepChange={handleWizardStepChange}
         onClose={handleClose}
