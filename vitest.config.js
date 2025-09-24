@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': frontendSrcDir,
+      '@core/api-client': path.resolve(__dirname, 'src', 'api', 'client.ts'),
     },
   },
   test: {

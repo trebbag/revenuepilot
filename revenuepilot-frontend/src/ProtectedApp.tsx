@@ -7,7 +7,7 @@ import { Analytics } from "./components/Analytics"
 import { Settings } from "./components/Settings"
 import { ActivityLog } from "./components/ActivityLog"
 import { Drafts } from "./components/Drafts"
-import { Schedule, type ScheduleChartUploadStatus } from "./components/Schedule"
+import { Schedule } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
 import type { CollaborationStreamState, ComplianceIssue, LiveCodeSuggestion, StreamConnectionState } from "./components/NoteEditor"
@@ -25,6 +25,7 @@ import { useAuth } from "./contexts/AuthContext"
 import { useSession } from "./contexts/SessionContext"
 import type { SessionCode, SuggestionCodeInput } from "./contexts/SessionContext"
 import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl } from "./lib/api"
+import { useChartUpload, useUploadStatuses } from "./hooks/useChartUpload"
 import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 import type { FinalizeResult } from "./features/finalization"
 
@@ -71,6 +72,49 @@ interface ScheduleAppointmentView {
   isVirtual: boolean
   sourceStatus: string
   visitSummary?: Record<string, unknown> | null
+  contextStages?: Record<string, VisitContextStage> | null
+}
+
+interface VisitContextStage {
+  state?: string | null
+  status?: string | null
+  percent?: number | null
+  [key: string]: unknown
+}
+
+function extractContextStages(source: unknown): Record<string, VisitContextStage> | null {
+  if (!source || typeof source !== "object") {
+    return null
+  }
+
+  const record = source as Record<string, unknown>
+  const stageKeys = ["superficial", "deep", "indexed"]
+  if (stageKeys.some((key) => record[key] && typeof record[key] === "object")) {
+    return record as Record<string, VisitContextStage>
+  }
+
+  const candidates: Array<unknown> = []
+  const directKeys = ["contextStages", "contextStage", "context", "stages"]
+  directKeys.forEach((key) => {
+    if (key in record) {
+      candidates.push(record[key])
+    }
+  })
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") {
+      continue
+    }
+    const candidateRecord = candidate as Record<string, unknown>
+    if (stageKeys.some((key) => candidateRecord[key] && typeof candidateRecord[key] === "object")) {
+      return candidateRecord as Record<string, VisitContextStage>
+    }
+    if ("stages" in candidateRecord && candidateRecord.stages && typeof candidateRecord.stages === "object") {
+      return candidateRecord.stages as Record<string, VisitContextStage>
+    }
+  }
+
+  return null
 }
 
 interface ScheduleDataState {
@@ -298,7 +342,8 @@ export function ProtectedApp() {
   const [scheduleRefreshKey, setScheduleRefreshKey] = useState(0)
   const [scheduleFilters, setScheduleFilters] = useState<ScheduleFiltersSnapshot | null>(null)
   const [draftCount, setDraftCount] = useState<number | null>(null)
-  const [chartUploadStatuses, setChartUploadStatuses] = useState<Record<string, ScheduleChartUploadStatus>>({})
+  const uploadStatuses = useUploadStatuses()
+  const { openFilePickerAndUpload } = useChartUpload()
 
   const [noteViewMode, setNoteViewMode] = useState<NoteViewMode>("draft")
   const [beautifiedNoteState, setBeautifiedNoteState] = useState<BeautifyResultState | null>(null)
@@ -420,10 +465,31 @@ export function ProtectedApp() {
       const fallbackEncounterId = idDigits ? `ENC-${idDigits.padStart(4, "0")}` : `ENC-${(idString || "0").padStart(4, "0")}`
       const encounterId = normalizeText(encounterIdSource, fallbackEncounterId)
 
-      const documentationComplete = typeof summary?.documentationComplete === "boolean"
-        ? summary.documentationComplete
-        : (summaryVisitStatus ?? "").toLowerCase() === "completed"
+      const documentationComplete = typeof summary?.documentationComplete === "boolean" ? summary.documentationComplete : null
+      const visitStatusComplete = typeof summaryVisitStatus === "string" ? summaryVisitStatus.toLowerCase() === "completed" : null
+      const rawSummary = summary && typeof summary === "object" ? (summary as Record<string, unknown>) : null
+      const sessionPayload = rawSummary && typeof rawSummary.session === "object" ? (rawSummary.session as Record<string, unknown>) : null
+      const contextStages = extractContextStages(sessionPayload) ?? extractContextStages(rawSummary)
+      const indexedStage = contextStages?.indexed
+      const indexedStateValue =
+        typeof indexedStage?.state === "string"
+          ? indexedStage.state
+          : typeof indexedStage?.status === "string"
+            ? indexedStage.status
+            : null
+      const contextCompleted = indexedStateValue ? indexedStateValue.toLowerCase() === "completed" : null
       const summaryNotes = readString(summary?.summary) ?? readString(summary?.notes) ?? readString(summary?.chiefComplaint)
+
+      let fileUpToDate = status === "Completed"
+      if (visitStatusComplete !== null) {
+        fileUpToDate = visitStatusComplete
+      }
+      if (typeof documentationComplete === "boolean") {
+        fileUpToDate = documentationComplete
+      }
+      if (contextCompleted === true) {
+        fileUpToDate = true
+      }
 
       return {
         id: idString || patientId,
@@ -439,11 +505,12 @@ export function ProtectedApp() {
         location,
         status,
         notes: summaryNotes ?? reason,
-        fileUpToDate: documentationComplete ?? status === "Completed",
+        fileUpToDate,
         priority: determinePriority(start, status, reason),
         isVirtual,
         sourceStatus: normalizeText(summaryVisitStatus ?? summaryStatus ?? raw.status, "scheduled"),
         visitSummary: summary,
+        contextStages,
       }
     },
     [buildPatientEmail, determinePriority, determineVisitType, mapScheduleStatus, normalizeText],
@@ -990,104 +1057,16 @@ export function ProtectedApp() {
 
   const handleUploadChart = useCallback(
     (patientId: string) => {
-      const input = document.createElement("input")
-      input.type = "file"
-      input.accept = ".pdf,.txt,.rtf,.doc,.docx,.json,.xml"
-
-      const cleanup = () => {
-        input.value = ""
-        input.remove()
+      const normalized = patientId.trim()
+      if (!normalized) {
+        return
       }
 
-      const uploadFile = async (file: File) => {
-        const boundary = `----RevenuePilotUpload${Math.random().toString(16).slice(2)}`
-        const encoder = new TextEncoder()
-        const safeFileName = file.name.replace(/"/g, "%22") || "chart-upload"
-        const prefixBytes = encoder.encode(
-          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${safeFileName}"\r\nContent-Type: ${file.type || "application/octet-stream"}\r\n\r\n`,
-        )
-        const suffixBytes = encoder.encode("\r\n--" + boundary + "--\r\n")
-        const totalBytes = Math.max(prefixBytes.byteLength + file.size + suffixBytes.byteLength, 1)
-        let uploadedBytes = 0
-        const reader = file.stream().getReader()
-
-        const updateProgress = (progress: number, status: ScheduleChartUploadStatus["status"] = "uploading", error?: string) => {
-          const boundedProgress = Math.max(0, Math.min(100, Math.round(progress)))
-          setChartUploadStatuses((prev) => ({
-            ...prev,
-            [patientId]: {
-              status,
-              progress: boundedProgress,
-              fileName: file.name,
-              error,
-            },
-          }))
-        }
-
-        updateProgress(0)
-
-        const stream = new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(prefixBytes)
-            uploadedBytes += prefixBytes.byteLength
-            updateProgress((uploadedBytes / totalBytes) * 100)
-
-            const pump = (): void => {
-              reader
-                .read()
-                .then(({ done, value }) => {
-                  if (done) {
-                    controller.enqueue(suffixBytes)
-                    uploadedBytes += suffixBytes.byteLength
-                    updateProgress((uploadedBytes / totalBytes) * 100)
-                    controller.close()
-                    return
-                  }
-
-                  if (value) {
-                    controller.enqueue(value)
-                    uploadedBytes += value.byteLength
-                    updateProgress((uploadedBytes / totalBytes) * 100)
-                  }
-
-                  pump()
-                })
-                .catch((error) => {
-                  controller.error(error)
-                })
-            }
-
-            pump()
-          },
-          cancel(reason) {
-            reader.cancel(reason).catch(() => undefined)
-          },
-        })
-
-        const controller = new AbortController()
-
-        try {
-          const response = await apiFetch("/api/charts/upload", {
-            method: "POST",
-            body: stream,
-            headers: {
-              "Content-Type": `multipart/form-data; boundary=${boundary}`,
-            },
-            signal: controller.signal,
-          })
-
-          if (!response.ok) {
-            const message = await response.text()
-            throw new Error(message || "Unable to upload chart.")
+      void openFilePickerAndUpload({ patientId: normalized })
+        .then((result) => {
+          if (!result) {
+            return
           }
-
-          try {
-            await response.json()
-          } catch {
-            // Ignore JSON parsing issues – upload succeeded
-          }
-
-          updateProgress(100, "success")
 
           setAppointmentsState((prev) => {
             if (!prev.data) {
@@ -1095,49 +1074,28 @@ export function ProtectedApp() {
             }
             return {
               ...prev,
-              data: prev.data.map((appointment) => (appointment.patientId === patientId ? { ...appointment, fileUpToDate: true } : appointment)),
+              data: prev.data.map((appointment) =>
+                appointment.patientId === normalized
+                  ? {
+                      ...appointment,
+                      fileUpToDate: true,
+                      visitSummary: appointment.visitSummary ?? undefined,
+                    }
+                  : appointment,
+              ),
             }
           })
 
-          try {
-            await apiFetchJson("/api/activity/log", {
-              method: "POST",
-              jsonBody: {
-                action: "chart.upload",
-                category: "chart",
-                details: {
-                  patientId,
-                  fileName: file.name,
-                  size: file.size,
-                },
-              },
-            })
-          } catch (error) {
-            console.error("Failed to log chart upload", error)
-          }
-
           triggerScheduleRefresh()
-        } catch (error) {
+        })
+        .catch((error) => {
           if ((error as DOMException)?.name === "AbortError") {
             return
           }
-          const message = error instanceof Error ? error.message : "Unable to upload chart."
-          updateProgress(0, "error", message)
-        }
-      }
-
-      input.addEventListener("change", () => {
-        const file = input.files?.[0]
-        if (!file) {
-          cleanup()
-          return
-        }
-        void uploadFile(file).finally(cleanup)
-      })
-
-      input.click()
+          console.error("Failed to upload chart", error)
+        })
     },
-    [triggerScheduleRefresh],
+    [openFilePickerAndUpload, triggerScheduleRefresh],
   )
 
   // Calculate user's draft count for navigation badge
@@ -1383,7 +1341,7 @@ export function ProtectedApp() {
                   currentUser={currentUser}
                   onStartVisit={handleStartVisit}
                   onUploadChart={handleUploadChart}
-                  uploadStatuses={chartUploadStatuses}
+                  uploadStatuses={uploadStatuses}
                   appointments={appointmentsState.data ?? []}
                   loading={appointmentsState.loading}
                   error={appointmentsState.error}
@@ -1431,7 +1389,12 @@ export function ProtectedApp() {
               {accessMessage}
 
               <div className="flex-1 overflow-auto">
-                <Builder currentUser={currentUser} appointments={appointmentsState.data ?? []} onAppointmentsChange={handleAppointmentsChange} />
+                <Builder
+                  currentUser={currentUser}
+                  appointments={appointmentsState.data ?? []}
+                  onAppointmentsChange={handleAppointmentsChange}
+                  onScheduleRefresh={triggerScheduleRefresh}
+                />
               </div>
             </main>
           </div>
