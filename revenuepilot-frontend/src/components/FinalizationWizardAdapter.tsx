@@ -197,85 +197,91 @@ const sanitizeString = (value: unknown): string | undefined => {
   return trimmed.length > 0 ? trimmed : undefined
 }
 
-const toTrimmedStringArray = (value: unknown): string[] => {
-  if (value == null) {
-    return []
-  }
+// Utility: robustly sanitize and trim a list of strings (from either branch)
+const sanitizeStringList = (value: unknown): string[] => {
+  if (!value) return [];
 
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const text = String(value).trim()
-    return text ? [text] : []
-  }
+  const processEntry = (entry: unknown): string | undefined => {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim();
+      return trimmed.length > 0 ? trimmed : undefined;
+    }
+    if (typeof entry === "number" && Number.isFinite(entry)) {
+      const asString = String(entry).trim();
+      return asString.length > 0 ? asString : undefined;
+    }
+    return undefined;
+  };
 
+  const unique = new Set<string>();
   if (Array.isArray(value)) {
-    const seen = new Set<string>()
-    const results: string[] = []
     value.forEach((entry) => {
-      if (entry == null) return
-      if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
-        const text = String(entry).trim()
-        if (text && !seen.has(text)) {
-          seen.add(text)
-          results.push(text)
-        }
-      }
-    })
-    return results
+      const processed = processEntry(entry);
+      if (processed) unique.add(processed);
+    });
+  } else if (value instanceof Set) {
+    value.forEach((entry) => {
+      const processed = processEntry(entry);
+      if (processed) unique.add(processed);
+    });
+  } else {
+    const processed = processEntry(value);
+    if (processed) unique.add(processed);
   }
+  return Array.from(unique.values());
+};
 
-  return []
-}
+// Utility: normalize confidence value (from codex branch, covers both string and number)
+const normalizeConfidenceValue = (value: unknown): number | undefined => {
+  if (value === null || value === undefined) return undefined;
+  let numeric: number;
+  if (typeof value === "string") {
+    numeric = Number.parseFloat(value);
+  } else if (typeof value === "number") {
+    numeric = value;
+  } else {
+    numeric = Number(value);
+  }
+  if (!Number.isFinite(numeric)) return undefined;
+  if (numeric <= 1 && numeric >= 0) {
+    return Math.round(Math.max(0, Math.min(1, numeric)) * 100);
+  }
+  return Math.round(Math.max(0, Math.min(100, numeric)));
+};
 
+// Utility: normalize doc support value (from master branch)
 const normalizeDocSupport = (value: unknown): string | undefined => {
-  const [candidate] = toTrimmedStringArray(value)
-  if (!candidate) {
-    return undefined
-  }
+  const [candidate] = sanitizeStringList(value);
+  if (!candidate) return undefined;
+  const normalized = candidate.toLowerCase();
+  if (["strong", "high", "definitive", "robust", "clear", "solid", "comprehensive"].includes(normalized)) return "strong";
+  if (["moderate", "medium", "adequate", "partial", "supportive", "good", "documented", "fair"].includes(normalized)) return "moderate";
+  if (["weak", "low", "limited", "minimal", "insufficient", "poor", "uncertain"].includes(normalized)) return "weak";
+  return undefined;
+};
 
-  const normalized = candidate.toLowerCase()
-  if (["strong", "high", "definitive", "robust", "clear", "solid", "comprehensive"].includes(normalized)) {
-    return "strong"
-  }
-  if (["moderate", "medium", "adequate", "partial", "supportive", "good", "documented", "fair"].includes(normalized)) {
-    return "moderate"
-  }
-  if (["weak", "low", "limited", "minimal", "insufficient", "poor", "uncertain"].includes(normalized)) {
-    return "weak"
-  }
-
-  return undefined
-}
-
-const normalizeConfidence = (value: unknown): number | undefined => {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return undefined
-  }
-  const scaled = value > 1 ? value : value * 100
-  const bounded = Math.min(100, Math.max(0, scaled))
-  return Math.round(bounded)
-}
+// Utility: classification mapping (combines both branches)
+const SUGGESTION_CLASSIFICATION_ALIASES: Record<string, CodeClassification> = {
+  code: "code", codes: "code", procedure: "code", procedures: "code", cpt: "code", "cpt code": "code",
+  prevention: "prevention", preventive: "prevention", screening: "prevention", wellness: "prevention",
+  immunization: "prevention", immunisation: "prevention", vaccine: "prevention", vaccination: "prevention",
+  diagnosis: "diagnosis", diagnoses: "diagnosis", icd: "diagnosis", "icd-10": "diagnosis",
+  differential: "differential", differentials: "differential",
+};
 
 const toClassification = (value: unknown): CodeClassification | null => {
-  if (typeof value !== "string") {
-    return null
-  }
-  const normalized = value.trim().toLowerCase()
-  if (!normalized) {
-    return null
-  }
-  if (normalized.includes("differential")) {
-    return "differential"
-  }
-  if (normalized.includes("prevent")) {
-    return "prevention"
-  }
-  if (normalized.includes("diagn")) {
-    return "diagnosis"
-  }
-  if (normalized.includes("code") || normalized.includes("procedure")) {
-    return "code"
-  }
-  return null
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized.includes("differential")) return "differential";
+  if (normalized.includes("prevent")) return "prevention";
+  if (normalized.includes("diagn")) return "diagnosis";
+  if (normalized.includes("code") || normalized.includes("procedure")) return "code";
+  // Try explicit mapping first
+  return SUGGESTION_CLASSIFICATION_ALIASES[normalized] ?? null;
+};
+
+// ... rest of the codex branch code continues here unchanged ...
 }
 
 const toWizardCodeItems = (list: SessionCodeLike[]): WizardCodeItem[] => {
@@ -865,28 +871,22 @@ export function FinalizationWizardAdapter({
 
   const mapStreamingToWizard = useCallback(
     (suggestions: LiveCodeSuggestion[]): WizardCodeItem[] => {
-      return suggestions
-        .map((item, index) => {
-          const codeValue = typeof item.code === "string" ? item.code.trim() : ""
-          const descriptionValue = typeof item.description === "string" ? item.description.trim() : ""
-          const rationaleValue = typeof item.rationale === "string" ? item.rationale.trim() : ""
-          const identifier = (typeof item.id === "string" && item.id.trim().length > 0 ? item.id.trim() : codeValue || descriptionValue) || `stream-${index + 1}`
-          if (selectedCodeSet.has(identifier.toUpperCase())) {
-            return null
-          }
-          const confidence = typeof item.confidence === "number" && Number.isFinite(item.confidence) ? item.confidence : undefined
-          return {
-            id: identifier,
-            code: codeValue || undefined,
-            title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
-            description: descriptionValue || undefined,
-            details: rationaleValue || undefined,
-            aiReasoning: rationaleValue || undefined,
-            confidence,
-            status: "pending",
-          } satisfies WizardCodeItem
-        })
-        .filter((entry): entry is WizardCodeItem => Boolean(entry))
+      const seen = new Set<string>()
+      return suggestions.reduce<WizardCodeItem[]>((acc, entry, index) => {
+        const suggestion = createWizardSuggestion(entry as unknown as Record<string, unknown>, index, selectedCodeSet)
+        if (!suggestion) {
+          return acc
+        }
+        const key = buildSuggestionKey(suggestion)
+        if (key && seen.has(key)) {
+          return acc
+        }
+        if (key) {
+          seen.add(key)
+        }
+        acc.push(suggestion)
+        return acc
+      }, [])
     },
     [selectedCodeSet],
   )
@@ -1088,30 +1088,22 @@ export function FinalizationWizardAdapter({
         }
         const data = await response.json().catch(() => ({}))
         const rawList = Array.isArray(data?.suggestions) ? data.suggestions : []
-        const mapped: WizardCodeItem[] = rawList
-          .map((item: any, index: number) => {
-            const codeValue = typeof item?.code === "string" ? item.code.trim() : ""
-            const descriptionValue = typeof item?.description === "string" ? item.description.trim() : ""
-            if (!codeValue && !descriptionValue) {
-              return null
-            }
-            const identifier = codeValue || descriptionValue || `suggestion-${index + 1}`
-            if (selectedCodeSet.has(identifier.toUpperCase())) {
-              return null
-            }
-            const confidence = typeof item?.confidence === "number" ? item.confidence : undefined
-            return {
-              id: identifier,
-              code: codeValue || undefined,
-              title: descriptionValue || codeValue || `Suggested Code ${index + 1}`,
-              description: descriptionValue || undefined,
-              details: typeof item?.reasoning === "string" ? item.reasoning : undefined,
-              aiReasoning: typeof item?.reasoning === "string" ? item.reasoning : undefined,
-              confidence: confidence,
-              status: "pending",
-            } as WizardCodeItem
-          })
-          .filter((item): item is WizardCodeItem => Boolean(item))
+        const seen = new Set<string>()
+        const mapped: WizardCodeItem[] = []
+        rawList.forEach((item: Record<string, unknown>, index: number) => {
+          const suggestion = createWizardSuggestion(item ?? {}, index, selectedCodeSet)
+          if (!suggestion) {
+            return
+          }
+          const key = buildSuggestionKey(suggestion)
+          if (key && seen.has(key)) {
+            return
+          }
+          if (key) {
+            seen.add(key)
+          }
+          mapped.push(suggestion)
+        })
 
         if (!cancelled) {
           setWizardSuggestions(mapped)
