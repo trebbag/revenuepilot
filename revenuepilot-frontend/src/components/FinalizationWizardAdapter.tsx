@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import {
   FinalizationWizard,
+  type AttestationFormPayload,
+  type AttestationSubmitResult,
   type CodeClassification,
   type FinalizeRequest,
   type FinalizeResult,
@@ -1247,6 +1249,8 @@ export function FinalizationWizardAdapter({
     }
     return undefined
   }, [sessionData?.reimbursementSummary])
+  const attestationRecap =
+    sessionData?.attestation ?? sessionSnapshot?.attestation ?? initialSessionSnapshot?.attestation ?? undefined
 
   const complianceWizardItems = useMemo(
     () =>
@@ -1530,6 +1534,246 @@ export function FinalizationWizardAdapter({
     return 1
   }, [sessionData?.currentStep, validationState.firstOpenStep])
 
+  const submitAttestation = useCallback(
+    async (form: AttestationFormPayload): Promise<AttestationSubmitResult> => {
+      const activeSessionId =
+        sessionDataRef.current?.sessionId ?? sessionData?.sessionId ?? initialSessionSnapshot?.sessionId
+      if (!activeSessionId) {
+        throw new Error("Create or load a session before recording attestation.")
+      }
+
+      const attestedBy = sanitizeString(form.attestedBy)
+      const statement = sanitizeString(form.statement)
+      const ipAddress = sanitizeString(form.ipAddress)
+      const signature = sanitizeString(form.signature)
+
+      if (!attestedBy || !statement) {
+        throw new Error("Attestation requires the provider name and attestation statement.")
+      }
+
+      const latestValidation =
+        preFinalizeResultRef.current ??
+        ((sessionDataRef.current?.lastValidation as PreFinalizeCheckResponse | null | undefined) ?? null)
+
+      const stepValidation =
+        latestValidation && typeof latestValidation.stepValidation === "object"
+          ? (latestValidation.stepValidation as Record<string, Record<string, unknown>>)
+          : {}
+
+      const codeVerification = stepValidation.codeVerification ?? {}
+      const contentReview = stepValidation.contentReview ?? {}
+      const complianceReview = stepValidation.complianceChecks ?? {}
+
+      const codesValidated = (codeVerification?.passed as boolean | undefined) !== false
+      const documentationVerified = (contentReview?.passed as boolean | undefined) !== false
+      const complianceVerified = (complianceReview?.passed as boolean | undefined) !== false
+
+      const estimatedFromValidation =
+        typeof latestValidation?.estimatedReimbursement === "number"
+          ? latestValidation.estimatedReimbursement
+          : undefined
+      const estimatedFromSummary =
+        typeof reimbursementSummary?.total === "number"
+          ? reimbursementSummary.total
+          : typeof sessionDataRef.current?.reimbursementSummary?.total === "number"
+            ? sessionDataRef.current.reimbursementSummary?.total
+            : undefined
+      const estimatedReimbursement = estimatedFromSummary ?? estimatedFromValidation ?? 0
+
+      const payerRequirements = new Set<string>()
+      combinedBlockingIssues.forEach((issue) => {
+        const normalized = sanitizeIssueText(issue)
+        if (normalized) {
+          payerRequirements.add(normalized)
+        }
+      })
+      if (latestValidation?.issues) {
+        flattenIssuesObject(latestValidation.issues).forEach((issue) => payerRequirements.add(issue))
+      }
+
+      const billingValidationPayload = {
+        codes_validated: codesValidated,
+        documentation_level_verified: documentationVerified,
+        medical_necessity_confirmed: codesValidated,
+        billing_compliance_checked: complianceVerified,
+        estimated_reimbursement: estimatedReimbursement,
+        payer_specific_requirements: Array.from(payerRequirements),
+      }
+
+      const complianceSource = (() => {
+        const fromSession = sessionDataRef.current?.complianceIssues
+        if (Array.isArray(fromSession) && fromSession.length > 0) {
+          return fromSession as Array<Record<string, unknown>>
+        }
+        if (Array.isArray(latestValidation?.complianceIssues) && latestValidation.complianceIssues.length > 0) {
+          return latestValidation.complianceIssues as Array<Record<string, unknown>>
+        }
+        return []
+      })()
+
+      const complianceChecksPayload = complianceSource.map((issue, index) => {
+        const record = issue ?? {}
+        const type =
+          sanitizeString((record as Record<string, unknown>).check_type) ??
+          sanitizeString((record as Record<string, unknown>).category) ??
+          sanitizeString((record as Record<string, unknown>).type) ??
+          `check_${index + 1}`
+        const status = sanitizeString((record as Record<string, unknown>).status) ?? "pass"
+        const description =
+          sanitizeString((record as Record<string, unknown>).description) ??
+          sanitizeString((record as Record<string, unknown>).title) ??
+          `Compliance check ${index + 1}`
+        const required = toTrimmedStringArray(
+          (record as Record<string, unknown>).required_actions ??
+            (record as Record<string, unknown>).requiredActions ??
+            [],
+        )
+        return {
+          check_type: type,
+          status,
+          description,
+          required_actions: required,
+        }
+      })
+
+      const diagnosisCodes: string[] = []
+      const procedureCodes: string[] = []
+      let evaluationManagement: string | undefined
+      let totalRvu = 0
+
+      selectedWizardCodes.forEach((item) => {
+        const code = sanitizeString(item.code)
+        if (!code) {
+          return
+        }
+        const type = sanitizeString((item as Record<string, unknown>).codeType ?? item.type)
+        const rvuValue =
+          typeof item.rvu === "number"
+            ? item.rvu
+            : typeof item.rvu === "string"
+              ? Number(item.rvu)
+              : undefined
+        if (typeof rvuValue === "number" && Number.isFinite(rvuValue)) {
+          totalRvu += rvuValue
+        }
+        if ((type ?? "").toUpperCase() === "CPT") {
+          if (!procedureCodes.includes(code)) {
+            procedureCodes.push(code)
+          }
+          if (!evaluationManagement && code.startsWith("99")) {
+            evaluationManagement = code
+          }
+        } else if (!diagnosisCodes.includes(code)) {
+          diagnosisCodes.push(code)
+        }
+      })
+
+      const primaryDiagnosis =
+        diagnosisCodes[0] ?? sanitizeString(selectedWizardCodes[0]?.code ?? selectedWizardCodes[0]?.title)
+      const secondaryDiagnoses = diagnosisCodes.slice(1)
+
+      const billingSummaryPayload: Record<string, unknown> = {
+        procedures: procedureCodes,
+        modifier_codes: [],
+        total_rvu: Number.isFinite(totalRvu) ? Number(totalRvu.toFixed(2)) : 0,
+        estimated_payment: estimatedReimbursement,
+      }
+      if (primaryDiagnosis) {
+        billingSummaryPayload.primary_diagnosis = primaryDiagnosis
+      }
+      if (secondaryDiagnoses.length) {
+        billingSummaryPayload.secondary_diagnoses = secondaryDiagnoses
+      }
+      if (evaluationManagement) {
+        billingSummaryPayload.evaluation_management_level = evaluationManagement
+      }
+
+      const attestationPayload: Record<string, unknown> = {
+        physician_attestation: true,
+        attestation_text: statement,
+        attestedBy,
+      }
+      if (ipAddress) {
+        attestationPayload.attestation_ip_address = ipAddress
+      }
+      if (signature) {
+        attestationPayload.digital_signature = signature
+      }
+
+      const requestBody = {
+        encounterId,
+        sessionId: activeSessionId,
+        billing_validation: billingValidationPayload,
+        attestation: attestationPayload,
+        compliance_checks: complianceChecksPayload,
+        billing_summary: billingSummaryPayload,
+      }
+
+      const response = await fetchWithAuth(`/api/v1/workflow/${activeSessionId}/step5/attest`, {
+        method: "POST",
+        jsonBody: requestBody,
+      })
+
+      if (!response.ok) {
+        throw new Error(`Attestation failed (${response.status})`)
+      }
+
+      const data = await response.json().catch(() => ({}))
+      const payload = (data?.session ?? data) as WorkflowSessionResponsePayload
+
+      setSessionData((prev) => {
+        if (!payload || typeof payload !== "object") {
+          return prev
+        }
+
+        const next: WorkflowSessionResponsePayload = { ...(prev ?? {}), ...payload }
+
+        const existingBlocking = Array.isArray(prev?.blockingIssues)
+          ? prev.blockingIssues.map((issue) => sanitizeIssueText(issue)).filter((issue): issue is string => Boolean(issue))
+          : []
+        const incomingBlocking = Array.isArray(payload.blockingIssues)
+          ? payload.blockingIssues.map((issue) => sanitizeIssueText(issue)).filter((issue): issue is string => Boolean(issue))
+          : []
+        const mergedBlocking = new Set<string>([...existingBlocking, ...incomingBlocking])
+        if (mergedBlocking.size) {
+          next.blockingIssues = Array.from(mergedBlocking)
+        }
+
+        const extras: Partial<StoredFinalizationSession> = {}
+        const resolvedPreFinalize = sessionSnapshot?.lastPreFinalize ?? preFinalizeResultRef.current ?? undefined
+        const resolvedFinalize = sessionSnapshot?.lastFinalizeResult ?? lastFinalizeResultRef.current ?? undefined
+        if (resolvedPreFinalize) {
+          extras.lastPreFinalize = resolvedPreFinalize
+        }
+        if (resolvedFinalize) {
+          extras.lastFinalizeResult = resolvedFinalize
+        }
+
+        persistSession(next, extras)
+        return next
+      })
+
+      const attestationResult = payload?.attestation
+      return {
+        attestation: attestationResult ? (attestationResult as Record<string, unknown>) : undefined,
+        reimbursementSummary: payload?.reimbursementSummary,
+      }
+    },
+    [
+      combinedBlockingIssues,
+      encounterId,
+      fetchWithAuth,
+      initialSessionSnapshot?.sessionId,
+      preFinalizeResultRef,
+      reimbursementSummary?.total,
+      selectedWizardCodes,
+      sessionData,
+      sessionDataRef,
+      sessionSnapshot,
+      persistSession,
+    ],
+  )
+
   const handleFinalize = useCallback(
     async (request: FinalizeRequest): Promise<FinalizeResult> => {
       const payload = toFinalizeRequestPayload(request, finalizeRequestSnapshot)
@@ -1736,11 +1980,13 @@ export function FinalizationWizardAdapter({
         reimbursementSummary={reimbursementSummary}
         transcriptEntries={sanitizedTranscripts}
         blockingIssues={combinedBlockingIssues}
+        attestationRecap={attestationRecap}
         stepOverrides={mergedStepOverrides.length ? mergedStepOverrides : undefined}
         initialStep={derivedCurrentStep}
         canFinalize={validationState.canFinalize}
         onFinalize={handleFinalize}
         onFinalizeAndDispatch={handleFinalizeAndDispatch}
+        onSubmitAttestation={submitAttestation}
         onStepChange={handleWizardStepChange}
         onClose={handleClose}
       />
