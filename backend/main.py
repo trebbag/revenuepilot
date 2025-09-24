@@ -12668,9 +12668,9 @@ async def suggest(
                 req.lang,
                 req.specialty,
                 req.payer,
-                prompt_context.age,
-                prompt_context.sex,
-                prompt_context.region,
+                req.age,
+                req.sex,
+                req.region,
             )
             response_content = call_openai(messages)
             data = json.loads(response_content)
