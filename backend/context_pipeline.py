@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 from backend.db import models as db_models
 from backend.clinical_parsing import ClinicalFactExtractor
 from backend.embedding import HashingVectorizerEmbedding
+from backend.encryption import decrypt_artifact
+from backend.security import hash_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +172,14 @@ class ChartContextPipeline:
                 continue
             path = (upload_dir / record.name).resolve()
             try:
-                data = path.read_bytes()
-            except OSError:
+                encrypted = path.read_bytes()
+                data = decrypt_artifact(encrypted)
+            except (OSError, ValueError) as exc:
                 logger.warning(
                     "context_pipeline.missing_document",
                     doc_id=record.doc_id,
                     path=str(path),
+                    error=str(exc),
                 )
                 continue
             text = _decode_text(data)
@@ -690,7 +694,7 @@ class ChartContextPipeline:
         logger.info(
             "context_pipeline.deep.metrics",
             correlation_id=correlation_id,
-            patient_id=patient_id,
+            patient_hash=hash_identifier(patient_id),
             metrics=metrics,
         )
         await self._event_manager.broadcast(
@@ -813,7 +817,7 @@ class ChartContextPipeline:
         logger.info(
             "context_pipeline.index.metrics",
             correlation_id=correlation_id,
-            patient_id=patient_id,
+            patient_hash=hash_identifier(patient_id),
             reindexed_docs=len(reindex_docs),
             chunk_count=len(chunks),
         )

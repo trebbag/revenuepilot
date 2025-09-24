@@ -19,7 +19,7 @@ import os
 import time
 from typing import Dict, List, Optional, Tuple
 
-import requests
+from backend.egress import secure_get
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -55,8 +55,7 @@ def _now() -> float:
 def _download_json(url: str) -> Dict:
     """Best‑effort JSON downloader returning an empty dict on error."""
 
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
+    resp = secure_get(url)
     try:
         return resp.json()
     except Exception:

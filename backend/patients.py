@@ -19,7 +19,7 @@ from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urljoin
 
-import requests
+from backend.egress import secure_get
 
 from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.orm import Session
@@ -202,7 +202,7 @@ def _fetch_remote_patient(patient_id: str) -> Optional[Dict[str, Any]]:
         return None
     endpoint = EHR_PATIENT_DETAIL_ENDPOINT.format(patientId=patient_id, mrn=patient_id)
     try:
-        resp = requests.get(
+        resp = secure_get(
             _build_ehr_url(endpoint),
             headers=_ehr_headers(),
             timeout=EHR_PATIENT_TIMEOUT,
@@ -225,7 +225,7 @@ def _fetch_remote_patients(
     if not EHR_PATIENT_API_URL or not query:
         return [], None
     try:
-        resp = requests.get(
+        resp = secure_get(
             _build_ehr_url(EHR_PATIENT_SEARCH_ENDPOINT),
             params={"q": query, "limit": limit, "offset": offset},
             headers=_ehr_headers(),
@@ -375,11 +375,7 @@ def search_patients(
         stmt = stmt.where(condition)
         count_stmt = count_stmt.where(condition)
 
-    stmt = stmt.order_by(
-        sa_models.patients.c.first_name.collate("NOCASE"),
-        sa_models.patients.c.last_name.collate("NOCASE"),
-        sa_models.patients.c.id,
-    ).limit(limit).offset(offset)
+    stmt = stmt.order_by(sa_models.patients.c.id).limit(limit).offset(offset)
 
     total = int(session.execute(count_stmt).scalar_one())
     rows = session.execute(stmt).mappings().all()

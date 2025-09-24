@@ -134,6 +134,8 @@ if parent_dir not in sys.path:
 from backend import prompts as prompt_utils  # type: ignore
 from backend.prompts import build_beautify_prompt, build_suggest_prompt, build_summary_prompt  # type: ignore
 from backend.openai_client import call_openai  # type: ignore
+from backend.encryption import encrypt_artifact
+from backend.security import PromptPrivacyGuard, hash_identifier, redact_value
 from backend.key_manager import (
     APP_NAME,
     SecretError,
@@ -340,6 +342,7 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+PROMPT_GUARD = PromptPrivacyGuard()
 
 
 _TRACE_ID_CTX: ContextVar[str | None] = ContextVar("trace_id", default=None)
@@ -502,6 +505,12 @@ AI_GATE_EDITS_PER_ALLOWED_RUN = _get_or_create_metric(
     "revenuepilot_ai_gate_edits_per_allowed_run",
     "Average edited characters per allowed AI gating run",
     ("route", "clinician_id", "note_id"),
+)
+SECRET_ROTATION_AGE = _get_or_create_metric(
+    Gauge,
+    "revenuepilot_secret_rotation_age_days",
+    "Age in days of managed secrets",
+    ("secret",),
 )
 
 try:
@@ -5074,9 +5083,33 @@ async def put_security_config(
     return config
 
 
+def _refresh_secret_metrics() -> None:
+    now = datetime.now(timezone.utc)
+    for record in list_key_metadata():
+        service = record.get("service") or record.get("name")
+        if not service:
+            continue
+        rotated = record.get("rotatedAt")
+        age_days = float("nan")
+        if rotated:
+            try:
+                value = rotated.strip()
+                if value.endswith("Z"):
+                    value = value[:-1] + "+00:00"
+                parsed = datetime.fromisoformat(value)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age_days = (now - parsed.astimezone(timezone.utc)).total_seconds() / 86400
+            except Exception:
+                age_days = float("nan")
+        SECRET_ROTATION_AGE.labels(secret=str(service)).set(age_days)
+
+
 @app.get("/api/keys")
 async def get_keys_endpoint(user=Depends(require_role("admin"))):
-    return {"keys": list_key_metadata()}
+    keys = list_key_metadata()
+    _refresh_secret_metrics()
+    return {"keys": keys}
 
 
 @app.post("/api/keys")
@@ -5099,6 +5132,7 @@ async def post_keys_endpoint(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
         ) from exc
+    _refresh_secret_metrics()
     return {"status": "saved"}
 
 
@@ -8969,6 +9003,10 @@ async def log_event(
         except (TypeError, ValueError):
             pass
 
+    data["details"] = redact_value(data["details"])
+    if isinstance(data["details"], Mapping):
+        data["details"] = dict(data["details"])
+
     events.append(data)
     # Persist the event to the SQLite database.  Serialize the details
     # dictionary as JSON for storage.  Use a simple INSERT statement
@@ -9287,7 +9325,11 @@ def _load_patient_details(session: Session, patient_id: str) -> Optional[Dict[st
     try:
         return patients.get_patient(session, patient_id, include_encounters=False)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("draft_patient_lookup_failed", patient_id=patient_id, error=str(exc))
+        logger.warning(
+            "draft_patient_lookup_failed",
+            patient_hash=hash_identifier(patient_id),
+            error=str(exc),
+        )
         return None
 
 
@@ -11498,12 +11540,8 @@ async def summarize(
     Returns:
         A dictionary containing "summary", "patient_friendly", "recommendations", "warnings".
     """
-    combined = req.text or ""
-    if req.chart:
-        combined += "\n\n" + str(req.chart)
-    if req.audio:
-        combined += "\n\n" + str(req.audio)
-    cleaned = deidentify(combined)
+    prompt_context = PROMPT_GUARD.prepare("summary", req)
+    cleaned = prompt_context.text or ""
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
         # check user stored preference (table may not exist in some test fixtures)
@@ -11522,7 +11560,7 @@ async def summarize(
             req.lang,
             req.specialty,
             req.payer,
-            req.age,
+            prompt_context.age,
             use_local=req.useLocalModels,
             model_path=req.summarizeModel,
         )
@@ -11532,7 +11570,11 @@ async def summarize(
     else:
         try:
             messages = build_summary_prompt(
-                cleaned, req.lang, req.specialty, req.payer, req.age
+                cleaned,
+                req.lang,
+                req.specialty,
+                req.payer,
+                prompt_context.age,
             )
             response_content = call_openai(messages)
             data = json.loads(response_content)
@@ -11686,7 +11728,8 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
     Returns:
         A dictionary with the beautified note as a string.
     """
-    cleaned = deidentify(req.text)
+    prompt_context = PROMPT_GUARD.prepare("beautify", req)
+    cleaned = prompt_context.text or ""
     offline_active = req.useOfflineMode if req.useOfflineMode is not None else False
     if not offline_active:
         # check user stored preference (table may not exist in some test fixtures)
@@ -11758,18 +11801,11 @@ async def suggest(
         SuggestionsResponse with four categories of suggestions.
     """
     # Combine the main note with any optional chart text or audio transcript
-    combined = req.text or ""
-    if req.chart:
-        combined += "\n\n" + str(req.chart)
-    if req.audio:
-        combined += "\n\n" + str(req.audio)
-    # Apply de-identification to the combined text
-    cleaned = deidentify(combined)
-    # If the client provided custom rules, append them as a guidance section
-    if req.rules:
-        # Join rules into a bulleted list
+    prompt_context = PROMPT_GUARD.prepare("suggest", req)
+    cleaned = prompt_context.text or ""
+    if prompt_context.rules:
         rules_section = "\n\nUser‑defined rules:\n" + "\n".join(
-            f"- {r}" for r in req.rules
+            f"- {r}" for r in prompt_context.rules
         )
         cleaned_for_prompt = cleaned + rules_section
     else:
@@ -11791,9 +11827,9 @@ async def suggest(
             req.lang,
             req.specialty,
             req.payer,
-            req.age,
-            req.sex,
-            req.region,
+            prompt_context.age,
+            prompt_context.sex,
+            prompt_context.region,
             use_local=req.useLocalModels,
             model_path=req.suggestModel,
         )
@@ -11859,9 +11895,9 @@ async def suggest(
             req.lang,
             req.specialty,
             req.payer,
-            req.age,
-            req.sex,
-            req.region,
+            prompt_context.age,
+            prompt_context.sex,
+            prompt_context.region,
         )
         response_content = call_openai(messages)
         # The model should return raw JSON.  Parse it into a Python dict.
@@ -14525,7 +14561,7 @@ async def _process_inline_chart_upload(
         ) from None
 
     try:
-        destination.write_bytes(contents)
+        destination.write_bytes(encrypt_artifact(contents))
     except OSError as exc:  # pragma: no cover - filesystem specific
         logger.error(
             "chart_upload.write_failed",
@@ -14556,7 +14592,7 @@ async def _process_inline_chart_upload(
         sanitized_filename=sanitized_name,
         size=len(contents),
         correlation_id=correlation_id,
-        patient_id=patient_identifier,
+        patient_hash=hash_identifier(patient_identifier),
     )
 
     correlation = result.get("correlation_id") if isinstance(result, Mapping) else None
@@ -15961,7 +15997,7 @@ async def upload_chart(
         ) from None
 
     try:
-        destination.write_bytes(contents)
+        destination.write_bytes(encrypt_artifact(contents))
     except OSError as exc:  # pragma: no cover - dependent on filesystem state
         logger.error(
             "chart_upload.write_failed",
@@ -15986,7 +16022,7 @@ async def upload_chart(
         sanitized_filename=sanitized_name,
         size=len(contents),
         correlation_id=correlation_id,
-        patient_id=normalized_patient,
+        patient_hash=hash_identifier(normalized_patient),
     )
     return result
 

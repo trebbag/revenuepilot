@@ -30,6 +30,7 @@ from backend.db.models import (
     AIJsonSnapshot,
     AINoteState,
 )
+from backend.encryption import decrypt_ai_payload, encrypt_ai_payload
 from backend.migrations import session_scope
 
 
@@ -939,11 +940,12 @@ class AIGatingService:
             return None
 
         snapshot = session.get(AIJsonSnapshot, json_hash)
+        encrypted_payload = encrypt_ai_payload(normalized)
         if snapshot is None:
-            snapshot = AIJsonSnapshot(hash=json_hash, payload=normalized)
+            snapshot = AIJsonSnapshot(hash=json_hash, payload=encrypted_payload)
             session.add(snapshot)
         else:
-            snapshot.payload = normalized
+            snapshot.payload = encrypted_payload
             session.add(snapshot)
         return json_hash
 
@@ -959,14 +961,29 @@ class AIGatingService:
             return None
         payload = snapshot.payload
         if isinstance(payload, MappingABC):
+            if "ciphertext" in payload:
+                try:
+                    decrypted = decrypt_ai_payload(payload)
+                    return _normalize_json_payload(decrypted)
+                except (ValueError, TypeError):
+                    logger.info(
+                        "ai_gate_json_decrypt_failed",
+                        hash=json_hash,
+                        exc_info=True,
+                    )
+                    return None
             try:
-                return _normalize_json_payload(payload)
+                normalized = _normalize_json_payload(payload)
             except (TypeError, ValueError):
                 logger.info(
                     "ai_gate_json_normalize_failed",
                     hash=json_hash,
                     exc_info=True,
                 )
+                return None
+            snapshot.payload = encrypt_ai_payload(normalized)
+            session.add(snapshot)
+            return normalized
         return None
 
 

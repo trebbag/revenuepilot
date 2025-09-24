@@ -66,6 +66,14 @@ models_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(models_module)  # type: ignore[union-attr]
 sys.modules['backend.db.models'] = models_module
 db_module.models = models_module
+config_path = Path(ROOT) / 'backend' / 'db' / 'config.py'
+config_spec = importlib.util.spec_from_file_location('backend.db.config', config_path)
+if config_spec and config_spec.loader:
+    config_module = importlib.util.module_from_spec(config_spec)
+    sys.modules['backend.db.config'] = config_module
+    config_spec.loader.exec_module(config_module)  # type: ignore[union-attr]
+    db_module.config = config_module
+    db_module.get_database_settings = config_module.get_database_settings
 sys.modules['backend.db'] = db_module
 
 

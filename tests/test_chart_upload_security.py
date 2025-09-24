@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
+from pathlib import Path
+
 import pytest
 
 import backend.db.models as db_models
@@ -11,6 +13,7 @@ if "backend.scheduling" in sys.modules:
     setattr(sys.modules["backend.scheduling"], "configure_database", lambda *args, **kwargs: None)
 
 from backend import charts, main
+from backend.encryption import decrypt_artifact
 
 
 def _auth_header(token: str) -> dict[str, str]:
@@ -53,7 +56,9 @@ def test_chart_upload_confines_to_directory(tmp_path: Path, authed_client, monke
 
     stored = tmp_path / payload["files"][0]["name"]
     assert stored.exists()
-    assert stored.read_bytes() == b"payload"
+    ciphertext = stored.read_bytes()
+    assert ciphertext != b"payload"
+    assert decrypt_artifact(ciphertext) == b"payload"
 
 
 def test_chart_upload_rejects_escape_attempt(tmp_path: Path, authed_client, monkeypatch):
@@ -87,4 +92,6 @@ def test_process_chart_persists_with_sanitized_name(tmp_path: Path, monkeypatch)
     assert result is not None
     stored = tmp_path / sanitized_name
     assert stored.exists()
-    assert stored.read_bytes() == b"payload"
+    ciphertext = stored.read_bytes()
+    assert ciphertext != b"payload"
+    assert decrypt_artifact(ciphertext) == b"payload"
