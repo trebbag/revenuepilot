@@ -381,6 +381,56 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Observability: counters and gauges for realtime audio endpoints
+# ---------------------------------------------------------------------------
+TRANSCRIBE_WS_CONNECTIONS_TOTAL = Counter(
+    "transcribe_ws_connections_total",
+    "Total number of accepted transcription websocket connections.",
+)
+TRANSCRIBE_WS_ACTIVE = Gauge(
+    "transcribe_ws_connections_active",
+    "Current number of active transcription websocket connections.",
+)
+TRANSCRIBE_WS_DISCONNECTS_TOTAL = Counter(
+    "transcribe_ws_disconnects_total",
+    "Total number of transcription websocket disconnects by reason.",
+    labelnames=("reason",),
+)
+TRANSCRIBE_WS_INTERIM_LATENCY = Histogram(
+    "transcribe_ws_interim_latency_seconds",
+    "Latency between receiving audio bytes and emitting interim transcripts.",
+    buckets=(
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        5.0,
+        float("inf"),
+    ),
+)
+TRANSCRIBE_WS_FINAL_LATENCY = Histogram(
+    "transcribe_ws_final_latency_seconds",
+    "Latency between a stop command and the final transcript emission.",
+    buckets=(
+        0.05,
+        0.1,
+        0.25,
+        0.5,
+        1.0,
+        2.0,
+        5.0,
+        float("inf"),
+    ),
+)
+TRANSCRIBE_WS_INTERIM_DROPPED_TOTAL = Counter(
+    "transcribe_ws_interim_dropped_total",
+    "Number of interim transcription events dropped due to backpressure.",
+)
 PROMPT_GUARD = PromptPrivacyGuard()
 
 
@@ -12710,6 +12760,9 @@ async def transcribe_stream(websocket: WebSocket):
     await ws_require_role(websocket, "user")
     await websocket.accept()
 
+    TRANSCRIBE_WS_CONNECTIONS_TOTAL.inc()
+    TRANSCRIBE_WS_ACTIVE.inc()
+
     session_id = f"ws-{uuid4().hex}"
     await websocket.send_json({"event": "connected", "sessionId": session_id})
 
@@ -12717,6 +12770,13 @@ async def transcribe_stream(websocket: WebSocket):
     last_transcript = ""
     event_index = 0
     max_buffer = 512 * 1024  # Keep a rolling window of ~512 KB
+    max_chunk_size = 512 * 1024  # Reject unusually large audio frames
+    max_session_bytes = 12 * 1024 * 1024  # Rough twelve megabyte limit per session
+    total_received = 0
+    interim_min_interval = 0.25
+    next_interim_allowed = 0.0
+    pending_interim: Optional[Dict[str, Any]] = None
+    disconnect_reason = "client_disconnect"
 
     def _confidence_from_error(error_message: str) -> float:
         return 0.9 if not error_message else 0.5
@@ -12731,8 +12791,37 @@ async def transcribe_stream(websocket: WebSocket):
             return "patient"
         return "unknown"
 
+    async def _send_interim(transcript: str, confidence: float, received_at: float) -> None:
+        nonlocal event_index, next_interim_allowed
+        event_index += 1
+        now = time.perf_counter()
+        TRANSCRIBE_WS_INTERIM_LATENCY.observe(max(0.0, now - received_at))
+        await websocket.send_json(
+            {
+                "eventId": f"{session_id}-{event_index}",
+                "isInterim": True,
+                "transcript": transcript,
+                "timestamp": time.time(),
+                "confidence": confidence,
+                "speakerLabel": "unknown",
+            }
+        )
+        next_interim_allowed = now + interim_min_interval
+
+    async def _flush_pending(force: bool = False) -> None:
+        nonlocal pending_interim
+        if not pending_interim:
+            return
+        now = time.perf_counter()
+        if not force and now < next_interim_allowed:
+            return
+        payload = pending_interim
+        pending_interim = None
+        await _send_interim(payload["transcript"], payload["confidence"], payload["received_at"])
+
     try:
         while True:
+            await _flush_pending()
             message = await websocket.receive()
             message_type = message.get("type")
 
@@ -12743,11 +12832,35 @@ async def transcribe_stream(websocket: WebSocket):
                 chunk = message["bytes"]
                 if not chunk:
                     continue
+                chunk_size = len(chunk)
+                if chunk_size > max_chunk_size:
+                    disconnect_reason = "payload_too_large"
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "code": "payload_too_large",
+                            "message": "Audio chunk exceeded maximum allowed size. Stream closed.",
+                        }
+                    )
+                    await websocket.close(code=1009)
+                    break
+                total_received += chunk_size
+                if total_received > max_session_bytes:
+                    disconnect_reason = "session_limit"
+                    await websocket.send_json(
+                        {
+                            "event": "error",
+                            "code": "session_audio_limit",
+                            "message": "Session audio limit exceeded. Please restart recording.",
+                        }
+                    )
+                    await websocket.close(code=1009)
+                    break
                 buffer.extend(chunk)
                 if len(buffer) > max_buffer:
-                    # Only keep the most recent portion of the stream to limit memory usage
                     del buffer[:-max_buffer]
 
+                received_at = time.perf_counter()
                 transcript, error = _transcribe_bytes(bytes(buffer))
                 last_transcript = transcript
 
@@ -12758,17 +12871,16 @@ async def transcribe_stream(websocket: WebSocket):
                         event_index=event_index,
                     )
 
-                event_index += 1
-                await websocket.send_json(
-                    {
-                        "eventId": f"{session_id}-{event_index}",
-                        "isInterim": True,
+                now = time.perf_counter()
+                if now >= next_interim_allowed:
+                    await _send_interim(transcript, _confidence_from_error(error), received_at)
+                else:
+                    pending_interim = {
                         "transcript": transcript,
-                        "timestamp": time.time(),
                         "confidence": _confidence_from_error(error),
-                        "speakerLabel": "unknown",
+                        "received_at": received_at,
                     }
-                )
+                    TRANSCRIBE_WS_INTERIM_DROPPED_TOTAL.inc()
                 continue
 
             if message.get("text") is not None:
@@ -12785,9 +12897,14 @@ async def transcribe_stream(websocket: WebSocket):
                 if event == "start":
                     buffer.clear()
                     last_transcript = ""
+                    total_received = 0
+                    pending_interim = None
+                    next_interim_allowed = 0.0
                     continue
 
                 if event == "stop":
+                    await _flush_pending(force=True)
+                    stop_received_at = time.perf_counter()
                     audio_snapshot = bytes(buffer)
                     transcript, error = _transcribe_bytes(audio_snapshot) if buffer else (last_transcript, "")
                     final_text = transcript or last_transcript
@@ -12801,19 +12918,27 @@ async def transcribe_stream(websocket: WebSocket):
                     diarized_segments: list[Dict[str, Any]] = []
                     diar_error = ""
                     if audio_snapshot:
-                        segments, diar_error = diarize_segments(audio_snapshot)
-                        diarized_segments = segments
-                        if diar_error:
+                        try:
+                            diarized_segments, diar_error = diarize_segments(audio_snapshot)
+                        except Exception as exc:  # pragma: no cover
+                            diar_error = str(exc)
                             logger.debug(
-                                "transcription diarisation warning",
-                                error=diar_error,
+                                "transcription diarization failed",
+                                error=str(exc),
                                 event_index=event_index,
                             )
 
+                    if diar_error:
+                        logger.debug(
+                            "transcription diarization warning",
+                            error=diar_error,
+                            event_index=event_index,
+                        )
+
                     if diarized_segments:
-                        timestamp = time.time()
                         for seg in diarized_segments:
                             event_index += 1
+                            timestamp = time.time()
                             seg_text = (seg.get("text") or "").strip()
                             await websocket.send_json(
                                 {
@@ -12842,11 +12967,21 @@ async def transcribe_stream(websocket: WebSocket):
                                 "segment": {"start": 0.0, "end": 0.0},
                             }
                         )
+                    TRANSCRIBE_WS_FINAL_LATENCY.observe(max(0.0, time.perf_counter() - stop_received_at))
                     buffer.clear()
                     last_transcript = ""
+                    pending_interim = None
+                    total_received = 0
                     continue
     except WebSocketDisconnect:
-        pass
+        disconnect_reason = "client_disconnect"
+    except Exception:
+        disconnect_reason = "error"
+        raise
+    finally:
+        TRANSCRIBE_WS_ACTIVE.dec()
+        TRANSCRIBE_WS_DISCONNECTS_TOTAL.labels(reason=disconnect_reason).inc()
+
 
 
 # Endpoint: set the OpenAI API key.  Accepts a JSON body with a single

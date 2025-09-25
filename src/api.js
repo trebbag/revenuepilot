@@ -2455,6 +2455,53 @@ function connectWebsocketStream(path, {
   };
 }
 
+function resolveLegacyStreamPreference() {
+  try {
+    const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : undefined;
+    const explicitEnable =
+      (metaEnv && metaEnv.VITE_ENABLE_LEGACY_STREAMS) ||
+      (typeof process !== 'undefined' && process.env && process.env.ENABLE_LEGACY_STREAMS);
+    if (explicitEnable != null) {
+      const value = String(explicitEnable).toLowerCase();
+      if (value === '1' || value === 'true' || value === 'yes') return true;
+      if (value === '0' || value === 'false' || value === 'no') return false;
+    }
+    const explicitDisable =
+      (metaEnv && metaEnv.VITE_DISABLE_LEGACY_STREAMS) ||
+      (typeof process !== 'undefined' && process.env && process.env.DISABLE_LEGACY_STREAMS);
+    if (explicitDisable != null) {
+      const value = String(explicitDisable).toLowerCase();
+      if (value === '1' || value === 'true' || value === 'yes') return false;
+      if (value === '0' || value === 'false' || value === 'no') return true;
+    }
+    const dev = metaEnv?.DEV ?? (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
+    return !dev;
+  } catch {
+    return false;
+  }
+}
+
+const LEGACY_STREAMS_ENABLED = resolveLegacyStreamPreference();
+
+function createLegacyStreamShim(name, options = {}) {
+  const { onError } = options;
+  const message =
+    `Legacy ${name} stream is disabled in this build. Please use the TypeScript workspace for live streaming.`;
+  if (typeof console !== 'undefined' && console.info) {
+    console.info(message);
+  }
+  if (typeof onError === 'function') {
+    setTimeout(() => {
+      try {
+        onError(new Error(message));
+      } catch {
+        /* ignore */
+      }
+    }, 0);
+  }
+  return { close() {} };
+}
+
 export function connectNotificationsStream(options = {}) {
   const { onCount, onEvent: userOnEvent, ...rest } = options;
   const emitCount = (data) => {
@@ -2490,6 +2537,9 @@ export function connectTranscriptionStream({
   params,
   ...rest
 } = {}) {
+  if (!LEGACY_STREAMS_ENABLED) {
+    return createLegacyStreamShim('transcription', rest);
+  }
   const staticParams = mergeParams(
     { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
     params,
@@ -2507,6 +2557,9 @@ export function connectComplianceStream({
   params,
   ...rest
 } = {}) {
+  if (!LEGACY_STREAMS_ENABLED) {
+    return createLegacyStreamShim('compliance', rest);
+  }
   const staticParams = mergeParams(
     { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
     params,
@@ -2524,6 +2577,9 @@ export function connectCodesStream({
   params,
   ...rest
 } = {}) {
+  if (!LEGACY_STREAMS_ENABLED) {
+    return createLegacyStreamShim('codes', rest);
+  }
   const staticParams = mergeParams(
     { visit_session_id: visitSessionId, encounter_id: encounterId, patient_id: patientId },
     params,
@@ -2542,6 +2598,9 @@ export function connectCollaborationStream({
   params,
   ...rest
 } = {}) {
+  if (!LEGACY_STREAMS_ENABLED) {
+    return createLegacyStreamShim('collaboration', rest);
+  }
   const staticParams = mergeParams(
     {
       visit_session_id: visitSessionId,
@@ -2624,6 +2683,27 @@ export async function updateVisitSession({ sessionId, action }) {
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error('Failed to update visit session');
   return data;
+}
+
+export async function getVisitSession({ encounterId, sessionId } = {}) {
+  const encounter =
+    encounterId != null && encounterId !== '' ? String(encounterId).trim() : '';
+  const session = sessionId != null && sessionId !== '' ? String(sessionId).trim() : '';
+  if (!encounter && !session) {
+    throw new Error('encounterId or sessionId is required to fetch visit session');
+  }
+  const baseUrl = resolveBaseUrl();
+  const token =
+    typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const params = new URLSearchParams();
+  if (session) params.set('session_id', session);
+  else params.set('encounter_id', encounter);
+  const resp = await rawFetch(`${baseUrl}/api/visits/session?${params.toString()}`, {
+    headers,
+  });
+  if (!resp.ok) throw new Error('Failed to fetch visit session');
+  return await resp.json();
 }
 
 export function getBackendBaseUrl() {
