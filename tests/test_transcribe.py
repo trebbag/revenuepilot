@@ -70,6 +70,7 @@ def test_transcribe_stream_interim_and_final():
         interim = ws.receive_json()
         assert interim["isInterim"] is True
         assert interim["speakerLabel"] == "unknown"
+        assert "confidence" in interim
         assert "hello world" in interim["transcript"]
         assert interim["eventId"].startswith(handshake["sessionId"])
 
@@ -77,5 +78,42 @@ def test_transcribe_stream_interim_and_final():
         final = ws.receive_json()
         assert final["isInterim"] is False
         assert final["speakerLabel"] == "unknown"
+        assert final["segment"] == {"start": 0.0, "end": 0.0}
+        assert "confidence" in final
         assert final["transcript"] == interim["transcript"]
         assert final["eventId"] != interim["eventId"]
+
+
+def test_transcribe_stream_with_diarization(monkeypatch):
+    client = TestClient(main.app)
+    token = main.create_token("alice", "user")
+
+    diarized = [
+        {"speaker": "provider", "start": 0.0, "end": 1.0, "text": "hello"},
+        {"speaker": "patient", "start": 1.0, "end": 2.0, "text": "world"},
+    ]
+
+    def fake_diarize_segments(data):
+        assert data
+        return diarized, ""
+
+    monkeypatch.setattr(main, "diarize_segments", fake_diarize_segments)
+
+    with client.websocket_connect(
+        "/api/transcribe/stream", headers=auth_header(token)
+    ) as ws:
+        ws.receive_json()
+        ws.send_json({"event": "start"})
+        ws.send_bytes(b"hello world")
+        ws.receive_json()  # interim
+        ws.send_json({"event": "stop"})
+
+        final_one = ws.receive_json()
+        final_two = ws.receive_json()
+
+        assert final_one["speakerLabel"] == "clinician"
+        assert final_one["segment"] == {"start": 0.0, "end": 1.0}
+        assert final_one["transcript"] == "hello"
+        assert final_two["speakerLabel"] == "patient"
+        assert final_two["segment"] == {"start": 1.0, "end": 2.0}
+        assert final_two["transcript"] == "world"

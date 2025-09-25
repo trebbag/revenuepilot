@@ -25,7 +25,7 @@ from backend.key_manager import get_api_key
 
 # Public functions exported by this module.  Keeping this explicit makes the
 # intent clear for tools and readers alike.
-__all__ = ["diarize_and_transcribe", "simple_transcribe"]
+__all__ = ["diarize_and_transcribe", "diarize_segments", "simple_transcribe"]
 
 try:  # pragma: no cover - optional heavy dependency
     from pyannote.audio import Pipeline, Audio
@@ -178,6 +178,75 @@ def _transcribe_bytes(data: bytes, language: str | None = None) -> Tuple[str, st
     return f"[transcribed {len(data)} bytes]", error_msg or "transcription failed"
 
 
+def _diarize_segments_internal(
+    audio_bytes: bytes, language: str | None = None
+) -> Tuple[list[Dict[str, Any]], str]:
+    """Return diarised segments for ``audio_bytes`` when available."""
+
+    if not audio_bytes:
+        return [], ""
+
+    if not _DIARISATION_AVAILABLE:
+        return [], "diarisation unavailable"
+
+    try:  # pragma: no cover - relies on optional heavy dependency
+        with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
+            tmp.write(audio_bytes)
+            tmp.flush()
+            pipeline = _get_diarization_pipeline()
+            diarization = pipeline(tmp.name)
+            audio = Audio()
+            speaker_text: Dict[str, str] = {}
+            raw_segments = []
+            for turn, _, speaker in diarization.itertracks(yield_label=True):
+                waveform, sr = audio.crop(tmp.name, turn)
+                waveform = _reduce_noise(waveform, sr)
+                buf = io.BytesIO()
+                torchaudio.save(buf, waveform, sr, format="wav")
+                buf.seek(0)
+                text = simple_transcribe(buf.read(), language=language)
+                raw_segments.append(
+                    {
+                        "speaker": speaker,
+                        "start": float(getattr(turn, "start", 0.0)),
+                        "end": float(getattr(turn, "end", 0.0)),
+                        "text": text,
+                    }
+                )
+                if text:
+                    speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
+
+        speakers = sorted(speaker_text.keys())
+        provider_key = speakers[0] if speakers else None
+        patient_key = speakers[1] if len(speakers) > 1 else None
+        mapped_segments = []
+        for seg in raw_segments:
+            if seg["speaker"] == provider_key:
+                role = "provider"
+            elif seg["speaker"] == patient_key:
+                role = "patient"
+            else:
+                role = seg["speaker"] or "unknown"
+            mapped_segments.append(
+                {
+                    "speaker": role,
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "text": seg["text"],
+                }
+            )
+        return mapped_segments, ""
+    except Exception as exc:  # pragma: no cover - defensive
+        logging.exception("Diarisation pipeline failed")
+        return [], f"diarisation failed: {exc}"
+
+
+def diarize_segments(audio_bytes: bytes, language: str | None = None) -> Tuple[list[Dict[str, Any]], str]:
+    """Public helper to obtain diarised segments for the given audio."""
+
+    return _diarize_segments_internal(audio_bytes, language)
+
+
 def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> Dict[str, object]:
     """Transcribe audio and attempt speaker diarisation.
 
@@ -193,68 +262,18 @@ def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> D
     if not audio_bytes:
         return {"provider": "", "patient": "", "segments": []}
 
-    error_msg = ""
-    if _DIARISATION_AVAILABLE:
-        try:
-            # Write bytes to a temporary file so pyannote can process it
-            with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
-                tmp.write(audio_bytes)
-                tmp.flush()
-                pipeline = _get_diarization_pipeline()
-                diarization = pipeline(tmp.name)
-                audio = Audio()
-                speaker_text: Dict[str, str] = {}
-                raw_segments = []
-                for turn, _, speaker in diarization.itertracks(yield_label=True):
-                    waveform, sr = audio.crop(tmp.name, turn)
-                    waveform = _reduce_noise(waveform, sr)
-                    buf = io.BytesIO()
-                    torchaudio.save(buf, waveform, sr, format="wav")
-                    buf.seek(0)
-                    text = simple_transcribe(buf.read(), language=language)
-                    raw_segments.append(
-                        {
-                            "speaker": speaker,
-                            "start": float(getattr(turn, "start", 0.0)),
-                            "end": float(getattr(turn, "end", 0.0)),
-                            "text": text,
-                        }
-                    )
-                    if text:
-                        speaker_text[speaker] = speaker_text.get(speaker, "") + " " + text
-                # Map first two speakers to provider/patient roles
-                speakers = sorted(speaker_text.keys())
-                provider_key = speakers[0] if speakers else None
-                patient_key = speakers[1] if len(speakers) > 1 else None
-                provider = speaker_text.get(provider_key, "").strip() if provider_key else ""
-                patient = speaker_text.get(patient_key, "").strip() if patient_key else ""
-                mapped_segments = []
-                for seg in raw_segments:
-                    if seg["speaker"] == provider_key:
-                        role = "provider"
-                    elif seg["speaker"] == patient_key:
-                        role = "patient"
-                    else:
-                        role = seg["speaker"]
-                    mapped_segments.append(
-                        {
-                            "speaker": role,
-                            "start": seg["start"],
-                            "end": seg["end"],
-                            "text": seg["text"],
-                        }
-                    )
-                if provider or patient:
-                    return {
-                        "provider": provider,
-                        "patient": patient,
-                        "segments": mapped_segments,
-                    }
-        except Exception as exc:
-            # Any failure falls through to simple transcription below
-            error_msg = f"diarisation failed: {exc}"
-    else:
-        error_msg = "diarisation unavailable"
+    segments, diar_error = _diarize_segments_internal(audio_bytes, language)
+    if segments:
+        provider = " ".join(seg["text"] for seg in segments if seg["speaker"] == "provider").strip()
+        patient = " ".join(seg["text"] for seg in segments if seg["speaker"] == "patient").strip()
+        result: Dict[str, object] = {
+            "provider": provider,
+            "patient": patient,
+            "segments": segments,
+        }
+        if diar_error:
+            result["error"] = diar_error
+        return result
 
     # Fallback: single-speaker transcription
     text, trans_err = _transcribe_bytes(audio_bytes, language=language)
@@ -267,7 +286,7 @@ def diarize_and_transcribe(audio_bytes: bytes, language: str | None = None) -> D
         "patient": "",
         "segments": [{"speaker": "provider", "start": 0.0, "end": 0.0, "text": text}],
     }
-    combined_err = ", ".join(filter(None, [error_msg, trans_err]))
+    combined_err = ", ".join(filter(None, [diar_error, trans_err]))
     if combined_err:
         result["error"] = combined_err
     return result

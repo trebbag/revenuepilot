@@ -184,6 +184,7 @@ from backend.db.models import (
 from backend.audio_processing import (  # type: ignore
     simple_transcribe,
     diarize_and_transcribe,
+    diarize_segments,
     _transcribe_bytes,
 )
 from backend import public_health as public_health_api  # type: ignore
@@ -12717,6 +12718,19 @@ async def transcribe_stream(websocket: WebSocket):
     event_index = 0
     max_buffer = 512 * 1024  # Keep a rolling window of ~512 KB
 
+    def _confidence_from_error(error_message: str) -> float:
+        return 0.9 if not error_message else 0.5
+
+    def _map_speaker_label(raw: Optional[str]) -> str:
+        if not raw:
+            return "unknown"
+        lowered = raw.strip().lower()
+        if lowered in {"provider", "clinician", "doctor"}:
+            return "clinician"
+        if lowered == "patient":
+            return "patient"
+        return "unknown"
+
     try:
         while True:
             message = await websocket.receive()
@@ -12751,6 +12765,7 @@ async def transcribe_stream(websocket: WebSocket):
                         "isInterim": True,
                         "transcript": transcript,
                         "timestamp": time.time(),
+                        "confidence": _confidence_from_error(error),
                         "speakerLabel": "unknown",
                     }
                 )
@@ -12773,7 +12788,8 @@ async def transcribe_stream(websocket: WebSocket):
                     continue
 
                 if event == "stop":
-                    transcript, error = _transcribe_bytes(bytes(buffer)) if buffer else (last_transcript, "")
+                    audio_snapshot = bytes(buffer)
+                    transcript, error = _transcribe_bytes(audio_snapshot) if buffer else (last_transcript, "")
                     final_text = transcript or last_transcript
                     if error:
                         logger.debug(
@@ -12782,16 +12798,50 @@ async def transcribe_stream(websocket: WebSocket):
                             event_index=event_index,
                         )
 
-                    event_index += 1
-                    await websocket.send_json(
-                        {
-                            "eventId": f"{session_id}-{event_index}",
-                            "isInterim": False,
-                            "transcript": final_text,
-                            "timestamp": time.time(),
-                            "speakerLabel": "unknown",
-                        }
-                    )
+                    diarized_segments: list[Dict[str, Any]] = []
+                    diar_error = ""
+                    if audio_snapshot:
+                        segments, diar_error = diarize_segments(audio_snapshot)
+                        diarized_segments = segments
+                        if diar_error:
+                            logger.debug(
+                                "transcription diarisation warning",
+                                error=diar_error,
+                                event_index=event_index,
+                            )
+
+                    if diarized_segments:
+                        timestamp = time.time()
+                        for seg in diarized_segments:
+                            event_index += 1
+                            seg_text = (seg.get("text") or "").strip()
+                            await websocket.send_json(
+                                {
+                                    "eventId": f"{session_id}-{event_index}",
+                                    "isInterim": False,
+                                    "transcript": seg_text,
+                                    "timestamp": timestamp,
+                                    "confidence": _confidence_from_error(""),
+                                    "speakerLabel": _map_speaker_label(seg.get("speaker")),
+                                    "segment": {
+                                        "start": float(seg.get("start", 0.0)),
+                                        "end": float(seg.get("end", 0.0)),
+                                    },
+                                }
+                            )
+                    else:
+                        event_index += 1
+                        await websocket.send_json(
+                            {
+                                "eventId": f"{session_id}-{event_index}",
+                                "isInterim": False,
+                                "transcript": final_text,
+                                "timestamp": time.time(),
+                                "confidence": _confidence_from_error(error),
+                                "speakerLabel": "unknown",
+                                "segment": {"start": 0.0, "end": 0.0},
+                            }
+                        )
                     buffer.clear()
                     last_transcript = ""
                     continue
