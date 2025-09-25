@@ -232,6 +232,42 @@ function formatSpeakerLabel(role: TranscriptSpeakerRole): string {
   }
 }
 
+type VisitSessionSpeakerPreference = "standard" | "swapped"
+
+function normalizeSpeakerPreference(value: unknown): VisitSessionSpeakerPreference | undefined {
+  if (typeof value !== "string") {
+    return undefined
+  }
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "swapped") {
+    return "swapped"
+  }
+  if (normalized === "standard") {
+    return "standard"
+  }
+  return undefined
+}
+
+function extractSpeakerPreference(source: unknown): VisitSessionSpeakerPreference | undefined {
+  if (!source || typeof source !== "object") {
+    return undefined
+  }
+  const record = source as Record<string, unknown>
+  const direct = normalizeSpeakerPreference(record.speakerPreference)
+  if (direct) {
+    return direct
+  }
+  const preferences = record.preferences
+  if (preferences && typeof preferences === "object") {
+    const prefsRecord = preferences as Record<string, unknown>
+    return (
+      normalizeSpeakerPreference(prefsRecord.transcriptSpeakerView) ??
+      normalizeSpeakerPreference(prefsRecord.transcript_speaker_view)
+    )
+  }
+  return undefined
+}
+
 function coerceTimestamp(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value
@@ -1006,6 +1042,7 @@ interface VisitSessionState {
   endTime?: string | null
   durationSeconds?: number
   lastResumedAt?: string | null
+  speakerPreference?: VisitSessionSpeakerPreference
 }
 
 const parseSessionTimestamp = (value: string | null | undefined): number | null => {
@@ -1269,9 +1306,14 @@ export function NoteEditor({
   const [visitLoading, setVisitLoading] = useState(false)
   const [visitError, setVisitError] = useState<string | null>(null)
   const [visitSession, setVisitSession] = useState<VisitSessionState>({})
+  const [swapSpeakers, setSwapSpeakers] = useState(false)
   useEffect(() => {
     latestVisitSessionRef.current = visitSession
   }, [visitSession])
+  useEffect(() => {
+    const next = visitSession.speakerPreference === "swapped"
+    setSwapSpeakers((prev) => (prev === next ? prev : next))
+  }, [visitSession.speakerPreference])
   const [hasEverStarted, setHasEverStarted] = useState(initialRecordedSeconds > 0)
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
   const [pausedTime, setPausedTime] = useState(initialRecordedSeconds)
@@ -1499,6 +1541,7 @@ export function NoteEditor({
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ensuredSessionKeyRef = useRef<string | null>(null)
   const latestVisitSessionRef = useRef<VisitSessionState>({})
+  const lastPersistedSpeakerPreferenceRef = useRef<VisitSessionSpeakerPreference | undefined>(undefined)
 
   type FetchOptions = ApiFetchOptions
 
@@ -1622,6 +1665,67 @@ export function NoteEditor({
 
   const fetchWithAuth = useCallback((input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init), [])
 
+  const persistVisitSessionPreference = useCallback(
+    async (preference: VisitSessionSpeakerPreference) => {
+      const sessionId = latestVisitSessionRef.current.sessionId
+      if (!sessionId) {
+        return
+      }
+      try {
+        await fetchWithAuth("/api/visits/session/preferences", {
+          method: "POST",
+          jsonBody: {
+            session_id: sessionId,
+            preferences: {
+              transcriptSpeakerView: preference,
+              transcript_speaker_view: preference,
+            },
+          },
+        })
+      } catch (error) {
+        console.error("Failed to persist visit session preference", error)
+      }
+    },
+    [fetchWithAuth],
+  )
+
+  const handleToggleSpeakerRoles = useCallback(() => {
+    setSwapSpeakers((prev) => {
+      const next = !prev
+      const preference: VisitSessionSpeakerPreference = next ? "swapped" : "standard"
+      const currentSessionId = latestVisitSessionRef.current.sessionId
+      setVisitSession((session) => ({
+        ...session,
+        speakerPreference: preference,
+      }))
+      if (currentSessionId) {
+        lastPersistedSpeakerPreferenceRef.current = preference
+      }
+      void persistVisitSessionPreference(preference)
+      return next
+    })
+  }, [persistVisitSessionPreference])
+
+  useEffect(() => {
+    const preference = visitSession.speakerPreference
+    const sessionId = visitSession.sessionId ?? latestVisitSessionRef.current.sessionId
+    if (!sessionId || !preference) {
+      if (!preference) {
+        lastPersistedSpeakerPreferenceRef.current = undefined
+      }
+      return
+    }
+    if (lastPersistedSpeakerPreferenceRef.current === preference) {
+      return
+    }
+    lastPersistedSpeakerPreferenceRef.current = preference
+    void persistVisitSessionPreference(preference)
+  }, [
+    visitSession.sessionId,
+    visitSession.speakerPreference,
+    persistVisitSessionPreference,
+  ])
+
   useEffect(() => {
     const trimmedEncounterId = encounterId.trim()
     if (!trimmedEncounterId) {
@@ -1658,13 +1762,17 @@ export function NoteEditor({
         const sessionData = await response.json().catch(() => null)
         if (!cancelled && sessionData) {
           const previouslyHadSession = Boolean(latestVisitSessionRef.current.sessionId)
-          setVisitSession((prev) => ({
-            ...prev,
-            ...sessionData,
-            sessionId: sessionData.sessionId ?? prev.sessionId,
-            encounterId: encounterNumeric,
-            patientId: trimmedPatientId || prev.patientId,
-          }))
+          setVisitSession((prev) => {
+            const preference = extractSpeakerPreference(sessionData) ?? prev.speakerPreference
+            return {
+              ...prev,
+              ...sessionData,
+              sessionId: sessionData.sessionId ?? prev.sessionId,
+              encounterId: encounterNumeric,
+              patientId: trimmedPatientId || prev.patientId,
+              speakerPreference: preference,
+            }
+          })
           setVisitError(null)
 
           const sessionIdNumber = Number(sessionData.sessionId)
@@ -3240,6 +3348,7 @@ export function NoteEditor({
     setAutoSaveError(null)
     setSaveDraftError(null)
     setVisitSession({})
+    setSwapSpeakers(false)
     latestVisitSessionRef.current = {}
     ensuredSessionKeyRef.current = null
     setVisitStarted(false)
@@ -3990,11 +4099,15 @@ export function NoteEditor({
 
       const sessionData = await response.json().catch(() => null)
       if (sessionData) {
-        setVisitSession((prev) => ({
-          ...prev,
-          ...sessionData,
-          sessionId: sessionData.sessionId ?? prev.sessionId,
-        }))
+        setVisitSession((prev) => {
+          const preference = extractSpeakerPreference(sessionData) ?? prev.speakerPreference
+          return {
+            ...prev,
+            ...sessionData,
+            sessionId: sessionData.sessionId ?? prev.sessionId,
+            speakerPreference: preference,
+          }
+        })
       }
       return sessionData
     },
@@ -4345,13 +4458,47 @@ export function NoteEditor({
 
   const hasInterimTranscript = useMemo(() => transcriptEntries.some((entry) => entry.isInterim), [transcriptEntries])
 
+  const activeSpeakerStyles = useMemo(() => {
+    if (!swapSpeakers) {
+      return SPEAKER_STYLES
+    }
+    return {
+      clinician: SPEAKER_STYLES.patient,
+      patient: SPEAKER_STYLES.clinician,
+      other: SPEAKER_STYLES.other,
+    }
+  }, [swapSpeakers])
+
+  const displayTranscriptEntries = useMemo(() => {
+    if (!swapSpeakers) {
+      return transcriptEntries
+    }
+    return transcriptEntries.map((entry) => {
+      if (entry.speakerRole === "clinician") {
+        return {
+          ...entry,
+          speakerRole: "patient",
+          speaker: formatSpeakerLabel("patient"),
+        }
+      }
+      if (entry.speakerRole === "patient") {
+        return {
+          ...entry,
+          speakerRole: "clinician",
+          speaker: formatSpeakerLabel("clinician"),
+        }
+      }
+      return entry
+    })
+  }, [swapSpeakers, transcriptEntries])
+
   const transcriptExcerpt = useMemo(
     () =>
-      buildTranscriptExcerpt(transcriptEntries, {
+      buildTranscriptExcerpt(displayTranscriptEntries, {
         windowMs: TRANSCRIPT_RECENT_WINDOW_MS,
         maxChars: 220,
       }),
-    [transcriptEntries, currentSessionTime],
+    [displayTranscriptEntries, currentSessionTime],
   )
 
   const totalTranscriptWords = useMemo(() => {
@@ -4748,24 +4895,28 @@ export function NoteEditor({
         }
 
         if (sessionData) {
-          setVisitSession((prev) => ({
-            ...prev,
-            ...sessionData,
-            sessionId: sessionData.sessionId ?? prev.sessionId,
-            status: (sessionData.status as VisitSessionStatus | undefined) ?? "active",
-            encounterId: encounterNumeric,
-            patientId: trimmedPatientId || prev.patientId,
-            startTime: sessionData.startTime ?? prev.startTime,
-            endTime: sessionData.endTime ?? prev.endTime ?? null,
-            durationSeconds:
-              typeof sessionData.durationSeconds === "number"
-                ? sessionData.durationSeconds
-                : prev.durationSeconds,
-            lastResumedAt:
-              typeof sessionData.lastResumedAt === "string"
-                ? sessionData.lastResumedAt
-                : prev.lastResumedAt ?? null,
-          }))
+          setVisitSession((prev) => {
+            const preference = extractSpeakerPreference(sessionData) ?? prev.speakerPreference
+            return {
+              ...prev,
+              ...sessionData,
+              sessionId: sessionData.sessionId ?? prev.sessionId,
+              status: (sessionData.status as VisitSessionStatus | undefined) ?? "active",
+              encounterId: encounterNumeric,
+              patientId: trimmedPatientId || prev.patientId,
+              startTime: sessionData.startTime ?? prev.startTime,
+              endTime: sessionData.endTime ?? prev.endTime ?? null,
+              durationSeconds:
+                typeof sessionData.durationSeconds === "number"
+                  ? sessionData.durationSeconds
+                  : prev.durationSeconds,
+              lastResumedAt:
+                typeof sessionData.lastResumedAt === "string"
+                  ? sessionData.lastResumedAt
+                  : prev.lastResumedAt ?? null,
+              speakerPreference: preference,
+            }
+          })
         } else {
           setVisitSession((prev) => ({
             ...prev,
@@ -5105,7 +5256,8 @@ export function NoteEditor({
                           {transcriptExcerpt.length > 0 ? (
                             <div className="space-y-1">
                               {transcriptExcerpt.map((segment, index) => {
-                                const styles = SPEAKER_STYLES[segment.speakerRole] ?? SPEAKER_STYLES.other
+                                const styles =
+                                  activeSpeakerStyles[segment.speakerRole] ?? activeSpeakerStyles.other
                                 const isLatest = index === transcriptExcerpt.length - 1
                                 // Use a more stable key: prefer segment.id, else combine speaker, text, and index as fallback
                                 const key = segment.id
@@ -5233,7 +5385,7 @@ export function NoteEditor({
       <FullTranscriptModal
         open={showFullTranscript}
         onOpenChange={setShowFullTranscript}
-        entries={transcriptEntries}
+        entries={displayTranscriptEntries}
         isRecording={isRecording}
         hasInterimTranscript={hasInterimTranscript}
         transcriptionIndex={transcriptionIndex}
@@ -5243,7 +5395,9 @@ export function NoteEditor({
         currentTranscriptCount={currentTranscriptCount}
         totalTranscribedLines={totalTranscribedLines}
         onInsertEntry={handleInsertTranscriptEntry}
-        speakerStyles={SPEAKER_STYLES}
+        speakerStyles={activeSpeakerStyles}
+        swapSpeakers={swapSpeakers}
+        onToggleSpeakers={handleToggleSpeakerRoles}
       />
     </div>
   )

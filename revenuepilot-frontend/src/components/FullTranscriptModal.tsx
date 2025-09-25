@@ -5,7 +5,7 @@ import { Input } from "./ui/input"
 import { Badge } from "./ui/badge"
 import { Button } from "./ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
-import { Clock, Copy, FilePlus2, Mic, MicOff, Search } from "lucide-react"
+import { ArrowLeftRight, Clock, Copy, FilePlus2, Mic, MicOff, Search } from "lucide-react"
 import { toast } from "sonner"
 import type { TranscriptEntry } from "./NoteEditor"
 
@@ -48,6 +48,8 @@ interface FullTranscriptModalProps {
   totalTranscribedLines: number
   onInsertEntry: (entry: TranscriptEntry) => void
   speakerStyles: Record<TranscriptEntry["speakerRole"], SpeakerStyle>
+  swapSpeakers: boolean
+  onToggleSpeakers: () => void
 }
 
 export function FullTranscriptModal({
@@ -64,6 +66,8 @@ export function FullTranscriptModal({
   totalTranscribedLines,
   onInsertEntry,
   speakerStyles,
+  swapSpeakers,
+  onToggleSpeakers,
 }: FullTranscriptModalProps) {
   const [searchQuery, setSearchQuery] = useState("")
   const normalizedQuery = searchQuery.trim().toLowerCase()
@@ -322,21 +326,35 @@ export function FullTranscriptModal({
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative sm:max-w-xs w-full">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  ref={searchInputRef}
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search transcript..."
-                  className="pl-9"
-                />
-              </div>
-              {hasQuery && (
-                <div className="text-xs text-muted-foreground">
-                  {filteredEntries.length} match{filteredEntries.length === 1 ? "" : "es"}
+              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                <div className="relative sm:max-w-xs w-full">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    ref={searchInputRef}
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search transcript..."
+                    className="pl-9"
+                  />
                 </div>
-              )}
+                {hasQuery && (
+                  <div className="text-xs text-muted-foreground">
+                    {filteredEntries.length} match{filteredEntries.length === 1 ? "" : "es"}
+                  </div>
+                )}
+              </div>
+              <Button
+                type="button"
+                variant={swapSpeakers ? "secondary" : "outline"}
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={onToggleSpeakers}
+                aria-pressed={swapSpeakers}
+                disabled={entries.length === 0}
+              >
+                <ArrowLeftRight className="w-3.5 h-3.5 mr-1" />
+                {swapSpeakers ? "Restore speakers" : "Swap speakers"}
+              </Button>
             </div>
           </div>
         </DialogHeader>
