@@ -4319,7 +4319,7 @@ export function NoteEditor({
         windowMs: TRANSCRIPT_RECENT_WINDOW_MS,
         maxChars: 220,
       }),
-    [transcriptEntries, isSessionActive ? currentSessionTime : null],
+    [transcriptEntries, currentSessionTime],
   )
 
   const totalTranscriptWords = useMemo(() => {
