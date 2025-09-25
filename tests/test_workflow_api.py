@@ -227,11 +227,26 @@ def test_workflow_session_lifecycle(api_client, create_user):
 
     resp = client.post(
         f"/api/v1/workflow/{session_id}/step5/attest",
-        json={"attestedBy": "alice", "statement": "I attest."},
+        json={
+            "attestedBy": "alice",
+            "statement": "I attest.",
+            "ip": "198.51.100.7",
+            "payerChecklist": [
+                {"id": "code-1", "label": "99213", "status": "ready"},
+                {"id": "warning-1", "label": "Follow-up plan", "status": "warning"},
+            ],
+        },
         headers=headers,
     )
     assert resp.status_code == 200
-    attest_payload = unwrap(resp.json())["session"]
+    attestation_response = unwrap(resp.json())
+    assert attestation_response["canFinalize"] is False
+    recap = attestation_response["recap"]
+    assert recap["attestedBy"] == "alice"
+    assert recap["statement"] == "I attest."
+    assert isinstance(recap.get("payerChecklist"), list)
+    assert recap["payerChecklist"][0]["status"] == "ready"
+    attest_payload = attestation_response["session"]
     assert attest_payload["stepStates"][4]["status"] == "completed"
 
     resp = client.post(
@@ -241,6 +256,8 @@ def test_workflow_session_lifecycle(api_client, create_user):
     )
     assert resp.status_code == 200
     dispatch_payload = unwrap(resp.json())
+    assert dispatch_payload["destination"] == "ehr"
+    assert dispatch_payload["status"] == "completed"
     assert dispatch_payload["result"]["exportReady"] is False
     assert "prevention" in dispatch_payload["result"]["issues"]
 
