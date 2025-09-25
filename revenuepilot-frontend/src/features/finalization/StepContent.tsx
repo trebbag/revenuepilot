@@ -77,6 +77,7 @@ interface StepContentProps {
   onPrevious: () => void
   onActiveItemChange?: (item: Item | null) => void
   onShowEvidence?: (show: boolean) => void
+  onItemStatusChange?: (itemId: number, status: Item["status"], item: Item | null) => void
   patientQuestions?: PatientQuestion[]
   onUpdatePatientQuestions?: (questions: PatientQuestion[]) => void
   showPatientTray?: boolean
@@ -145,6 +146,7 @@ export function StepContent({
   onPrevious,
   onActiveItemChange,
   onShowEvidence,
+  onItemStatusChange,
   patientQuestions = [],
   onUpdatePatientQuestions,
   showPatientTray: externalShowPatientTray,
@@ -171,6 +173,11 @@ export function StepContent({
   const adjustedActiveIndex = filteredItems.length > 0 ? Math.min(Math.max(0, activeItemIndex), filteredItems.length - 1) : 0
   const activeItem = filteredItems.length > 0 ? filteredItems[adjustedActiveIndex] : null
 
+  useEffect(() => {
+    setItems(step.items ? enhancedItems(step.items, step.id) : [])
+    setActiveItemIndex(0)
+  }, [step.items, step.id])
+
   const hasContextEstablishedGap = Boolean(
     activeItem &&
       Array.isArray((activeItem as any).gaps) &&
@@ -186,11 +193,24 @@ export function StepContent({
     }
   }, [activeItem, onActiveItemChange])
 
+  useEffect(() => {
+    if (!activeItem) {
+      onShowEvidence?.(false)
+    }
+  }, [activeItem, onShowEvidence])
+
+  useEffect(() => () => onShowEvidence?.(false), [onShowEvidence])
+
   const updateItemStatus = (itemId: number, status: Item["status"]) => {
+    const original = items.find((item) => item && item.id === itemId) || null
+    const nextItem = original ? { ...original, status } : null
     setItems((prev) => {
       if (!prev || !Array.isArray(prev)) return prev
       return prev.map((item) => (item && item.id === itemId ? { ...item, status } : item))
     })
+    if (onItemStatusChange) {
+      onItemStatusChange(itemId, status, nextItem)
+    }
   }
 
   const getStatusIcon = (status: Item["status"]) => {

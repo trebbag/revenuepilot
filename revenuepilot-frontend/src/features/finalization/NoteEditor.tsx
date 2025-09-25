@@ -174,6 +174,7 @@ export function NoteEditor({ content, onChange, highlightRanges = [], disabled =
           return (
             <motion.span
               key={partIndex}
+              data-testid="note-highlight"
               initial={{ backgroundColor: "transparent" }}
               animate={{
                 backgroundColor: [colorSet.bg, colorSet.bg.replace("0.2", "0.3"), colorSet.bg.replace("0.2", "0.35"), colorSet.bg.replace("0.2", "0.3"), colorSet.bg],
