@@ -105,6 +105,12 @@ interface TranscriptEntry {
   isInterim?: boolean
 }
 
+export interface TranscriptExcerptSegment {
+  speaker: string
+  speakerRole: TranscriptSpeakerRole
+  text: string
+}
+
 const TRANSCRIPT_RECENT_WINDOW_MS = 60_000
 const TRANSCRIPTION_CONNECTION_ERROR = "Unable to maintain transcription connection."
 
@@ -136,6 +142,92 @@ function normaliseSpeakerRole(value: unknown): TranscriptSpeakerRole {
     if (normalised.startsWith("pt")) return "patient"
   }
   return "other"
+}
+
+export function buildTranscriptExcerpt(
+  entries: TranscriptEntry[],
+  options: { windowMs: number; maxChars: number },
+): TranscriptExcerptSegment[] {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return []
+  }
+
+  const windowMs = Math.max(0, options?.windowMs ?? 0)
+  const maxChars = Math.max(0, options?.maxChars ?? 0)
+  if (windowMs === 0 || maxChars === 0) {
+    return []
+  }
+
+  const cutoff = Date.now() - windowMs
+  const filtered = entries
+    .filter((entry) => Number.isFinite(entry.timestamp) && entry.timestamp >= cutoff)
+    .map((entry) => ({
+      id: entry.id,
+      timestamp: entry.timestamp,
+      speaker: typeof entry.speaker === "string" && entry.speaker.trim().length > 0 ? entry.speaker.trim() : "Unknown",
+      speakerRole: entry.speakerRole ?? "other",
+      text: typeof entry.text === "string" ? entry.text.trim() : "",
+    }))
+    .filter((entry) => entry.text.length > 0)
+
+  if (filtered.length === 0) {
+    return []
+  }
+
+  filtered.sort((a, b) => a.timestamp - b.timestamp)
+
+  const grouped: TranscriptExcerptSegment[] = []
+  for (const entry of filtered) {
+    const last = grouped[grouped.length - 1]
+    if (last && last.speaker === entry.speaker && last.speakerRole === entry.speakerRole) {
+      const merged = `${last.text} ${entry.text}`.replace(/\s+/g, " ").trim()
+      last.text = merged
+    } else {
+      grouped.push({
+        speaker: entry.speaker,
+        speakerRole: entry.speakerRole,
+        text: entry.text,
+      })
+    }
+  }
+
+  const excerpt: TranscriptExcerptSegment[] = []
+  let usedChars = 0
+
+  for (let index = grouped.length - 1; index >= 0; index -= 1) {
+    const segment = grouped[index]
+    const labelLength = segment.speaker.length > 0 ? segment.speaker.length + 2 : 0
+    const fullLength = labelLength + segment.text.length
+
+    if (usedChars + fullLength <= maxChars) {
+      excerpt.push({ ...segment })
+      usedChars += fullLength
+      continue
+    }
+
+    const available = maxChars - usedChars - labelLength
+    if (available <= 0) {
+      continue
+    }
+
+    const needsEllipsis = segment.text.length > available
+    const sliceLength = needsEllipsis ? Math.max(available - 1, 0) : available
+    let snippet = sliceLength > 0 ? segment.text.slice(-sliceLength) : ""
+    snippet = snippet.trimStart()
+    const text = needsEllipsis ? `…${snippet}` : snippet
+    if (!text) {
+      continue
+    }
+
+    excerpt.push({
+      speaker: segment.speaker,
+      speakerRole: segment.speakerRole,
+      text,
+    })
+    break
+  }
+
+  return excerpt.reverse()
 }
 
 function formatSpeakerLabel(role: TranscriptSpeakerRole): string {
@@ -4221,21 +4313,14 @@ export function NoteEditor({
 
   const hasInterimTranscript = useMemo(() => transcriptEntries.some((entry) => entry.isInterim), [transcriptEntries])
 
-  const recentTranscription = useMemo(() => {
-    if (!transcriptEntries.length) return []
-    const now = Date.now()
-    const subset: TranscriptEntry[] = []
-    for (let index = transcriptEntries.length - 1; index >= 0; index -= 1) {
-      const entry = transcriptEntries[index]
-      const age = now - entry.timestamp
-      if (age <= TRANSCRIPT_RECENT_WINDOW_MS || subset.length === 0) {
-        subset.push(entry)
-      } else {
-        break
-      }
-    }
-    return subset.reverse()
-  }, [transcriptEntries])
+  const transcriptExcerpt = useMemo(
+    () =>
+      buildTranscriptExcerpt(transcriptEntries, {
+        windowMs: TRANSCRIPT_RECENT_WINDOW_MS,
+        maxChars: 220,
+      }),
+    [transcriptEntries, currentSessionTime],
+  )
 
   const totalTranscriptWords = useMemo(() => {
     return transcriptEntries.reduce((sum, entry) => {
@@ -4909,57 +4994,102 @@ export function NoteEditor({
                     <TooltipProvider>
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <div className="flex items-center gap-0.5 h-6 cursor-pointer" onClick={() => setShowFullTranscript(true)}>
-                            {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-                              <div
-                                key={i}
-                                className={`w-0.5 rounded-full ${isRecording ? "bg-destructive" : "bg-muted-foreground"}`}
-                                style={{
-                                  height: isRecording ? `${8 + (i % 4) * 3}px` : `${6 + (i % 3) * 2}px`,
-                                  animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : "none",
-                                  animationDelay: isRecording ? `${i * 0.1}s` : "0s",
-                                }}
-                              />
-                            ))}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowFullTranscript(true)}
+                            aria-label={
+                              isRecording
+                                ? "View live transcript excerpt"
+                                : "View transcript preview"
+                            }
+                            className={`flex h-7 w-7 items-center justify-center rounded-full border transition-colors ${
+                              isRecording
+                                ? "border-destructive/40 bg-destructive/10 hover:bg-destructive/20"
+                                : "border-border bg-muted/60 hover:bg-muted"
+                            }`}
+                          >
+                            {isRecording ? (
+                              <Mic className="w-4 h-4 text-destructive" />
+                            ) : (
+                              <MicOff className="w-4 h-4 text-muted-foreground" />
+                            )}
+                          </button>
                         </TooltipTrigger>
-                        <TooltipContent side="bottom" align="center" className="max-w-sm p-3 bg-popover border-border">
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <div className={`w-1.5 h-1.5 rounded-full ${isRecording ? "bg-destructive animate-pulse" : "bg-muted-foreground"}`}></div>
-                              {isRecording ? "Live Transcription Preview" : "Transcription Preview (Paused)"}
-                            </div>
-                            <div className="bg-muted/50 rounded-md p-2 border-l-2 border-destructive space-y-2">
-                              {recentTranscription.length ? (
-                                recentTranscription.map((entry, index) => {
-                                  const styles = SPEAKER_STYLES[entry.speakerRole] ?? SPEAKER_STYLES.other
-                                  const isLatest = index === recentTranscription.length - 1
-                                  return (
-                                    <div
-                                      key={entry.id}
-                                      className={`flex items-start gap-2 text-xs leading-relaxed ${isLatest ? "text-foreground" : "text-muted-foreground"}`}
-                                      style={{ opacity: isLatest ? 1 : Math.max(0.25, 0.75 - index * 0.2) }}
-                                    >
-                                      <div className={`mt-1 h-1.5 w-1.5 rounded-full ${styles.dot}`}></div>
-                                      <div className="flex-1 space-y-1">
-                                        <Badge className={`text-[10px] font-semibold uppercase tracking-wide ${styles.badge}`}>{entry.speaker}</Badge>
-                                        <div className={isLatest ? "font-medium" : undefined}>{entry.text}</div>
-                                      </div>
-                                    </div>
-                                  )
-                                })
-                              ) : (
-                                <div className="text-xs text-muted-foreground">Transcript will appear once the conversation begins.</div>
-                              )}
-                            </div>
-                            <div className="text-xs text-muted-foreground pt-2 border-t border-border">
-                              Click audio wave to view full transcript
-                              {!isRecording && <div className="mt-1 text-muted-foreground/80">Recording paused - transcript available</div>}
-                            </div>
+                        <TooltipContent
+                          side="bottom"
+                          align="center"
+                          className="max-w-sm space-y-2 p-3 bg-popover border-border"
+                        >
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <div
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                isRecording ? "bg-destructive animate-pulse" : "bg-muted-foreground"
+                              }`}
+                            ></div>
+                            {isRecording ? "Live transcript excerpt" : "Transcript preview"}
                           </div>
+                          {!isRecording && (
+                            <div className="text-xs text-muted-foreground">Not recording.</div>
+                          )}
+                          {transcriptExcerpt.length > 0 ? (
+                            <div className="space-y-1">
+                              {transcriptExcerpt.map((segment, index) => {
+                                const styles = SPEAKER_STYLES[segment.speakerRole] ?? SPEAKER_STYLES.other
+                                const isLatest = index === transcriptExcerpt.length - 1
+                                // Use a more stable key: prefer segment.id, else combine speaker, text, and index as fallback
+                                const key = segment.id
+                                  ? segment.id
+                                  : `${segment.speaker}-${segment.text}-${index}`;
+                                return (
+                                  <div key={key} className="flex items-start gap-2 text-xs leading-snug">
+                                    <Badge className={`text-[10px] font-semibold uppercase tracking-wide ${styles.badge}`}>
+                                      {segment.speaker}
+                                    </Badge>
+                                    <span className={isLatest ? "text-foreground font-medium" : "text-muted-foreground"}>
+                                      {segment.text}
+                                    </span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">No recent transcript.</div>
+                          )}
+                          <button
+                            type="button"
+                            className="text-xs font-medium text-primary underline hover:text-primary/90"
+                            onClick={() => setShowFullTranscript(true)}
+                          >
+                            Open full transcript
+                          </button>
                         </TooltipContent>
                       </Tooltip>
                     </TooltipProvider>
+                    <div
+                      className="flex items-center gap-0.5 h-6 cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      aria-label="Open full transcript"
+                      onClick={() => setShowFullTranscript(true)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          setShowFullTranscript(true)
+                        }
+                      }}
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                        <div
+                          key={i}
+                          className={`w-0.5 rounded-full ${isRecording ? "bg-destructive" : "bg-muted-foreground"}`}
+                          style={{
+                            height: isRecording ? `${8 + (i % 4) * 3}px` : `${6 + (i % 3) * 2}px`,
+                            animation: isRecording ? `audioWave${i} ${1.2 + (i % 3) * 0.3}s ease-in-out infinite` : "none",
+                            animationDelay: isRecording ? `${i * 0.1}s` : "0s",
+                          }}
+                        />
+                      ))}
+                    </div>
                     {transcriptionError && <p className="text-xs text-destructive">{transcriptionError}</p>}
                   </>
                 )}

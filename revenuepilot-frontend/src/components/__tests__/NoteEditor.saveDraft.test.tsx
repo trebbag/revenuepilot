@@ -67,7 +67,7 @@ vi.mock("../../contexts/SessionContext", () => ({
   }),
 }))
 
-import { NoteEditor } from "../NoteEditor"
+import { NoteEditor, buildTranscriptExcerpt } from "../NoteEditor"
 
 vi.mock("../../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../../lib/api")>("../../lib/api")
@@ -419,5 +419,96 @@ describe("NoteEditor manual draft save", () => {
         resolveUrl(input).startsWith("/api/notes/drafts/") && (init?.method ?? "GET").toUpperCase() === "PATCH",
     )
     expect(autoSaveCall?.[0]).toContain("/api/notes/drafts/42")
+  })
+})
+
+describe("buildTranscriptExcerpt", () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("filters entries to the window and groups consecutive speakers", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"))
+    const now = Date.now()
+
+    const excerpt = buildTranscriptExcerpt(
+      [
+        {
+          id: "1",
+          text: "First statement",
+          timestamp: now - 30_000,
+          speaker: "Dr. Smith",
+          speakerRole: "clinician",
+        },
+        {
+          id: "2",
+          text: "Follow up question",
+          timestamp: now - 10_000,
+          speaker: "Dr. Smith",
+          speakerRole: "clinician",
+        },
+        {
+          id: "3",
+          text: "Patient response",
+          timestamp: now - 5_000,
+          speaker: "Patient",
+          speakerRole: "patient",
+        },
+        {
+          id: "4",
+          text: "This is too old",
+          timestamp: now - 120_000,
+          speaker: "Other",
+          speakerRole: "other",
+        },
+      ] as any,
+      { windowMs: 60_000, maxChars: 220 },
+    )
+
+    expect(excerpt).toEqual([
+      { speaker: "Dr. Smith", speakerRole: "clinician", text: "First statement Follow up question" },
+      { speaker: "Patient", speakerRole: "patient", text: "Patient response" },
+    ])
+  })
+
+  it("respects the max character bound while keeping the latest speaker", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"))
+    const now = Date.now()
+
+    const excerpt = buildTranscriptExcerpt(
+      [
+        {
+          id: "1",
+          text: "A very long explanation from the clinician that exceeds the limit of the tooltip display.",
+          timestamp: now - 20_000,
+          speaker: "Clinician",
+          speakerRole: "clinician",
+        },
+        {
+          id: "2",
+          text: "Short reply from patient.",
+          timestamp: now - 5_000,
+          speaker: "Patient",
+          speakerRole: "patient",
+        },
+      ] as any,
+      { windowMs: 60_000, maxChars: 60 },
+    )
+
+    expect(excerpt).toHaveLength(2)
+    expect(excerpt[1]).toEqual({
+      speaker: "Patient",
+      speakerRole: "patient",
+      text: "Short reply from patient.",
+    })
+    expect(excerpt[0].speaker).toBe("Clinician")
+    expect(excerpt[0].text.length).toBeLessThan(
+      "A very long explanation from the clinician that exceeds the limit of the tooltip display.".length,
+    )
+
+    const totalChars = excerpt.reduce((sum, segment) => sum + segment.speaker.length + 2 + segment.text.length, 0)
+    expect(totalChars).toBeLessThanOrEqual(60)
   })
 })
