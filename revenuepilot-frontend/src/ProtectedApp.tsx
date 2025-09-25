@@ -29,6 +29,7 @@ import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl } from "./l
 import { useChartUpload, useUploadStatuses } from "./hooks/useChartUpload"
 import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 import type { FinalizeResult } from "./features/finalization"
+import { ReadableChartDrawer } from "./features/context"
 import { toast } from "sonner"
 
 interface RawScheduleAppointment {
@@ -204,6 +205,41 @@ export function ProtectedApp() {
   })
   const [collaborationState, setCollaborationState] = useState<CollaborationStreamState | null>(null)
   const [contextStageInfo, setContextStageInfo] = useState<NoteContextStageInfo | null>(null)
+  const [chartDrawerState, setChartDrawerState] = useState<{
+    open: boolean
+    patientId: string | null
+    patientName: string | null
+  }>({ open: false, patientId: null, patientName: null })
+
+  const handleOpenChartContext = useCallback((patientId: string, options?: { patientName?: string | null }) => {
+    if (!patientId) {
+      return
+    }
+    setChartDrawerState({
+      open: true,
+      patientId,
+      patientName: options?.patientName ?? null,
+    })
+  }, [])
+
+  const handleCloseChartContext = useCallback(() => {
+    setChartDrawerState((prev) => ({ ...prev, open: false }))
+  }, [])
+
+  const chartDrawer = (
+    <ReadableChartDrawer
+      open={chartDrawerState.open}
+      onOpenChange={(open) => {
+        if (!open) {
+          handleCloseChartContext()
+        } else if (chartDrawerState.patientId) {
+          setChartDrawerState((prev) => ({ ...prev, open: true }))
+        }
+      }}
+      patientId={chartDrawerState.patientId}
+      patientName={chartDrawerState.patientName}
+    />
+  )
 
   const handleComplianceStreamUpdate = useCallback((issues: ComplianceIssue[], state: StreamConnectionState) => {
     setLiveComplianceIssues(issues)
@@ -1131,378 +1167,408 @@ export function ProtectedApp() {
   // Home Dashboard View
   if (currentView === "home") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="home" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="home" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">RevenuePilot Dashboard</h1>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">RevenuePilot Dashboard</h1>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
+                      View Style Guide
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
+                      Figma Library
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
-                    View Style Guide
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
-                    Figma Library
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Dashboard onNavigate={handleNavigate} />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Dashboard onNavigate={handleNavigate} />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Analytics View
   if (currentView === "analytics") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="analytics" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="analytics" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Analytics Dashboard</h1>
-                  <Badge variant="outline" className="ml-2">
-                    {userRole === "admin" ? "Admin Access" : "User Access"}
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Analytics Dashboard</h1>
+                    <Badge variant="outline" className="ml-2">
+                      {userRole === "admin" ? "Admin Access" : "User Access"}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
+                      Documentation
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
-                    Documentation
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Analytics userRole={userRole} />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Analytics userRole={userRole} />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Activity Log View
   if (currentView === "activity") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="activity" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="activity" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Activity Log</h1>
-                  <Badge variant="outline" className="ml-2">
-                    {userRole === "admin" ? "Administrator" : "User"} Access
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Activity Log</h1>
+                    <Badge variant="outline" className="ml-2">
+                      {userRole === "admin" ? "Administrator" : "User"} Access
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("analytics")}>
+                      Analytics
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("settings")}>
+                      Settings
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("analytics")}>
-                    Analytics
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("settings")}>
-                    Settings
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <ActivityLog currentUser={currentUser} userRole={userRole} />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <ActivityLog currentUser={currentUser} userRole={userRole} />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Settings View
   if (currentView === "settings") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="settings" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="settings" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Settings & Configuration</h1>
-                  <Badge variant="outline" className="ml-2">
-                    {userRole === "admin" ? "Administrator" : "User"} Access
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Settings & Configuration</h1>
+                    <Badge variant="outline" className="ml-2">
+                      {userRole === "admin" ? "Administrator" : "User"} Access
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
+                      Documentation
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
-                    Documentation
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Settings userRole={userRole} />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Settings userRole={userRole} />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Drafts View
   if (currentView === "drafts") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="drafts" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="drafts" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Draft Notes Management</h1>
-                  <Badge variant="outline" className="ml-2">
-                    {getUserDraftCount()} Drafts Available
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Draft Notes Management</h1>
+                    <Badge variant="outline" className="ml-2">
+                      {getUserDraftCount()} Drafts Available
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
+                      New Note
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
-                    New Note
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Drafts onEditDraft={handleEditDraft} currentUser={currentUser} onDraftsSummaryUpdate={handleDraftSummaryUpdate} />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Drafts onEditDraft={handleEditDraft} currentUser={currentUser} onDraftsSummaryUpdate={handleDraftSummaryUpdate} />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Schedule View
   if (currentView === "schedule") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="schedule" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="schedule" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Patient Schedule</h1>
-                  <Badge variant="outline" className="ml-2">
-                    Today's Appointments
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Patient Schedule</h1>
+                    <Badge variant="outline" className="ml-2">
+                      Today's Appointments
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
+                      Documentation
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("drafts")}>
+                      Drafts
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("activity")}>
+                      Activity Log
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
-                    Documentation
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("drafts")}>
-                    Drafts
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("activity")}>
-                    Activity Log
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Schedule
+                    currentUser={currentUser}
+                    onStartVisit={handleStartVisit}
+                    onUploadChart={handleUploadChart}
+                    uploadStatuses={uploadStatuses}
+                    appointments={appointmentsState.data ?? []}
+                    loading={appointmentsState.loading}
+                    error={appointmentsState.error}
+                    onRefresh={triggerScheduleRefresh}
+                    onFiltersChange={handleScheduleFiltersChange}
+                    onOpenChartContext={handleOpenChartContext}
+                  />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Schedule
-                  currentUser={currentUser}
-                  onStartVisit={handleStartVisit}
-                  onUploadChart={handleUploadChart}
-                  uploadStatuses={uploadStatuses}
-                  appointments={appointmentsState.data ?? []}
-                  loading={appointmentsState.loading}
-                  error={appointmentsState.error}
-                  onRefresh={triggerScheduleRefresh}
-                  onFiltersChange={handleScheduleFiltersChange}
-                />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Builder View
   if (currentView === "builder") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="builder" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="builder" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Schedule Builder</h1>
-                  <Badge variant="outline" className="ml-2">
-                    Template Creator
-                  </Badge>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Schedule Builder</h1>
+                    <Badge variant="outline" className="ml-2">
+                      Template Creator
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("schedule")}>
+                      Schedule
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
+                      Documentation
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("schedule")}>
-                    Schedule
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("app")}>
-                    Documentation
-                  </Button>
+
+                {accessMessage}
+
+                <div className="flex-1 overflow-auto">
+                  <Builder
+                    currentUser={currentUser}
+                    appointments={appointmentsState.data ?? []}
+                    onAppointmentsChange={handleAppointmentsChange}
+                    onScheduleRefresh={triggerScheduleRefresh}
+                    onOpenChartContext={handleOpenChartContext}
+                  />
                 </div>
-              </div>
-
-              {accessMessage}
-
-              <div className="flex-1 overflow-auto">
-                <Builder
-                  currentUser={currentUser}
-                  appointments={appointmentsState.data ?? []}
-                  onAppointmentsChange={handleAppointmentsChange}
-                  onScheduleRefresh={triggerScheduleRefresh}
-                />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Style Guide View
   if (currentView === "style-guide") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="style-guide" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="style-guide" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">RevenuePilot Design System</h1>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">RevenuePilot Design System</h1>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Back to Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
+                      Figma Library
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("figma-library")}>
-                    Figma Library
-                  </Button>
-                </div>
-              </div>
-              {accessMessage}
+                {accessMessage}
 
-              <div className="flex-1 overflow-auto">
-                <StyleGuide />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+                <div className="flex-1 overflow-auto">
+                  <StyleGuide />
+                </div>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Figma Library View
   if (currentView === "figma-library") {
     return (
-      <TooltipProvider>
-        <SidebarProvider defaultOpen={false}>
-          <div className="flex h-screen w-full bg-background">
-            <NavigationSidebar currentView="figma-library" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+      <>
+        <TooltipProvider>
+          <SidebarProvider defaultOpen={false}>
+            <div className="flex h-screen w-full bg-background">
+              <NavigationSidebar currentView="figma-library" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-            <main className="flex-1 flex flex-col min-w-0">
-              <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
-                <div className="flex items-center gap-2">
-                  <SidebarTrigger />
-                  <h1 className="text-lg font-medium">Figma Component Library</h1>
+              <main className="flex-1 flex flex-col min-w-0">
+                <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
+                  <div className="flex items-center gap-2">
+                    <SidebarTrigger />
+                    <h1 className="text-lg font-medium">Figma Component Library</h1>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
+                      Back to Dashboard
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
+                      Style Guide
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("home")}>
-                    Back to Dashboard
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleNavigate("style-guide")}>
-                    Style Guide
-                  </Button>
-                </div>
-              </div>
-              {accessMessage}
+                {accessMessage}
 
-              <div className="flex-1 overflow-auto">
-                <FigmaComponentLibrary />
-              </div>
-            </main>
-          </div>
-        </SidebarProvider>
-      </TooltipProvider>
+                <div className="flex-1 overflow-auto">
+                  <FigmaComponentLibrary />
+                </div>
+              </main>
+            </div>
+          </SidebarProvider>
+        </TooltipProvider>
+        {chartDrawer}
+      </>
     )
   }
 
   // Main App View (Documentation Editor)
   return (
-    <TooltipProvider>
-      <SidebarProvider defaultOpen={false}>
-        <div className="flex h-screen w-full bg-background">
-          <NavigationSidebar currentView="app" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
+    <>
+      <TooltipProvider>
+        <SidebarProvider defaultOpen={false}>
+          <div className="flex h-screen w-full bg-background">
+            <NavigationSidebar currentView="app" onNavigate={handleNavigate} currentUser={currentUser} userDraftCount={getUserDraftCount()} />
 
-          <main className="flex-1 flex flex-col min-w-0">
+            <main className="flex-1 flex flex-col min-w-0">
             <div className="border-b bg-background p-4 flex items-center gap-2 justify-between">
               <div className="flex items-center gap-2">
                 <SidebarTrigger />
@@ -1582,6 +1648,7 @@ export function ProtectedApp() {
                       onCodeStreamUpdate={handleCodeStreamUpdate}
                       onCollaborationStreamUpdate={handleCollaborationStreamUpdate}
                       onContextStageChange={setContextStageInfo}
+                      onOpenChartContext={handleOpenChartContext}
                     />
                     <SelectedCodesBar
                       selectedCodes={selectedCodes}
@@ -1634,9 +1701,11 @@ export function ProtectedApp() {
                 </div>
               )}
             </div>
-          </main>
-        </div>
-      </SidebarProvider>
-    </TooltipProvider>
+            </main>
+          </div>
+        </SidebarProvider>
+      </TooltipProvider>
+      {chartDrawer}
+    </>
   )
 }

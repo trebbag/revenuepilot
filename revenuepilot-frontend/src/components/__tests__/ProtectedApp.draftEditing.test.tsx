@@ -120,11 +120,11 @@ vi.mock("../ActivityLog", () => ({
 }))
 
 vi.mock("../Schedule", () => ({
-  Schedule: () => <div data-testid="schedule" />,
+  Schedule: (props: unknown) => <div data-testid="schedule" data-props={JSON.stringify(props)} />,
 }))
 
 vi.mock("../Builder", () => ({
-  Builder: () => <div data-testid="builder" />,
+  Builder: (props: unknown) => <div data-testid="builder" data-props={JSON.stringify(props)} />,
 }))
 
 vi.mock("../StyleGuide", () => ({

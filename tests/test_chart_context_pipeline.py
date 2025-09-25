@@ -80,13 +80,16 @@ def test_chart_context_pipeline_progress(authed_client):
     assert snapshot.status_code == 200
     payload = snapshot.json()
     assert payload["stage"] in {"indexed", "deep"}
-    problems = payload["summary"]["problems"]
+    problems = payload["pmh"]
     diabetes = next(entry for entry in problems if entry.get("code") == "E11.9")
     assert diabetes.get("value") == "active"
     assert diabetes.get("date") is not None
     assert diabetes.get("evidence")
+    anchor = diabetes["evidence"][0]
+    assert anchor["sourceDocId"]
+    assert anchor["offset"] is not None
 
-    meds = payload["summary"]["medications"]
+    meds = payload["meds"]
     metformin = next(entry for entry in meds if entry.get("label") == "Metformin")
     assert metformin.get("rxnorm") == "860975"
     assert metformin.get("unit") == "mg"
@@ -94,7 +97,7 @@ def test_chart_context_pipeline_progress(authed_client):
     assert metformin.get("date")
     assert metformin.get("evidence")
 
-    labs = payload["summary"]["labs"]
+    labs = payload["labs"]
     hemoglobin = next(entry for entry in labs if entry.get("label") == "Hemoglobin")
     assert hemoglobin.get("loinc") == "718-7"
     assert hemoglobin.get("unit") == "g/dL"
@@ -116,6 +119,18 @@ def test_chart_context_pipeline_progress(authed_client):
     status2 = _wait_for_stage(client, token, "pt-456")
     assert status2["stages"]["superficial"]["doc_count"] == 2
     assert status2["stages"]["indexed"]["state"] == "completed"
+
+    search_resp = client.get(
+        "/api/patients/pt-456/context/search",
+        headers=_auth_header(token),
+        params={"q": "metformin"},
+    )
+    assert search_resp.status_code == 200
+    results = search_resp.json()["results"]
+    assert any(result["category"] == "meds" for result in results)
+    med_result = next(result for result in results if result["category"] == "meds")
+    assert med_result["fact"]["label"] == "Metformin"
+    assert med_result["fact"]["evidence"]
 
 
 def test_chart_context_idempotent_upload(authed_client, db_session, tmp_path):

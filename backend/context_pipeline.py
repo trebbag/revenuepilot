@@ -3,6 +3,7 @@ from __future__ import annotations
 """Staged chart ingestion pipeline for patient context generation."""
 
 import asyncio
+import copy
 import hashlib
 import logging
 import os
@@ -364,6 +365,54 @@ class ChartContextPipeline:
             return None
         return self._build_status_payload(correlation_id, jobs)
 
+    def _convert_anchors(
+        self,
+        evidence: Optional[Iterable[Mapping[str, Any]]],
+        documents: Mapping[str, Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        anchors: list[dict[str, Any]] = []
+        if not evidence:
+            return anchors
+        for anchor in evidence:
+            if not isinstance(anchor, Mapping):
+                continue
+            doc_id = anchor.get("doc_id")
+            doc_key = str(doc_id) if doc_id is not None else None
+            doc_meta = documents.get(doc_key or "") if doc_key else None
+            anchors.append(
+                {
+                    "sourceDocId": doc_key,
+                    "sourceName": doc_meta.get("name") if doc_meta else None,
+                    "page": anchor.get("page"),
+                    "offset": anchor.get("char_start"),
+                    "offsetEnd": anchor.get("char_end"),
+                }
+            )
+        return anchors
+
+    def _normalize_fact_entries(
+        self,
+        entries: Optional[Iterable[Mapping[str, Any]]],
+        documents: Mapping[str, Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not entries:
+            return []
+        normalized: list[dict[str, Any]] = []
+        for entry in entries:
+            cloned = copy.deepcopy(entry)
+            if isinstance(cloned, dict):
+                anchors = self._convert_anchors(cloned.get("evidence"), documents)
+                cloned["evidence"] = anchors
+                cloned["anchors"] = anchors
+                history_entries = cloned.get("history") if isinstance(cloned.get("history"), list) else []
+                for history_entry in history_entries:
+                    if isinstance(history_entry, dict):
+                        history_anchors = self._convert_anchors(history_entry.get("evidence"), documents)
+                        history_entry["evidence"] = history_anchors
+                        history_entry["anchors"] = history_anchors
+            normalized.append(cloned if isinstance(cloned, dict) else copy.deepcopy(entry))
+        return normalized
+
     def get_snapshot(self, patient_id: str, stage: str) -> Optional[dict[str, Any]]:
         desired = stage or "superficial"
         desired = desired.lower()
@@ -378,6 +427,25 @@ class ChartContextPipeline:
                 .scalars()
                 .all()
             )
+            doc_rows = (
+                session.execute(
+                    sa.select(
+                        db_models.ChartDocument.doc_id,
+                        db_models.ChartDocument.name,
+                        db_models.ChartDocument.pages,
+                    ).where(db_models.ChartDocument.patient_id == patient_id)
+                )
+                .all()
+            )
+        documents = {
+            str(row.doc_id): {
+                "doc_id": str(row.doc_id),
+                "name": row.name,
+                "pages": row.pages,
+            }
+            for row in doc_rows
+        }
+        document_list = [dict(value) for value in documents.values()]
         if desired == "superficial" or not deep:
             if not superficial:
                 return None
@@ -385,29 +453,114 @@ class ChartContextPipeline:
                 "stage": _SUPERFICIAL,
                 "patient_id": patient_id,
                 "summary": superficial.kv,
+                "pmh": [],
+                "meds": [],
+                "allergies": [],
+                "labs": [],
+                "vitals": [],
                 "provenance": {
                     "doc_count": superficial.provenance.get("doc_count"),
                     "generated_at": superficial.generated_at.isoformat(),
+                    "documents": document_list,
                 },
             }
         best_stage = _DEEP
         if desired in {"final", "indexed"} and chunks:
             best_stage = _INDEXED
-        payload = deep.problems or []
+        problems = self._normalize_fact_entries(deep.problems, documents)
+        medications = self._normalize_fact_entries(deep.meds, documents)
+        allergies = self._normalize_fact_entries(deep.allergies, documents)
+        labs = self._normalize_fact_entries(deep.labs, documents)
+        vitals = self._normalize_fact_entries(deep.vitals, documents)
         return {
             "stage": best_stage,
             "patient_id": patient_id,
             "summary": {
-                "problems": deep.problems,
-                "medications": deep.meds,
-                "allergies": deep.allergies,
-                "labs": deep.labs,
-                "vitals": deep.vitals,
+                "problems": problems,
+                "medications": medications,
+                "allergies": allergies,
+                "labs": labs,
+                "vitals": vitals,
             },
+            "pmh": problems,
+            "meds": medications,
+            "allergies": allergies,
+            "labs": labs,
+            "vitals": vitals,
             "provenance": {
                 "doc_count": deep.provenance.get("doc_count"),
                 "generated_at": deep.generated_at.isoformat(),
+                "documents": document_list,
             },
+        }
+
+    def search_context(self, patient_id: str, query: str) -> Optional[dict[str, Any]]:
+        snapshot = self.get_snapshot(patient_id, "final")
+        if not snapshot:
+            return None
+        normalized_query = (query or "").strip().lower()
+        results: list[dict[str, Any]] = []
+        if normalized_query:
+            categories = {
+                "pmh": snapshot.get("pmh", []),
+                "meds": snapshot.get("meds", []),
+                "allergies": snapshot.get("allergies", []),
+                "labs": snapshot.get("labs", []),
+                "vitals": snapshot.get("vitals", []),
+            }
+
+            def _collect_strings(value: Any) -> list[str]:
+                collected: list[str] = []
+                if value is None:
+                    return collected
+                if isinstance(value, str):
+                    text = value.strip()
+                    if text:
+                        collected.append(text.lower())
+                elif isinstance(value, (int, float)):
+                    collected.append(str(value).lower())
+                elif isinstance(value, list):
+                    for item in value:
+                        collected.extend(_collect_strings(item))
+                elif isinstance(value, dict):
+                    for item in value.values():
+                        collected.extend(_collect_strings(item))
+                return collected
+
+            for category, entries in categories.items():
+                for entry in entries or []:
+                    haystack: list[str] = []
+                    if isinstance(entry, Mapping):
+                        haystack.extend(_collect_strings(entry.get("label")))
+                        haystack.extend(_collect_strings(entry.get("code")))
+                        haystack.extend(_collect_strings(entry.get("value")))
+                        haystack.extend(_collect_strings(entry.get("status")))
+                        haystack.extend(_collect_strings(entry.get("dose_text")))
+                        haystack.extend(_collect_strings(entry.get("frequency")))
+                        haystack.extend(_collect_strings(entry.get("route")))
+                        haystack.extend(_collect_strings(entry.get("notes")))
+                        history_entries = entry.get("history") if isinstance(entry.get("history"), list) else []
+                        for history_entry in history_entries:
+                            if isinstance(history_entry, Mapping):
+                                haystack.extend(_collect_strings(history_entry.get("context")))
+                                haystack.extend(_collect_strings(history_entry.get("value")))
+                                haystack.extend(_collect_strings(history_entry.get("notes")))
+                                haystack.extend(_collect_strings(history_entry.get("detail")))
+                    if any(normalized_query in item for item in haystack):
+                        matches = sorted({item for item in haystack if normalized_query in item})
+                        results.append(
+                            {
+                                "category": category,
+                                "matches": matches,
+                                "fact": copy.deepcopy(entry),
+                            }
+                        )
+
+        return {
+            "query": query,
+            "stage": snapshot.get("stage"),
+            "documents": snapshot.get("provenance", {}).get("documents", []),
+            "results": results,
         }
 
     def _build_status_payload(

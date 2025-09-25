@@ -74,9 +74,20 @@ vi.mock("../../components/FinalizationWizardAdapter", () => ({
 }))
 
 vi.mock("../../components/Schedule", () => ({
-  Schedule: ({ onUploadChart, uploadStatuses }: { onUploadChart?: (patientId: string) => void; uploadStatuses?: Record<string, unknown> }) => (
+  Schedule: ({
+    onUploadChart,
+    uploadStatuses,
+    onOpenChartContext = () => {},
+  }: {
+    onUploadChart?: (patientId: string) => void
+    uploadStatuses?: Record<string, unknown>
+    onOpenChartContext?: (patientId: string) => void
+  }) => (
     <div>
-      <button type="button" onClick={() => onUploadChart?.("PT-0001")}>Upload Chart</button>
+      <button type="button" onClick={() => onUploadChart?.("PT-0001")}>
+        Upload Chart
+      </button>
+      <button type="button" onClick={() => onOpenChartContext("PT-0001")}>Open chart</button>
       <pre data-testid="upload-status">{JSON.stringify(uploadStatuses ?? {})}</pre>
     </div>
   ),

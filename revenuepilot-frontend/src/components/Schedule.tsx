@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useRef } from "react"
 import { motion } from "motion/react"
 import {
   Calendar as CalendarIcon,
+  BookOpen,
   ChevronLeft,
   ChevronRight,
   Filter,
@@ -76,9 +77,10 @@ interface ScheduleProps {
   error?: string | null
   onRefresh?: () => void
   onFiltersChange?: (filters: { provider: string; status: string; appointmentType: string; viewMode: "day" | "week" | "month"; date: string; search: string }) => void
+  onOpenChartContext?: (patientId: string, options?: { patientName?: string | null }) => void
 }
 
-export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatuses = {}, appointments: propAppointments, loading = false, error = null, onRefresh, onFiltersChange }: ScheduleProps) {
+export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatuses = {}, appointments: propAppointments, loading = false, error = null, onRefresh, onFiltersChange, onOpenChartContext }: ScheduleProps) {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<"day" | "week" | "month">("day")
   const [providerFilter, setProviderFilter] = useState("me") // 'me', 'everyone', specific provider
@@ -369,6 +371,10 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatu
           : null
     const contextPipelineComplete = indexedStageState ? indexedStageState.toLowerCase() === "completed" : false
 
+    const handleOpenChart = () => {
+      onOpenChartContext?.(appointment.patientId, { patientName: appointment.patientName })
+    }
+
     return (
       <Card
         className={`hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30 border-l-4 ${getPriorityColor(appointment.priority)} ${compact ? "p-2" : ""}`}
@@ -443,6 +449,16 @@ export function Schedule({ currentUser, onStartVisit, onUploadChart, uploadStatu
                   )}
                 </Button>
               )}
+
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="ghost" size="sm" className="flex items-center gap-1" onClick={handleOpenChart}>
+                    <BookOpen className="w-4 h-4" />
+                    <span className="text-xs font-medium">Readable chart</span>
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>View structured chart context</TooltipContent>
+              </Tooltip>
 
               {isError && (
                 <Badge variant="destructive" className="text-xs max-w-[12rem] truncate" title={uploadState?.error}>
