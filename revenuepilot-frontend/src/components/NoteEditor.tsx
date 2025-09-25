@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type MutableRefObject,
 } from "react"
+import { useTranslation } from "react-i18next"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
@@ -895,6 +896,7 @@ export function NoteEditor({
   onTranscriptCursorChange,
   onOpenChartContext,
 }: NoteEditorProps) {
+  const { t } = useTranslation()
   const auth = useAuth()
   const { state: sessionState } = useSession()
   const [patientInputValue, setPatientInputValue] = useState(initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || "")
@@ -1068,6 +1070,9 @@ export function NoteEditor({
   const [visitLoading, setVisitLoading] = useState(false)
   const [visitError, setVisitError] = useState<string | null>(null)
   const [visitSession, setVisitSession] = useState<VisitSessionState>({})
+  useEffect(() => {
+    latestVisitSessionRef.current = visitSession
+  }, [visitSession])
   const [hasEverStarted, setHasEverStarted] = useState(initialRecordedSeconds > 0)
   const [currentSessionTime, setCurrentSessionTime] = useState(0)
   const [pausedTime, setPausedTime] = useState(initialRecordedSeconds)
@@ -1292,6 +1297,8 @@ export function NoteEditor({
   const prevInitialPatientNameRef = useRef<string | undefined>(initialNoteData?.patientName)
   const prevPrePopulatedRef = useRef<{ patientId: string; encounterId: string } | null>(prePopulatedPatient ?? null)
   const patientDropdownCloseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const ensuredSessionKeyRef = useRef<string | null>(null)
+  const latestVisitSessionRef = useRef<VisitSessionState>({})
 
   type FetchOptions = ApiFetchOptions
 
@@ -1414,6 +1421,87 @@ export function NoteEditor({
   }, [autoSaveLastContentRef, buildDemographicsHeader, noteContentRef, onNoteContentChange])
 
   const fetchWithAuth = useCallback((input: RequestInfo | URL, init: FetchOptions = {}) => apiFetch(input, init), [])
+
+  useEffect(() => {
+    const trimmedEncounterId = encounterId.trim()
+    if (!trimmedEncounterId) {
+      return
+    }
+    const encounterNumeric = Number(trimmedEncounterId)
+    if (!Number.isFinite(encounterNumeric)) {
+      return
+    }
+    const trimmedPatientId = patientId.trim()
+    const key = `${encounterNumeric}:${trimmedPatientId}`
+    if (ensuredSessionKeyRef.current === key && latestVisitSessionRef.current.sessionId) {
+      return
+    }
+
+    let cancelled = false
+    const controller = new AbortController()
+
+    const ensureSession = async () => {
+      try {
+        const response = await fetchWithAuth("/api/visits/session", {
+          method: "POST",
+          jsonBody: {
+            encounter_id: encounterNumeric,
+            patient_id: trimmedPatientId || undefined,
+          },
+          signal: controller.signal,
+        })
+
+        if (!response.ok) {
+          throw new Error(`Failed to load visit session (${response.status})`)
+        }
+
+        const sessionData = await response.json().catch(() => null)
+        if (!cancelled && sessionData) {
+          const previouslyHadSession = Boolean(latestVisitSessionRef.current.sessionId)
+          setVisitSession((prev) => ({
+            ...prev,
+            ...sessionData,
+            sessionId: sessionData.sessionId ?? prev.sessionId,
+            encounterId: encounterNumeric,
+            patientId: trimmedPatientId || prev.patientId,
+          }))
+          setVisitError(null)
+
+          const sessionIdNumber = Number(sessionData.sessionId)
+          const baseDuration = Number(sessionData.durationSeconds)
+          if (
+            !previouslyHadSession &&
+            Number.isFinite(sessionIdNumber) &&
+            sessionData.status === "active" &&
+            (!Number.isFinite(baseDuration) || baseDuration === 0)
+          ) {
+            try {
+              await fetchWithAuth("/api/visits/session", {
+                method: "PATCH",
+                jsonBody: { session_id: sessionIdNumber, action: "pause" },
+              })
+            } catch (error) {
+              console.error("Failed to pause newly created visit session", error)
+            }
+          }
+        }
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        console.error("Failed to ensure visit session", error)
+        setVisitError(t("noteEditor.visitSessionError"))
+      }
+    }
+
+    ensuredSessionKeyRef.current = key
+    ensureSession()
+
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [encounterId, patientId, fetchWithAuth, t])
 
   const convertComplianceResponse = useCallback((raw: any): ComplianceIssue[] => {
     if (!Array.isArray(raw)) return []
@@ -2934,6 +3022,8 @@ export function NoteEditor({
     setAutoSaveError(null)
     setSaveDraftError(null)
     setVisitSession({})
+    latestVisitSessionRef.current = {}
+    ensuredSessionKeyRef.current = null
     setVisitStarted(false)
     setHasEverStarted(false)
     setVisitLoading(false)
@@ -3568,14 +3658,51 @@ export function NoteEditor({
   }, [stopAudioStream])
 
   useEffect(() => {
-    if (!visitStarted) return
-    const interval = window.setInterval(() => {
-      setCurrentSessionTime((time) => time + 1)
-    }, 1000)
     return () => {
-      clearInterval(interval)
+      const sessionId = latestVisitSessionRef.current.sessionId
+      if (!sessionId) {
+        return
+      }
+      if (latestVisitSessionRef.current.status !== "active") {
+        return
+      }
+      void fetchWithAuth("/api/visits/session", {
+        method: "PATCH",
+        jsonBody: { session_id: sessionId, action: "pause" },
+      }).catch((error) => {
+        console.error("Failed to pause visit session on cleanup", error)
+      })
     }
-  }, [visitStarted])
+  }, [fetchWithAuth])
+
+  const performVisitSessionUpdate = useCallback(
+    async (action: "pause" | "resume" | "stop") => {
+      const sessionId = latestVisitSessionRef.current.sessionId
+      if (!sessionId) {
+        return null
+      }
+
+      const response = await fetchWithAuth("/api/visits/session", {
+        method: "PATCH",
+        jsonBody: { session_id: sessionId, action },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to ${action} visit (${response.status})`)
+      }
+
+      const sessionData = await response.json().catch(() => null)
+      if (sessionData) {
+        setVisitSession((prev) => ({
+          ...prev,
+          ...sessionData,
+          sessionId: sessionData.sessionId ?? prev.sessionId,
+        }))
+      }
+      return sessionData
+    },
+    [fetchWithAuth],
+  )
 
   useEffect(() => {
     onComplianceStreamUpdate?.(complianceIssues, complianceStreamState)
@@ -3681,11 +3808,17 @@ export function NoteEditor({
       setIsFinalized(true)
       stopAudioStream()
       setVisitStarted(false)
-      setVisitSession((prev) => ({
-        ...prev,
-        status: "finalized",
-        endTime: new Date().toISOString(),
-      }))
+      if (visitSession.sessionId) {
+        void performVisitSessionUpdate("stop").catch((error) => {
+          console.error("Failed to complete visit session", error)
+        })
+      } else {
+        setVisitSession((prev) => ({
+          ...prev,
+          status: "completed",
+          endTime: new Date().toISOString(),
+        }))
+      }
       setVisitError(null)
       setPausedTime(currentSessionTime)
 
@@ -3707,7 +3840,15 @@ export function NoteEditor({
         description: result.exportReady ? "The note has been finalized and is ready for export." : "The note was finalized, but some items still require review.",
       })
     },
-    [applyWizardIssues, currentSessionTime, complianceCodeValues, onNoteContentChange, stopAudioStream],
+    [
+      applyWizardIssues,
+      currentSessionTime,
+      complianceCodeValues,
+      onNoteContentChange,
+      performVisitSessionUpdate,
+      stopAudioStream,
+      visitSession.sessionId,
+    ],
   )
 
   useEffect(() => {
@@ -3824,52 +3965,82 @@ export function NoteEditor({
   }, [visitSession?.startTime])
 
   useEffect(() => {
-    const status = visitSession.status
-    const baseDuration = Number.isFinite(visitSession.durationSeconds)
-      ? Math.max(0, Math.floor(Number(visitSession.durationSeconds)))
-      : 0
-    let computed = baseDuration
-    if (status === "active") {
+    const fallbackDuration = Math.max(
+      0,
+      Math.floor(pausedTime > 0 ? pausedTime : initialRecordedSeconds),
+    )
+
+    const computeDuration = () => {
+      const baseDuration = Number.isFinite(visitSession.durationSeconds)
+        ? Math.max(0, Math.floor(Number(visitSession.durationSeconds)))
+        : fallbackDuration
+      if (visitSession.status !== "active") {
+        return baseDuration
+      }
       const resumedMs =
         parseSessionTimestamp(visitSession.lastResumedAt ?? null) ??
         parseSessionTimestamp(visitSession.startTime ?? null)
-      if (resumedMs !== null) {
-        const nowMs = Date.now()
-        if (!Number.isNaN(nowMs) && nowMs > resumedMs) {
-          computed = baseDuration + Math.max(0, Math.floor((nowMs - resumedMs) / 1000))
-        }
+      if (resumedMs === null) {
+        return baseDuration
       }
+      const nowMs = Date.now()
+      if (Number.isNaN(nowMs) || nowMs <= resumedMs) {
+        return baseDuration
+      }
+      return baseDuration + Math.max(0, Math.floor((nowMs - resumedMs) / 1000))
     }
+
+    const applyDuration = () => {
+      const computed = computeDuration()
+      setCurrentSessionTime(computed)
+      setPausedTime(computed)
+      return computed
+    }
+
+    const status = visitSession.status
+    const initialDuration = applyDuration()
+
     if (status === "active") {
       setVisitStarted(true)
-      setCurrentSessionTime(computed)
-      setPausedTime(computed)
       setHasEverStarted(true)
-    } else if (status === "paused" || status === "completed") {
-      setVisitStarted(false)
-      setCurrentSessionTime(computed)
-      setPausedTime(computed)
-      if (computed > 0 || status === "completed") {
-        setHasEverStarted(true)
+      const interval = window.setInterval(() => {
+        applyDuration()
+      }, 1000)
+      return () => {
+        clearInterval(interval)
       }
     }
-  }, [visitSession.status, visitSession.durationSeconds, visitSession.lastResumedAt, visitSession.startTime])
 
-  const visitStatus = visitSession.status ?? (visitStarted ? "active" : undefined)
-  const totalDisplayTime = visitStarted ? currentSessionTime : pausedTime
+    setVisitStarted(false)
+    if (initialDuration > 0 || status === "completed") {
+      setHasEverStarted(true)
+    }
+    return undefined
+  }, [
+    visitSession.status,
+    visitSession.durationSeconds,
+    visitSession.lastResumedAt,
+    visitSession.startTime,
+    pausedTime,
+    initialRecordedSeconds,
+  ])
+
+  const isSessionActive = visitSession.status === "active"
+  const visitStatus = visitSession.status
+  const totalDisplayTime = isSessionActive ? currentSessionTime : pausedTime
   const hasRecordedTime = totalDisplayTime > 0
   const visitStatusLabel = useMemo(() => {
     switch (visitStatus) {
       case "active":
-        return "Visit Active"
+        return t("noteEditor.visitSessionActive")
       case "paused":
-        return "Visit Paused"
+        return t("noteEditor.visitSessionPaused")
       case "completed":
-        return "Visit Completed"
+        return t("noteEditor.visitSessionComplete")
       default:
         return null
     }
-  }, [visitStatus])
+  }, [t, visitStatus])
 
   const visitStatusBadgeClass = useMemo(() => {
     switch (visitStatus) {
@@ -3883,7 +4054,7 @@ export function NoteEditor({
         return "bg-muted text-muted-foreground"
     }
   }, [visitStatus])
-  const isEditorDisabled = isFinalized || !visitStarted
+  const isEditorDisabled = isFinalized || (!isSessionActive && !hasEverStarted)
 
   // Calculate active issues for button state
   const activeIssues = complianceIssues.filter((issue) => !issue.dismissed)
@@ -4095,16 +4266,7 @@ export function NoteEditor({
 
       if (visitSession.sessionId) {
         try {
-          const sessionResponse = await fetchWithAuth("/api/visits/session", {
-            method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "stop" },
-          })
-          if (sessionResponse.ok) {
-            const sessionData = await sessionResponse.json().catch(() => null)
-            if (sessionData) {
-              setVisitSession((prev) => ({ ...prev, ...sessionData }))
-            }
-          }
+          await performVisitSessionUpdate("pause")
         } catch (error) {
           console.error("Failed to update visit session after draft save", error)
         }
@@ -4158,6 +4320,7 @@ export function NoteEditor({
     performAutoSave,
     fetchWithAuth,
     visitSession.sessionId,
+    performVisitSessionUpdate,
     setVisitSession,
     stopAudioStream,
     setVisitStarted,
@@ -4183,7 +4346,7 @@ export function NoteEditor({
     }
     const trimmedPatientId = patientId.trim()
     const encounterNumeric = Number(encounterValidation.encounter?.encounterId ?? encounterId)
-    if (!visitStarted) {
+    if (visitSession.status !== "active") {
       if (!canStartVisit) {
         setVisitError("Validate patient and encounter before starting a visit.")
         return
@@ -4257,21 +4420,17 @@ export function NoteEditor({
         if (!visitSession.sessionId) {
           const response = await fetchWithAuth("/api/visits/session", {
             method: "POST",
-            jsonBody: { encounter_id: encounterNumeric },
+            jsonBody: {
+              encounter_id: encounterNumeric,
+              patient_id: trimmedPatientId || undefined,
+            },
           })
           if (!response.ok) {
             throw new Error(`Failed to start visit (${response.status})`)
           }
           sessionData = await response.json().catch(() => null)
         } else {
-          const response = await fetchWithAuth("/api/visits/session", {
-            method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "resume" },
-          })
-          if (!response.ok) {
-            throw new Error(`Failed to resume visit (${response.status})`)
-          }
-          sessionData = await response.json().catch(() => null)
+          sessionData = await performVisitSessionUpdate("resume")
         }
 
         if (sessionData) {
@@ -4293,6 +4452,12 @@ export function NoteEditor({
                 ? sessionData.lastResumedAt
                 : prev.lastResumedAt ?? null,
           }))
+        } else {
+          setVisitSession((prev) => ({
+            ...prev,
+            encounterId: encounterNumeric,
+            patientId: trimmedPatientId || prev.patientId,
+          }))
         }
 
         setHasEverStarted(true)
@@ -4301,7 +4466,8 @@ export function NoteEditor({
           setVisitError("Microphone access is required for live transcription.")
         }
       } catch (error) {
-        setVisitError(error instanceof Error ? error.message : "Unable to start visit")
+        const message = error instanceof Error ? error.message : t("noteEditor.visitSessionError")
+        setVisitError(message)
         stopAudioStream()
         setVisitStarted(false)
       } finally {
@@ -4311,20 +4477,11 @@ export function NoteEditor({
       setVisitLoading(true)
       try {
         if (visitSession.sessionId) {
-          const response = await fetchWithAuth("/api/visits/session", {
-            method: "PUT",
-            jsonBody: { session_id: visitSession.sessionId, action: "stop" },
-          })
-          if (!response.ok) {
-            throw new Error(`Failed to stop visit (${response.status})`)
-          }
-          const data = await response.json().catch(() => null)
-          if (data) {
-            setVisitSession((prev) => ({ ...prev, ...data }))
-          }
+          await performVisitSessionUpdate("pause")
         }
       } catch (error) {
-        setVisitError(error instanceof Error ? error.message : "Unable to stop visit")
+        const message = error instanceof Error ? error.message : t("noteEditor.visitSessionError")
+        setVisitError(message)
       } finally {
         await performAutoSave({ reason: "manual", force: true })
         stopAudioStream()
@@ -4334,12 +4491,12 @@ export function NoteEditor({
     }
   }, [
     visitLoading,
-    visitStarted,
     canStartVisit,
     encounterValidation.encounter?.encounterId,
     encounterId,
     fetchWithAuth,
     visitSession.sessionId,
+    visitSession.status,
     ensureNoteCreated,
     ensureDemographicsHeader,
     noteContentRef,
@@ -4350,6 +4507,8 @@ export function NoteEditor({
     setPatientId,
     setPatientInputValue,
     performAutoSave,
+    performVisitSessionUpdate,
+    t,
   ])
 
   return (

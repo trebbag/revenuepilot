@@ -44,6 +44,7 @@ vi.mock("lucide-react", () => ({
   AlertTriangle: () => null,
   Loader2: () => null,
   XIcon: () => null,
+  BookOpen: () => null,
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({
@@ -217,7 +218,7 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
     )
   }
 
-  if (url === "/api/visits/session" && method === "PUT") {
+  if (url === "/api/visits/session" && method === "PATCH") {
     const action = init.jsonBody?.action
     if (action === "resume") {
       return new Response(
@@ -231,6 +232,17 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
         { status: 200 },
       )
     }
+    if (action === "pause") {
+      return new Response(
+        JSON.stringify({
+          sessionId: 42,
+          status: "paused",
+          durationSeconds: 300,
+          startTime: "2024-03-14T10:00:00",
+        }),
+        { status: 200 },
+      )
+    }
     if (action === "stop") {
       return new Response(
         JSON.stringify({
@@ -239,17 +251,6 @@ const defaultFetchImplementation = async (input: RequestInfo | URL, init: Record
           startTime: "2024-03-14T10:00:00",
           endTime: "2024-03-14T10:10:00",
           durationSeconds: 600,
-        }),
-        { status: 200 },
-      )
-    }
-    if (action === "pause") {
-      return new Response(
-        JSON.stringify({
-          sessionId: 42,
-          status: "paused",
-          durationSeconds: 300,
-          startTime: "2024-03-14T10:00:00",
         }),
         { status: 200 },
       )
