@@ -269,7 +269,6 @@ const normalizeConfidenceValue = (value: unknown): number | undefined => {
 
 const normalizeConfidence = (value: unknown): number | undefined => normalizeConfidenceValue(value);
 
-const toTrimmedStringArray = (value: unknown): string[] => sanitizeStringList(value);
 
 // Utility: normalize doc support value (from master branch)
 const normalizeDocSupport = (value: unknown): string | undefined => {
