@@ -19,7 +19,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
-from backend.time_utils import ensure_utc, from_epoch_seconds, to_epoch_seconds, utc_now
+from backend.time_utils import ensure_utc, from_epoch_seconds, utc_now
 
 import sqlalchemy as sa
 from sqlalchemy import case, select
@@ -297,11 +297,13 @@ _VISIT_SESSIONS_TABLE = sa.Table(
     _METADATA,
     sa.Column("id", sa.Integer, primary_key=True),
     sa.Column("encounter_id", sa.Integer),
+    sa.Column("patient_id", sa.String),
     sa.Column("status", sa.String),
     sa.Column("start_time", sa.String),
+    sa.Column("last_resumed_at", sa.String),
     sa.Column("end_time", sa.String),
-    sa.Column("data", sa.JSON),
-    sa.Column("updated_at", sa.Float),
+    sa.Column("duration_seconds", sa.Integer),
+    sa.Column("meta", sa.JSON),
 )
 
 
@@ -520,10 +522,28 @@ def _normalise_status(value: Optional[str]) -> str:
 
 def _visit_session_sort_key(value: Optional[datetime]) -> float:
     if isinstance(value, datetime):
+        value = ensure_utc(value)
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.timestamp()
     return float("-inf")
+
+
+def _visit_session_row_timestamp(row: Mapping[str, Any]) -> float:
+    """Return a comparable timestamp for ordering visit session rows."""
+
+    candidates = (
+        _parse_datetime(row.get("last_resumed_at")),
+        _parse_datetime(row.get("end_time")),
+        _parse_datetime(row.get("start_time")),
+    )
+    latest: Optional[datetime] = None
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if latest is None or candidate > latest:
+            latest = candidate
+    return _visit_session_sort_key(latest)
 
 
 def _load_visit_sessions(session: Session) -> Dict[int, Mapping[str, Any]]:
@@ -536,11 +556,11 @@ def _load_visit_sessions(session: Session) -> Dict[int, Mapping[str, Any]]:
         if encounter_id is None:
             continue
         existing = latest.get(encounter_id)
-        candidate_ts = _visit_session_sort_key(row.get("updated_at"))
+        candidate_ts = _visit_session_row_timestamp(row)
         if existing is None:
             latest[encounter_id] = dict(row)
             continue
-        existing_ts = _visit_session_sort_key(existing.get("updated_at"))
+        existing_ts = _visit_session_row_timestamp(existing)
         if candidate_ts > existing_ts:
             latest[encounter_id] = dict(row)
         elif candidate_ts == existing_ts and row.get("id", 0) > existing.get("id", 0):
@@ -549,33 +569,24 @@ def _load_visit_sessions(session: Session) -> Dict[int, Mapping[str, Any]]:
 
 
 def _extract_session_runtime(row: Mapping[str, Any]) -> Tuple[int, Optional[str]]:
-    payload_raw = row.get("data")
-    payload: Dict[str, Any]
-    if isinstance(payload_raw, Mapping):
-        payload = dict(payload_raw)
-    elif isinstance(payload_raw, str) and payload_raw.strip():
-        try:
-            parsed = json.loads(payload_raw)
-        except json.JSONDecodeError:
-            payload = {"raw": payload_raw}
-        else:
-            payload = parsed if isinstance(parsed, dict) else {"raw": payload_raw}
-    else:
-        payload = {}
-
-    base_seconds = payload.get("durationSeconds")
+    raw_duration = row.get("duration_seconds")
     try:
-        duration_seconds = int(base_seconds)
+        duration_seconds = int(raw_duration)
     except (TypeError, ValueError):
         duration_seconds = 0
 
-    last_resumed_raw = payload.get("lastResumedAt")
+    last_resumed_raw = row.get("last_resumed_at")
+    last_resumed: Optional[str] = None
     if isinstance(last_resumed_raw, datetime):
         last_resumed = _serialize_datetime(ensure_utc(last_resumed_raw))
     elif isinstance(last_resumed_raw, str):
-        last_resumed = last_resumed_raw.strip() or None
-    else:
-        last_resumed = None
+        text = last_resumed_raw.strip()
+        if text:
+            parsed = _parse_datetime(text)
+            last_resumed = _serialize_datetime(parsed) if parsed else text
+    elif isinstance(last_resumed_raw, (int, float)):
+        parsed = _parse_datetime(last_resumed_raw)
+        last_resumed = _serialize_datetime(parsed)
 
     if row.get("status") == "active" and last_resumed:
         resumed_dt = _parse_datetime(last_resumed)
@@ -631,7 +642,7 @@ def _build_visit_summary(
     session_duration: Optional[int] = None
     last_resumed_at: Optional[str] = None
     if session_row is not None:
-        session_data = session_row.get("data")
+        session_data = session_row.get("meta")
         if session_data:
             if isinstance(session_data, Mapping):
                 session_payload = dict(session_data)
@@ -653,11 +664,20 @@ def _build_visit_summary(
             if isinstance(location_override, str) and location_override.strip():
                 summary.setdefault("location", location_override.strip())
 
-        updated_at = session_row.get("updated_at")
-        if updated_at is not None:
-            summary["sessionUpdatedAt"] = _serialize_datetime(
-                _parse_datetime(updated_at)
-            )
+        updated_candidates = (
+            session_row.get("last_resumed_at"),
+            session_row.get("end_time"),
+            session_row.get("start_time"),
+        )
+        updated_ts: Optional[datetime] = None
+        for candidate in updated_candidates:
+            parsed = _parse_datetime(candidate)
+            if parsed is None:
+                continue
+            if updated_ts is None or parsed > updated_ts:
+                updated_ts = parsed
+        if updated_ts is not None:
+            summary["sessionUpdatedAt"] = _serialize_datetime(updated_ts)
 
         session_status = (session_row.get("status") or "").strip().lower() or None
         duration_seconds, last_resumed_at = _extract_session_runtime(session_row)
@@ -772,7 +792,7 @@ def _load_db_appointments(session: Session) -> list[dict]:
         )
 
         if session_row is not None:
-            session_data = session_row.get("data")
+            session_data = session_row.get("meta")
             if isinstance(session_data, Mapping):
                 session_payload = dict(session_data)
             elif session_data:
@@ -879,8 +899,8 @@ def create_persisted_appointment(
             status="scheduled",
             start_time=_serialize_datetime(start_utc) or start_utc.isoformat(),
             end_time=_serialize_datetime(end_utc) or end_utc.isoformat(),
-            updated_at=to_epoch_seconds(utc_now()),
-            data=session_payload or None,
+            duration_seconds=0,
+            meta=session_payload or None,
         )
     )
     session.commit()
@@ -1153,10 +1173,7 @@ def _apply_db_bulk_operation(
             session.execute(
                 select(_VISIT_SESSIONS_TABLE)
                 .where(_VISIT_SESSIONS_TABLE.c.encounter_id == encounter_id)
-                .order_by(
-                    _VISIT_SESSIONS_TABLE.c.updated_at.desc().nulls_last(),
-                    _VISIT_SESSIONS_TABLE.c.id.desc(),
-                )
+                .order_by(_VISIT_SESSIONS_TABLE.c.id.desc())
                 .limit(1)
             )
             .mappings()
@@ -1176,8 +1193,6 @@ def _apply_db_bulk_operation(
         start_iso = _serialize_datetime(new_start) or new_start.replace(microsecond=0).isoformat()
         end_dt = ensure_utc(new_start + duration)
         end_iso = _serialize_datetime(end_dt) or end_dt.replace(microsecond=0).isoformat()
-        now_ts = to_epoch_seconds(utc_now())
-
         if session_row:
             session.execute(
                 _VISIT_SESSIONS_TABLE.update()
@@ -1186,7 +1201,6 @@ def _apply_db_bulk_operation(
                     start_time=start_iso,
                     end_time=end_iso,
                     status="scheduled",
-                    updated_at=now_ts,
                 )
             )
         else:
@@ -1196,7 +1210,6 @@ def _apply_db_bulk_operation(
                     status="scheduled",
                     start_time=start_iso,
                     end_time=end_iso,
-                    updated_at=now_ts,
                 )
             )
 
@@ -1220,15 +1233,11 @@ def _apply_db_bulk_operation(
         return False
 
 
-    now_ts = to_epoch_seconds(utc_now())
     session_row = (
         session.execute(
             select(_VISIT_SESSIONS_TABLE)
             .where(_VISIT_SESSIONS_TABLE.c.encounter_id == encounter_id)
-            .order_by(
-                _VISIT_SESSIONS_TABLE.c.updated_at.desc().nulls_last(),
-                _VISIT_SESSIONS_TABLE.c.id.desc(),
-            )
+            .order_by(_VISIT_SESSIONS_TABLE.c.id.desc())
             .limit(1)
         )
         .mappings()
@@ -1238,7 +1247,7 @@ def _apply_db_bulk_operation(
         session.execute(
             _VISIT_SESSIONS_TABLE.update()
             .where(_VISIT_SESSIONS_TABLE.c.id == session_row["id"])
-            .values(status=status, updated_at=now_ts)
+            .values(status=status)
         )
     else:
         session.execute(
@@ -1247,7 +1256,6 @@ def _apply_db_bulk_operation(
                 status=status,
                 start_time=None,
                 end_time=None,
-                updated_at=now_ts,
             )
         )
     session.commit()

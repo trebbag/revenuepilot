@@ -364,11 +364,13 @@ visit_sessions = sa.Table(
     legacy_metadata,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("encounter_id", sa.Integer, sa.ForeignKey("encounters.id"), nullable=False),
+    sa.Column("patient_id", sa.Text),
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("start_time", sa.Text),
+    sa.Column("last_resumed_at", sa.Text),
     sa.Column("end_time", sa.Text),
-    sa.Column("data", sa.Text),
-    sa.Column("updated_at", sa.Float),
+    sa.Column("duration_seconds", sa.Integer, nullable=False, server_default=sa.text("0")),
+    sa.Column("meta", sa.JSON),
     sqlite_autoincrement=True,
 )
 
@@ -948,11 +950,13 @@ class VisitSession(Base):
 
     id = sa.Column(Integer, primary_key=True, autoincrement=True)
     encounter_id = sa.Column(Integer, ForeignKey("encounters.id"), nullable=False)
+    patient_id = sa.Column(String, nullable=True)
     status = sa.Column(String, nullable=False)
     start_time = sa.Column(DateTime(timezone=True), nullable=True)
+    last_resumed_at = sa.Column(DateTime(timezone=True), nullable=True)
     end_time = sa.Column(DateTime(timezone=True), nullable=True)
-    data = sa.Column(sa.JSON, nullable=True)
-    updated_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow, onupdate=_utcnow)
+    duration_seconds = sa.Column(Integer, nullable=False, default=0, server_default=sa.text("0"))
+    meta = sa.Column(sa.JSON, nullable=True)
 
 
 class UserSession(Base):
