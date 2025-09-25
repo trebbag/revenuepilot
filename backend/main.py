@@ -6493,11 +6493,26 @@ def _normalize_attestation_payload(raw: Any) -> Dict[str, Any]:
         billing_summary = BillingSummaryModel.model_validate(billing_summary_raw).model_dump()
     except ValidationError:
         billing_summary = BillingSummaryModel().model_dump()
+    payer_checklist_raw = payload.get("payerChecklist") or payload.get("payer_checklist") or []
+    payer_checklist: List[Dict[str, Any]] = []
+    if isinstance(payer_checklist_raw, list):
+        for item in payer_checklist_raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                entry = PayerChecklistItemModel.model_validate(item).model_dump()
+            except ValidationError:
+                continue
+            if entry.get("status") not in {"ready", "warning", "blocker"}:
+                status_value = str(entry.get("status") or "ready").lower()
+                entry["status"] = status_value if status_value in {"ready", "warning", "blocker"} else "ready"
+            payer_checklist.append(entry)
     record = {
         "billingValidation": billing,
         "attestation": attestation,
         "complianceChecks": compliance,
         "billingSummary": billing_summary,
+        "payerChecklist": payer_checklist,
     }
     return record
 
@@ -8400,6 +8415,13 @@ class PayerRequirementModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class PayerChecklistItemModel(BaseModel):
+    id: Optional[str] = None
+    label: Optional[str] = None
+    status: Optional[str] = None
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class ComplianceCheckModel(BaseModel):
     checkType: Optional[str] = Field(None, alias="check_type")
     status: Optional[str] = None
@@ -8447,6 +8469,7 @@ class AttestationRequest(BaseModel):
     attestedBy: Optional[str] = None
     statement: Optional[str] = None
     timestamp: Optional[str] = None
+    ip: Optional[str] = Field(None, alias="ip")
     billingValidation: Optional[BillingValidationModel] = Field(
         None, alias="billing_validation"
     )
@@ -8457,11 +8480,16 @@ class AttestationRequest(BaseModel):
     billingSummary: Optional[BillingSummaryModel] = Field(
         None, alias="billing_summary"
     )
+    payerChecklist: List[PayerChecklistItemModel] = Field(
+        default_factory=list, alias="payer_checklist"
+    )
     model_config = ConfigDict(populate_by_name=True)
 
 
 class WorkflowAttestationResponse(BaseModel):
     session: WorkflowSessionResponse
+    recap: Dict[str, Any]
+    canFinalize: bool
 
 
 class FinalReviewModel(BaseModel):
@@ -8523,6 +8551,8 @@ class DispatchRequest(BaseModel):
 class DispatchResponse(BaseModel):
     session: WorkflowSessionResponse
     result: FinalizeResult
+    destination: Optional[str] = None
+    status: str = "completed"
 
 
 class SelectedCodeBase(BaseModel):
@@ -14616,11 +14646,14 @@ async def attest_workflow_session_v1(
         or req.statement
         or "Provider attestation recorded"
     )
+    ip_address = req.ip or requested_attestation.get("attestationIpAddress")
     requested_attestation.setdefault("attestationTimestamp", attestation_timestamp)
     requested_attestation.setdefault("attestationText", statement)
     requested_attestation.setdefault("attestedBy", attested_by)
     if requested_attestation.get("physicianAttestation") is None:
         requested_attestation["physicianAttestation"] = True
+    if ip_address and not requested_attestation.get("attestationIpAddress"):
+        requested_attestation["attestationIpAddress"] = ip_address
     billing_validation = (
         req.billingValidation.model_dump()
         if req.billingValidation
@@ -14641,12 +14674,27 @@ async def attest_workflow_session_v1(
         if req.billingSummary
         else _derive_billing_summary_from_session(session)
     )
+    payer_checklist = (
+        [item.model_dump() for item in req.payerChecklist]
+        if req.payerChecklist
+        else []
+    )
+    if not payer_checklist:
+        existing_attestation = session.get("attestation") or {}
+        existing_checklist = existing_attestation.get("payerChecklist")
+        if isinstance(existing_checklist, list):
+            payer_checklist = [
+                item
+                for item in existing_checklist
+                if isinstance(item, dict)
+            ]
     session["attestation"] = _normalize_attestation_payload(
         {
             "billingValidation": billing_validation,
             "attestation": requested_attestation,
             "complianceChecks": compliance_checks,
             "billingSummary": billing_summary,
+            "payerChecklist": payer_checklist,
         }
     )
     step_states = session.get("stepStates") or {}
@@ -14683,9 +14731,64 @@ async def attest_workflow_session_v1(
     normalized["context"] = session.get("context", {})
     _recalculate_current_step(normalized)
     _update_session_progress(normalized)
+    attestation_record = normalized.get("attestation") or {}
+    attestation_details = (
+        attestation_record.get("attestation")
+        if isinstance(attestation_record.get("attestation"), dict)
+        else {}
+    )
+    billing_validation_payload = (
+        attestation_record.get("billingValidation")
+        if isinstance(attestation_record.get("billingValidation"), dict)
+        else {}
+    )
+    billing_summary_payload = (
+        attestation_record.get("billingSummary")
+        if isinstance(attestation_record.get("billingSummary"), dict)
+        else {}
+    )
+    compliance_payload = (
+        attestation_record.get("complianceChecks")
+        if isinstance(attestation_record.get("complianceChecks"), list)
+        else []
+    )
+    checklist_payload = (
+        attestation_record.get("payerChecklist")
+        if isinstance(attestation_record.get("payerChecklist"), list)
+        else []
+    )
+    validation_payload = normalized.get("lastValidation")
+    if not isinstance(validation_payload, dict):
+        validation_payload = {}
+    blocking = normalized.get("blockingIssues") or []
+    can_finalize = validation_payload.get("canFinalize")
+    if can_finalize is None:
+        can_finalize = not bool(blocking)
+    validation_payload["canFinalize"] = bool(can_finalize)
+    normalized["lastValidation"] = validation_payload
+    recap: Dict[str, Any] = {
+        "attestedBy": attestation_details.get("attestedBy"),
+        "statement": attestation_details.get("attestationText"),
+        "attestationTimestamp": attestation_details.get("attestationTimestamp"),
+        "attestationIpAddress": attestation_details.get("attestationIpAddress"),
+        "billingValidation": billing_validation_payload,
+        "billingSummary": billing_summary_payload,
+        "complianceChecks": compliance_payload,
+        "payerChecklist": checklist_payload,
+    }
+    estimated_reimbursement = billing_validation_payload.get("estimatedReimbursement")
+    if estimated_reimbursement is None:
+        estimated_reimbursement = billing_summary_payload.get("estimatedPayment")
+    if estimated_reimbursement is not None:
+        recap["estimatedReimbursement"] = estimated_reimbursement
     sessions[session_id] = normalized
     _persist_finalization_sessions(user_id, session_state, sessions)
-    return WorkflowAttestationResponse(session=WorkflowSessionResponse(**_session_to_response(normalized)))
+    response_payload = WorkflowSessionResponse(**_session_to_response(normalized))
+    return WorkflowAttestationResponse(
+        session=response_payload,
+        recap=recap,
+        canFinalize=bool(can_finalize),
+    )
 
 
 @app.post(
@@ -14776,7 +14879,6 @@ async def dispatch_workflow_session_v1(
         validation = {
             "issues": {},
             "reimbursementSummary": normalized.get("reimbursementSummary", {}),
-            "canFinalize": True,
         }
     issues = validation.get("issues") or {}
     reimbursement_summary = validation.get("reimbursementSummary") or normalized.get("reimbursementSummary") or {
@@ -14786,6 +14888,8 @@ async def dispatch_workflow_session_v1(
     blocking = _collect_blocking_issues(issues)
     normalized["blockingIssues"] = blocking
     export_ready = not blocking
+    validation["canFinalize"] = export_ready
+    normalized["lastValidation"] = validation
     finalized_content = (normalized.get("noteContent") or "").strip()
     normalized["updatedAt"] = session["updatedAt"]
     normalized["context"] = session.get("context", {})
@@ -14814,6 +14918,8 @@ async def dispatch_workflow_session_v1(
     return DispatchResponse(
         session=WorkflowSessionResponse(**_session_to_response(normalized)),
         result=result,
+        destination=destination,
+        status="completed" if dispatch_status.get("dispatchCompleted") else "pending",
     )
 
 

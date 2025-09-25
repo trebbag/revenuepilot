@@ -153,4 +153,67 @@ describe("FinalizationWizardAdapter finalize & dispatch", () => {
     expect(lastStoreCall?.[1].noteId).toBe("note-final")
     expect(lastStoreCall?.[1].dispatch).toMatchObject({ destination: "ehr" })
   })
+
+  it("surfaces blockers returned by the pre-finalize check", async () => {
+    const fetchCalls: string[] = []
+    const fetchWithAuthMock = vi.fn<Parameters<FetchWithAuth>, ReturnType<FetchWithAuth>>(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url
+      fetchCalls.push(url)
+
+      if (url.endsWith("/api/notes/pre-finalize-check")) {
+        return buildResponse({
+          canFinalize: false,
+          issues: { content: ["Content too short"] },
+          reimbursementSummary: { total: 0, codes: [] },
+        })
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`)
+    }) as unknown as FetchWithAuth
+
+    render(
+      <FinalizationWizardAdapter
+        isOpen
+        onClose={vi.fn()}
+        selectedCodesList={[]}
+        complianceIssues={[]}
+        noteContent="Test content"
+        patientInfo={{ patientId: "pat-1" }}
+        transcriptEntries={[]}
+        stepOverrides={[]}
+        noteId={null}
+        fetchWithAuth={fetchWithAuthMock}
+        onError={vi.fn()}
+        displayMode="embedded"
+        initialPreFinalizeResult={null}
+        initialSessionSnapshot={{ sessionId: "session-123", encounterId: "enc-1" } as any}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(wizardRenderSpy).toHaveBeenCalled()
+    })
+
+    const latestProps = wizardRenderSpy.mock.lastCall?.[0]
+    expect(latestProps?.onFinalizeAndDispatch).toBeInstanceOf(Function)
+
+    const finalizeRequest = {
+      content: "Finalized note",
+      codes: [],
+      prevention: [],
+      diagnoses: [],
+      differentials: [],
+      compliance: [],
+    }
+
+    const initialPreFinalizeCalls = fetchCalls.filter((url) => url.includes("/api/notes/pre-finalize-check")).length
+
+    await expect(latestProps.onFinalizeAndDispatch(finalizeRequest, {})).rejects.toThrow(
+      /Resolve validation blockers/i,
+    )
+    const preFinalizeCalls = fetchCalls.filter((url) => url.includes("/api/notes/pre-finalize-check"))
+    expect(preFinalizeCalls.length - initialPreFinalizeCalls).toBe(1)
+    expect(fetchCalls.some((url) => url.includes("/api/notes/finalize"))).toBe(false)
+    expect(fetchCalls.some((url) => url.includes("/step6/dispatch"))).toBe(false)
+  })
 })

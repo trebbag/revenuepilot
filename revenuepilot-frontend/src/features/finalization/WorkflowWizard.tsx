@@ -196,16 +196,25 @@ export interface FinalizeResult {
   finalizedNoteId?: string
 }
 
+export interface AttestationChecklistItem {
+  id?: string
+  label?: string
+  status?: "ready" | "warning" | "blocker"
+}
+
 export interface AttestationFormPayload {
   attestedBy: string
   statement: string
   ipAddress?: string
   signature?: string
+  payerChecklist?: AttestationChecklistItem[]
 }
 
 export interface AttestationSubmitResult {
   attestation?: Record<string, unknown>
   reimbursementSummary?: { total?: number; codes?: Array<Record<string, unknown>> }
+  recap?: Record<string, unknown>
+  canFinalize?: boolean
 }
 
 export interface FinalizationWizardProps {
@@ -845,7 +854,40 @@ function BillingAttestationStep({
     }).format(Math.max(0, attestationDetails.estimated))
   }, [attestationDetails.estimated])
 
+  const serverChecklist = useMemo(() => {
+    if (!attestation || typeof attestation !== "object") {
+      return null
+    }
+    const raw = (attestation as Record<string, unknown>).payerChecklist
+    if (!Array.isArray(raw) || raw.length === 0) {
+      return null
+    }
+    const normalized = raw
+      .map((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          return null
+        }
+        const record = entry as Record<string, unknown>
+        const statusRaw = typeof record.status === "string" ? record.status.trim().toLowerCase() : undefined
+        const status: "ready" | "warning" | "blocker" =
+          statusRaw === "warning" || statusRaw === "blocker" ? (statusRaw as "warning" | "blocker") : "ready"
+        const label = typeof record.label === "string" && record.label.trim().length > 0 ? record.label.trim() : undefined
+        const id = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : `check-${index}`
+        return {
+          id,
+          label: label ?? `Checklist item ${index + 1}`,
+          status,
+        }
+      })
+      .filter((item): item is { id: string; label: string; status: "ready" | "warning" | "blocker" } => Boolean(item))
+    return normalized.length > 0 ? normalized : null
+  }, [attestation])
+
   const checklistItems = useMemo(() => {
+    if (serverChecklist) {
+      return serverChecklist
+    }
+
     const items: Array<{ id: string; label: string; status: "ready" | "warning" | "blocker" }> = []
 
     if (Array.isArray(reimbursementSummary?.codes)) {
@@ -888,7 +930,7 @@ function BillingAttestationStep({
     })
 
     return items
-  }, [reimbursementSummary?.codes, warnings, blockingIssues])
+  }, [blockingIssues, reimbursementSummary?.codes, serverChecklist, warnings])
 
   const handleChange = useCallback((field: keyof typeof form, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -909,6 +951,11 @@ function BillingAttestationStep({
           statement: form.statement,
           ipAddress: form.ipAddress,
           signature: form.signature,
+          payerChecklist: checklistItems.map((item) => ({
+            id: item.id,
+            label: item.label,
+            status: item.status,
+          })),
         })
         setSubmissionSucceeded(true)
       } catch (error) {
@@ -919,7 +966,7 @@ function BillingAttestationStep({
         setSubmitting(false)
       }
     },
-    [form.attestedBy, form.statement, form.ipAddress, form.signature, onSubmit, submitting],
+    [checklistItems, form.attestedBy, form.statement, form.ipAddress, form.signature, onSubmit, submitting],
   )
 
   const nextDisabled =
@@ -1907,6 +1954,13 @@ export function FinalizationWizard({
         statement: form.statement.trim(),
         ipAddress: form.ipAddress?.trim() || undefined,
         signature: form.signature?.trim() || undefined,
+        payerChecklist: Array.isArray(form.payerChecklist)
+          ? form.payerChecklist.map((item) => ({
+              id: typeof item?.id === "string" ? item.id.trim() || undefined : item?.id,
+              label: typeof item?.label === "string" ? item.label.trim() || undefined : item?.label,
+              status: item?.status,
+            }))
+          : undefined,
       }
 
       if (!payload.attestedBy || !payload.statement) {
@@ -1915,8 +1969,16 @@ export function FinalizationWizard({
 
       const result = await Promise.resolve(onSubmitAttestation?.(payload))
 
-      if (result && result.attestation && typeof result.attestation === "object") {
-        setAttestationSnapshot({ ...(result.attestation as Record<string, unknown>) })
+      if (result) {
+        const nextRecap =
+          (result.recap && typeof result.recap === "object"
+            ? result.recap
+            : result.attestation && typeof result.attestation === "object"
+              ? result.attestation
+              : undefined) ?? null
+        if (nextRecap) {
+          setAttestationSnapshot({ ...(nextRecap as Record<string, unknown>) })
+        }
       } else if (!onSubmitAttestation) {
         setAttestationSnapshot({
           attestation: {

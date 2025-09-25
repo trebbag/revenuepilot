@@ -267,6 +267,9 @@ const normalizeConfidenceValue = (value: unknown): number | undefined => {
   return Math.round(Math.max(0, Math.min(100, numeric)));
 };
 
+const normalizeConfidence = (value: unknown): number | undefined => normalizeConfidenceValue(value);
+
+
 // Utility: normalize doc support value (from master branch)
 const normalizeDocSupport = (value: unknown): string | undefined => {
   const [candidate] = sanitizeStringList(value);
@@ -1201,6 +1204,139 @@ export function FinalizationWizardAdapter({
     return new Set(identifiers)
   }, [selectedCodesList])
 
+  const buildSuggestionKey = (item: WizardCodeItem): string | undefined => {
+    const code = sanitizeString(item.code)
+    if (code) {
+      return `code:${code.toUpperCase()}`
+    }
+
+    const title = sanitizeString(item.title ?? item.description)
+    if (title) {
+      return `title:${title.toUpperCase()}`
+    }
+
+    return undefined
+  }
+
+  const createWizardSuggestion = (
+    entry: Record<string, unknown>,
+    index: number,
+    selectedCodeSet: Set<string>,
+  ): WizardCodeItem | null => {
+    if (!entry || typeof entry !== "object") {
+      return null
+    }
+
+    const getString = (...candidates: unknown[]): string | undefined => {
+      for (const candidate of candidates) {
+        const value = sanitizeString(candidate)
+        if (value) {
+          return value
+        }
+      }
+      return undefined
+    }
+
+    const code = getString(entry.code, entry.codeValue, entry.code_value, entry.cpt, entry.icd, entry.value)
+    const description = getString(entry.description, entry.label, entry.title, entry.text, entry.summary)
+    const rationale = getString(entry.rationale, entry.reason, entry.details, entry.justification, entry.notes)
+    const normalizedCodeKey = code ? code.toUpperCase() : undefined
+    const normalizedDescriptionKey = description ? description.toUpperCase() : undefined
+
+    if (
+      (normalizedCodeKey && selectedCodeSet.has(normalizedCodeKey)) ||
+      (normalizedDescriptionKey && selectedCodeSet.has(normalizedDescriptionKey))
+    ) {
+      return null
+    }
+
+    const registerClassification = (
+      target: Set<CodeClassification>,
+      value: unknown,
+    ) => {
+      if (Array.isArray(value)) {
+        value.forEach((entryValue) => registerClassification(target, entryValue))
+        return
+      }
+      const normalized = toClassification(value)
+      if (normalized) {
+        target.add(normalized)
+      }
+    }
+
+    const classifications = new Set<CodeClassification>()
+    registerClassification(classifications, (entry as { classification?: unknown }).classification)
+    registerClassification(classifications, (entry as { category?: unknown }).category)
+    registerClassification(classifications, (entry as { type?: unknown }).type)
+
+    const rawTags =
+      (entry as { tags?: unknown }).tags ??
+      (entry as { labels?: unknown }).labels ??
+      (entry as { keywords?: unknown }).keywords
+    const tags = toTrimmedStringArray(rawTags)
+    tags.forEach((tag) => registerClassification(classifications, tag))
+
+    if (!classifications.size) {
+      if (code && /^\d{4,5}$/.test(code)) {
+        classifications.add("code")
+      } else {
+        classifications.add("diagnosis")
+      }
+    }
+
+    const type = getString(
+      (entry as { type?: unknown }).type,
+      (entry as { codeType?: unknown }).codeType,
+      (entry as { category?: unknown }).category,
+    )
+    const docSupport = normalizeDocSupport(
+      (entry as { docSupport?: unknown }).docSupport ??
+        (entry as { support?: unknown }).support ??
+        (entry as { evidenceLevel?: unknown }).evidenceLevel,
+    )
+    const confidence = normalizeConfidence(
+      (entry as { confidence?: unknown }).confidence ??
+        (entry as { score?: unknown }).score ??
+        (entry as { confidenceScore?: unknown }).confidenceScore,
+    )
+    const suggestedBy = getString(
+      (entry as { source?: unknown }).source,
+      (entry as { suggestedBy?: unknown }).suggestedBy,
+      (entry as { origin?: unknown }).origin,
+      (entry as { provider?: unknown }).provider,
+      (entry as { engine?: unknown }).engine,
+    )
+
+    const classificationValues = Array.from(classifications.values())
+    const id =
+      getString((entry as { id?: unknown }).id) ??
+      (code ? `suggestion-${code.replace(/\s+/g, "-")}-${index + 1}` : `suggestion-${index + 1}`)
+
+    const suggestion: WizardCodeItem = {
+      id,
+      code: code ?? undefined,
+      title: description ?? code ?? `Suggestion ${index + 1}`,
+      description: description ?? undefined,
+      details: rationale ?? description ?? undefined,
+      status: "pending",
+      codeType: type ?? undefined,
+      category: type ?? undefined,
+      docSupport: docSupport ?? undefined,
+      confidence: confidence ?? undefined,
+      aiReasoning: rationale ?? undefined,
+      suggestedBy: suggestedBy ?? undefined,
+      tags: tags.length ? tags : undefined,
+    }
+
+    if (classificationValues.length === 1) {
+      suggestion.classification = classificationValues[0]
+    } else if (classificationValues.length > 1) {
+      suggestion.classification = classificationValues
+    }
+
+    return suggestion
+  }
+
   const mapStreamingToWizard = useCallback(
     (suggestions: LiveCodeSuggestion[]): WizardCodeItem[] => {
       const seen = new Set<string>()
@@ -1883,6 +2019,25 @@ export function FinalizationWizardAdapter({
       const statement = sanitizeString(form.statement)
       const ipAddress = sanitizeString(form.ipAddress)
       const signature = sanitizeString(form.signature)
+      const payerChecklistPayload = Array.isArray(form.payerChecklist)
+        ? form.payerChecklist
+            .map((item, index) => {
+              if (!item || typeof item !== "object") {
+                return null
+              }
+              const statusRaw = sanitizeString((item as Record<string, unknown>).status)?.toLowerCase()
+              const status: "ready" | "warning" | "blocker" =
+                statusRaw === "warning" || statusRaw === "blocker" ? (statusRaw as "warning" | "blocker") : "ready"
+              const label = sanitizeString((item as Record<string, unknown>).label)
+              const id = sanitizeString((item as Record<string, unknown>).id)
+              return {
+                id: id ?? `check-${index + 1}`,
+                label: label ?? `Checklist item ${index + 1}`,
+                status,
+              }
+            })
+            .filter((entry): entry is { id: string; label: string; status: "ready" | "warning" | "blocker" } => Boolean(entry))
+        : []
 
       if (!attestedBy || !statement) {
         throw new Error("Attestation requires the provider name and attestation statement.")
@@ -2040,10 +2195,12 @@ export function FinalizationWizardAdapter({
       const requestBody = {
         encounterId,
         sessionId: activeSessionId,
+        ip: ipAddress || undefined,
         billing_validation: billingValidationPayload,
         attestation: attestationPayload,
         compliance_checks: complianceChecksPayload,
         billing_summary: billingSummaryPayload,
+        payer_checklist: payerChecklistPayload,
       }
 
       const response = await fetchWithAuth(`/api/v1/workflow/${activeSessionId}/step5/attest`, {
@@ -2057,6 +2214,7 @@ export function FinalizationWizardAdapter({
 
       const data = await response.json().catch(() => ({}))
       const payload = (data?.session ?? data) as WorkflowSessionResponsePayload
+      const responseCanFinalize = typeof data?.canFinalize === "boolean" ? data.canFinalize : undefined
 
       setSessionData((prev) => {
         if (!payload || typeof payload !== "object") {
@@ -2085,15 +2243,28 @@ export function FinalizationWizardAdapter({
         if (resolvedFinalize) {
           extras.lastFinalizeResult = resolvedFinalize
         }
+        if (typeof responseCanFinalize === "boolean") {
+          const validationNode =
+            next.lastValidation && typeof next.lastValidation === "object"
+              ? { ...(next.lastValidation as Record<string, unknown>) }
+              : {}
+          validationNode.canFinalize = responseCanFinalize
+          next.lastValidation = validationNode as any
+        }
 
         persistSession(next, extras)
         return next
       })
 
-      const attestationResult = payload?.attestation
+      const attestationResult =
+        data && typeof data.recap === "object"
+          ? (data.recap as Record<string, unknown>)
+          : payload?.attestation
       return {
         attestation: attestationResult ? (attestationResult as Record<string, unknown>) : undefined,
         reimbursementSummary: payload?.reimbursementSummary,
+        recap: data && typeof data.recap === "object" ? (data.recap as Record<string, unknown>) : undefined,
+        canFinalize: responseCanFinalize,
       }
     },
     [

@@ -11,7 +11,7 @@ describe("FinalizationWizard attestation step", () => {
   it("submits attestation payload and renders recap", async () => {
     const submitSpy = vi.fn(
       async (payload: AttestationFormPayload): Promise<AttestationSubmitResult> => ({
-        attestation: {
+        recap: {
           attestation: {
             attestedBy: payload.attestedBy,
             attestationText: payload.statement,
@@ -19,7 +19,9 @@ describe("FinalizationWizard attestation step", () => {
           billingValidation: {
             estimatedReimbursement: 150,
           },
+          payerChecklist: payload.payerChecklist ?? [],
         },
+        canFinalize: true,
       }),
     )
 
@@ -49,12 +51,20 @@ describe("FinalizationWizard attestation step", () => {
     fireEvent.click(screen.getByRole("button", { name: /submit attestation/i }))
 
     await waitFor(() => expect(submitSpy).toHaveBeenCalledTimes(1))
-    expect(submitSpy).toHaveBeenCalledWith({
-      attestedBy: "Dr. Example",
-      statement: "Reviewed and verified",
-      ipAddress: "203.0.113.1",
-      signature: "sig-42",
-    })
+    expect(submitSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attestedBy: "Dr. Example",
+        statement: "Reviewed and verified",
+        ipAddress: "203.0.113.1",
+        signature: "sig-42",
+      }),
+    )
+
+    const payloadArg = submitSpy.mock.calls[0]?.[0] as AttestationFormPayload
+    expect(Array.isArray(payloadArg.payerChecklist)).toBe(true)
+    const checklistStatuses = payloadArg.payerChecklist?.map((item) => item.status) ?? []
+    expect(checklistStatuses.length).toBeGreaterThan(0)
+    expect(checklistStatuses.every((status) => ["ready", "warning", "blocker"].includes(status ?? ""))).toBe(true)
 
     await waitFor(() => {
       expect(screen.getAllByText(/Recorded attestation/i).length).toBeGreaterThan(0)
