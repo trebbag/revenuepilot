@@ -171,11 +171,13 @@ visit_sessions = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("encounter_id", Integer, ForeignKey("encounters.id"), nullable=False),
+    Column("patient_id", String, nullable=True),
     Column("status", String, nullable=False),
     Column("start_time", String, nullable=True),
+    Column("last_resumed_at", String, nullable=True),
     Column("end_time", String, nullable=True),
-    Column("data", Text, nullable=True),
-    Column("updated_at", Float, nullable=True),
+    Column("duration_seconds", Integer, nullable=False, server_default=text("0")),
+    Column("meta", Text, nullable=True),
     sqlite_autoincrement=True,
 )
 

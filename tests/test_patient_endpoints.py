@@ -2,6 +2,7 @@
 
 import json
 from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -135,6 +136,129 @@ def test_patient_encounter_flow(client):
     assert info['patient_id'] == 'pt-test'
     assert info['files'][0]['name'] == 'chart.txt'
     assert (main.UPLOAD_DIR / 'chart.txt').exists()
+
+
+def test_visit_session_server_authoritative(client, monkeypatch):
+    db = main.db_conn
+    db.execute(
+        "INSERT INTO patients (first_name, last_name, dob, mrn, gender, insurance) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            'Alice',
+            'Wonder',
+            '1985-05-05',
+            'MRN999',
+            'F',
+            'PayerX',
+        ),
+    )
+    patient_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+    db.execute(
+        "INSERT INTO encounters (patient_id, date, type, provider, description) VALUES (?, ?, ?, ?, ?)",
+        (patient_id, '2024-04-01', 'consult', 'Dr. Watson', 'Initial consult'),
+    )
+    encounter_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+    db.commit()
+
+    token = client.post('/login', json={'username': 'user', 'password': 'pw'}).json()['access_token']
+
+    base_time = datetime(2024, 4, 1, 12, 0, tzinfo=timezone.utc)
+    timeline = [
+        base_time,
+        base_time,
+        base_time,
+        base_time,
+        base_time + timedelta(minutes=5),
+        base_time + timedelta(minutes=5),
+        base_time + timedelta(minutes=7),
+        base_time + timedelta(minutes=7),
+        base_time + timedelta(minutes=12),
+        base_time + timedelta(minutes=12),
+        base_time + timedelta(minutes=12),
+    ]
+    iterator = iter(timeline)
+
+    def fake_now():
+        try:
+            return next(iterator)
+        except StopIteration:
+            return timeline[-1]
+
+    monkeypatch.setattr(main, 'utc_now', fake_now)
+
+    resp = client.post(
+        '/api/visits/session',
+        json={'encounter_id': encounter_id, 'patient_id': str(patient_id)},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    session = resp.json()
+    assert session['status'] == 'active'
+    assert session['durationSeconds'] == 0
+    assert session['patientId'] == str(patient_id)
+    session_id = session['sessionId']
+
+    resp = client.post(
+        '/api/visits/session',
+        json={'encounter_id': encounter_id},
+        headers=auth_header(token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()['sessionId'] == session_id
+
+    pause = client.patch(
+        '/api/visits/session',
+        json={'sessionId': session_id, 'action': 'pause'},
+        headers=auth_header(token),
+    )
+    assert pause.status_code == 200
+    payload = pause.json()
+    assert payload['status'] == 'paused'
+    assert payload['durationSeconds'] == 300
+    assert payload['lastResumedAt'] is None
+
+    resume = client.patch(
+        '/api/visits/session',
+        json={'sessionId': session_id, 'action': 'resume'},
+        headers=auth_header(token),
+    )
+    assert resume.status_code == 200
+    resumed_payload = resume.json()
+    assert resumed_payload['status'] == 'active'
+    assert resumed_payload['durationSeconds'] == 300
+
+    stop = client.patch(
+        '/api/visits/session',
+        json={'sessionId': session_id, 'action': 'stop'},
+        headers=auth_header(token),
+    )
+    assert stop.status_code == 200
+    stopped = stop.json()
+    assert stopped['status'] == 'completed'
+    assert stopped['durationSeconds'] == 600
+    assert stopped['endTime'] is not None
+
+    row = db.execute(
+        'SELECT status, duration_seconds, last_resumed_at, end_time FROM visit_sessions WHERE id=?',
+        (session_id,),
+    ).fetchone()
+    assert row['status'] == 'completed'
+    assert row['duration_seconds'] == 600
+    assert row['last_resumed_at'] is None
+    assert row['end_time']
+
+    audit_rows = db.execute(
+        "SELECT action, details FROM audit_log ORDER BY id"
+    ).fetchall()
+    events = [
+        (entry['action'], json.loads(entry['details'] or '{}'))
+        for entry in audit_rows
+        if entry['action'] in {'visit_session_start', 'visit_session_pause', 'visit_session_complete'}
+    ]
+    actions = [action for action, _ in events]
+    assert 'visit_session_start' in actions
+    assert 'visit_session_pause' in actions
+    assert 'visit_session_complete' in actions
+    assert any(evt.get('durationSeconds') == 600 for _, evt in events if _.endswith('complete'))
 
 
 def test_validate_encounter_missing_patient(client):

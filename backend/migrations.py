@@ -600,6 +600,54 @@ def ensure_visit_sessions_table(conn: sqlite3.Connection) -> None:
     """Ensure the visit_sessions table exists for visit timing data."""
 
     db_models.create_tables(conn, db_models.visit_sessions)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(visit_sessions)")}
+
+    if "patient_id" not in columns:
+        conn.execute("ALTER TABLE visit_sessions ADD COLUMN patient_id TEXT")
+    if "last_resumed_at" not in columns:
+        conn.execute("ALTER TABLE visit_sessions ADD COLUMN last_resumed_at TEXT")
+    if "duration_seconds" not in columns:
+        conn.execute(
+            "ALTER TABLE visit_sessions ADD COLUMN duration_seconds INTEGER NOT NULL DEFAULT 0"
+        )
+    if "meta" not in columns:
+        conn.execute("ALTER TABLE visit_sessions ADD COLUMN meta TEXT")
+
+    # Best-effort migration of legacy payloads stored in the data column.
+    if "data" in columns:
+        rows = list(
+            conn.execute(
+                "SELECT id, data FROM visit_sessions WHERE data IS NOT NULL AND TRIM(data) != ''"
+            )
+        )
+        for session_id, raw in rows:
+            try:
+                payload = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                continue
+
+            updates: Dict[str, Any] = {}
+            duration = payload.get("durationSeconds")
+            if "duration_seconds" in columns and duration is not None:
+                try:
+                    updates["duration_seconds"] = int(duration)
+                except (TypeError, ValueError):
+                    pass
+
+            last_resumed = payload.get("lastResumedAt")
+            if "last_resumed_at" in columns and last_resumed:
+                updates["last_resumed_at"] = str(last_resumed).strip()
+
+            if "meta" in columns and payload:
+                updates["meta"] = json.dumps(payload)
+
+            if updates:
+                assignments = ", ".join(f"{column} = ?" for column in updates)
+                conn.execute(
+                    f"UPDATE visit_sessions SET {assignments} WHERE id = ?",
+                    (*updates.values(), session_id),
+                )
+
     conn.commit()
 
 def ensure_session_table(conn: sqlite3.Connection) -> None:  # pragma: no cover - thin wrapper
