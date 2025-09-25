@@ -181,7 +181,11 @@ from backend.db.models import (
     User,
     UserProfile as UserProfileRecord,
 )
-from backend.audio_processing import simple_transcribe, diarize_and_transcribe  # type: ignore
+from backend.audio_processing import (  # type: ignore
+    simple_transcribe,
+    diarize_and_transcribe,
+    _transcribe_bytes,
+)
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.time_utils import ensure_utc, utc_now
@@ -12698,19 +12702,99 @@ async def get_last_transcript(user=Depends(require_role("user"))) -> Dict[str, A
     return {"history": history}
 
 
-@app.websocket("/api/transcribe/stream")  # pragma: no cover - not exercised in tests
+@app.websocket("/api/transcribe/stream")
 async def transcribe_stream(websocket: WebSocket):
-    """Stream transcription via WebSocket."""
+    """Handle live audio transcription over WebSocket."""
 
     await ws_require_role(websocket, "user")
     await websocket.accept()
+
+    session_id = f"ws-{uuid4().hex}"
+    await websocket.send_json({"event": "connected", "sessionId": session_id})
+
+    buffer = bytearray()
+    last_transcript = ""
+    event_index = 0
+    max_buffer = 512 * 1024  # Keep a rolling window of ~512 KB
+
     try:
         while True:
-            chunk = await websocket.receive_bytes()
-            text = simple_transcribe(chunk)
-            await websocket.send_json(
-                {"transcript": text, "confidence": 1.0, "isInterim": False}
-            )
+            message = await websocket.receive()
+            message_type = message.get("type")
+
+            if message_type == "websocket.disconnect":
+                break
+
+            if message.get("bytes") is not None:
+                chunk = message["bytes"]
+                if not chunk:
+                    continue
+                buffer.extend(chunk)
+                if len(buffer) > max_buffer:
+                    # Only keep the most recent portion of the stream to limit memory usage
+                    del buffer[:-max_buffer]
+
+                transcript, error = _transcribe_bytes(bytes(buffer))
+                last_transcript = transcript
+
+                if error:
+                    logger.debug(
+                        "transcription interim warning",
+                        error=error,
+                        event_index=event_index,
+                    )
+
+                event_index += 1
+                await websocket.send_json(
+                    {
+                        "eventId": f"{session_id}-{event_index}",
+                        "isInterim": True,
+                        "transcript": transcript,
+                        "timestamp": time.time(),
+                        "speakerLabel": "unknown",
+                    }
+                )
+                continue
+
+            if message.get("text") is not None:
+                raw_text = message["text"]
+                if not raw_text:
+                    continue
+                try:
+                    payload = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    logger.debug("transcribe_stream received non-JSON text frame", raw=raw_text)
+                    continue
+
+                event = payload.get("event")
+                if event == "start":
+                    buffer.clear()
+                    last_transcript = ""
+                    continue
+
+                if event == "stop":
+                    transcript, error = _transcribe_bytes(bytes(buffer)) if buffer else (last_transcript, "")
+                    final_text = transcript or last_transcript
+                    if error:
+                        logger.debug(
+                            "transcription final warning",
+                            error=error,
+                            event_index=event_index,
+                        )
+
+                    event_index += 1
+                    await websocket.send_json(
+                        {
+                            "eventId": f"{session_id}-{event_index}",
+                            "isInterim": False,
+                            "transcript": final_text,
+                            "timestamp": time.time(),
+                            "speakerLabel": "unknown",
+                        }
+                    )
+                    buffer.clear()
+                    last_transcript = ""
+                    continue
     except WebSocketDisconnect:
         pass
 
