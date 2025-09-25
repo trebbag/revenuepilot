@@ -1123,6 +1123,7 @@ export function FinalizationWizardAdapter({
       pollComposeJobStatus,
       sessionData?.sessionId,
     ],
+  )
 
   const applyValidationResult = useCallback(
     (
@@ -2080,12 +2081,17 @@ export function FinalizationWizardAdapter({
         }
 
         const data = (await response.json()) as FinalizeNoteResponse
-        lastFinalizeResultRef.current = data
-        applyValidationResult(data, {
-          finalizeResult: data,
-          finalizedNoteId: data.finalizedNoteId,
+        const finalizedNoteId =
+          typeof data.finalizedNoteId === "string" && data.finalizedNoteId.trim().length > 0
+            ? data.finalizedNoteId.trim()
+            : undefined
+        const resultWithId = finalizedNoteId ? ({ ...data, finalizedNoteId } as FinalizeNoteResponse) : data
+        lastFinalizeResultRef.current = resultWithId as FinalizeResult
+        applyValidationResult(resultWithId, {
+          finalizeResult: resultWithId,
+          finalizedNoteId,
         })
-        return data
+        return resultWithId
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unable to finalize the note."
         onError?.(message, error)
@@ -2125,13 +2131,16 @@ export function FinalizationWizardAdapter({
           throw new Error(`Finalization failed (${finalizeResponse.status})`)
         }
         const finalizeData = (await finalizeResponse.json()) as FinalizeNoteResponse
-        lastFinalizeResultRef.current = finalizeData
         const finalizedNoteId =
           typeof finalizeData.finalizedNoteId === "string" && finalizeData.finalizedNoteId.trim().length > 0
             ? finalizeData.finalizedNoteId.trim()
             : undefined
-        applyValidationResult(finalizeData, {
-          finalizeResult: finalizeData,
+        const finalizePayload = finalizedNoteId
+          ? ({ ...finalizeData, finalizedNoteId } as FinalizeNoteResponse)
+          : finalizeData
+        lastFinalizeResultRef.current = finalizePayload as FinalizeResult
+        applyValidationResult(finalizePayload, {
+          finalizeResult: finalizePayload,
           finalizedNoteId,
         })
 
@@ -2177,20 +2186,22 @@ export function FinalizationWizardAdapter({
             : undefined) ??
           (typeof dispatchForm === "object" && dispatchForm ? dispatchForm : undefined)
 
-        applyValidationResult(finalizeData, {
-          finalizeResult: finalizeData,
+        const dispatchResultRaw = dispatchJson.result
+          ? ({ ...dispatchJson.result, ...(finalizedNoteId ? { finalizedNoteId } : {}) } as FinalizeNoteResponse)
+          : finalizePayload
+        const dispatchResult = dispatchResultRaw as FinalizeResult
+        applyValidationResult(finalizePayload, {
+          finalizeResult: dispatchResultRaw,
           finalizedNoteId,
           dispatchSummary,
           sessionOverride: dispatchSession,
         })
 
-        if (dispatchJson.result) {
-          lastFinalizeResultRef.current = dispatchJson.result
-        }
+        lastFinalizeResultRef.current = dispatchResult
 
         return {
           finalizedNoteId,
-          result: dispatchJson.result ?? finalizeData,
+          result: dispatchResult,
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unable to finalize and dispatch the note."

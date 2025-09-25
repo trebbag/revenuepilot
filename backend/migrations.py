@@ -532,6 +532,20 @@ def ensure_notes_table(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE notes ADD COLUMN created_at REAL")
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE notes ADD COLUMN updated_at REAL")
+    if "finalized_at" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_at REAL")
+    if "finalized_note_id" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_note_id TEXT")
+    if "finalized_content" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_content TEXT")
+    if "finalized_summary" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_summary TEXT")
+    if "finalized_by" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_by TEXT")
+    if "finalized_clinic_id" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_clinic_id TEXT")
+    if "finalized_patient_hash" not in columns:
+        conn.execute("ALTER TABLE notes ADD COLUMN finalized_patient_hash TEXT")
 
 
 def ensure_error_log_table(conn: sqlite3.Connection) -> None:

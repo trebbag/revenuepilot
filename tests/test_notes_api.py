@@ -63,6 +63,36 @@ def test_get_drafts(api_client, db_session, create_user):
     assert data[0]["status"] == "draft"
 
 
+def test_recent_finalized_note_visible_in_drafts(api_client, db_session, create_user):
+    create_user("alice")
+    token = main.create_token("alice", "user")
+    payload = {
+        "content": "Patient is stable with follow up plan.",
+        "codes": ["99213"],
+        "prevention": ["flu shot"],
+        "diagnoses": ["J10.1"],
+        "differentials": ["J00"],
+        "compliance": ["HIPAA"],
+    }
+    finalize_resp = api_client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth(token),
+    )
+    assert finalize_resp.status_code == 200
+    finalize_data = finalize_resp.json()
+
+    resp = api_client.get("/api/notes/drafts", headers=auth(token))
+    assert resp.status_code == 200
+    data = resp.json()
+    finalized_notes = [note for note in data if note.get("status") == "finalized"]
+    assert finalized_notes, "Expected a finalized note to be present in drafts"
+    recent = finalized_notes[0]
+    assert "finalized_note_id" in recent
+    assert recent["finalized_note_id"] == finalize_data["finalizedNoteId"]
+    assert recent["content"] == payload["content"].strip()
+
+
 def test_search_and_bulk_update(api_client, db_session, create_user):
     create_user("alice")
     token = main.create_token("alice", "user")

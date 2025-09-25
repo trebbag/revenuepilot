@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { Sidebar, SidebarContent, SidebarProvider, SidebarTrigger } from "./components/ui/sidebar"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { NavigationSidebar } from "./components/NavigationSidebar"
@@ -28,6 +29,7 @@ import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl } from "./l
 import { useChartUpload, useUploadStatuses } from "./hooks/useChartUpload"
 import { mapServerViewToViewKey, type ViewKey } from "./lib/navigation"
 import type { FinalizeResult } from "./features/finalization"
+import { toast } from "sonner"
 
 interface RawScheduleAppointment {
   id: number | string
@@ -173,6 +175,7 @@ const VIEW_LABELS: Record<ViewKey, string> = {
 export function ProtectedApp() {
   const auth = useAuth()
   const { state: sessionState, actions: sessionActions, hydrated: sessionHydrated, syncing: sessionSyncing } = useSession()
+  const { t } = useTranslation()
 
   const [currentView, setCurrentView] = useState<ViewKey>("home")
   const [viewHydrated, setViewHydrated] = useState(false)
@@ -914,6 +917,12 @@ export function ProtectedApp() {
       if (request?.onClose) {
         request.onClose(result)
       }
+
+      const finalizedNoteId =
+        result && typeof result.finalizedNoteId === "string" && result.finalizedNoteId.trim().length > 0
+          ? result.finalizedNoteId.trim()
+          : undefined
+
       if (result) {
         setRecentFinalization({
           result,
@@ -922,17 +931,30 @@ export function ProtectedApp() {
           patientId: request?.patientInfo?.patientId ?? null,
         })
       }
+
       setFinalizationRequest(null)
+
+      if (finalizedNoteId) {
+        finalizationReturnViewRef.current = "app"
+        setViewHydrated(true)
+        setCurrentView("drafts")
+        toast.info(t("workflow.noteFinalized", "Note finalized"))
+        return
+      }
+
       setCurrentView((prev) => {
         if (prev !== "finalization") {
           return prev
         }
-        const target = finalizationReturnViewRef.current && finalizationReturnViewRef.current !== "finalization" ? finalizationReturnViewRef.current : "app"
+        const target =
+          finalizationReturnViewRef.current && finalizationReturnViewRef.current !== "finalization"
+            ? finalizationReturnViewRef.current
+            : "app"
         finalizationReturnViewRef.current = "app"
         return target
       })
     },
-    [finalizationRequest],
+    [finalizationRequest, t],
   )
 
   useEffect(() => {

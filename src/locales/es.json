@@ -130,7 +130,12 @@
   "drafts": {
     "title": "Borradores guardados",
     "none": "No hay borradores guardados.",
-    "delete": "Eliminar borrador"
+    "delete": "Eliminar borrador",
+    "downloadSummaryPdf": "Descargar resumen del paciente (PDF)",
+    "downloadNotePdf": "Descargar nota (PDF)",
+    "downloadSummaryPdfAria": "Descargar PDF del resumen del paciente para {{patient}}",
+    "downloadNotePdfAria": "Descargar PDF de la nota para {{patient}}",
+    "pdfUnavailableOffline": "PDF no disponible sin conexión."
   },
   "notifications": {
     "title": "Notificaciones",

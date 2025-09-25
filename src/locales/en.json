@@ -130,7 +130,12 @@
   "drafts": {
     "title": "Saved Drafts",
     "none": "No drafts saved.",
-    "delete": "Delete draft"
+    "delete": "Delete draft",
+    "downloadSummaryPdf": "Download Patient Summary (PDF)",
+    "downloadNotePdf": "Download Note (PDF)",
+    "downloadSummaryPdfAria": "Download summary PDF for {{patient}}",
+    "downloadNotePdfAria": "Download note PDF for {{patient}}",
+    "pdfUnavailableOffline": "PDF unavailable offline."
   },
   "notifications": {
     "title": "Notifications",

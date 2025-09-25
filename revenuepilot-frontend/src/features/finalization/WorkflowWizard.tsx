@@ -181,6 +181,7 @@ export interface FinalizeResult {
   exportReady: boolean
   issues: Record<string, string[]>
   [key: string]: unknown
+  finalizedNoteId?: string
 }
 
 export interface AttestationFormPayload {
@@ -1113,7 +1114,7 @@ export function FinalizationWizard({
   onSubmitAttestation,
   onStepChange,
   composeJob,
-  composeError,
+  composeError: composeErrorProp,
   onRequestCompose,
 }: FinalizationWizardProps) {
   const normalizedSelected = useMemo(() => normalizeCodeItems(selectedCodes), [selectedCodes])
@@ -1204,10 +1205,7 @@ export function FinalizationWizard({
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
   const [finalizeResult, setFinalizeResult] = useState<FinalizeResult | null>(null)
   const [finalizeStage, setFinalizeStage] = useState<"idle" | "processing" | "completed">("idle")
-  const [composeProgress, setComposeProgress] = useState<WizardProgressStep[]>(() => createComposeProgressState())
   const [composeComplete, setComposeComplete] = useState(false)
-  const [composeError, setComposeError] = useState<string | null>(null)
-  const [isComposeRunning, setIsComposeRunning] = useState(false)
   const [composeRetryKey, setComposeRetryKey] = useState(0)
   const composeRunRef = useRef(0)
   const [attestationSnapshot, setAttestationSnapshot] = useState<Record<string, unknown> | null>(() =>
@@ -1301,8 +1299,8 @@ export function FinalizationWizard({
     composeStatus === "failed" || composeStatus === "blocked" || composeValidation?.ok === false
 
   const composeErrorMessage = useMemo(() => {
-    if (composeError) {
-      return composeError
+    if (composeErrorProp) {
+      return composeErrorProp
     }
     if (composeValidation && composeValidation.ok === false) {
       const issues = composeValidation.issues as Record<string, unknown> | undefined
@@ -1320,7 +1318,7 @@ export function FinalizationWizard({
       return composeJobState?.message ?? "AI enhancement was unable to complete. Please review and retry."
     }
     return null
-  }, [composeBlocked, composeError, composeJobState?.message, composeValidation])
+  }, [composeBlocked, composeErrorProp, composeJobState?.message, composeValidation])
 
   let composeReady = false
   if (!composeJobState) {
@@ -1764,10 +1762,8 @@ export function FinalizationWizard({
     try {
       if (onFinalizeAndDispatch) {
         const response = await Promise.resolve(onFinalizeAndDispatch(request, dispatchPayload))
-        if (response && typeof response === "object" && "result" in response && response.result) {
-          setFinalizeResult(response.result)
-        } else if (!finalizeResult) {
-          setFinalizeResult({
+        const fallbackResult: FinalizeResult =
+          finalizeResult ?? {
             finalizedContent: request.content.trim(),
             codesSummary: request.codes.map((code) => ({ code })),
             reimbursementSummary: {
@@ -1776,7 +1772,21 @@ export function FinalizationWizard({
             },
             exportReady: true,
             issues: {},
-          })
+          }
+
+        let nextResult: FinalizeResult =
+          response && typeof response === "object" && "result" in response && response.result
+            ? response.result
+            : fallbackResult
+
+        if (response?.finalizedNoteId) {
+          nextResult = { ...nextResult, finalizedNoteId: response.finalizedNoteId }
+        }
+
+        setFinalizeResult(nextResult)
+
+        if (response?.finalizedNoteId && onClose) {
+          onClose(nextResult)
         }
       } else {
         const result = await Promise.resolve(onFinalize?.(request))
@@ -1803,6 +1813,7 @@ export function FinalizationWizard({
     buildDispatchForm,
     buildFinalizeRequest,
     finalizeResult,
+    onClose,
     onFinalize,
     onFinalizeAndDispatch,
     reimbursementSummary?.codes,

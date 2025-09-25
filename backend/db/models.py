@@ -874,6 +874,13 @@ class Note(Base):
     status = sa.Column(String, nullable=False, server_default=sa.text("'draft'"))
     created_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow)
     updated_at = sa.Column(DateTime(timezone=True), nullable=True, default=_utcnow, onupdate=_utcnow)
+    finalized_at = sa.Column(DateTime(timezone=True), nullable=True)
+    finalized_note_id = sa.Column(String, nullable=True, unique=True)
+    finalized_content = sa.Column(Text, nullable=True)
+    finalized_summary = sa.Column(sa.JSON, nullable=True)
+    finalized_by = sa.Column(String, nullable=True)
+    finalized_clinic_id = sa.Column(String, nullable=True)
+    finalized_patient_hash = sa.Column(String, nullable=True)
 
 
 class ErrorLog(Base):
