@@ -51,3 +51,31 @@ def test_transcribe_updates_last_transcript(monkeypatch):
             }
         ]
     }
+
+
+def test_transcribe_stream_interim_and_final():
+    client = TestClient(main.app)
+    token = main.create_token("alice", "user")
+
+    with client.websocket_connect(
+        "/api/transcribe/stream", headers=auth_header(token)
+    ) as ws:
+        handshake = ws.receive_json()
+        assert handshake["event"] == "connected"
+        assert handshake["sessionId"].startswith("ws-")
+
+        ws.send_json({"event": "start"})
+        ws.send_bytes(b"hello world")
+
+        interim = ws.receive_json()
+        assert interim["isInterim"] is True
+        assert interim["speakerLabel"] == "unknown"
+        assert "hello world" in interim["transcript"]
+        assert interim["eventId"].startswith(handshake["sessionId"])
+
+        ws.send_json({"event": "stop"})
+        final = ws.receive_json()
+        assert final["isInterim"] is False
+        assert final["speakerLabel"] == "unknown"
+        assert final["transcript"] == interim["transcript"]
+        assert final["eventId"] != interim["eventId"]
