@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react"
 import { useTranslation } from "react-i18next"
+import { apiFetchJson } from "@/lib/api"
 import { ProgressIndicator } from "./ProgressIndicator"
 import { NoteEditor } from "./NoteEditor"
 import { StepContent } from "./StepContent"
@@ -159,6 +160,17 @@ export interface WizardStepData {
 
 export interface WizardStepOverride extends Partial<Omit<WizardStepData, "id">> {
   id: number
+}
+
+interface EvidenceAnchor {
+  start: number
+  end: number
+  phrase: string
+  confidence: number
+}
+
+interface ExplainAnchorsResponse {
+  anchors?: EvidenceAnchor[]
 }
 
 export interface FinalizeRequest {
@@ -385,6 +397,20 @@ function normalizeComplianceItems(items?: WizardComplianceItem[]): NormalizedCom
       status,
     }
   })
+}
+
+function buildAnchorCacheKey(code: string | undefined, note: string): string {
+  const identifier = (code ?? "").trim().toUpperCase()
+  const text = typeof note === "string" ? note : ""
+  if (!text) {
+    return identifier
+  }
+  const step = Math.max(1, Math.floor(text.length / 64))
+  let hash = 0
+  for (let index = 0; index < text.length; index += step) {
+    hash = (hash * 31 + text.charCodeAt(index)) | 0
+  }
+  return `${identifier}:${text.length}:${(hash >>> 0).toString(16)}`
 }
 
 function createOverridesMap(overrides?: WizardStepOverride[]): Map<number, WizardStepOverride> {
@@ -1151,6 +1177,16 @@ export function FinalizationWizard({
       })
       .filter((entry): entry is VisitTranscriptEntry => Boolean(entry))
   }, [transcriptEntries])
+  const [selectedItems, setSelectedItems] = useState<NormalizedWizardCodeItem[]>(normalizedSelected)
+  const [suggestedItems, setSuggestedItems] = useState<NormalizedWizardCodeItem[]>(normalizedSuggested)
+
+  useEffect(() => {
+    setSelectedItems(normalizedSelected)
+  }, [normalizedSelected])
+
+  useEffect(() => {
+    setSuggestedItems(normalizedSuggested)
+  }, [normalizedSuggested])
   const overridesMap = useMemo(() => createOverridesMap(stepOverrides), [stepOverrides])
   const payerWarnings = useMemo(() => {
     const warnings = new Set<string>()
@@ -1180,25 +1216,26 @@ export function FinalizationWizard({
       }
     }
 
-    normalizedSelected.forEach(collectWarnings)
-    normalizedSuggested.forEach(collectWarnings)
+    selectedItems.forEach(collectWarnings)
+    suggestedItems.forEach(collectWarnings)
 
     return Array.from(warnings)
-  }, [normalizedSelected, normalizedSuggested])
+  }, [selectedItems, suggestedItems])
 
   const defaultNoteRef = useRef(incomingNoteContent || getDefaultNoteContent(patientMetadata))
   const [noteContent, setNoteContent] = useState<string>(defaultNoteRef.current)
   const [beautifiedContent, setBeautifiedContent] = useState<string>(() =>
-    buildBeautifiedContent(defaultNoteRef.current, patientMetadata, normalizedSelected, normalizedTranscript),
+    buildBeautifiedContent(defaultNoteRef.current, patientMetadata, selectedItems, normalizedTranscript),
   )
   const [summaryContent, setSummaryContent] = useState<string>(() =>
-    buildPatientSummary(defaultNoteRef.current, patientMetadata, normalizedSelected, normalizedTranscript),
+    buildPatientSummary(defaultNoteRef.current, patientMetadata, selectedItems, normalizedTranscript),
   )
   const sanitizedInitialStep = Number.isFinite(initialStep) && initialStep >= 1 ? Math.floor(initialStep) : 1
   const [currentStep, setCurrentStep] = useState<number>(() => sanitizedInitialStep)
   const lastInitialStepRef = useRef<number>(sanitizedInitialStep)
   const [activeItemData, setActiveItemData] = useState<NormalizedWizardCodeItem | null>(null)
   const [isShowingEvidence, setIsShowingEvidence] = useState(false)
+  const [anchorCache, setAnchorCache] = useState<Map<string, EvidenceAnchor[]>>(new Map())
   const [patientQuestions, setPatientQuestions] = useState<WizardPatientQuestion[]>([])
   const [showPatientQuestions, setShowPatientQuestions] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
@@ -1208,6 +1245,8 @@ export function FinalizationWizard({
   const [composeComplete, setComposeComplete] = useState(false)
   const [composeRetryKey, setComposeRetryKey] = useState(0)
   const composeRunRef = useRef(0)
+  const anchorAbortRef = useRef<AbortController | null>(null)
+  const keptSuggestionIdRef = useRef<number>(1000)
   const [attestationSnapshot, setAttestationSnapshot] = useState<Record<string, unknown> | null>(() =>
     incomingAttestationRecap && typeof incomingAttestationRecap === "object"
       ? { ...(incomingAttestationRecap as Record<string, unknown>) }
@@ -1249,7 +1288,7 @@ export function FinalizationWizard({
     setFinalizeResult(null)
     setFinalizeError(null)
     setFinalizeStage("idle")
-  }, [finalizeResult, normalizedSelected, normalizedSuggested, normalizedCompliance, noteContent])
+  }, [finalizeResult, selectedItems, suggestedItems, normalizedCompliance, noteContent])
 
   useEffect(() => {
     const nextDefault = incomingNoteContent || getDefaultNoteContent(patientMetadata)
@@ -1262,12 +1301,12 @@ export function FinalizationWizard({
   }, [incomingNoteContent, patientMetadata, noteContent])
 
   useEffect(() => {
-    const artifacts = composeEnhancedArtifacts(noteContent, patientMetadata, normalizedSelected, normalizedTranscript)
+    const artifacts = composeEnhancedArtifacts(noteContent, patientMetadata, selectedItems, normalizedTranscript)
     if (!composeResult || typeof composeResult !== "object") {
       setBeautifiedContent((prev) => (prev === artifacts.professionalNote ? prev : artifacts.professionalNote))
       setSummaryContent((prev) => (prev === artifacts.patientSummary ? prev : artifacts.patientSummary))
     }
-  }, [composeResult, noteContent, patientMetadata, normalizedSelected, normalizedTranscript])
+  }, [composeResult, noteContent, patientMetadata, selectedItems, normalizedTranscript])
 
   useEffect(() => {
     if (incomingAttestationRecap && typeof incomingAttestationRecap === "object") {
@@ -1282,10 +1321,10 @@ export function FinalizationWizard({
   }, [incomingAttestationRecap])
 
   useEffect(() => {
-    if (!normalizedSelected.length && !normalizedSuggested.length && currentStep < 3) {
+    if (!selectedItems.length && !suggestedItems.length && currentStep < 3) {
       setCurrentStep(3)
     }
-  }, [currentStep, normalizedSelected.length, normalizedSuggested.length])
+  }, [currentStep, selectedItems.length, suggestedItems.length])
 
   const fallbackValidationOk = useMemo(
     () => performFinalValidation(noteContent, beautifiedContent, summaryContent),
@@ -1402,9 +1441,9 @@ export function FinalizationWizard({
         description: "Review and validate your selected diagnostic codes",
         type: "selected-codes",
         stepType: "selected",
-        totalSelected: normalizedSelected.length,
-        totalSuggestions: normalizedSuggested.length,
-        items: normalizedSelected,
+        totalSelected: selectedItems.length,
+        totalSuggestions: suggestedItems.length,
+        items: selectedItems,
         status: defaultStatusForStep(1),
       },
       {
@@ -1413,9 +1452,9 @@ export function FinalizationWizard({
         description: "Evaluate AI-recommended diagnostic codes",
         type: "suggested-codes",
         stepType: "suggested",
-        totalSelected: normalizedSelected.length,
-        totalSuggestions: normalizedSuggested.length,
-        items: normalizedSuggested,
+        totalSelected: selectedItems.length,
+        totalSuggestions: suggestedItems.length,
+        items: suggestedItems,
         status: defaultStatusForStep(2),
       },
       {
@@ -1467,8 +1506,8 @@ export function FinalizationWizard({
       return override ? { ...step, ...override } : step
     })
   }, [
-    normalizedSelected,
-    normalizedSuggested,
+    selectedItems,
+    suggestedItems,
     normalizedCompliance.length,
     noteContent,
     beautifiedContent,
@@ -1606,8 +1645,149 @@ export function FinalizationWizard({
     [noteContent, handleNoteChange],
   )
 
+  const handleItemStatusChange = useCallback(
+    (stepId: number, itemId: number, status: CodeStatus, item: NormalizedWizardCodeItem | null) => {
+      if (stepId === 1) {
+        setSelectedItems((prev) => prev.map((entry) => (entry.id === itemId ? { ...entry, status } : entry)))
+        return
+      }
+
+      if (stepId === 2) {
+        if (status === "completed" && item) {
+          setSuggestedItems((prev) => prev.filter((entry) => entry.id !== itemId))
+          setSelectedItems((prev) => {
+            const identifier = (item.code || item.title || "").trim().toUpperCase()
+            const nextItem: NormalizedWizardCodeItem = { ...item, status: "completed" }
+            const existingIndex = prev.findIndex((entry) => {
+              if (entry.id === itemId) {
+                return true
+              }
+              const entryKey = (entry.code || entry.title || "").trim().toUpperCase()
+              return identifier && entryKey === identifier
+            })
+            if (existingIndex >= 0) {
+              const next = [...prev]
+              next[existingIndex] = { ...next[existingIndex], status: "completed" }
+              return next
+            }
+            const nextId = keptSuggestionIdRef.current++
+            return [{ ...nextItem, id: nextId }, ...prev]
+          })
+          return
+        }
+
+        if (status === "in-progress") {
+          setSuggestedItems((prev) => prev.filter((entry) => entry.id !== itemId))
+          return
+        }
+
+        if (item) {
+          setSuggestedItems((prev) => prev.map((entry) => (entry.id === itemId ? { ...entry, status } : entry)))
+        }
+      }
+    },
+    [setSelectedItems, setSuggestedItems],
+  )
+
+  useEffect(() => {
+    if (!isShowingEvidence || !activeItemData) {
+      return
+    }
+    const codeKey = (activeItemData.code || activeItemData.title || "").trim()
+    if (!codeKey) {
+      return
+    }
+    const cacheKey = buildAnchorCacheKey(codeKey, noteContent)
+    if (anchorCache.has(cacheKey)) {
+      return
+    }
+    if (!noteContent) {
+      return
+    }
+    const controller = new AbortController()
+    anchorAbortRef.current?.abort()
+    anchorAbortRef.current = controller
+
+    const fetchAnchors = async () => {
+      try {
+        const response = await apiFetchJson<ExplainAnchorsResponse>("/api/ai/explain/anchors", {
+          method: "POST",
+          jsonBody: { note: noteContent, code: codeKey },
+          signal: controller.signal,
+        })
+        const anchors = Array.isArray(response?.anchors)
+          ? response!.anchors.filter(
+              (anchor): anchor is EvidenceAnchor =>
+                typeof anchor?.start === "number" &&
+                typeof anchor?.end === "number" &&
+                anchor.start >= 0 &&
+                anchor.end > anchor.start &&
+                anchor.end <= noteContent.length,
+            )
+          : []
+        setAnchorCache((prev) => {
+          if (anchors.length === 0 && prev.has(cacheKey)) {
+            return prev
+          }
+          const next = new Map(prev)
+          next.set(cacheKey, anchors)
+          return next
+        })
+      } catch (error) {
+        if ((error as Error)?.name === "AbortError") {
+          return
+        }
+        setAnchorCache((prev) => {
+          if (prev.has(cacheKey)) {
+            return prev
+          }
+          const next = new Map(prev)
+          next.set(cacheKey, [])
+          return next
+        })
+      }
+    }
+
+    void fetchAnchors()
+
+    return () => {
+      controller.abort()
+    }
+  }, [isShowingEvidence, activeItemData, noteContent, anchorCache])
+
+  useEffect(() => {
+    if (!activeItemData && isShowingEvidence) {
+      setIsShowingEvidence(false)
+    }
+  }, [activeItemData, isShowingEvidence])
+
+  useEffect(() => {
+    return () => {
+      anchorAbortRef.current?.abort()
+      setIsShowingEvidence(false)
+    }
+  }, [])
+
   const highlightRanges = useMemo(() => {
     if (!activeItemData || !noteContent || !isShowingEvidence) return []
+
+    const codeKey = (activeItemData.code || activeItemData.title || "").trim()
+    const cacheKey = buildAnchorCacheKey(codeKey, noteContent)
+    const cachedAnchors = anchorCache.get(cacheKey) ?? []
+    const anchorHighlights = cachedAnchors
+      .filter((anchor) => anchor.start >= 0 && anchor.end <= noteContent.length && anchor.start < anchor.end)
+      .map((anchor, index) => ({
+        start: anchor.start,
+        end: anchor.end,
+        className:
+          index % 3 === 0 ? "highlight-blue" : index % 3 === 1 ? "highlight-emerald" : "highlight-amber",
+        label: `Evidence ${index + 1}`,
+        text: noteContent.slice(anchor.start, anchor.end),
+      }))
+
+    if (anchorHighlights.length) {
+      return anchorHighlights
+    }
 
     const evidenceTexts = Array.isArray(activeItemData.evidence) ? activeItemData.evidence : []
 
@@ -1620,7 +1800,8 @@ export function FinalizationWizard({
         text: string
       }>
     >((acc, evidenceText, index) => {
-      const startIndex = noteContent.toLowerCase().indexOf(evidenceText.toLowerCase())
+      const target = evidenceText.toLowerCase()
+      const startIndex = noteContent.toLowerCase().indexOf(target)
       if (startIndex !== -1) {
         acc.push({
           start: startIndex,
@@ -1632,7 +1813,7 @@ export function FinalizationWizard({
       }
       return acc
     }, [])
-  }, [activeItemData, noteContent, isShowingEvidence])
+  }, [activeItemData, noteContent, isShowingEvidence, anchorCache])
 
   const buildFinalizeRequest = useCallback((): FinalizeRequest => {
     const codes = new Set<string>()
@@ -1671,8 +1852,8 @@ export function FinalizationWizard({
       })
     }
 
-    normalizedSelected.forEach(assignCodes)
-    normalizedSuggested.forEach(assignCodes)
+    selectedItems.forEach(assignCodes)
+    suggestedItems.forEach(assignCodes)
     normalizedCompliance.forEach((item) => {
       const identifier = item.code || item.title
       if (identifier) {
@@ -1689,7 +1870,7 @@ export function FinalizationWizard({
       compliance: Array.from(complianceSet),
       patient: patientMetadata,
     }
-  }, [noteContent, normalizedSelected, normalizedSuggested, normalizedCompliance, patientMetadata])
+  }, [noteContent, selectedItems, suggestedItems, normalizedCompliance, patientMetadata])
 
   const buildDispatchForm = useCallback((): Record<string, unknown> => {
     const timestamp = new Date().toISOString()
@@ -1992,15 +2173,15 @@ export function FinalizationWizard({
               </div>
             </motion.div>
           ) : currentStepData?.type === "dual-editor" ? (
-            <DualRichTextEditor
-              originalContent={currentStepData.originalContent || ""}
-              aiEnhancedContent={currentStepData.beautifiedContent || ""}
-              patientSummaryContent={currentStepData.patientSummaryContent || ""}
-              patientMetadata={patientMetadata}
-              transcriptEntries={normalizedTranscript}
-              selectedCodes={normalizedSelected}
-              suggestedCodes={normalizedSuggested}
-              reimbursementSummary={reimbursementSummary}
+              <DualRichTextEditor
+                originalContent={currentStepData.originalContent || ""}
+                aiEnhancedContent={currentStepData.beautifiedContent || ""}
+                patientSummaryContent={currentStepData.patientSummaryContent || ""}
+                patientMetadata={patientMetadata}
+                transcriptEntries={normalizedTranscript}
+                selectedCodes={selectedItems}
+                suggestedCodes={suggestedItems}
+                reimbursementSummary={reimbursementSummary}
               onAcceptAllChanges={() => {
                 handleNoteChange(beautifiedContent)
               }}
@@ -2012,7 +2193,7 @@ export function FinalizationWizard({
                 const refreshed = composeEnhancedArtifacts(
                   noteContent,
                   patientMetadata,
-                  normalizedSelected,
+                  selectedItems,
                   normalizedTranscript,
                 )
                 setBeautifiedContent(refreshed.professionalNote)
@@ -2236,6 +2417,14 @@ export function FinalizationWizard({
                         onPrevious={() => goToStep(currentStepData.id - 1)}
                         onActiveItemChange={(item) => setActiveItemData(item as unknown as NormalizedWizardCodeItem)}
                         onShowEvidence={setIsShowingEvidence}
+                        onItemStatusChange={(itemId, status, item) =>
+                          handleItemStatusChange(
+                            currentStepData.id,
+                            itemId,
+                            status as CodeStatus,
+                            item as unknown as NormalizedWizardCodeItem | null,
+                          )
+                        }
                         patientQuestions={patientQuestions}
                         onUpdatePatientQuestions={setPatientQuestions}
                         showPatientTray={showPatientQuestions}

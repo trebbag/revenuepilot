@@ -8600,6 +8600,286 @@ class CodeSuggestItem(BaseModel):
         return _validate_code(v)
 
 
+class ExplainAnchor(BaseModel):
+    start: int = Field(..., ge=0)
+    end: int = Field(..., ge=0)
+    phrase: str = ""
+    confidence: float = Field(0.0, ge=0.0, le=1.0)
+
+
+class ExplainAnchorsRequest(BaseModel):
+    note: str = Field(..., max_length=10000)
+    code: str = Field(..., max_length=64)
+
+    @field_validator("note")
+    @classmethod
+    def _sanitize_note(cls, value: str) -> str:
+        return sanitize_text(value)
+
+    @field_validator("code")
+    @classmethod
+    def _sanitize_code(cls, value: str) -> str:
+        return sanitize_text(value)
+
+
+class ExplainAnchorsResponse(BaseModel):
+    anchors: List[ExplainAnchor] = Field(default_factory=list)
+
+
+class CodesReviewSnapshotRequest(BaseModel):
+    snapshotId: str = Field(..., alias="snapshotId", max_length=128)
+    note: str = Field(..., max_length=10000)
+    selectedCodes: List[str] = Field(default_factory=list, alias="selectedCodes")
+    patientContext: Dict[str, Any] = Field(default_factory=dict, alias="patientContext")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("snapshotId")
+    @classmethod
+    def _sanitize_snapshot_id(cls, value: str) -> str:
+        cleaned = sanitize_text(value).strip()
+        if not cleaned:
+            raise ValueError("snapshotId is required")
+        return cleaned
+
+    @field_validator("note")
+    @classmethod
+    def _sanitize_note(cls, value: str) -> str:
+        return sanitize_text(value)
+
+    @field_validator("selectedCodes", mode="before")
+    @classmethod
+    def _normalize_selected_codes(cls, value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, (str, int, float)):
+            value = [value]
+        if not isinstance(value, Iterable):
+            raise TypeError("selectedCodes must be an array")
+        results: List[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = sanitize_text(str(item)).strip()
+            if text:
+                results.append(text)
+        return results
+
+    @field_validator("patientContext", mode="before")
+    @classmethod
+    def _ensure_patient_context(cls, value: Any) -> Dict[str, Any]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        return {}
+
+
+class CodesReviewSnapshotResponse(BaseModel):
+    newSuggestions: List[CodeSuggestItem] = Field(default_factory=list)
+
+
+_CODE_REVIEW_SNAPSHOT_LOCK = threading.Lock()
+_CODE_REVIEW_SNAPSHOTS: Dict[str, List[Dict[str, Any]]] = {}
+
+_SNAPSHOT_SUGGESTION_LIBRARY: List[Dict[str, Any]] = [
+    {
+        "code": "I10",
+        "phrases": [
+            "hypertension",
+            "blood pressure",
+            "bp control",
+        ],
+        "rationale": "Hypertension follow-up with documented blood pressure readings.",
+        "reasoning": "Note documents elevated blood pressure and ongoing management plan.",
+        "usageRules": [
+            "Document blood pressure measurements and treatment plan",
+            "Confirm hypertension addressed in assessment/plan",
+        ],
+        "reasonsSuggested": [
+            "Hypertension referenced in assessment section",
+            "Blood pressure values recorded in the encounter",
+        ],
+        "potentialConcerns": [
+            "Ensure chronic condition status is clearly stated",
+        ],
+        "confidence": 92,
+        "whatItIs": "Essential (primary) hypertension diagnosis code.",
+    },
+    {
+        "code": "E11.9",
+        "phrases": [
+            "type 2 diabetes",
+            "type ii diabetes",
+            "a1c",
+        ],
+        "rationale": "Type 2 diabetes discussed with management details.",
+        "reasoning": "Encounter references diabetes history and monitoring.",
+        "usageRules": [
+            "Include current control status and treatment adjustments",
+        ],
+        "reasonsSuggested": [
+            "Diabetes management described in history",
+            "Lab values or A1C noted in documentation",
+        ],
+        "potentialConcerns": [
+            "Specify complications if present for more specific coding",
+        ],
+        "confidence": 88,
+        "whatItIs": "Type 2 diabetes mellitus without complications.",
+    },
+    {
+        "code": "99214",
+        "phrases": [
+            "medication management",
+            "moderate complexity",
+            "25 minute",
+        ],
+        "rationale": "Visit complexity supported by medication management and counseling.",
+        "reasoning": "Documentation reflects moderate decision making with chronic disease counseling.",
+        "usageRules": [
+            "Ensure history, exam, and decision making support level 4 complexity",
+            "Include total time or decision-making rationale",
+        ],
+        "reasonsSuggested": [
+            "Medication adjustments completed during visit",
+            "Chronic conditions reviewed in detail",
+        ],
+        "potentialConcerns": [
+            "Verify documentation meets level 4 coding criteria",
+        ],
+        "confidence": 78,
+        "whatItIs": "Established patient office visit, 25 minutes.",
+    },
+]
+
+_SNAPSHOT_SUGGESTION_LOOKUP: Dict[str, Dict[str, Any]] = {
+    entry["code"].upper(): entry for entry in _SNAPSHOT_SUGGESTION_LIBRARY
+}
+
+
+def _build_snapshot_key(snapshot_id: str) -> str:
+    cleaned = sanitize_text(snapshot_id).strip()
+    if not cleaned:
+        raise ValueError("snapshotId is required")
+    return cleaned
+
+
+def _match_phrase_occurrences(
+    note: str, phrase: str, *, limit: int = 3
+) -> List[Tuple[int, int, str]]:
+    matches: List[Tuple[int, int, str]] = []
+    if not note or not phrase:
+        return matches
+    lower_note = note.lower()
+    target = phrase.lower()
+    start = 0
+    while len(matches) < limit:
+        idx = lower_note.find(target, start)
+        if idx == -1:
+            break
+        end = idx + len(target)
+        if end > len(note):
+            break
+        matches.append((idx, end, note[idx:end]))
+        start = end
+    return matches
+
+
+def _extract_code_anchors(note: str, code: str) -> List[ExplainAnchor]:
+    if not note or not code:
+        return []
+    entry = _SNAPSHOT_SUGGESTION_LOOKUP.get(code.upper())
+    if not entry:
+        return []
+    phrases = entry.get("phrases") or []
+    anchors: List[ExplainAnchor] = []
+    seen: Set[Tuple[int, int]] = set()
+    base_conf = entry.get("anchorConfidence")
+    if not isinstance(base_conf, (int, float)):
+        base_conf = 0.9
+    else:
+        base_conf = max(0.5, min(float(base_conf) / (100 if base_conf > 1 else 1), 0.95))
+    for phrase in phrases:
+        normalized = sanitize_text(str(phrase)).strip()
+        if not normalized:
+            continue
+        for start, end, matched in _match_phrase_occurrences(note, normalized):
+            if (start, end) in seen:
+                continue
+            seen.add((start, end))
+            confidence = max(0.5, min(0.95, base_conf - 0.08 * len(anchors)))
+            anchors.append(
+                ExplainAnchor(start=start, end=end, phrase=matched, confidence=confidence)
+            )
+            if len(anchors) >= 3:
+                break
+        if len(anchors) >= 3:
+            break
+    anchors.sort(key=lambda anchor: anchor.start)
+    return anchors
+
+
+def _generate_snapshot_suggestions(
+    note: str, selected_codes: Iterable[str]
+) -> List[Dict[str, Any]]:
+    metadata = load_code_metadata()
+    selected = {
+        _normalize_code_identifier(code) for code in selected_codes if code is not None
+    }
+    suggestions: List[Dict[str, Any]] = []
+    for entry in _SNAPSHOT_SUGGESTION_LIBRARY:
+        code = entry.get("code")
+        identifier = _normalize_code_identifier(code)
+        if identifier and identifier in selected:
+            continue
+        phrases = entry.get("phrases") or []
+        matches: List[str] = []
+        seen_spans: Set[Tuple[int, int]] = set()
+        for phrase in phrases:
+            normalized = sanitize_text(str(phrase)).strip()
+            if not normalized:
+                continue
+            for start, end, matched in _match_phrase_occurrences(note, normalized):
+                if (start, end) in seen_spans:
+                    continue
+                seen_spans.add((start, end))
+                matches.append(matched)
+                if len(matches) >= 3:
+                    break
+            if len(matches) >= 3:
+                break
+        if not matches:
+            continue
+        meta = metadata.get(code, {}) if code else {}
+        description = entry.get("description") or meta.get("description") or code or ""
+        code_type = entry.get("type") or meta.get("type") or "ICD-10"
+        rationale = entry.get("rationale") or entry.get("reasoning") or description
+        reasoning = entry.get("reasoning") or entry.get("rationale") or description
+        what_it_is = entry.get("whatItIs") or description
+        usage_rules = list(entry.get("usageRules") or [])
+        reasons = list(entry.get("reasonsSuggested") or matches)
+        concerns = list(entry.get("potentialConcerns") or [])
+        confidence_raw = entry.get("confidence")
+        if isinstance(confidence_raw, (int, float)):
+            confidence_value = max(0, min(int(round(confidence_raw)), 100))
+        else:
+            confidence_value = min(95, 70 + len(matches) * 10)
+        suggestion = CodeSuggestItem(
+            code=code or description,
+            type=str(code_type or "ICD-10"),
+            description=description or (code or ""),
+            rationale=rationale,
+            reasoning=reasoning,
+            confidence=confidence_value,
+            whatItIs=what_it_is or description or (code or ""),
+            usageRules=usage_rules,
+            reasonsSuggested=reasons,
+            potentialConcerns=concerns,
+            evidence=matches,
+        )
+        suggestions.append(suggestion.model_dump())
+    return suggestions
+
+
 class CodesSuggestResponse(BaseModel):
     suggestions: List[CodeSuggestItem]
     questions: List[CodeGapQuestion] = Field(default_factory=list)
@@ -15264,6 +15544,43 @@ async def ws_codes_suggest(websocket: WebSocket):
     resp = await _codes_suggest(CodesSuggestRequest(**data))
     await websocket.send_json(resp.model_dump())
     await websocket.close()
+
+
+@app.post(
+    "/api/ai/explain/anchors",
+    response_model=ExplainAnchorsResponse,
+    response_model_exclude_none=True,
+)
+async def explain_code_anchors(
+    req: ExplainAnchorsRequest, user=Depends(require_role("user"))
+) -> ExplainAnchorsResponse:
+    anchors = _extract_code_anchors(req.note, req.code)
+    return ExplainAnchorsResponse(anchors=anchors)
+
+
+@app.post(
+    "/api/ai/codes/review-snapshot",
+    response_model=CodesReviewSnapshotResponse,
+    response_model_exclude_none=True,
+)
+async def codes_review_snapshot(
+    req: CodesReviewSnapshotRequest, user=Depends(require_role("user"))
+) -> CodesReviewSnapshotResponse:
+    try:
+        snapshot_key = _build_snapshot_key(req.snapshotId)
+    except ValueError as exc:  # pragma: no cover - validation handled by pydantic
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    with _CODE_REVIEW_SNAPSHOT_LOCK:
+        cached = _CODE_REVIEW_SNAPSHOTS.get(snapshot_key)
+        if cached is None:
+            cached = _generate_snapshot_suggestions(req.note, req.selectedCodes)
+            _CODE_REVIEW_SNAPSHOTS[snapshot_key] = cached
+
+    suggestions = [CodeSuggestItem(**item) for item in cached]
+    return CodesReviewSnapshotResponse(newSuggestions=suggestions)
 
 
 def _load_compliance_rule_index(conn: sqlite3.Connection) -> List[Dict[str, Any]]:

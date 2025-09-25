@@ -1233,6 +1233,21 @@ export function FinalizationWizardAdapter({
     [mapStreamingToWizard, streamingCodeSuggestions, streamingCodesAvailable],
   )
 
+  const snapshotSeed = useMemo(() => {
+    const sessionKey = sanitizeString(sessionData?.sessionId) ?? sanitizeString(initialSessionSnapshot?.sessionId)
+    const encounterKey = sanitizeString(encounterId)
+    return sessionKey || encounterKey || "finalization"
+  }, [encounterId, initialSessionSnapshot?.sessionId, sessionData?.sessionId])
+
+  const snapshotIdRef = useRef<string>("")
+  const snapshotPrimedRef = useRef<boolean>(false)
+
+  useEffect(() => {
+    const base = snapshotSeed && snapshotSeed.trim().length > 0 ? snapshotSeed.trim() : "finalization"
+    snapshotIdRef.current = `${base}-${Math.random().toString(36).slice(2, 10)}`
+    snapshotPrimedRef.current = false
+  }, [snapshotSeed])
+
   const initializationInput = useMemo(() => {
     const trimmedNoteId = typeof noteId === "string" ? noteId.trim() : ""
     const sessionNoteId = typeof sessionData?.noteId === "string" ? sessionData.noteId.trim() : ""
@@ -1399,11 +1414,17 @@ export function FinalizationWizardAdapter({
     const trimmedContent = typeof sourceContent === "string" ? sourceContent.trim() : ""
     if (!trimmedContent) {
       setWizardSuggestions([])
+      snapshotPrimedRef.current = false
       return
     }
 
     if (streamingCodesAvailable) {
       setWizardSuggestions(streamingWizardSuggestions)
+      snapshotPrimedRef.current = true
+      return
+    }
+
+    if (snapshotPrimedRef.current) {
       return
     }
 
@@ -1411,15 +1432,27 @@ export function FinalizationWizardAdapter({
 
     const fetchSuggestions = async () => {
       try {
-        const response = await fetchWithAuth("/api/ai/codes/suggest", {
+        const snapshotId = snapshotIdRef.current
+        if (!snapshotId) {
+          return
+        }
+        const selectedIdentifiers = selectedWizardCodes
+          .map((item) => sanitizeString(item.code) ?? sanitizeString(item.title))
+          .filter((value): value is string => Boolean(value))
+        const response = await fetchWithAuth("/api/ai/codes/review-snapshot", {
           method: "POST",
-          jsonBody: { content: trimmedContent, useOfflineMode: true },
+          jsonBody: {
+            snapshotId,
+            note: trimmedContent,
+            selectedCodes: Array.from(new Set(selectedIdentifiers)),
+            patientContext: patientMetadataPayload,
+          },
         })
         if (!response.ok) {
           throw new Error(`Suggestion request failed (${response.status})`)
         }
         const data = await response.json().catch(() => ({}))
-        const rawList = Array.isArray(data?.suggestions) ? data.suggestions : []
+        const rawList = Array.isArray(data?.newSuggestions) ? data.newSuggestions : []
         const seen = new Set<string>()
         const mapped: WizardCodeItem[] = []
         rawList.forEach((item: Record<string, unknown>, index: number) => {
@@ -1439,11 +1472,13 @@ export function FinalizationWizardAdapter({
 
         if (!cancelled) {
           setWizardSuggestions(mapped)
+          snapshotPrimedRef.current = true
         }
       } catch (error) {
         if (!cancelled) {
           onError?.("Unable to fetch AI suggestions", error)
           setWizardSuggestions([])
+          snapshotPrimedRef.current = true
         }
       }
     }
@@ -1453,7 +1488,18 @@ export function FinalizationWizardAdapter({
     return () => {
       cancelled = true
     }
-  }, [fetchWithAuth, isOpen, noteContent, onError, selectedCodeSet, sessionData?.noteContent, streamingCodesAvailable, streamingWizardSuggestions])
+  }, [
+    fetchWithAuth,
+    isOpen,
+    noteContent,
+    onError,
+    patientMetadataPayload,
+    selectedCodeSet,
+    selectedWizardCodes,
+    sessionData?.noteContent,
+    streamingCodesAvailable,
+    streamingWizardSuggestions,
+  ])
 
   useEffect(() => {
     if (!isOpen) {
