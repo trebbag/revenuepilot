@@ -18351,6 +18351,18 @@ async def get_patient_context_snapshot(
     return snapshot
 
 
+@app.get("/api/patients/{patient_id}/context/search")
+async def search_patient_context(
+    patient_id: str,
+    q: str = Query(""),
+    user=Depends(require_role("user")),
+):
+    search_payload = context_pipeline.search_context(patient_id, q)
+    if search_payload is None:
+        raise HTTPException(status_code=404, detail="No chart context available")
+    return search_payload
+
+
 # Notes and drafts management
 
 _DEEP_SEARCH_NOT_FOUND = object()

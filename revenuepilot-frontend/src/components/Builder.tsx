@@ -4,6 +4,7 @@ import {
   Calendar as CalendarIcon,
   ChevronLeft,
   ChevronRight,
+  BookOpen,
   Plus,
   Users,
   User,
@@ -86,9 +87,10 @@ interface BuilderProps {
   appointments?: AppointmentTemplate[]
   onAppointmentsChange?: (appointments: AppointmentTemplate[]) => void
   onScheduleRefresh?: () => void
+  onOpenChartContext?: (patientId: string, options?: { patientName?: string | null }) => void
 }
 
-export function Builder({ currentUser, appointments: propAppointments, onAppointmentsChange, onScheduleRefresh }: BuilderProps) {
+export function Builder({ currentUser, appointments: propAppointments, onAppointmentsChange, onScheduleRefresh, onOpenChartContext }: BuilderProps) {
   const [currentDate, setCurrentDate] = useState(new Date())
   const [viewMode, setViewMode] = useState<"day" | "week">("day")
   const [selectedProvider, setSelectedProvider] = useState(currentUser?.name || "Dr. Johnson")
@@ -1254,9 +1256,24 @@ export function Builder({ currentUser, appointments: propAppointments, onAppoint
                       {uploadError && <p className="text-xs text-destructive">{uploadError}</p>}
                       {uploadStatusMessage && <p className="text-xs text-muted-foreground">{uploadStatusMessage}</p>}
                       {patientIdForContext && (
-                        <p className="text-xs text-muted-foreground">
-                          Chart: {contextStageDisplay.superficial} superficial · {contextStageDisplay.deep} deep · {contextStageDisplay.indexed} indexed
-                        </p>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>
+                            Chart: {contextStageDisplay.superficial} superficial · {contextStageDisplay.deep} deep · {contextStageDisplay.indexed} indexed
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            onClick={() =>
+                              onOpenChartContext?.(patientIdForContext, {
+                                patientName: editingAppointment?.patientName || newAppointment.patientName || null,
+                              })
+                            }
+                          >
+                            <BookOpen className="w-3.5 h-3.5 mr-1" />
+                            Readable chart
+                          </Button>
+                        </div>
                       )}
                     </div>
 

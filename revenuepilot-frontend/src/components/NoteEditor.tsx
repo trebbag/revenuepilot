@@ -14,7 +14,7 @@ import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
 import { ScrollArea } from "./ui/scroll-area"
-import { CheckCircle, Save, Play, Square, Clock, Mic, MicOff, AlertTriangle, Loader2 } from "lucide-react"
+import { CheckCircle, Save, Play, Square, Clock, Mic, MicOff, AlertTriangle, Loader2, BookOpen } from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
@@ -861,6 +861,7 @@ interface NoteEditorProps {
   onCollaborationStreamUpdate?: (state: CollaborationStreamState) => void
   onContextStageChange?: (info: NoteContextStageInfo | null) => void
   onTranscriptCursorChange?: (cursor: string | null) => void
+  onOpenChartContext?: (patientId: string, options?: { patientName?: string | null }) => void
 }
 
 export interface NoteContextStageInfo {
@@ -892,6 +893,7 @@ export function NoteEditor({
   onCollaborationStreamUpdate,
   onContextStageChange,
   onTranscriptCursorChange,
+  onOpenChartContext,
 }: NoteEditorProps) {
   const auth = useAuth()
   const { state: sessionState } = useSession()
@@ -902,6 +904,15 @@ export function NoteEditor({
   const normalizedPatientId = useMemo(() => patientId.trim(), [patientId])
   const patientIdForContext = normalizedPatientId.length > 0 ? normalizedPatientId : undefined
   const contextStageState = useContextStage(null, { patientId: patientIdForContext })
+  const chartPatientName = useMemo(
+    () =>
+      initialNoteData?.patientName ||
+      prePopulatedPatient?.patientId ||
+      (patientInputValue ? patientInputValue.trim() : "") ||
+      patientIdForContext ||
+      null,
+    [initialNoteData?.patientName, prePopulatedPatient?.patientId, patientInputValue, patientIdForContext],
+  )
 
   useEffect(() => {
     if (!onContextStageChange) {
@@ -4487,40 +4498,51 @@ export function NoteEditor({
           </div>
 
           {patientIdForContext && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex items-center gap-1 text-xs text-muted-foreground rounded-full border border-border px-2 py-1">
-                  <span className="font-medium">Context:</span>
-                  {[
-                    { key: "superficial", label: "Superficial" },
-                    { key: "deep", label: "Deep" },
-                    { key: "indexed", label: "Indexed" },
-                  ].map((stage, index) => {
-                    const display = contextStageDisplay[stage.key as keyof typeof contextStageDisplay]
-                    const isBest = contextStageState.bestStage === stage.key
-                    return (
-                      <div key={stage.key} className="flex items-center gap-1">
-                        <span className={isBest ? "font-semibold text-foreground" : undefined}>{stage.label}</span>
-                        <span>{display}</span>
-                        {index < 2 && <span>·</span>}
-                      </div>
-                    )
-                  })}
-                </div>
-              </TooltipTrigger>
-              <TooltipContent className="text-xs space-y-1">
-                <div>Profile: {contextStageState.profile ?? "balanced"}</div>
-                {contextStageState.lastUpdated && (
-                  <div>Updated: {new Date(contextStageState.lastUpdated).toLocaleString()}</div>
-                )}
-                {contextStageState.stages.superficial?.doc_count != null && (
-                  <div>Documents: {contextStageState.stages.superficial.doc_count}</div>
-                )}
-                {contextStageState.bestStage !== "indexed" && (
-                  <div className="text-muted-foreground">Deep parsing may still be in progress.</div>
-                )}
-              </TooltipContent>
-            </Tooltip>
+            <div className="flex items-center gap-2">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground rounded-full border border-border px-2 py-1">
+                    <span className="font-medium">Context:</span>
+                    {[
+                      { key: "superficial", label: "Superficial" },
+                      { key: "deep", label: "Deep" },
+                      { key: "indexed", label: "Indexed" },
+                    ].map((stage, index) => {
+                      const display = contextStageDisplay[stage.key as keyof typeof contextStageDisplay]
+                      const isBest = contextStageState.bestStage === stage.key
+                      return (
+                        <div key={stage.key} className="flex items-center gap-1">
+                          <span className={isBest ? "font-semibold text-foreground" : undefined}>{stage.label}</span>
+                          <span>{display}</span>
+                          {index < 2 && <span>·</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent className="text-xs space-y-1">
+                  <div>Profile: {contextStageState.profile ?? "balanced"}</div>
+                  {contextStageState.lastUpdated && (
+                    <div>Updated: {new Date(contextStageState.lastUpdated).toLocaleString()}</div>
+                  )}
+                  {contextStageState.stages.superficial?.doc_count != null && (
+                    <div>Documents: {contextStageState.stages.superficial.doc_count}</div>
+                  )}
+                  {contextStageState.bestStage !== "indexed" && (
+                    <div className="text-muted-foreground">Deep parsing may still be in progress.</div>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => onOpenChartContext?.(patientIdForContext, { patientName: chartPatientName })}
+              >
+                <BookOpen className="w-3.5 h-3.5 mr-1" />
+                Readable chart
+              </Button>
+            </div>
           )}
 
           {/* Start Visit with Recording Indicator */}
