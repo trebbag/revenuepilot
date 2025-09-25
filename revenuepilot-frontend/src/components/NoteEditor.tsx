@@ -5036,8 +5036,12 @@ export function NoteEditor({
                               {transcriptExcerpt.map((segment, index) => {
                                 const styles = SPEAKER_STYLES[segment.speakerRole] ?? SPEAKER_STYLES.other
                                 const isLatest = index === transcriptExcerpt.length - 1
+                                // Use a more stable key: prefer segment.id, else combine speaker, text, and index as fallback
+                                const key = segment.id
+                                  ? segment.id
+                                  : `${segment.speaker}-${segment.text}-${index}`;
                                 return (
-                                  <div key={`${segment.speaker}-${index}`} className="flex items-start gap-2 text-xs leading-snug">
+                                  <div key={key} className="flex items-start gap-2 text-xs leading-snug">
                                     <Badge className={`text-[10px] font-semibold uppercase tracking-wide ${styles.badge}`}>
                                       {segment.speaker}
                                     </Badge>
