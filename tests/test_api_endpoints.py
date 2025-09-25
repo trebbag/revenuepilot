@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend import main, prompts, migrations, ehr_integration
 from backend.main import _init_core_tables
+from backend.security import hash_identifier
 
 
 @pytest.fixture
@@ -797,6 +798,8 @@ def test_suggest_parses_public_health_reason(client, monkeypatch):
 
 def test_pre_finalize_and_finalize(client):
     token = main.create_token("u", "user")
+    main.db_conn.execute("DELETE FROM audit_log")
+    main.db_conn.commit()
     payload = {
         "content": "Patient is stable with follow up plan.",
         "codes": ["99213"],
@@ -804,6 +807,7 @@ def test_pre_finalize_and_finalize(client):
         "diagnoses": ["J10.1"],
         "differentials": ["J00"],
         "compliance": ["HIPAA"],
+        "patientId": "pat-123",
     }
     resp = client.post(
         "/api/notes/pre-finalize-check",
@@ -838,6 +842,183 @@ def test_pre_finalize_and_finalize(client):
     assert data2["complianceCertification"]["issuesReviewed"]
     assert isinstance(data2["finalizedNoteId"], str)
 
+    row = main.db_conn.execute(
+        """
+        SELECT status, finalized_at, finalized_note_id, finalized_content, finalized_summary,
+               finalized_patient_hash, finalized_by, finalized_clinic_id
+        FROM notes ORDER BY id DESC LIMIT 1
+        """
+    ).fetchone()
+    assert row is not None
+    assert row["status"] == "finalized"
+    assert row["finalized_at"] is not None
+    assert row["finalized_note_id"] == data2["finalizedNoteId"]
+    assert row["finalized_content"] == data2["finalizedContent"]
+    assert row["finalized_summary"]
+    summary_payload = json.loads(row["finalized_summary"])
+    assert summary_payload["codes"] == payload["codes"]
+    assert summary_payload["exportReady"] is True
+    assert summary_payload["reimbursementSummary"]["total"] == data2["reimbursementSummary"]["total"]
+    assert summary_payload["patientId"] == payload["patientId"]
+    assert row["finalized_patient_hash"] == hash_identifier(payload["patientId"])
+    assert row["finalized_by"] == "u"
+    assert row["finalized_clinic_id"] is None
+
+    audit_row = main.db_conn.execute(
+        "SELECT action, details, success FROM audit_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert audit_row["action"] == "note.finalized"
+    assert audit_row["success"] == 1
+    detail_payload = json.loads(audit_row["details"])
+    assert detail_payload["finalizedNoteId"] == data2["finalizedNoteId"]
+
+
+def test_download_finalized_pdfs(client):
+    token = main.create_token("u", "user")
+    main.db_conn.execute("DELETE FROM audit_log")
+    main.db_conn.commit()
+    payload = {
+        "content": "Patient is stable with follow up plan.",
+        "codes": ["99213"],
+        "prevention": ["flu shot"],
+        "diagnoses": ["J10.1"],
+        "differentials": ["J00"],
+        "compliance": ["HIPAA"],
+        "patientId": "pat-123",
+    }
+    finalize_resp = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert finalize_resp.status_code == 200
+    finalized_note_id = finalize_resp.json()["finalizedNoteId"]
+
+    note_resp = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "pat-123"},
+        headers=auth_header(token),
+    )
+    assert note_resp.status_code == 200
+    assert note_resp.headers["content-type"] == "application/pdf"
+    disposition = note_resp.headers.get("content-disposition", "")
+    assert "attachment" in disposition
+    assert disposition.endswith('-note.pdf"')
+    assert note_resp.content.startswith(b"%PDF")
+    assert note_resp.headers["cache-control"].startswith("private")
+    assert "etag" in {key.lower() for key in note_resp.headers.keys()}
+    etag = note_resp.headers.get("etag")
+    assert etag
+
+    summary_resp = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "summary", "patientId": "pat-123"},
+        headers=auth_header(token),
+    )
+    assert summary_resp.status_code == 200
+    assert summary_resp.headers["content-type"] == "application/pdf"
+    summary_disposition = summary_resp.headers.get("content-disposition", "")
+    assert summary_disposition.endswith('-summary.pdf"')
+    assert summary_resp.content.startswith(b"%PDF")
+
+    conditional_resp = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "pat-123"},
+        headers={**auth_header(token), "If-None-Match": etag},
+    )
+    assert conditional_resp.status_code == 304
+    assert conditional_resp.headers.get("etag") == etag
+
+    missing_resp = client.get(
+        "/api/notes/unknown-id/pdf",
+        params={"variant": "note"},
+        headers=auth_header(token),
+    )
+    assert missing_resp.status_code == 404
+
+    invalid_resp = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "invalid"},
+        headers=auth_header(token),
+    )
+    assert invalid_resp.status_code == 400
+
+    audit_row = main.db_conn.execute(
+        "SELECT action, details FROM audit_log WHERE action=? ORDER BY id DESC LIMIT 1",
+        ("pdf.download",),
+    ).fetchone()
+    assert audit_row is not None
+    audit_details = json.loads(audit_row["details"])
+    assert audit_details["finalizedNoteId"] == finalized_note_id
+    assert audit_details["variant"] == "summary"
+
+
+def test_download_finalized_pdf_requires_auth(client):
+    token = main.create_token("secure-user", "user")
+    payload = {
+        "content": "Follow up in two weeks.",
+        "codes": ["99214"],
+        "prevention": [],
+        "diagnoses": ["I10"],
+        "differentials": [],
+        "compliance": [],
+        "patientId": "pat-auth",
+    }
+    finalize_resp = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(token),
+    )
+    assert finalize_resp.status_code == 200
+    finalized_note_id = finalize_resp.json()["finalizedNoteId"]
+
+    unauthorized = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "pat-auth"},
+    )
+    assert unauthorized.status_code in {401, 403}
+
+
+def test_download_finalized_pdf_enforces_clinic_and_patient(client):
+    finalizer_token = main.create_token("clinic-a-user", "user", clinic="clinic-a")
+    payload = {
+        "content": "Vitals stable, continue meds.",
+        "codes": ["99212"],
+        "prevention": [],
+        "diagnoses": ["E11.9"],
+        "differentials": [],
+        "compliance": [],
+        "patientId": "clinic-patient",
+    }
+    finalize_resp = client.post(
+        "/api/notes/finalize",
+        json=payload,
+        headers=auth_header(finalizer_token),
+    )
+    assert finalize_resp.status_code == 200
+    finalized_note_id = finalize_resp.json()["finalizedNoteId"]
+
+    other_clinic_token = main.create_token("clinic-b-user", "user", clinic="clinic-b")
+    cross_tenant = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "clinic-patient"},
+        headers=auth_header(other_clinic_token),
+    )
+    assert cross_tenant.status_code == 403
+
+    wrong_patient = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "different-patient"},
+        headers=auth_header(finalizer_token),
+    )
+    assert wrong_patient.status_code == 403
+
+    allowed = client.get(
+        f"/api/notes/{finalized_note_id}/pdf",
+        params={"variant": "note", "patientId": "clinic-patient"},
+        headers=auth_header(finalizer_token),
+    )
+    assert allowed.status_code == 200
 
 def test_pre_finalize_detects_issues(client):
     token = main.create_token("u", "user")

@@ -3,7 +3,15 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import "@testing-library/jest-dom/vitest"
 import React from "react"
 
-const { mockedApiFetch, mockedApiFetchJson, mockCreateAppointment, sessionActions } = vi.hoisted(() => {
+const {
+  mockedApiFetch,
+  mockedApiFetchJson,
+  mockCreateAppointment,
+  sessionActions,
+  toastInfo,
+  toastSuccess,
+  toastError,
+} = vi.hoisted(() => {
   const actions = {
     addCode: vi.fn(),
     removeCode: vi.fn(),
@@ -19,8 +27,19 @@ const { mockedApiFetch, mockedApiFetchJson, mockCreateAppointment, sessionAction
     mockedApiFetchJson: vi.fn(),
     mockCreateAppointment: vi.fn(),
     sessionActions: actions,
+    toastInfo: vi.fn(),
+    toastSuccess: vi.fn(),
+    toastError: vi.fn(),
   }
 })
+
+vi.mock("sonner", () => ({
+  toast: {
+    info: toastInfo,
+    success: toastSuccess,
+    error: toastError,
+  },
+}))
 
 let resetUploadStatuses: (() => void) | null = null
 
@@ -129,6 +148,9 @@ describe("ProtectedApp chart upload flow", () => {
     mockedApiFetchJson.mockReset()
     mockCreateAppointment.mockReset()
     Object.values(sessionActions).forEach((action) => action.mockReset?.())
+    toastInfo.mockReset()
+    toastSuccess.mockReset()
+    toastError.mockReset()
     resetUploadStatuses?.()
   })
 

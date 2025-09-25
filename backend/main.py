@@ -185,6 +185,7 @@ from backend.audio_processing import simple_transcribe, diarize_and_transcribe  
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.time_utils import ensure_utc, utc_now
+from backend.pdf_render import render_note_pdf, render_summary_pdf
 from backend.database_legacy import (
     DATABASE_PATH,
     SessionLocal,
@@ -4001,6 +4002,28 @@ def require_role(role: str):
 
     return checker
 
+
+def require_auth():
+    """Dependency ensuring the caller is an authenticated clinician."""
+
+    allowed_roles = {"user", "admin"}
+
+    def checker(
+        request: Request, credentials: HTTPAuthorizationCredentials = Depends(security)
+    ):
+        data = get_current_user(credentials)
+        role = data.get("role")
+        if role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Clinician access required",
+            )
+        _log_action_for_user(
+            data, f"{request.method} {request.url.path}", _audit_details_from_request(request)
+        )
+        return data
+
+    return checker
 
 
 def require_roles(*roles: str):
@@ -8220,7 +8243,8 @@ class PreFinalizeCheckRequest(BaseModel):
 
 class FinalizeNoteRequest(PreFinalizeCheckRequest):
     """Request payload for completing note finalization."""
-    pass
+
+    patientId: Optional[str] = None
 
 
 class WorkflowSessionCreateRequest(BaseModel):
@@ -14862,17 +14886,93 @@ async def finalize_note(
     details = validation_result["reimbursementDetails"]
     total = validation_result["estimatedTotal"]
     export_ready = validation_result["canFinalize"]
+    now = utc_now()
+    now_ts = now.timestamp()
+    finalized_note_id = uuid4().hex
+    finalized_by = user.get("sub")
+    clinic_id = user.get("clinic")
+    patient_identifier = (req.patientId or "").strip() if hasattr(req, "patientId") else ""
+    patient_id = patient_identifier or None
+    patient_hash = hash_identifier(patient_identifier) if patient_identifier else None
     compliance_certification = {
         "status": "pass" if export_ready else "fail",
-        "attestedBy": user.get("sub"),
+        "attestedBy": finalized_by,
         "attestedAt": _utc_now_iso(),
         "summary": "All compliance checks passed." if export_ready else "Outstanding compliance items require attention.",
         "pendingActions": validation_result["missingDocumentation"],
         "issuesReviewed": validation_result["complianceIssues"],
         "stepValidation": validation_result["stepValidation"],
     }
+    finalized_content = req.content.strip()
+    summary_payload = {
+        "codes": list(req.codes),
+        "prevention": list(req.prevention),
+        "diagnoses": list(req.diagnoses),
+        "differentials": list(req.differentials),
+        "compliance": list(req.compliance),
+        "issues": validation_result["issues"],
+        "exportReady": export_ready,
+        "reimbursementSummary": {"total": total, "codes": details},
+    }
+    if patient_id:
+        summary_payload["patientId"] = patient_id
+    if clinic_id:
+        summary_payload["clinicId"] = clinic_id
+    summary_payload["finalizedBy"] = finalized_by
+    try:
+        db_conn.execute(
+            """
+            INSERT INTO notes (
+                content,
+                status,
+                created_at,
+                updated_at,
+                finalized_at,
+                finalized_note_id,
+                finalized_content,
+                finalized_summary,
+                finalized_by,
+                finalized_clinic_id,
+                finalized_patient_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                finalized_content,
+                "finalized",
+                now_ts,
+                now_ts,
+                now_ts,
+                finalized_note_id,
+                finalized_content,
+                json.dumps(summary_payload),
+                finalized_by,
+                clinic_id,
+                patient_hash,
+            ),
+        )
+        db_conn.commit()
+        persisted = True
+    except sqlite3.Error as exc:  # pragma: no cover - defensive logging
+        logger.exception(
+            "note_finalize_persist_failed",
+            error=str(exc),
+            finalized_note_id=finalized_note_id,
+        )
+        persisted = False
+    _insert_audit_log(
+        finalized_by,
+        "note.finalized",
+        {
+            "finalizedNoteId": finalized_note_id,
+            "exportReady": export_ready,
+            "clinicId": clinic_id,
+            "patientIdHash": patient_hash,
+        },
+        success=persisted,
+        clinic_id=clinic_id,
+    )
     return {
-        "finalizedContent": req.content.strip(),
+        "finalizedContent": finalized_content,
         "codesSummary": details,
         "reimbursementSummary": {"total": total, "codes": details},
         "estimatedReimbursement": total,
@@ -14884,9 +14984,175 @@ async def finalize_note(
         "stepValidation": validation_result["stepValidation"],
         "complianceIssues": validation_result["complianceIssues"],
         "complianceCertification": compliance_certification,
-        "finalizedNoteId": uuid4().hex,
+        "finalizedNoteId": finalized_note_id,
     }
 
+
+def _patient_filename_token(summary: Any, fallback: str) -> str:
+    candidate: Optional[str] = None
+
+    def _dig(mapping: Any, path: Sequence[str]) -> Optional[str]:
+        current = mapping
+        for key in path:
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            else:
+                return None
+        return current if isinstance(current, str) else None
+
+    if isinstance(summary, str):
+        try:
+            summary_data = json.loads(summary)
+        except json.JSONDecodeError:
+            summary_data = None
+    else:
+        summary_data = summary
+
+    if isinstance(summary_data, dict):
+        for path in (
+            ("patient", "name"),
+            ("metadata", "patient", "name"),
+            ("patient", "fullName"),
+            ("metadata", "patient", "fullName"),
+            ("patientName",),
+            ("patient", "id"),
+            ("metadata", "patient", "id"),
+        ):
+            candidate = _dig(summary_data, path)
+            if candidate:
+                break
+
+    if not candidate and isinstance(summary_data, dict):
+        patient = summary_data.get("patient")
+        if isinstance(patient, str) and patient.strip():
+            candidate = patient.strip()
+
+    token = candidate.strip() if candidate else fallback
+    token = re.sub(r"[^A-Za-z0-9_-]+", "_", token).strip("_")
+    if not token:
+        token = fallback
+    return token
+
+
+@app.get("/api/notes/{finalized_note_id}/pdf")
+async def download_finalized_pdf(
+    finalized_note_id: str,
+    request: Request,
+    variant: str = Query("note"),
+    patient_id: Optional[str] = Query(default=None, alias="patientId"),
+    user=Depends(require_auth()),
+):
+    variant_normalized = (variant or "").lower()
+    if variant_normalized not in {"note", "summary"}:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "variant must be either 'note' or 'summary'",
+        )
+
+    row = db_conn.execute(
+        """
+        SELECT finalized_content, finalized_summary, finalized_by, finalized_clinic_id, finalized_patient_hash
+        FROM notes
+        WHERE finalized_note_id = ?
+        LIMIT 1
+        """,
+        (finalized_note_id,),
+    ).fetchone()
+
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Finalized note not found")
+
+    clinic_id = row["finalized_clinic_id"]
+    if clinic_id and user.get("role") != "admin":
+        if user.get("clinic") != clinic_id:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "You do not have access to this clinic",
+            )
+
+    patient_hash = row["finalized_patient_hash"]
+    requester_id = user.get("sub")
+    role = user.get("role")
+    permitted = True
+    if patient_hash:
+        provided_hash: Optional[str] = None
+        if patient_id:
+            provided_hash = hash_identifier(patient_id.strip())
+            if provided_hash != patient_hash and role != "admin":
+                permitted = False
+            else:
+                permitted = True
+        else:
+            permitted = bool(requester_id and requester_id == row["finalized_by"]) or role == "admin"
+    if not permitted:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "You do not have access to this patient's documents",
+        )
+
+    summary_blob = row["finalized_summary"] or ""
+    source_blob = row["finalized_content"] or ""
+    etag_source = source_blob if variant_normalized == "note" else summary_blob
+    etag_material = f"{variant_normalized}:{finalized_note_id}:{etag_source}".encode("utf-8")
+    etag_hash = hashlib.sha256(etag_material).hexdigest()
+    etag_value = f'"{etag_hash}"'
+    cache_headers = {
+        "ETag": etag_value,
+        "Cache-Control": "private, max-age=300",
+    }
+
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match:
+        candidates = {token.strip() for token in if_none_match.split(",") if token.strip()}
+
+        def _normalise_etag(value: str) -> str:
+            token = value.strip()
+            if token.startswith("W/"):
+                token = token[2:].strip()
+            return token.strip('"')
+
+        normalised_candidates = {_normalise_etag(token) for token in candidates}
+        if etag_hash in normalised_candidates:
+            return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers)
+
+    summary_data: Any = None
+    if summary_blob:
+        try:
+            summary_data = json.loads(summary_blob)
+        except json.JSONDecodeError:
+            summary_data = summary_blob
+
+    try:
+        if variant_normalized == "note":
+            pdf_bytes = render_note_pdf(row["finalized_content"] or "")
+        else:
+            pdf_bytes = render_summary_pdf(summary_data)
+    except ValueError as exc:  # pragma: no cover - defensive branch
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Finalized note is missing required data",
+        ) from exc
+
+    filename_token = _patient_filename_token(
+        summary_data, fallback=finalized_note_id[:12]
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename_token}-{variant_normalized}.pdf"'
+    }
+    headers.update(cache_headers)
+    _insert_audit_log(
+        requester_id,
+        "pdf.download",
+        {
+            "finalizedNoteId": finalized_note_id,
+            "variant": variant_normalized,
+            "clinicId": clinic_id,
+            "patientIdHash": patient_hash,
+        },
+        success=True,
+        clinic_id=user.get("clinic"),
+    )
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 async def _codes_suggest(req: CodesSuggestRequest) -> CodesSuggestResponse:
@@ -18124,8 +18390,16 @@ class BulkNotesRequest(BaseModel):
 
 @app.get("/api/notes/drafts")
 async def list_draft_notes(user=Depends(require_role("user"))):
+    cutoff = time.time() - 24 * 60 * 60
     cur = db_conn.execute(
-        "SELECT id, content, status, created_at, updated_at FROM notes WHERE status = 'draft' ORDER BY id"
+        """
+        SELECT id, content, status, created_at, updated_at, finalized_note_id
+        FROM notes
+        WHERE status = 'draft'
+           OR (status = 'finalized' AND finalized_at IS NOT NULL AND finalized_at >= ?)
+        ORDER BY id
+        """,
+        (cutoff,),
     )
     data = [dict(row) for row in cur.fetchall()]
     return JSONResponse(content=data, headers={"X-Bypass-Envelope": "1"})

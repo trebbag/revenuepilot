@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react"
+import type { MouseEvent } from "react"
+import { useTranslation } from "react-i18next"
 import { motion } from "motion/react"
 import { FilePlus, Calendar, Clock, User, Search, Filter, SortAsc, SortDesc, Eye, Edit, Trash2, AlertTriangle, CheckCircle, FileText, Stethoscope, MoreHorizontal, ChevronDown } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
@@ -11,6 +13,7 @@ import { Avatar, AvatarFallback } from "./ui/avatar"
 import { Separator } from "./ui/separator"
 import { Skeleton } from "./ui/skeleton"
 import { apiFetch, apiFetchJson } from "../lib/api"
+import { downloadPdfWithFallback } from "../utils/pdfFallback"
 
 interface CurrentUser {
   id: string
@@ -34,6 +37,10 @@ interface DraftNote {
   urgency: "low" | "medium" | "high"
   noteLength: number
   lastEditor: string
+  status: string
+  finalizedNoteId?: string | null
+  cachedBeautifiedHtml?: string | null
+  cachedSummaryHtml?: string | null
 }
 
 interface DraftAnalyticsResponse {
@@ -46,6 +53,8 @@ interface DraftApiNote {
   status?: string | null
   created_at?: string | null
   updated_at?: string | null
+  finalized_note_id?: string | null
+  finalizedNoteId?: string | null
 }
 
 interface DraftsPreferences {
@@ -75,6 +84,7 @@ interface DraftsProps {
 }
 
 export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: DraftsProps) {
+  const { t } = useTranslation()
   const [searchTerm, setSearchTerm] = useState("")
   const [selectedProvider, setSelectedProvider] = useState("all")
   const [selectedVisitType, setSelectedVisitType] = useState("all")
@@ -150,6 +160,16 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
       const now = new Date()
       const daysOld = Math.max(0, Math.floor((now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
 
+      const statusValue = typeof raw.status === "string" ? raw.status.trim().toLowerCase() : ""
+      const status = statusValue === "finalized" ? "finalized" : "draft"
+      const finalizedNoteSource =
+        typeof raw.finalized_note_id === "string"
+          ? raw.finalized_note_id
+          : typeof raw.finalizedNoteId === "string"
+            ? raw.finalizedNoteId
+            : null
+      const finalizedNoteId = finalizedNoteSource && finalizedNoteSource.trim().length > 0 ? finalizedNoteSource.trim() : null
+
       const patientName = extractField(content, /patient\s*(?:name)?\s*[:\-]\s*([^\n]+)/i) || extractField(content, /name\s*[:\-]\s*([^\n]+)/i) || `Note ${raw.id}`
 
       const provider = normalizeProvider(extractField(content, /provider\s*[:\-]\s*([^\n]+)/i)) || normalizeProvider(extractField(content, /author\s*[:\-]\s*([^\n]+)/i))
@@ -179,6 +199,8 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
         urgency,
         noteLength,
         lastEditor,
+        status,
+        finalizedNoteId,
       }
     },
     [calculateCompletion, deriveUrgency, determineVisitType, extractField, normalizeProvider],
@@ -243,6 +265,27 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
   const handleRefresh = useCallback(() => {
     setRefreshCounter((prev) => prev + 1)
   }, [])
+
+  const handleDownloadClick = useCallback(
+    async (event: MouseEvent<HTMLButtonElement>, draft: DraftNote, variant: "note" | "summary") => {
+      event.stopPropagation()
+      event.preventDefault()
+
+      if (!draft.finalizedNoteId) {
+        return
+      }
+
+      await downloadPdfWithFallback({
+        finalizedNoteId: draft.finalizedNoteId,
+        variant,
+        patientName: draft.patientName,
+        noteHtml: draft.cachedBeautifiedHtml,
+        summaryHtml: draft.cachedSummaryHtml,
+        offlineMessage: t("drafts.pdfUnavailableOffline", "PDF unavailable offline."),
+      })
+    },
+    [t],
+  )
 
   useEffect(() => {
     const controller = new AbortController()
@@ -712,143 +755,189 @@ export function Drafts({ onEditDraft, currentUser, onDraftsSummaryUpdate }: Draf
             </CardContent>
           </Card>
         ) : (
-          filteredDrafts.map((draft, index) => (
-            <motion.div key={draft.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
-              <Card
-                className="hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30"
-                onClick={() => handleCardClick(draft.id)}
-              >
-                <CardContent className="p-6">
-                  <div className="flex items-center justify-between">
-                    {/* Left Section: Patient & Visit Info */}
-                    <div className="flex items-center gap-4">
-                      <div className="relative">
-                        <Avatar className="w-12 h-12 ring-2 ring-white shadow-sm">
-                          <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium">
-                            {draft.patientName
-                              .split(" ")
-                              .map((n) => n[0])
-                              .join("")}
-                          </AvatarFallback>
-                        </Avatar>
-                        {draft.urgency === "high" && <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white" />}
-                      </div>
-
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <h3 className="font-semibold text-foreground text-lg">{draft.patientName}</h3>
-                          <Badge className={`text-xs font-medium ${getVisitTypeColor(draft.visitType)}`}>{draft.visitType}</Badge>
-                          <Badge variant={getUrgencyColor(draft.urgency)} className="text-xs font-medium">
-                            {draft.urgency} priority
-                          </Badge>
+          filteredDrafts.map((draft, index) => {
+            const isFinalized = draft.status === "finalized"
+            return (
+              <motion.div key={draft.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
+                <Card
+                  className="hover:shadow-lg transition-all duration-300 cursor-pointer bg-white border-2 border-stone-100/50 hover:border-stone-200/70 shadow-md hover:bg-stone-50/30"
+                  onClick={() => handleCardClick(draft.id)}
+                >
+                  <CardContent className="p-6">
+                    <div className="flex items-center justify-between">
+                      {/* Left Section: Patient & Visit Info */}
+                      <div className="flex items-center gap-4">
+                        <div className="relative">
+                          <Avatar className="w-12 h-12 ring-2 ring-white shadow-sm">
+                            <AvatarFallback className="bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700 font-medium">
+                              {draft.patientName
+                                .split(" ")
+                                .map((n) => n[0])
+                                .join("")}
+                            </AvatarFallback>
+                          </Avatar>
+                          {draft.urgency === "high" && <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full border-2 border-white" />}
                         </div>
-                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                          <span className="font-medium">Patient ID: {draft.patientId}</span>
-                          <span>•</span>
-                          <span className="font-medium">Encounter: {draft.encounterId}</span>
-                          <span>•</span>
-                          <span className="font-medium">Provider: {draft.provider}</span>
-                          {currentUser?.name === draft.provider && (
-                            <Badge variant="outline" className="text-xs">
-                              You
+
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-3">
+                            <h3 className="font-semibold text-foreground text-lg">{draft.patientName}</h3>
+                            <Badge className={`text-xs font-medium ${getVisitTypeColor(draft.visitType)}`}>{draft.visitType}</Badge>
+                            <Badge variant={getUrgencyColor(draft.urgency)} className="text-xs font-medium">
+                              {draft.urgency} priority
                             </Badge>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Center Section: Dates & Progress */}
-                    <div className="flex items-center gap-8">
-                      <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
-                        <div className="text-sm font-semibold text-foreground mb-1">Visit Date</div>
-                        <div className="text-sm text-muted-foreground">{formatDate(draft.visitDate)}</div>
-                      </div>
-
-                      <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
-                        <div className="text-sm font-semibold text-foreground mb-1">Last Edit</div>
-                        <div className="text-sm text-muted-foreground">{formatDate(draft.lastEditDate)}</div>
-                        <div className="text-xs text-muted-foreground">{formatTime(draft.lastEditDate)}</div>
-                      </div>
-
-                      <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
-                        <div className="text-sm font-semibold text-foreground mb-2">Completion</div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-20 h-3 bg-stone-200 rounded-full overflow-hidden shadow-inner">
-                            <div className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 shadow-sm" style={{ width: `${draft.completionStatus}%` }} />
+                            {isFinalized && (
+                              <Badge className="flex items-center gap-1 border-emerald-200 bg-emerald-50 text-emerald-700 text-xs font-medium" variant="outline">
+                                <CheckCircle className="h-3 w-3" /> Final
+                              </Badge>
+                            )}
                           </div>
-                          <span className="text-sm font-semibold text-foreground">{draft.completionStatus}%</span>
+                          <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                            <span className="font-medium">Patient ID: {draft.patientId}</span>
+                            <span>•</span>
+                            <span className="font-medium">Encounter: {draft.encounterId}</span>
+                            <span>•</span>
+                            <span className="font-medium">Provider: {draft.provider}</span>
+                            {currentUser?.name === draft.provider && (
+                              <Badge variant="outline" className="text-xs">
+                                You
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Right Section: Age & Actions */}
-                    <div className="flex items-center gap-6">
-                      <div className="text-center p-4 bg-gradient-to-br from-stone-50 to-stone-100 rounded-xl border border-stone-200/50 shadow-sm">
-                        <div className={`text-3xl font-bold ${getDaysOldColor(draft.daysOld)} mb-1`}>{draft.daysOld}</div>
-                        <div className="text-xs text-muted-foreground font-medium">day{draft.daysOld !== 1 ? "s" : ""} old</div>
+                      {/* Center Section: Dates & Progress */}
+                      <div className="flex items-center gap-8">
+                        <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
+                          <div className="text-sm font-semibold text-foreground mb-1">Visit Date</div>
+                          <div className="text-sm text-muted-foreground">{formatDate(draft.visitDate)}</div>
+                        </div>
+
+                        <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
+                          <div className="text-sm font-semibold text-foreground mb-1">Last Edit</div>
+                          <div className="text-sm text-muted-foreground">{formatDate(draft.lastEditDate)}</div>
+                          <div className="text-xs text-muted-foreground">{formatTime(draft.lastEditDate)}</div>
+                        </div>
+
+                        <div className="text-center p-3 bg-stone-50/80 rounded-lg border border-stone-200/50">
+                          <div className="text-sm font-semibold text-foreground mb-2">Completion</div>
+                          <div className="flex items-center gap-2">
+                            <div className="w-20 h-3 bg-stone-200 rounded-full overflow-hidden shadow-inner">
+                              <div className="h-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500 shadow-sm" style={{ width: `${draft.completionStatus}%` }} />
+                            </div>
+                            <span className="text-sm font-semibold text-foreground">{draft.completionStatus}%</span>
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
-                        <Button variant="default" size="sm" onClick={(e) => handleButtonClick(e, draft.id)} className="shadow-sm hover:shadow-md transition-shadow">
-                          <Edit className="w-4 h-4 mr-2" />
-                          Continue
-                        </Button>
+                      {/* Right Section: Age & Actions */}
+                      <div className="flex items-center gap-6">
+                        <div className="text-center p-4 bg-gradient-to-br from-stone-50 to-stone-100 rounded-xl border border-stone-200/50 shadow-sm">
+                          <div className={`text-3xl font-bold ${getDaysOldColor(draft.daysOld)} mb-1`}>{draft.daysOld}</div>
+                          <div className="text-xs text-muted-foreground font-medium">day{draft.daysOld !== 1 ? "s" : ""} old</div>
+                        </div>
 
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="shadow-sm" onClick={handleDropdownClick}>
-                              <MoreHorizontal className="w-4 h-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem>
-                              <Eye className="w-4 h-4 mr-2" />
-                              Preview
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => handleButtonClick(e, draft.id)}>
+                        <div className="flex items-center gap-3">
+                          {isFinalized ? (
+                            <div className="flex flex-col gap-2">
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                className="shadow-sm justify-start"
+                                aria-label={t("drafts.downloadSummaryPdfAria", {
+                                  patient: draft.patientName,
+                                })}
+                                disabled={!draft.finalizedNoteId}
+                                onClick={(event) =>
+                                  void handleDownloadClick(event, draft, "summary")
+                                }
+                              >
+                                {t("drafts.downloadSummaryPdf", "Download Patient Summary (PDF)")}
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                className="shadow-sm justify-start"
+                                aria-label={t("drafts.downloadNotePdfAria", {
+                                  patient: draft.patientName,
+                                })}
+                                disabled={!draft.finalizedNoteId}
+                                onClick={(event) => void handleDownloadClick(event, draft, "note")}
+                              >
+                                {t("drafts.downloadNotePdf", "Download Note (PDF)")}
+                              </Button>
+                            </div>
+                          ) : (
+                            <Button
+                              variant="default"
+                              size="sm"
+                              onClick={(e) => handleButtonClick(e, draft.id)}
+                              className="shadow-sm hover:shadow-md transition-shadow"
+                            >
                               <Edit className="w-4 h-4 mr-2" />
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem className="text-destructive">
-                              <Trash2 className="w-4 h-4 mr-2" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              Continue
+                            </Button>
+                          )}
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="sm" className="shadow-sm" onClick={handleDropdownClick}>
+                                <MoreHorizontal className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem>
+                                <Eye className="w-4 h-4 mr-2" />
+                                Preview
+                              </DropdownMenuItem>
+                              {!isFinalized && (
+                                <DropdownMenuItem onClick={(e) => handleButtonClick(e, draft.id)}>
+                                  <Edit className="w-4 h-4 mr-2" />
+                                  Edit
+                                </DropdownMenuItem>
+                              )}
+                              <DropdownMenuItem className="text-destructive">
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Delete
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Additional Info Row */}
-                  <div className="mt-6 pt-4 border-t border-stone-200/50 flex items-center justify-between text-sm">
-                    <div className="flex items-center gap-4 text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <FileText className="w-4 h-4" />
-                        {draft.noteLength} words
-                      </span>
-                      <span>•</span>
-                      <span>Last edited by {draft.lastEditor}</span>
-                    </div>
+                    {/* Additional Info Row */}
+                    <div className="mt-6 pt-4 border-t border-stone-200/50 flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-4 text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <FileText className="w-4 h-4" />
+                          {draft.noteLength} words
+                        </span>
+                        <span>•</span>
+                        <span>Last edited by {draft.lastEditor}</span>
+                      </div>
 
-                    <div className="flex items-center gap-2">
-                      {draft.completionStatus < 50 && (
-                        <div className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded-md border border-orange-200/50">
-                          <AlertTriangle className="w-4 h-4" />
-                          <span className="text-xs font-medium">Needs attention</span>
-                        </div>
-                      )}
-                      {draft.completionStatus >= 90 && (
-                        <div className="flex items-center gap-1 text-green-600 bg-green-50 px-2 py-1 rounded-md border border-green-200/50">
-                          <CheckCircle className="w-4 h-4" />
-                          <span className="text-xs font-medium">Nearly complete</span>
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {draft.completionStatus < 50 && (
+                          <div className="flex items-center gap-1 text-orange-600 bg-orange-50 px-2 py-1 rounded-md border border-orange-200/50">
+                            <AlertTriangle className="w-4 h-4" />
+                            <span className="text-xs font-medium">Needs attention</span>
+                          </div>
+                        )}
+                        {draft.completionStatus >= 90 && (
+                          <div className="flex items-center gap-1 text-green-600 bg-green-50 px-2 py-1 rounded-md border border-green-200/50">
+                            <CheckCircle className="w-4 h-4" />
+                            <span className="text-xs font-medium">Nearly complete</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          ))
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )
+          })
         )}
       </div>
 

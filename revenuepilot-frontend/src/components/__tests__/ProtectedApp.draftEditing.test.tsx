@@ -4,11 +4,24 @@ import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ReactNode } from "react"
 
-const { noteEditorPropsSpy, sessionResetSpy, apiFetchMock, apiFetchJsonMock } = vi.hoisted(() => ({
+const { noteEditorPropsSpy, sessionResetSpy, apiFetchMock, apiFetchJsonMock, toastInfo, toastSuccess, toastError } = vi.hoisted(
+  () => ({
   noteEditorPropsSpy: vi.fn(),
   sessionResetSpy: vi.fn(),
   apiFetchMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<Response>>(),
   apiFetchJsonMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<any>>(),
+  toastInfo: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
+  }),
+)
+
+vi.mock("sonner", () => ({
+  toast: {
+    info: toastInfo,
+    success: toastSuccess,
+    error: toastError,
+  },
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({
@@ -170,6 +183,9 @@ describe("ProtectedApp draft editing", () => {
   beforeEach(() => {
     noteEditorPropsSpy.mockClear()
     sessionResetSpy.mockClear()
+    toastInfo.mockReset()
+    toastSuccess.mockReset()
+    toastError.mockReset()
     apiFetchMock.mockImplementation(async () => new Response(JSON.stringify({}), { status: 200 }))
     apiFetchJsonMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = resolveUrl(input)
