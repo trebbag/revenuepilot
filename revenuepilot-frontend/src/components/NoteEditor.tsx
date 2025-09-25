@@ -102,6 +102,7 @@ interface TranscriptEntry {
   timestamp: number
   speaker: string
   speakerRole: TranscriptSpeakerRole
+  isInterim?: boolean
 }
 
 const TRANSCRIPT_RECENT_WINDOW_MS = 60_000
@@ -173,6 +174,29 @@ function parseConfidence(value: unknown): number | null {
     const numeric = Number.parseFloat(value)
     if (Number.isFinite(numeric)) {
       return Math.max(0, Math.min(1, numeric))
+    }
+  }
+  return null
+}
+
+function parseBooleanLike(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value === 0) return false
+    if (value === 1) return true
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) {
+      return null
+    }
+    if (["true", "t", "yes", "y", "1", "on"].includes(normalized)) {
+      return true
+    }
+    if (["false", "f", "no", "n", "0", "off"].includes(normalized)) {
+      return false
     }
   }
   return null
@@ -298,6 +322,95 @@ const TRANSCRIPT_ID_KEYS = [
   "guid",
   "lineId",
 ]
+
+const TRANSCRIPT_INTERIM_TRUE_KEYS = [
+  "isInterim",
+  "interim",
+  "is_interim",
+  "isPartial",
+  "partial",
+  "isPending",
+  "pending",
+  "isProvisional",
+  "provisional",
+  "isLive",
+  "live",
+]
+
+const TRANSCRIPT_FINAL_TRUE_KEYS = [
+  "isFinal",
+  "final",
+  "is_final",
+  "finalized",
+  "isComplete",
+  "complete",
+  "completed",
+]
+
+const TRANSCRIPT_STATUS_KEYS = ["status", "state", "result", "phase", "stage"]
+
+const TRANSCRIPT_STATUS_INTERIM_VALUES = [
+  "interim",
+  "partial",
+  "pending",
+  "listening",
+  "capturing",
+  "live",
+  "streaming",
+  "in_progress",
+  "in-progress",
+  "draft",
+]
+
+const TRANSCRIPT_STATUS_FINAL_VALUES = [
+  "final",
+  "complete",
+  "completed",
+  "stabilized",
+  "stable",
+  "done",
+  "ready",
+  "finalized",
+]
+
+function extractInterimFlag(record: Record<string, unknown>): boolean | null {
+  for (const key of TRANSCRIPT_INTERIM_TRUE_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      const parsed = parseBooleanLike(record[key])
+      if (parsed !== null) {
+        return parsed
+      }
+    }
+  }
+
+  for (const key of TRANSCRIPT_FINAL_TRUE_KEYS) {
+    if (record[key] !== undefined && record[key] !== null) {
+      const parsed = parseBooleanLike(record[key])
+      if (parsed !== null) {
+        return !parsed
+      }
+    }
+  }
+
+  for (const key of TRANSCRIPT_STATUS_KEYS) {
+    const value = record[key]
+    if (typeof value !== "string") {
+      continue
+    }
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) {
+      continue
+    }
+    if (TRANSCRIPT_STATUS_INTERIM_VALUES.some((candidate) => normalized.includes(candidate))) {
+      return true
+    }
+    if (TRANSCRIPT_STATUS_FINAL_VALUES.some((candidate) => normalized.includes(candidate))) {
+      return false
+    }
+  }
+
+  return null
+}
 
 type TranscriptNormalizationMode = "append" | "replace" | "clear"
 
@@ -477,6 +590,10 @@ function buildTranscriptEntryFromSource(
   }
   if (confidence !== null) {
     entry.confidence = confidence
+  }
+  const interimFlag = extractInterimFlag(record)
+  if (interimFlag !== null) {
+    entry.isInterim = interimFlag
   }
   return entry
 }
@@ -823,6 +940,8 @@ const parseSessionTimestamp = (value: string | null | undefined): number | null 
 
 const AUTO_SAVE_DEBOUNCE_MS = 5_000
 const STREAM_HISTORY_LIMIT = 50
+const MAX_BUFFERED_AUDIO_BYTES = 512 * 1024
+const MEDIA_RECORDER_TIMESLICE_MS = 750
 
 interface NoteEditorProps {
   prePopulatedPatient?: {
@@ -1274,10 +1393,12 @@ export function NoteEditor({
   const mediaStreamRef = useRef<MediaStream | null>(null)
   const websocketRef = useRef<WebSocket | null>(null)
   const queuedAudioChunksRef = useRef<ArrayBuffer[]>([])
-  const transcriptionSocketRef = useRef<WebSocket | null>(null)
+  const queuedAudioBytesRef = useRef(0)
   const transcriptionReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transcriptionAttemptsRef = useRef(0)
   const previousTranscriptionStreamKeyRef = useRef<string | null>(null)
+  const audioStartPromiseRef = useRef<Promise<boolean> | null>(null)
+  const transcriptionCloseRequestedRef = useRef(false)
   const complianceSocketRef = useRef<WebSocket | null>(null)
   const complianceReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const complianceAttemptsRef = useRef(0)
@@ -1917,146 +2038,147 @@ export function NoteEditor({
         clearTimeout(transcriptionReconnectTimerRef.current)
         transcriptionReconnectTimerRef.current = null
       }
-      const socket = transcriptionSocketRef.current
-      if (socket) {
-        try {
-          socket.onopen = null
-          socket.onclose = null
-          socket.onerror = null
-          socket.onmessage = null
-          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-            socket.close()
-          }
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-      transcriptionSocketRef.current = null
       transcriptionAttemptsRef.current = 0
       clearTranscriptionStreamError()
-      return () => undefined
     }
 
-    let cancelled = false
-
-    const cleanupTimer = () => {
+    return () => {
       if (transcriptionReconnectTimerRef.current) {
         clearTimeout(transcriptionReconnectTimerRef.current)
         transcriptionReconnectTimerRef.current = null
       }
     }
-
-    const closeSocket = () => {
-      const socket = transcriptionSocketRef.current
-      if (socket) {
-        try {
-          socket.onopen = null
-          socket.onclose = null
-          socket.onerror = null
-          socket.onmessage = null
-          if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-            socket.close()
-          }
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-      transcriptionSocketRef.current = null
-    }
-
-    const scheduleReconnect = (message?: string) => {
-      if (cancelled) {
-        return
-      }
-      cleanupTimer()
-      const attempt = transcriptionAttemptsRef.current + 1
-      transcriptionAttemptsRef.current = attempt
-      const delay = Math.min(15_000, Math.max(500, 500 * Math.min(attempt, 6)))
-      setTranscriptionStreamError(message)
-      transcriptionReconnectTimerRef.current = window.setTimeout(() => {
-        if (cancelled) {
-          return
-        }
-        connect()
-      }, delay)
-    }
-
-    const connect = () => {
-      if (cancelled) {
-        return
-      }
-      cleanupTimer()
-      closeSocket()
-
-      const { url, token } = buildStreamUrl("/ws/transcription")
-      try {
-        const socket =
-          token != null ? new WebSocket(url.toString(), ["authorization", `Bearer ${token}`]) : new WebSocket(url.toString())
-
-        transcriptionSocketRef.current = socket
-
-        socket.onopen = () => {
-          if (cancelled) {
-            return
-          }
-          transcriptionAttemptsRef.current = 0
-          clearTranscriptionStreamError()
-        }
-
-        socket.onmessage = async (event) => {
-          if (cancelled) {
-            return
-          }
-          try {
-            const decoded = await decodeWebsocketData(event.data)
-            processTranscriptionPacket(decoded)
-            clearTranscriptionStreamError()
-          } catch (error) {
-            console.error("Failed to process transcription stream payload", error)
-          }
-        }
-
-        socket.onerror = () => {
-          if (cancelled) {
-            return
-          }
-          setTranscriptionStreamError()
-        }
-
-        socket.onclose = () => {
-          transcriptionSocketRef.current = null
-          if (cancelled) {
-            return
-          }
-          scheduleReconnect()
-        }
-      } catch (error) {
-        if (cancelled) {
-          return
-        }
-        const message = error instanceof Error ? error.message : undefined
-        scheduleReconnect(message)
-      }
-    }
-
-    transcriptionAttemptsRef.current = 0
-    connect()
-
-    return () => {
-      cancelled = true
-      cleanupTimer()
-      closeSocket()
-    }
   }, [
-    buildStreamUrl,
     clearTranscriptionStreamError,
-    processTranscriptionPacket,
-    setTranscriptionStreamError,
-    streamBaseParams.encounterId,
-    streamBaseParams.noteId,
-    streamBaseParams.patientId,
     streamBaseParams.sessionId,
   ])
+
+  const connectTranscriptionSocket = useCallback(
+    (options?: { force?: boolean }) => {
+      if (typeof window === "undefined") {
+        return
+      }
+
+      const force = options?.force ?? false
+      const latestStatus = latestVisitSessionRef.current?.status
+      if (!force && latestStatus !== "active") {
+        return
+      }
+
+      const existing = websocketRef.current
+      if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        return
+      }
+
+      if (transcriptionReconnectTimerRef.current) {
+        clearTimeout(transcriptionReconnectTimerRef.current)
+        transcriptionReconnectTimerRef.current = null
+      }
+
+      const scheduleReconnect = (message?: string) => {
+        if (latestVisitSessionRef.current?.status !== "active") {
+          return
+        }
+        if (transcriptionReconnectTimerRef.current) {
+          clearTimeout(transcriptionReconnectTimerRef.current)
+        }
+        const attempt = transcriptionAttemptsRef.current + 1
+        transcriptionAttemptsRef.current = attempt
+        const delay = Math.min(15_000, Math.max(500, 500 * Math.min(attempt, 6)))
+        setTranscriptionStreamError(message)
+        transcriptionReconnectTimerRef.current = window.setTimeout(() => {
+          transcriptionReconnectTimerRef.current = null
+          if (latestVisitSessionRef.current?.status === "active") {
+            connectTranscriptionSocket()
+          }
+        }, delay)
+      }
+
+      let target: URL
+      try {
+        target = new URL(resolveWebsocketUrl("/api/transcribe/stream"))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : undefined
+        scheduleReconnect(message)
+        return
+      }
+
+      const token = getStoredToken()
+      if (token) {
+        target.searchParams.set("token", token)
+      }
+
+      let socket: WebSocket
+      try {
+        const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
+        socket = protocols ? new WebSocket(target.toString(), protocols) : new WebSocket(target.toString())
+      } catch (error) {
+        const message = error instanceof Error ? error.message : undefined
+        scheduleReconnect(message)
+        return
+      }
+
+      transcriptionCloseRequestedRef.current = false
+      websocketRef.current = socket
+
+      socket.onopen = () => {
+        transcriptionAttemptsRef.current = 0
+        clearTranscriptionStreamError()
+        try {
+          socket.send(JSON.stringify({ event: "start" }))
+        } catch (error) {
+          console.error("Failed to send start event", error)
+        }
+
+        if (queuedAudioChunksRef.current.length) {
+          const pending = queuedAudioChunksRef.current.slice()
+          queuedAudioChunksRef.current = []
+          queuedAudioBytesRef.current = 0
+          const remaining: ArrayBuffer[] = []
+          for (const chunk of pending) {
+            try {
+              socket.send(chunk)
+            } catch (error) {
+              console.error("Failed to flush audio chunk", error)
+              remaining.push(chunk)
+            }
+          }
+          if (remaining.length) {
+            queuedAudioChunksRef.current = remaining
+            queuedAudioBytesRef.current = remaining.reduce((total, item) => total + item.byteLength, 0)
+          }
+        }
+      }
+
+      socket.onmessage = async (event) => {
+        try {
+          const decoded = await decodeWebsocketData(event.data)
+          processTranscriptionPacket(decoded)
+          clearTranscriptionStreamError()
+        } catch (error) {
+          console.error("Failed to parse transcript payload", error)
+        }
+      }
+
+      socket.onerror = () => {
+        setTranscriptionStreamError()
+      }
+
+      socket.onclose = () => {
+        websocketRef.current = null
+        const shouldReconnect = !transcriptionCloseRequestedRef.current && latestVisitSessionRef.current?.status === "active"
+        transcriptionCloseRequestedRef.current = false
+        if (shouldReconnect) {
+          scheduleReconnect()
+        }
+      }
+    },
+    [
+      clearTranscriptionStreamError,
+      processTranscriptionPacket,
+      setTranscriptionStreamError,
+    ],
+  )
 
   const convertWizardIssuesToCompliance = useCallback((issues?: Record<string, unknown>): ComplianceIssue[] => {
     if (!issues || typeof issues !== "object") {
@@ -2296,6 +2418,14 @@ export function NoteEditor({
   )
 
   const stopAudioStream = useCallback(() => {
+    audioStartPromiseRef.current = null
+    if (transcriptionReconnectTimerRef.current) {
+      clearTimeout(transcriptionReconnectTimerRef.current)
+      transcriptionReconnectTimerRef.current = null
+    }
+    transcriptionAttemptsRef.current = 0
+    transcriptionCloseRequestedRef.current = true
+
     const recorder = mediaRecorderRef.current
     if (recorder && recorder.state !== "inactive") {
       try {
@@ -2321,6 +2451,13 @@ export function NoteEditor({
     const socket = websocketRef.current
     if (socket) {
       try {
+        if (socket.readyState === WebSocket.OPEN) {
+          try {
+            socket.send(JSON.stringify({ event: "stop" }))
+          } catch (error) {
+            console.error("Failed to send stop event", error)
+          }
+        }
         if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
           socket.close()
         }
@@ -2330,6 +2467,7 @@ export function NoteEditor({
     }
     websocketRef.current = null
     queuedAudioChunksRef.current = []
+    queuedAudioBytesRef.current = 0
     setIsRecording(false)
     setShouldSnapTranscriptToEnd(true)
   }, [])
@@ -3015,6 +3153,7 @@ export function NoteEditor({
     prevInitialPatientNameRef.current = initialNoteData?.patientName
     noteCreatePromiseRef.current = null
     queuedAudioChunksRef.current = []
+    queuedAudioBytesRef.current = 0
     setNoteId(incomingId)
     setIsFinalized(false)
     setShowFinalizationWizard(false)
@@ -3076,86 +3215,103 @@ export function NoteEditor({
       setTranscriptionError("Microphone access is not supported in this browser.")
       return false
     }
-    setTranscriptionError(null)
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-      const recorder = new MediaRecorder(stream)
-      mediaRecorderRef.current = recorder
-      queuedAudioChunksRef.current = []
 
-      const token = getStoredToken()
-      const wsTarget = new URL(resolveWebsocketUrl("/api/transcribe/stream"))
-      if (token) {
-        wsTarget.searchParams.set("token", token)
-      }
-      const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
-      const ws = protocols ? new WebSocket(wsTarget.toString(), protocols) : new WebSocket(wsTarget.toString())
-      websocketRef.current = ws
-
-      ws.onopen = () => {
-        clearTranscriptionStreamError()
-        if (queuedAudioChunksRef.current.length) {
-          for (const chunk of queuedAudioChunksRef.current) {
-            ws.send(chunk)
-          }
-          queuedAudioChunksRef.current = []
-        }
-      }
-
-      ws.onmessage = async (event) => {
-        try {
-          const decoded = await decodeWebsocketData(event.data)
-          processTranscriptionPacket(decoded)
-          clearTranscriptionStreamError()
-        } catch (error) {
-          console.error("Failed to parse transcript payload", error)
-        }
-      }
-
-      ws.onerror = () => {
-        setTranscriptionStreamError()
-      }
-
-      ws.onclose = () => {
-        websocketRef.current = null
-      }
-
-      recorder.ondataavailable = async (event: BlobEvent) => {
-        if (!event.data || event.data.size === 0) return
-        try {
-          const buffer = await event.data.arrayBuffer()
-          const socket = websocketRef.current
-          if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(buffer)
-          } else {
-            queuedAudioChunksRef.current.push(buffer)
-          }
-        } catch (error) {
-          console.error("Failed to process audio chunk", error)
-        }
-      }
-
-      recorder.onstop = () => {
-        stream.getTracks().forEach((track) => {
-          try {
-            track.stop()
-          } catch (error) {
-            console.error("Failed to stop track", error)
-          }
-        })
-      }
-
-      recorder.start(1000)
+    const existingRecorder = mediaRecorderRef.current
+    if (existingRecorder && existingRecorder.state !== "inactive") {
       setIsRecording(true)
+      connectTranscriptionSocket({ force: true })
       return true
-    } catch (error) {
-      console.error("Unable to start audio stream", error)
-      setTranscriptionError(error instanceof Error ? error.message : "Unable to access microphone")
-      stopAudioStream()
-      return false
     }
-  }, [stopAudioStream])
+
+    if (audioStartPromiseRef.current) {
+      return audioStartPromiseRef.current
+    }
+
+    const promise = (async () => {
+      setTranscriptionError(null)
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        mediaStreamRef.current = stream
+        const recorder = new MediaRecorder(stream)
+        mediaRecorderRef.current = recorder
+        queuedAudioChunksRef.current = []
+        queuedAudioBytesRef.current = 0
+        transcriptionCloseRequestedRef.current = false
+
+        recorder.ondataavailable = async (event: BlobEvent) => {
+          if (!event.data || event.data.size === 0) {
+            return
+          }
+          try {
+            const buffer = await event.data.arrayBuffer()
+            const socket = websocketRef.current
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(buffer)
+            } else {
+              queuedAudioChunksRef.current.push(buffer)
+              queuedAudioBytesRef.current += buffer.byteLength
+              while (
+                queuedAudioChunksRef.current.length > 1 &&
+                queuedAudioBytesRef.current > MAX_BUFFERED_AUDIO_BYTES
+              ) {
+                const discarded = queuedAudioChunksRef.current.shift()
+                if (discarded) {
+                  queuedAudioBytesRef.current -= discarded.byteLength
+                }
+              }
+              if (!socket || socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+                connectTranscriptionSocket()
+              }
+            }
+          } catch (error) {
+            console.error("Failed to process audio chunk", error)
+          }
+        }
+
+        recorder.onstop = () => {
+          stream.getTracks().forEach((track) => {
+            try {
+              track.stop()
+            } catch (error) {
+              console.error("Failed to stop track", error)
+            }
+          })
+        }
+
+        connectTranscriptionSocket({ force: true })
+
+        try {
+          recorder.start(MEDIA_RECORDER_TIMESLICE_MS)
+        } catch (error) {
+          throw error
+        }
+
+        setIsRecording(true)
+        return true
+      } catch (error) {
+        console.error("Unable to start audio stream", error)
+        setTranscriptionError(error instanceof Error ? error.message : "Unable to access microphone")
+        stopAudioStream()
+        return false
+      }
+    })()
+
+    audioStartPromiseRef.current = promise
+    try {
+      return await promise
+    } finally {
+      audioStartPromiseRef.current = null
+    }
+  }, [connectTranscriptionSocket, stopAudioStream])
+
+  useEffect(() => {
+    const status = visitSession.status
+    if (status === "active") {
+      void startAudioStream()
+    } else if (status && status !== "active") {
+      stopAudioStream()
+    }
+  }, [startAudioStream, stopAudioStream, visitSession.status])
 
   const handlePatientInputChange = useCallback((value: string) => {
     setPatientInputValue(value)
@@ -4063,6 +4219,8 @@ export function NoteEditor({
   const finalizeButtonDisabled = isFinalized || !hasRecordedTime || hasActiveIssues
   const hasCriticalIssues = criticalIssues.length > 0
 
+  const hasInterimTranscript = useMemo(() => transcriptEntries.some((entry) => entry.isInterim), [transcriptEntries])
+
   const recentTranscription = useMemo(() => {
     if (!transcriptEntries.length) return []
     const now = Date.now()
@@ -4895,6 +5053,14 @@ export function NoteEditor({
                       </Badge>
                     </>
                   )}
+                  {hasInterimTranscript && (
+                    <Badge
+                      variant="outline"
+                      className="text-xs bg-amber-100 text-amber-700 border border-amber-200"
+                    >
+                      Live (interim)
+                    </Badge>
+                  )}
                 </div>
                 <div className={`flex items-center gap-1 text-sm ${isRecording ? "text-destructive" : "text-muted-foreground"}`}>
                   <Clock className="w-4 h-4" />
@@ -4972,7 +5138,17 @@ export function NoteEditor({
                         )}
                       </div>
                       <div className={`text-sm leading-relaxed flex-1 ${isCurrent ? "font-medium" : ""}`}>
-                        {highlightTranscriptText(entry.text)}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>{highlightTranscriptText(entry.text)}</span>
+                          {entry.isInterim && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-200"
+                            >
+                              Interim
+                            </Badge>
+                          )}
+                        </div>
                         {isCurrent && isRecording && <span className="inline-block w-2 h-4 bg-destructive ml-1 animate-pulse"></span>}
                       </div>
                     </div>
