@@ -1,25 +1,16 @@
-import {
-  useState,
-  useEffect,
-  useMemo,
-  useRef,
-  useCallback,
-  type ReactNode,
-  type MutableRefObject,
-} from "react"
+import { useState, useEffect, useMemo, useRef, useCallback, type MutableRefObject } from "react"
 import { useTranslation } from "react-i18next"
 import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Label } from "./ui/label"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog"
-import { ScrollArea } from "./ui/scroll-area"
 import { CheckCircle, Save, Play, Square, Clock, Mic, MicOff, AlertTriangle, Loader2, BookOpen } from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
+import { FullTranscriptModal } from "./FullTranscriptModal"
 import { type FinalizationWizardLaunchOptions, type PreFinalizeCheckResponse } from "./FinalizationWizardAdapter"
 import type { FinalizeResult } from "../features/finalization"
 import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFetchOptions } from "../lib/api"
@@ -95,7 +86,7 @@ interface EncounterValidationState {
 
 type TranscriptSpeakerRole = "clinician" | "patient" | "other"
 
-interface TranscriptEntry {
+export interface TranscriptEntry {
   id: string
   text: string
   confidence?: number | null
@@ -292,10 +283,6 @@ function parseBooleanLike(value: unknown): boolean | null {
     }
   }
   return null
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 const TRANSCRIPT_ARRAY_KEYS = [
@@ -1252,8 +1239,9 @@ export function NoteEditor({
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [transcriptionIndex, setTranscriptionIndex] = useState(-1)
   const [showFullTranscript, setShowFullTranscript] = useState(false)
-  const [transcriptSearch, setTranscriptSearch] = useState("")
-  const [shouldSnapTranscriptToEnd, setShouldSnapTranscriptToEnd] = useState(false)
+  const noteEditorContainerRef = useRef<HTMLDivElement | null>(null)
+  const activeNoteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const noteSelectionRef = useRef<{ start: number; end: number }>({ start: 0, end: 0 })
 
   const clearTranscriptionStreamError = useCallback(() => {
     setTranscriptionError((prev) => {
@@ -1500,7 +1488,6 @@ export function NoteEditor({
   const collaborationSocketRef = useRef<WebSocket | null>(null)
   const collaborationReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const collaborationAttemptsRef = useRef(0)
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const transcriptIdCounterRef = useRef(0)
   const transcriptCursorRef = useRef<string | null>(null)
   const prevInitialNoteIdRef = useRef<string | null>(initialNoteData?.noteId ?? null)
@@ -3444,6 +3431,68 @@ export function NoteEditor({
   }, [noteContent])
 
   useEffect(() => {
+    const container = noteEditorContainerRef.current
+    if (!container) {
+      return
+    }
+
+    const updateSelection = (target?: HTMLTextAreaElement | null) => {
+      const textarea = target ?? activeNoteTextareaRef.current
+      if (!textarea) {
+        return
+      }
+      if (!container.contains(textarea)) {
+        return
+      }
+      noteSelectionRef.current = {
+        start: typeof textarea.selectionStart === "number" ? textarea.selectionStart : textarea.value.length,
+        end: typeof textarea.selectionEnd === "number" ? textarea.selectionEnd : textarea.value.length,
+      }
+    }
+
+    const handleFocusIn = (event: FocusEvent) => {
+      const target = event.target
+      if (!(target instanceof HTMLTextAreaElement)) {
+        return
+      }
+      if (!container.contains(target)) {
+        return
+      }
+      activeNoteTextareaRef.current = target
+      updateSelection(target)
+    }
+
+    const handleFocusOut = (event: FocusEvent) => {
+      const target = event.target
+      if (!(target instanceof HTMLTextAreaElement)) {
+        return
+      }
+      if (!container.contains(target)) {
+        return
+      }
+      updateSelection(target)
+    }
+
+    const handleSelectionUpdate = () => {
+      updateSelection()
+    }
+
+    container.addEventListener("focusin", handleFocusIn)
+    container.addEventListener("focusout", handleFocusOut)
+    container.addEventListener("keyup", handleSelectionUpdate, true)
+    container.addEventListener("mouseup", handleSelectionUpdate, true)
+    document.addEventListener("selectionchange", handleSelectionUpdate)
+
+    return () => {
+      container.removeEventListener("focusin", handleFocusIn)
+      container.removeEventListener("focusout", handleFocusOut)
+      container.removeEventListener("keyup", handleSelectionUpdate, true)
+      container.removeEventListener("mouseup", handleSelectionUpdate, true)
+      document.removeEventListener("selectionchange", handleSelectionUpdate)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!noteId && patientId.trim().length > 0 && (noteContentRef.current?.trim()?.length ?? 0) > 0) {
       void ensureNoteCreated(noteContentRef.current).catch(() => {})
     }
@@ -4000,23 +4049,6 @@ export function NoteEditor({
     }
   }, [onTranscriptCursorChange])
 
-  useEffect(() => {
-    if (!shouldSnapTranscriptToEnd) return
-    if (!showFullTranscript) return
-    const anchor = transcriptEndRef.current
-    if (!anchor) {
-      return
-    }
-    anchor.scrollIntoView({ behavior: "smooth", block: "end" })
-    setShouldSnapTranscriptToEnd(false)
-  }, [shouldSnapTranscriptToEnd, showFullTranscript, transcriptEntries])
-
-  useEffect(() => {
-    if (showFullTranscript) {
-      setShouldSnapTranscriptToEnd(true)
-    }
-  }, [showFullTranscript])
-
   const handleDismissIssue = (issueId: string) => {
     setComplianceIssues((prev) => prev.map((issue) => (issue.id === issueId ? { ...issue, dismissed: true } : issue)))
   }
@@ -4339,46 +4371,6 @@ export function NoteEditor({
     return sum / samples.length
   }, [transcriptEntries])
 
-  const normalizedTranscriptQuery = transcriptSearch.trim().toLowerCase()
-  const hasTranscriptSearch = normalizedTranscriptQuery.length > 0
-
-  const entryMatchesSearch = useCallback(
-    (entry: TranscriptEntry) => {
-      if (!hasTranscriptSearch) return true
-      const textValue = entry.text?.toLowerCase() ?? ""
-      const speakerValue = entry.speaker?.toLowerCase() ?? ""
-      return textValue.includes(normalizedTranscriptQuery) || speakerValue.includes(normalizedTranscriptQuery)
-    },
-    [hasTranscriptSearch, normalizedTranscriptQuery],
-  )
-
-  const matchingTranscriptCount = useMemo(() => {
-    if (!transcriptEntries.length) return 0
-    return transcriptEntries.reduce((count, entry) => (entryMatchesSearch(entry) ? count + 1 : count), 0)
-  }, [entryMatchesSearch, transcriptEntries])
-
-  const highlightTranscriptText = useCallback(
-    (text: string): ReactNode => {
-      if (!hasTranscriptSearch || !text) return text
-      try {
-        const regex = new RegExp(`(${escapeRegExp(normalizedTranscriptQuery)})`, "ig")
-        const parts = text.split(regex)
-        return parts.map((part, index) =>
-          part.toLowerCase() === normalizedTranscriptQuery ? (
-            <mark key={index} className="rounded-sm bg-amber-200 px-1 py-0.5 text-foreground">
-              {part}
-            </mark>
-          ) : (
-            <span key={index}>{part}</span>
-          ),
-        )
-      } catch {
-        return text
-      }
-    },
-    [hasTranscriptSearch, normalizedTranscriptQuery],
-  )
-
   const totalTranscribedLines = transcriptEntries.length
   const currentTranscriptCount = transcriptionIndex >= 0 ? transcriptionIndex + 1 : 0
   const averageConfidencePercent = averageTranscriptConfidence === null ? null : Math.round(Math.min(1, Math.max(0, averageTranscriptConfidence)) * 100)
@@ -4388,6 +4380,85 @@ export function NoteEditor({
     const secs = seconds % 60
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`
   }
+
+  const resolveNoteTextarea = useCallback(() => {
+    const container = noteEditorContainerRef.current
+    if (!container) {
+      return null
+    }
+
+    const active = activeNoteTextareaRef.current
+    if (active && container.contains(active)) {
+      return active
+    }
+
+    const fallback = container.querySelector<HTMLTextAreaElement>("textarea")
+    if (fallback) {
+      activeNoteTextareaRef.current = fallback
+      noteSelectionRef.current = {
+        start: typeof fallback.selectionStart === "number" ? fallback.selectionStart : fallback.value.length,
+        end: typeof fallback.selectionEnd === "number" ? fallback.selectionEnd : fallback.value.length,
+      }
+    }
+
+    return fallback
+  }, [])
+
+  const handleInsertTranscriptEntry = useCallback(
+    (entry: TranscriptEntry) => {
+      const rawText = entry?.text ?? ""
+      const trimmed = rawText.trim()
+      if (!trimmed) {
+        return
+      }
+
+      const textarea = resolveNoteTextarea()
+      if (textarea) {
+        const baseValue = textarea.value ?? ""
+        const { start, end } = noteSelectionRef.current
+        const selectionStart = typeof start === "number" ? start : textarea.selectionStart ?? baseValue.length
+        const selectionEnd = typeof end === "number" ? end : textarea.selectionEnd ?? baseValue.length
+        const safeStart = Math.max(0, Math.min(selectionStart, baseValue.length))
+        const safeEnd = Math.max(safeStart, Math.min(selectionEnd, baseValue.length))
+        const before = baseValue.slice(0, safeStart)
+        const after = baseValue.slice(safeEnd)
+        const needsLeadingNewline = before.length > 0 && !before.endsWith("\n")
+        const needsTrailingNewline = after.length > 0 && !after.startsWith("\n")
+        const trailingSuffix = needsTrailingNewline && !trimmed.endsWith("\n") ? "\n" : ""
+        const leadingPrefix = needsLeadingNewline ? "\n" : ""
+        const insertion = `${leadingPrefix}${trimmed}${trailingSuffix}`
+        const nextValue = `${before}${insertion}${after}`
+
+        const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set
+        if (nativeSetter) {
+          nativeSetter.call(textarea, nextValue)
+        } else {
+          textarea.value = nextValue
+        }
+
+        const inputEvent = new Event("input", { bubbles: true })
+        textarea.dispatchEvent(inputEvent)
+
+        const cursor = before.length + insertion.length
+        requestAnimationFrame(() => {
+          textarea.focus()
+          textarea.setSelectionRange(cursor, cursor)
+          noteSelectionRef.current = { start: cursor, end: cursor }
+        })
+        return
+      }
+
+      const currentContent = noteContentRef.current ?? ""
+      const needsLeadingNewline = currentContent.length > 0 && !currentContent.endsWith("\n")
+      const nextContent = `${currentContent}${needsLeadingNewline ? "\n" : ""}${trimmed}${trimmed.endsWith("\n") ? "" : "\n"}`
+      noteContentRef.current = nextContent
+      setNoteContent(nextContent)
+      if (onNoteContentChange) {
+        onNoteContentChange(nextContent)
+      }
+    },
+    [noteContentRef, onNoteContentChange, resolveNoteTextarea, setNoteContent],
+  )
 
   const handleFinalize = useCallback(async () => {
     if (isFinalized) {
@@ -4755,7 +4826,7 @@ export function NoteEditor({
   ])
 
   return (
-    <div className="flex flex-col flex-1">
+    <div ref={noteEditorContainerRef} className="flex flex-col flex-1">
       {/* Toolbar */}
       <div className="border-b bg-background p-4 space-y-4">
         <div className="flex flex-wrap gap-4 items-end">
@@ -5159,163 +5230,21 @@ export function NoteEditor({
       </div>
 
       {/* Full Transcript Modal */}
-      <Dialog open={showFullTranscript} onOpenChange={setShowFullTranscript}>
-        <DialogContent className="max-w-4xl w-full h-[90vh] flex flex-col p-0 gap-0 bg-background border-border">
-          <DialogHeader className="px-6 py-4 border-b border-border shrink-0">
-            <div className="space-y-3">
-              <div className="flex items-center gap-3 flex-wrap">
-                <DialogTitle className="text-lg font-medium">Full Transcript</DialogTitle>
-                <DialogDescription className="sr-only">Real-time transcription of your patient encounter showing the complete conversation history.</DialogDescription>
-                <div className="flex items-center gap-2">
-                  {isRecording ? (
-                    <>
-                      <Mic className="w-4 h-4 text-destructive" />
-                      <Badge variant="destructive" className="text-xs">
-                        <div className="w-1.5 h-1.5 bg-destructive-foreground rounded-full animate-pulse mr-1"></div>
-                        Recording
-                      </Badge>
-                    </>
-                  ) : (
-                    <>
-                      <MicOff className="w-4 h-4 text-muted-foreground" />
-                      <Badge variant="secondary" className="text-xs">
-                        Paused
-                      </Badge>
-                    </>
-                  )}
-                  {hasInterimTranscript && (
-                    <Badge
-                      variant="outline"
-                      className="text-xs bg-amber-100 text-amber-700 border border-amber-200"
-                    >
-                      Live (interim)
-                    </Badge>
-                  )}
-                </div>
-                <div className={`flex items-center gap-1 text-sm ${isRecording ? "text-destructive" : "text-muted-foreground"}`}>
-                  <Clock className="w-4 h-4" />
-                  <span className="font-mono tabular-nums">{formatTime(totalDisplayTime)}</span>
-                </div>
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <Input
-                  value={transcriptSearch}
-                  onChange={(event) => setTranscriptSearch(event.target.value)}
-                  placeholder="Search transcript..."
-                  className="sm:max-w-xs"
-                />
-                {hasTranscriptSearch && (
-                  <div className="text-xs text-muted-foreground">
-                    {matchingTranscriptCount} match{matchingTranscriptCount === 1 ? "" : "es"}
-                  </div>
-                )}
-              </div>
-            </div>
-          </DialogHeader>
-
-          <ScrollArea className="flex-1 min-h-0">
-            <div className="p-6 space-y-4">
-              <div className="text-sm text-muted-foreground mb-4">
-                {isRecording
-                  ? "Real-time transcription of your patient encounter. The transcript updates automatically as the conversation continues."
-                  : "Transcription of your patient encounter. Recording is currently paused - click 'Start Visit' to resume recording and live transcription."}
-              </div>
-
-              <div className="space-y-3">
-                {hasTranscriptSearch && transcriptEntries.length > 0 && matchingTranscriptCount === 0 && (
-                  <div className="rounded-lg border border-dashed border-border p-4 text-center text-sm text-muted-foreground">
-                    No transcript entries match “{transcriptSearch.trim()}”.
-                  </div>
-                )}
-                {transcriptEntries.map((entry, index) => {
-                  const isRecent = index >= Math.max(0, transcriptionIndex - 2) && index <= transcriptionIndex
-                  const isCurrent = index === transcriptionIndex && isRecording
-                  const styles = SPEAKER_STYLES[entry.speakerRole] ?? SPEAKER_STYLES.other
-                  const matchesQuery = entryMatchesSearch(entry)
-                  const speakerMatches = hasTranscriptSearch && entry.speaker.toLowerCase().includes(normalizedTranscriptQuery)
-                  const timestampDate = new Date(entry.timestamp)
-                  const timestampLabel = Number.isFinite(entry.timestamp)
-                    ? timestampDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                    : ""
-
-                  return (
-                    <div
-                      key={entry.id}
-                      className={`flex gap-4 p-3 rounded-lg border transition-all duration-300 ${
-                        isCurrent
-                          ? "bg-destructive/10 border-destructive/30 shadow-sm"
-                          : isRecent
-                            ? "bg-accent/40 border-accent/60"
-                            : "bg-muted/30 border-transparent"
-                      }`}
-                      style={{ opacity: matchesQuery ? 1 : 0.45 }}
-                    >
-                      <div className="flex flex-col gap-2 min-w-[6rem]">
-                        <Badge
-                          className={`text-[11px] font-semibold uppercase tracking-wide ${styles.badge} ${
-                            speakerMatches ? "ring-2 ring-amber-400 shadow-sm" : ""
-                          }`}
-                        >
-                          {entry.speaker}
-                        </Badge>
-                        {timestampLabel && (
-                          <time
-                            dateTime={timestampDate.toISOString()}
-                            className={`text-[11px] font-medium ${styles.text} opacity-80`}
-                          >
-                            {timestampLabel}
-                          </time>
-                        )}
-                      </div>
-                      <div className={`text-sm leading-relaxed flex-1 ${isCurrent ? "font-medium" : ""}`}>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span>{highlightTranscriptText(entry.text)}</span>
-                          {entry.isInterim && (
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] uppercase tracking-wide bg-amber-100 text-amber-700 border border-amber-200"
-                            >
-                              Interim
-                            </Badge>
-                          )}
-                        </div>
-                        {isCurrent && isRecording && <span className="inline-block w-2 h-4 bg-destructive ml-1 animate-pulse"></span>}
-                      </div>
-                    </div>
-                  )
-                })}
-                {!transcriptEntries.length && (
-                  <div className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                    No transcript available yet. Start the visit to capture the conversation.
-                  </div>
-                )}
-                <div ref={transcriptEndRef} />
-              </div>
-
-              {isRecording && (
-                <div className="text-center py-4">
-                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <div className="w-2 h-2 bg-destructive rounded-full animate-pulse"></div>
-                    Listening and transcribing...
-                  </div>
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-
-          <div className="border-t border-border p-4 bg-muted/30 shrink-0">
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <div>
-                {currentTranscriptCount} of {totalTranscribedLines} lines transcribed
-              </div>
-              <div className="flex items-center gap-4">
-                <div>Words: {totalTranscriptWords.toLocaleString()}</div>
-                <div>Confidence: {averageConfidencePercent !== null ? `${averageConfidencePercent}%` : "N/A"}</div>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <FullTranscriptModal
+        open={showFullTranscript}
+        onOpenChange={setShowFullTranscript}
+        entries={transcriptEntries}
+        isRecording={isRecording}
+        hasInterimTranscript={hasInterimTranscript}
+        transcriptionIndex={transcriptionIndex}
+        visitDurationLabel={formatTime(totalDisplayTime)}
+        totalTranscriptWords={totalTranscriptWords}
+        averageConfidencePercent={averageConfidencePercent}
+        currentTranscriptCount={currentTranscriptCount}
+        totalTranscribedLines={totalTranscribedLines}
+        onInsertEntry={handleInsertTranscriptEntry}
+        speakerStyles={SPEAKER_STYLES}
+      />
     </div>
   )
 }
