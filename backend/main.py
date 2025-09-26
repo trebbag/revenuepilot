@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import copy
 import difflib
+import html
 import hashlib
 import logging
 import os
@@ -190,7 +191,12 @@ from backend.audio_processing import (  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.time_utils import ensure_utc, utc_now
-from backend.pdf_render import render_note_pdf, render_summary_pdf
+from backend.pdf_render import render_pdf_from_html, render_pdf_from_text
+from backend.notes_service import (
+    FinalizedNoteArtifacts,
+    load_finalized_note_artifacts,
+    verify_patient_access,
+)
 from backend.database_legacy import (
     DATABASE_PATH,
     SessionLocal,
@@ -15692,6 +15698,202 @@ def _patient_filename_token(summary: Any, fallback: str) -> str:
     return token
 
 
+def _etag_material_for_variant(
+    artifacts: FinalizedNoteArtifacts, variant: str
+) -> str:
+    if variant == "note":
+        for candidate in (
+            artifacts.note_html,
+            artifacts.note_markdown,
+            artifacts.note_text,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate
+        return ""
+
+    if artifacts.summary_html and artifacts.summary_html.strip():
+        return artifacts.summary_html
+    if artifacts.summary_markdown and artifacts.summary_markdown.strip():
+        return artifacts.summary_markdown
+    if artifacts.summary_json is not None:
+        try:
+            return json.dumps(artifacts.summary_json, sort_keys=True)
+        except TypeError:
+            return repr(artifacts.summary_json)
+    if artifacts.summary_text and artifacts.summary_text.strip():
+        return artifacts.summary_text
+    return "Summary not available"
+
+
+def _render_note_pdf_bytes(artifacts: FinalizedNoteArtifacts) -> bytes:
+    title = "Finalized Clinical Note"
+    if artifacts.note_html and artifacts.note_html.strip():
+        return render_pdf_from_html(artifacts.note_html, title)
+    if artifacts.note_markdown and artifacts.note_markdown.strip():
+        html_blob = _markdown_to_html(artifacts.note_markdown)
+        if html_blob:
+            return render_pdf_from_html(html_blob, title)
+        return render_pdf_from_text(artifacts.note_markdown, title)
+    if artifacts.note_text and artifacts.note_text.strip():
+        return render_pdf_from_text(artifacts.note_text, title)
+    raise ValueError("Finalized note content is empty")
+
+
+def _render_summary_pdf_bytes(artifacts: FinalizedNoteArtifacts) -> bytes:
+    title = "Patient Summary"
+    if artifacts.summary_html and artifacts.summary_html.strip():
+        return render_pdf_from_html(artifacts.summary_html, title)
+    if artifacts.summary_markdown and artifacts.summary_markdown.strip():
+        html_blob = _markdown_to_html(artifacts.summary_markdown)
+        if html_blob:
+            return render_pdf_from_html(html_blob, title)
+        return render_pdf_from_text(artifacts.summary_markdown, title)
+    if artifacts.summary_json is not None:
+        html_blob = _summary_json_to_html(artifacts.summary_json)
+        if html_blob.strip():
+            return render_pdf_from_html(html_blob, title)
+    if artifacts.summary_text and artifacts.summary_text.strip():
+        return render_pdf_from_text(artifacts.summary_text, title)
+    return render_pdf_from_text("Summary not available", title)
+
+
+def _markdown_to_html(markdown_text: str) -> str | None:
+    if not markdown_text or not markdown_text.strip():
+        return None
+    try:  # pragma: no cover - optional dependency
+        import markdown as markdown_lib  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        return None
+    return markdown_lib.markdown(markdown_text)
+
+
+def _summary_json_to_html(summary: Any) -> str:
+    if not isinstance(summary, dict):
+        return f"<p>{html.escape(str(summary))}</p>" if summary else ""
+
+    sections: list[str] = ["<h1>Patient Summary</h1>"]
+
+    def _render_list_section(title: str, values: Any) -> None:
+        if not isinstance(values, (list, tuple)):
+            return
+        items = [
+            f"<li>{html.escape(str(item))}</li>"
+            for item in values
+            if str(item).strip()
+        ]
+        if items:
+            sections.append(f"<section><h2>{html.escape(title)}</h2><ul>")
+            sections.extend(items)
+            sections.append("</ul></section>")
+
+    patient_lines: list[str] = []
+    patient = summary.get("patient")
+    if isinstance(patient, dict):
+        name = (
+            patient.get("name")
+            or patient.get("fullName")
+            or patient.get("displayName")
+        )
+        if name:
+            patient_lines.append(
+                f"<li><strong>Name:</strong> {html.escape(str(name))}</li>"
+            )
+        identifier = patient.get("id") or patient.get("identifier")
+        if identifier:
+            patient_lines.append(
+                f"<li><strong>Patient ID:</strong> {html.escape(str(identifier))}</li>"
+            )
+    elif isinstance(patient, str) and patient.strip():
+        patient_lines.append(
+            f"<li><strong>Patient:</strong> {html.escape(patient.strip())}</li>"
+        )
+
+    patient_id = summary.get("patientId")
+    if patient_id:
+        patient_lines.append(
+            f"<li><strong>Patient ID:</strong> {html.escape(str(patient_id))}</li>"
+        )
+    clinic_id = summary.get("clinicId")
+    if clinic_id:
+        patient_lines.append(
+            f"<li><strong>Clinic:</strong> {html.escape(str(clinic_id))}</li>"
+        )
+    finalized_by = summary.get("finalizedBy")
+    if finalized_by:
+        patient_lines.append(
+            f"<li><strong>Finalized by:</strong> {html.escape(str(finalized_by))}</li>"
+        )
+
+    if patient_lines:
+        sections.append("<section><h2>Patient Information</h2><ul>")
+        sections.extend(patient_lines)
+        sections.append("</ul></section>")
+
+    _render_list_section("Diagnoses", summary.get("diagnoses"))
+    _render_list_section("Differentials", summary.get("differentials"))
+    _render_list_section("Prevention", summary.get("prevention"))
+    _render_list_section("Compliance Items", summary.get("compliance"))
+    _render_list_section("Codes", summary.get("codes"))
+    _render_list_section("Issues", summary.get("issues"))
+
+    reimbursement = summary.get("reimbursementSummary")
+    if isinstance(reimbursement, dict):
+        reimbursement_lines: list[str] = []
+        total = reimbursement.get("total")
+        if total is not None:
+            reimbursement_lines.append(
+                f"<li><strong>Total:</strong> {html.escape(str(total))}</li>"
+            )
+        codes = reimbursement.get("codes")
+        if isinstance(codes, list) and codes:
+            codes_html = ", ".join(html.escape(str(code)) for code in codes)
+            reimbursement_lines.append(
+                f"<li><strong>Codes:</strong> {codes_html}</li>"
+            )
+        if reimbursement_lines:
+            sections.append("<section><h2>Reimbursement</h2><ul>")
+            sections.extend(reimbursement_lines)
+            sections.append("</ul></section>")
+
+    export_ready = summary.get("exportReady")
+    if export_ready is not None:
+        status_text = "Ready" if export_ready else "Pending"
+        sections.append(
+            f"<section><h2>Export Status</h2><p>{html.escape(status_text)}</p></section>"
+        )
+
+    documented_keys = {
+        "patient",
+        "patientId",
+        "clinicId",
+        "finalizedBy",
+        "diagnoses",
+        "differentials",
+        "prevention",
+        "compliance",
+        "codes",
+        "issues",
+        "reimbursementSummary",
+        "exportReady",
+    }
+
+    extras = {
+        key: value
+        for key, value in summary.items()
+        if key not in documented_keys and value not in (None, [], "", {})
+    }
+    if extras:
+        try:
+            extras_payload = json.dumps(extras, indent=2, sort_keys=True)
+        except TypeError:
+            extras_payload = repr(extras)
+        extras_blob = html.escape(extras_payload)
+        sections.append(
+            f"<section><h2>Additional Details</h2><pre>{extras_blob}</pre></section>"
+        )
+
+    return "".join(sections)
+
 @app.get("/api/notes/{finalized_note_id}/pdf")
 async def download_finalized_pdf(
     finalized_note_id: str,
@@ -15707,20 +15909,11 @@ async def download_finalized_pdf(
             "variant must be either 'note' or 'summary'",
         )
 
-    row = db_conn.execute(
-        """
-        SELECT finalized_content, finalized_summary, finalized_by, finalized_clinic_id, finalized_patient_hash
-        FROM notes
-        WHERE finalized_note_id = ?
-        LIMIT 1
-        """,
-        (finalized_note_id,),
-    ).fetchone()
-
-    if row is None:
+    artifacts = load_finalized_note_artifacts(db_conn, finalized_note_id)
+    if artifacts is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Finalized note not found")
 
-    clinic_id = row["finalized_clinic_id"]
+    clinic_id = artifacts.clinic_id
     if clinic_id and user.get("role") != "admin":
         if user.get("clinic") != clinic_id:
             raise HTTPException(
@@ -15728,29 +15921,23 @@ async def download_finalized_pdf(
                 "You do not have access to this clinic",
             )
 
-    patient_hash = row["finalized_patient_hash"]
+    patient_hash = artifacts.patient_hash
     requester_id = user.get("sub")
     role = user.get("role")
     permitted = True
     if patient_hash:
-        provided_hash: Optional[str] = None
-        if patient_id:
-            provided_hash = hash_identifier(patient_id.strip())
-            if provided_hash != patient_hash and role != "admin":
-                permitted = False
-            else:
-                permitted = True
+        if not verify_patient_access(patient_id, patient_hash, role=role):
+            permitted = bool(requester_id and requester_id == artifacts.finalized_by) or role == "admin"
         else:
-            permitted = bool(requester_id and requester_id == row["finalized_by"]) or role == "admin"
+            permitted = True
     if not permitted:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
             "You do not have access to this patient's documents",
         )
 
-    summary_blob = row["finalized_summary"] or ""
-    source_blob = row["finalized_content"] or ""
-    etag_source = source_blob if variant_normalized == "note" else summary_blob
+    summary_data = artifacts.summary_json
+    etag_source = _etag_material_for_variant(artifacts, variant_normalized)
     etag_material = f"{variant_normalized}:{finalized_note_id}:{etag_source}".encode("utf-8")
     etag_hash = hashlib.sha256(etag_material).hexdigest()
     etag_value = f'"{etag_hash}"'
@@ -15773,18 +15960,11 @@ async def download_finalized_pdf(
         if etag_hash in normalised_candidates:
             return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=cache_headers)
 
-    summary_data: Any = None
-    if summary_blob:
-        try:
-            summary_data = json.loads(summary_blob)
-        except json.JSONDecodeError:
-            summary_data = summary_blob
-
     try:
         if variant_normalized == "note":
-            pdf_bytes = render_note_pdf(row["finalized_content"] or "")
+            pdf_bytes = _render_note_pdf_bytes(artifacts)
         else:
-            pdf_bytes = render_summary_pdf(summary_data)
+            pdf_bytes = _render_summary_pdf_bytes(artifacts)
     except ValueError as exc:  # pragma: no cover - defensive branch
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -15792,7 +15972,8 @@ async def download_finalized_pdf(
         ) from exc
 
     filename_token = _patient_filename_token(
-        summary_data, fallback=finalized_note_id[:12]
+        summary_data or artifacts.summary_text,
+        fallback=finalized_note_id[:12]
     )
     headers = {
         "Content-Disposition": f'attachment; filename="{filename_token}-{variant_normalized}.pdf"'
