@@ -1,87 +1,75 @@
 import { test, expect } from '@playwright/test'
-
-declare global {
-  interface Window {
-    __mockSockets?: Array<{
-      emit: (type: 'message', event: MessageEvent) => void
-    }>
-  }
-}
+import {
+  USE_REAL_TRANSCRIBE_SOCKET,
+  configureVisitStreamSockets,
+  deliverVisitStreamPayloads,
+  waitForMockSocketCount,
+  waitForVisitStreamHarness,
+} from './helpers/visit-stream-sockets'
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 test.describe('Suggestion panel live websocket indicators', () => {
   test.beforeEach(async ({ page }) => {
+    await configureVisitStreamSockets(page)
+
     await page.addInitScript(() => {
-      const sockets: any[] = []
-
-      class MockSocket {
-        static CONNECTING = 0
-        static OPEN = 1
-        static CLOSING = 2
-        static CLOSED = 3
-
-        url: string
-        readyState = MockSocket.CONNECTING
-        listeners: Record<string, Array<(event: Event) => void>> = {}
-        onopen: ((event: Event) => void) | null = null
-        onmessage: ((event: MessageEvent) => void) | null = null
-        onerror: ((event: Event) => void) | null = null
-        onclose: ((event: CloseEvent) => void) | null = null
-
-        constructor(url: string) {
-          this.url = url
-          sockets.push(this)
-          setTimeout(() => {
-            this.readyState = MockSocket.OPEN
-            const event = new Event('open')
-            this.onopen?.(event)
-            this.listeners['open']?.forEach(listener => listener(event))
-          }, 0)
-        }
-
-        addEventListener(type: string, handler: (event: any) => void) {
-          if (!this.listeners[type]) {
-            this.listeners[type] = []
-          }
-          this.listeners[type]?.push(handler as (event: Event) => void)
-        }
-
-        removeEventListener(type: string, handler: (event: any) => void) {
-          if (!this.listeners[type]) {
-            return
-          }
-          this.listeners[type] = this.listeners[type]!.filter(listener => listener !== handler)
-        }
-
-        emit(type: 'message', event: MessageEvent) {
-          this.onmessage?.(event)
-          this.listeners[type]?.forEach(listener => listener(event))
-        }
-
-        send() {}
-
-        close() {
-          if (this.readyState === MockSocket.CLOSED) {
-            return
-          }
-          this.readyState = MockSocket.CLOSED
-          const event = new CloseEvent('close', { code: 1000 })
-          this.onclose?.(event)
-          this.listeners['close']?.forEach(listener => listener(event))
+      class MockMediaStreamTrack {
+        stop() {
+          // no-op
         }
       }
 
-      Object.defineProperty(window, '__mockSockets', {
-        configurable: true,
-        writable: false,
-        value: sockets,
-      })
+      class MockMediaStream {
+        getTracks() {
+          return [new MockMediaStreamTrack()]
+        }
+      }
 
-      Object.defineProperty(window, 'WebSocket', {
+      class MockMediaRecorder {
+        constructor(stream) {
+          this.stream = stream
+          this.state = 'inactive'
+          this.ondataavailable = null
+          this.onstop = null
+          this.onstart = null
+        }
+
+        start() {
+          this.state = 'recording'
+          if (typeof this.onstart === 'function') {
+            this.onstart()
+          }
+        }
+
+        stop() {
+          this.state = 'inactive'
+          if (typeof this.onstop === 'function') {
+            this.onstop()
+          }
+        }
+
+        requestData() {}
+
+        addEventListener() {}
+
+        removeEventListener() {}
+      }
+
+      Object.defineProperty(window, 'MediaRecorder', {
         configurable: true,
         writable: true,
-        value: MockSocket as unknown as typeof WebSocket,
+        value: MockMediaRecorder,
+      })
+
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        writable: true,
+        value: {
+          async getUserMedia() {
+            return new MockMediaStream()
+          },
+        },
       })
     })
 
@@ -176,61 +164,24 @@ test.describe('Suggestion panel live websocket indicators', () => {
     await showSuggestions.waitFor({ state: 'visible' })
     await showSuggestions.click()
 
-    await page.waitForFunction(() => Array.isArray(window.__mockSockets) && window.__mockSockets.length >= 4)
+    await waitForVisitStreamHarness(page)
 
-    await page.evaluate(() => {
-      const sockets = window.__mockSockets ?? []
-      const findSocket = (segment: string) =>
-        sockets.find(socket => typeof (socket as any).url === 'string' && (socket as any).url.includes(segment))
+    const expectedMockSockets = USE_REAL_TRANSCRIBE_SOCKET ? 3 : 4
+    await waitForMockSocketCount(page, expectedMockSockets)
 
-      const compliance = findSocket('/ws/compliance')
-      const codes = findSocket('/ws/codes')
-      const collaboration = findSocket('/ws/collaboration')
-      const transcription = findSocket('/api/transcribe') ?? sockets[0]
-      const message = (data: unknown) =>
-        new MessageEvent('message', {
-          data: JSON.stringify(data),
-        })
+    await deliverVisitStreamPayloads(page)
 
-      transcription?.emit(
-        'message',
-        message({ event: 'connected', sessionId: 'ws-trans' }),
-      )
-      transcription?.emit(
-        'message',
-        message({ eventId: 1, transcript: 'final patient note', isInterim: false, speakerLabel: 'patient' }),
-      )
-      compliance?.emit(
-        'message',
-        message({
-          eventId: 2,
-          issues: [
-            {
-              title: 'Live compliance alert',
-              description: 'Add ROS to complete documentation.',
-              severity: 'warning',
-            },
-          ],
-        }),
-      )
-      codes?.emit(
-        'message',
-        message({
-          eventId: 3,
-          code: 'Z1234',
-          description: 'Streaming code',
-          rationale: 'Suggested from live encounter',
-        }),
-      )
-      collaboration?.emit(
-        'message',
-        message({ eventId: 4, participants: [{ userId: 'abc', name: 'Dr Demo' }] }),
-      )
-      collaboration?.emit(
-        'message',
-        message({ eventId: 5, conflicts: ['Simultaneous edits detected'] }),
-      )
-    })
+    await delay(500)
+
+    await page.getByRole('button', { name: /Open full transcript/i }).click()
+
+    const transcriptDialog = page.getByRole('dialog', { name: /Full Transcript/i })
+    await expect(transcriptDialog).toBeVisible()
+    await expect(transcriptDialog.getByText(/interim patient note/i)).toBeVisible()
+    await expect(transcriptDialog.getByText(/Interim/i)).toBeVisible()
+    await expect(transcriptDialog.getByText(/final patient note/i)).toBeVisible()
+
+    await page.keyboard.press('Escape')
 
     await delay(300)
 

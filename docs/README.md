@@ -141,6 +141,16 @@ npm run test:coverage
 
 # Playwright e2e smoke tests (requires browsers installed once)
 npm run test:e2e
+
+# Run E2E with the real transcription socket (requires access to the live stack)
+USE_REAL_TRANSCRIBE_SOCKET=true npm run test:e2e
+
+# When targeting the live socket, install browsers via `npx playwright install` first and
+# ensure the helper harness can reach the real `/api/transcribe/stream` endpoint. The
+# `visit-session-streams.spec.ts` test streams text bytes through the captured
+# `window.__visitStreamHarness` reference, opens the Full Transcript modal to verify the
+# interim badge, and still emits mocked compliance/coding events so the suggestion panel
+# assertions remain stable.
 ```
 
 The CI pipeline mirrors these commands and enforces linting via ESLint
