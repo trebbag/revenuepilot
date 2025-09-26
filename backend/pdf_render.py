@@ -8,6 +8,8 @@ import textwrap
 from typing import Iterable, List
 
 __all__ = [
+    "render_note_pdf",
+    "render_summary_pdf",
     "render_pdf_from_html",
     "render_pdf_from_text",
 ]
@@ -89,6 +91,18 @@ def render_pdf_from_text(text: str, title: str) -> bytes:
     wrapped_lines = _wrap_lines(normalised.splitlines())
     pages = _paginate(wrapped_lines)
     return _build_pdf(pages, title=title)
+
+
+def render_note_pdf(html_content: str, title: str) -> bytes:
+    """Compatibility wrapper to render a note into PDF."""
+
+    return render_pdf_from_html(html_content, title)
+
+
+def render_summary_pdf(text: str, title: str) -> bytes:
+    """Compatibility wrapper to render summaries into PDF."""
+
+    return render_pdf_from_text(text, title)
 
 
 def _wrap_lines(lines: Iterable[str]) -> List[str]:

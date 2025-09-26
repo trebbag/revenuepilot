@@ -45,7 +45,7 @@ def _setup_db(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
-    monkeypatch.setattr(main, "notification_counts", main.NotificationStore())
+    main.notification_service.update_connection(db)
 
 
 def test_ws_require_role_accepts_query_token(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,20 +6,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import main, migrations
+from backend.notifications_service import NotificationEvent
 
 
 class DummyNotificationsManager:
     def __init__(self) -> None:
-        self.sent: list[Tuple[str, dict]] = []
+        self.events: list[Tuple[str, NotificationEvent]] = []
+        self.unread: list[Tuple[str, int]] = []
+        self.items: list[Tuple[str, list[dict]]] = []
 
-    def latest_session(self, username: str) -> None:
-        return None
+    async def handle(self, websocket, username: str) -> None:  # pragma: no cover - not used in tests
+        raise AssertionError("Websocket handling not expected in this test")
 
-    async def push(self, session_id: str, payload: dict) -> None:
-        self.sent.append(("push", payload))
+    async def broadcast_event(self, username: str, event: main.NotificationEvent) -> None:
+        self.events.append((username, event))
+        await self.broadcast_unread(username, event.unread_count)
+        await self.broadcast_items(username, [event.item])
 
-    async def push_user(self, username: str, payload: dict) -> None:
-        self.sent.append(("push_user", payload))
+    async def broadcast_unread(self, username: str, count: int) -> None:
+        self.unread.append((username, count))
+
+    async def broadcast_items(self, username: str, items: list[dict]) -> None:
+        self.items.append((username, list(items)))
 
 
 @pytest.fixture
@@ -38,9 +46,9 @@ def notification_client(monkeypatch):
     )
     db.commit()
     monkeypatch.setattr(main, "db_conn", db)
-    main.notification_counts = main.NotificationStore()
+    main.notification_service.update_connection(db)
     manager = DummyNotificationsManager()
-    monkeypatch.setattr(main, "notifications_manager", manager)
+    monkeypatch.setattr(main, "notifications_ws_manager", manager)
     client = TestClient(main.app)
     token = main.create_token("alice", "user")
     yield client, token, manager
@@ -67,11 +75,13 @@ def test_notifications_lifecycle(notification_client):
             increment=True,
         )
     )
-    assert manager.sent
-    event_payload = manager.sent[-1][1]
-    assert event_payload["unreadCount"] == 1
-    assert event_payload["notifications"] == 1
-    assert event_payload["id"]
+    assert manager.events
+    username, event_payload = manager.events[-1]
+    assert username == "alice"
+    assert event_payload.unread_count == 1
+    assert event_payload.item["title"] == "Compliance alert"
+    assert event_payload.item["id"]
+    assert manager.unread[-1] == ("alice", 1)
 
     resp = client.get("/api/notifications", headers=_auth_headers(token))
     assert resp.status_code == 200

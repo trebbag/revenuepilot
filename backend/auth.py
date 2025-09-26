@@ -17,8 +17,11 @@ from backend.migrations import (  # type: ignore
 )
 from backend.time_utils import from_epoch_seconds, to_epoch_seconds, utc_now
 
-# Password hashing context using bcrypt
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context using bcrypt with a pbkdf2 fallback for limited environments.
+pwd_context = CryptContext(
+    schemes=["bcrypt", "pbkdf2_sha256"],
+    deprecated="auto",
+)
 
 LOCKOUT_THRESHOLD = 5
 LOCKOUT_DURATION_SECONDS = 15 * 60
@@ -77,7 +80,12 @@ settings_table = Table(
 def hash_password(password: str) -> str:
     """Hash a plaintext password using a secure algorithm."""
 
-    return pwd_context.hash(password)
+    try:
+        return pwd_context.hash(password)
+    except Exception:
+        # Bcrypt isn't always available in constrained environments (e.g. tests without the C extension).
+        # Fall back to pbkdf2 so hashes remain verifiable via ``pwd_context``.
+        return pwd_context.hash(password, scheme="pbkdf2_sha256")
 
 
 def verify_password(password: str, hashed: str) -> bool:

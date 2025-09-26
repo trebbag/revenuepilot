@@ -228,7 +228,8 @@ def in_memory_db() -> Iterator[DatabaseContext]:
     main.db_conn = raw_connection
     main.configure_auth_session_factory(raw_connection)
     main._init_core_tables(raw_connection)
-    main.notification_counts = main.NotificationStore()
+    main.notification_service.update_connection(raw_connection)
+    main.notifications_ws_manager = main.NotificationWebSocketManager(main.notification_service)
     main.events = []
     main.transcript_history = defaultdict(lambda: deque(maxlen=main.TRANSCRIPT_HISTORY_LIMIT))
 
