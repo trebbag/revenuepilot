@@ -191,12 +191,15 @@ from backend.audio_processing import (  # type: ignore
 from backend import public_health as public_health_api  # type: ignore
 import backend.scheduling as scheduling_module  # type: ignore
 from backend.time_utils import ensure_utc, utc_now
-from backend.pdf_render import render_pdf_from_html, render_pdf_from_text
+from backend.ws_codes import CodesDeltaStream
+from backend.ws_compliance import ComplianceDeltaStream
+from backend.pdf_render import render_note_pdf, render_summary_pdf, render_pdf_from_html, render_pdf_from_text
 from backend.notes_service import (
     FinalizedNoteArtifacts,
     load_finalized_note_artifacts,
     verify_patient_access,
 )
+
 from backend.database_legacy import (
     DATABASE_PATH,
     SessionLocal,
@@ -17975,6 +17978,9 @@ codes_manager = ConnectionManager()
 notifications_manager = ConnectionManager()
 schedule_manager = ConnectionManager()
 
+compliance_stream = ComplianceDeltaStream()
+codes_stream = CodesDeltaStream()
+
 
 async def _broadcast_schedule_event(payload: Dict[str, Any]) -> None:
     """Broadcast *payload* to all active schedule websocket subscribers."""
@@ -18183,12 +18189,9 @@ async def ws_transcription(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/compliance")
 async def ws_compliance(websocket: WebSocket) -> None:
-    """Real-time compliance alerts.
+    """Stream compliance deltas for a specific encounter."""
 
-    Expected payload: ``{"analysisId", "issues", "severity", "timestamp"}``
-    """
-
-    await _ws_endpoint(compliance_manager, websocket, channel="compliance")
+    await compliance_stream.handle(websocket, lambda ws: ws_require_role(ws, "user"))
 
 
 @app.websocket("/ws/collaboration")
@@ -18203,12 +18206,9 @@ async def ws_collaboration(websocket: WebSocket) -> None:
 
 @app.websocket("/ws/codes")
 async def ws_codes(websocket: WebSocket) -> None:
-    """Streaming coding suggestions.
+    """Stream coding deltas for a specific encounter."""
 
-    Expected payload: ``{"code", "type", "description", "rationale", "confidence", "timestamp"}``
-    """
-
-    await _ws_endpoint(codes_manager, websocket, channel="codes")
+    await codes_stream.handle(websocket, lambda ws: ws_require_role(ws, "user"))
 
 
 @app.websocket("/ws/notifications")
