@@ -202,5 +202,3 @@ class EncounterDeltaStream:
 
 __all__ = ["EncounterDeltaStream", "AuthCallable"]
 
-
-__all__ = ["EncounterDeltaStream"]
