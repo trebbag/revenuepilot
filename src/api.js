@@ -738,6 +738,18 @@ export async function getSuggestions(text, context = {}) {
       context.agencies.length > 0
     )
       payload.agencies = context.agencies;
+    if (context.encounterId) {
+      const encounterValue = String(context.encounterId).trim();
+      if (encounterValue) payload.encounterId = encounterValue;
+    }
+    if (context.sessionId) {
+      const sessionValue = String(context.sessionId).trim();
+      if (sessionValue) payload.sessionId = sessionValue;
+    }
+    if (context.noteId) {
+      const noteValue = String(context.noteId).trim();
+      if (noteValue) payload.noteId = noteValue;
+    }
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
     const headers = token

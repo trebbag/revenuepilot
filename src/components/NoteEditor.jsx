@@ -224,6 +224,34 @@ const NoteEditor = forwardRef(function NoteEditor(
   const sessionStateRef = useRef(null);
   const sessionKeyRef = useRef('');
   const sessionTimerRef = useRef(null);
+  const buildSuggestionContext = () => {
+    const sessionContext = sessionStateRef.current || visitSession;
+    const encounterSource =
+      sessionContext?.encounterId ??
+      emittedEncounterRef.current ??
+      encounterInput ??
+      encounterId ??
+      '';
+    const encounterValue =
+      encounterSource !== undefined && encounterSource !== null
+        ? String(encounterSource).trim()
+        : '';
+    const sessionValue =
+      sessionContext?.sessionId !== undefined && sessionContext?.sessionId !== null
+        ? String(sessionContext.sessionId).trim()
+        : '';
+    const noteValue =
+      sessionContext?.noteId !== undefined && sessionContext?.noteId !== null
+        ? String(sessionContext.noteId).trim()
+        : '';
+    return {
+      specialty,
+      payer,
+      encounterId: encounterValue || undefined,
+      sessionId: sessionValue || undefined,
+      noteId: noteValue || undefined,
+    };
+  };
   const resetStreamSessions = () => {
     streamSessionsRef.current = {
       transcription: { sessionId: '', lastEventId: null },
@@ -1065,10 +1093,80 @@ const NoteEditor = forwardRef(function NoteEditor(
         });
       }
     };
+    const pushComplianceItems = (items) => {
+      if (!Array.isArray(items) || !items.length) return;
+      setStreamingCompliance((prev) => {
+        const map = new Map(
+          (Array.isArray(prev) ? prev : []).map((entry) => [
+            entry.id || entry.text,
+            entry,
+          ]),
+        );
+        items.forEach((entry) => {
+          if (!entry) return;
+          map.set(entry.id || entry.text, entry);
+        });
+        return Array.from(map.values()).slice(-50);
+      });
+    };
     const handleCompliance = (payload) => {
       if (!payload) return;
       touchStreamMetadata('compliance', payload);
       if (payload.event === 'connected') return;
+      const timestamp = payload.timestamp || Date.now();
+      if (Array.isArray(payload.alerts) && payload.alerts.length) {
+        const alerts = payload.alerts
+          .map((alert, index) => {
+            if (!alert) return null;
+            if (typeof alert === 'string') {
+              const trimmed = alert.trim();
+              if (!trimmed) return null;
+              return {
+                id: `${payload.eventId ?? payload.timestamp ?? 'alert'}-${index}`,
+                text: trimmed,
+                severity: (payload.severity || 'info').toString().toLowerCase(),
+                live: true,
+                timestamp,
+              };
+            }
+            const text =
+              alert.text || alert.message || alert.reasoning || alert.summary || '';
+            const trimmed = text ? String(text).trim() : '';
+            if (!trimmed) return null;
+            const severitySource =
+              alert.priority || alert.severity || alert.category || payload.severity || 'info';
+            return {
+              id: `${payload.eventId ?? payload.timestamp ?? 'alert'}-${index}`,
+              text: trimmed,
+              severity: String(severitySource || 'info').toLowerCase(),
+              reasoning: alert.reasoning,
+              live: true,
+              timestamp,
+            };
+          })
+          .filter(Boolean);
+        pushComplianceItems(alerts);
+        return;
+      }
+      if (Array.isArray(payload.messages) && payload.messages.length) {
+        const suggestions = payload.messages
+          .map((message, index) => {
+            const text =
+              typeof message === 'string' ? message : String(message ?? '').trim();
+            const trimmed = text.trim();
+            if (!trimmed) return null;
+            return {
+              id: `${payload.eventId ?? payload.timestamp ?? 'compliance'}-${index}`,
+              text: trimmed,
+              severity: String(payload.severity || 'info').toLowerCase(),
+              live: true,
+              timestamp,
+            };
+          })
+          .filter(Boolean);
+        pushComplianceItems(suggestions);
+        return;
+      }
       const items = [];
       if (Array.isArray(payload.issues) && payload.issues.length) {
         payload.issues.forEach((issue, index) => {
@@ -1091,7 +1189,7 @@ const NoteEditor = forwardRef(function NoteEditor(
             text: message,
             severity: issue.severity || payload.severity || 'info',
             live: true,
-            timestamp: payload.timestamp || Date.now(),
+            timestamp,
           });
         });
       } else {
@@ -1107,20 +1205,24 @@ const NoteEditor = forwardRef(function NoteEditor(
             text: message,
             severity: payload.severity || 'info',
             live: true,
-            timestamp: payload.timestamp || Date.now(),
+            timestamp,
           });
         }
       }
-      if (!items.length) return;
-      setStreamingCompliance((prev) => {
+      pushComplianceItems(items);
+    };
+    const pushCodeItems = (items) => {
+      if (!Array.isArray(items) || !items.length) return;
+      setStreamingCodes((prev) => {
         const map = new Map(
-          (Array.isArray(prev) ? prev : []).map((entry) => [
-            entry.id || entry.text,
-            entry,
+          (Array.isArray(prev) ? prev : []).map((item) => [
+            item.id || item.code || item.rationale,
+            item,
           ]),
         );
         items.forEach((entry) => {
-          map.set(entry.id || entry.text, entry);
+          if (!entry) return;
+          map.set(entry.id || entry.code || entry.rationale, entry);
         });
         return Array.from(map.values()).slice(-50);
       });
@@ -1129,6 +1231,35 @@ const NoteEditor = forwardRef(function NoteEditor(
       if (!payload) return;
       touchStreamMetadata('codes', payload);
       if (payload.event === 'connected') return;
+      if (Array.isArray(payload.codes) && payload.codes.length) {
+        const timestamp = payload.timestamp || Date.now();
+        const aggregated = payload.codes
+          .map((entry, index) => {
+            if (!entry) return null;
+            const codeValue = entry.code || entry.Code || entry.codeValue;
+            const rationaleValue =
+              entry.rationale || entry.reason || entry.description || '';
+            if (!codeValue && !rationaleValue) return null;
+            const confidenceValue =
+              typeof entry.confidence === 'number'
+                ? entry.confidence
+                : typeof entry.score === 'number'
+                  ? entry.score
+                  : undefined;
+            return {
+              id: `${payload.eventId ?? payload.timestamp ?? 'codes'}-${index}`,
+              code: codeValue ? String(codeValue) : '',
+              rationale: rationaleValue ? String(rationaleValue) : '',
+              type: payload.type || 'suggestions',
+              confidence: confidenceValue,
+              live: true,
+              timestamp,
+            };
+          })
+          .filter(Boolean);
+        pushCodeItems(aggregated);
+        return;
+      }
       const codeValue =
         payload.code ||
         payload.codeValue ||
@@ -1152,16 +1283,7 @@ const NoteEditor = forwardRef(function NoteEditor(
         live: true,
         timestamp: payload.timestamp || Date.now(),
       };
-      setStreamingCodes((prev) => {
-        const map = new Map(
-          (Array.isArray(prev) ? prev : []).map((item) => [
-            item.id || item.code || item.rationale,
-            item,
-          ]),
-        );
-        map.set(entry.id || entry.code || entry.rationale, entry);
-        return Array.from(map.values()).slice(-50);
-      });
+      pushCodeItems([entry]);
     };
     const handleCollaboration = (payload) => {
       if (!payload) return;
@@ -1910,7 +2032,7 @@ const NoteEditor = forwardRef(function NoteEditor(
       clearTimeout(suggestionDebounceRef.current);
     suggestionDebounceRef.current = setTimeout(() => {
       setSuggestLoading(true);
-      getSuggestions(value || '', { specialty, payer })
+      getSuggestions(value || '', buildSuggestionContext())
         .then((res) => setSuggestions(res))
         .catch(() => setSuggestions(null))
         .finally(() => setSuggestLoading(false));
@@ -2249,7 +2371,7 @@ const NoteEditor = forwardRef(function NoteEditor(
                 settingsState={settingsState}
                 text={value}
                 fetchSuggestions={(text) =>
-                  getSuggestions(text, { specialty, payer }).then(
+                  getSuggestions(text, buildSuggestionContext()).then(
                     setSuggestions,
                   )
                 }
@@ -2511,7 +2633,7 @@ const NoteEditor = forwardRef(function NoteEditor(
           /* Provide text so internal debounce logic may run if needed */
           text={localValue}
           fetchSuggestions={(text) =>
-            getSuggestions(text, { specialty, payer }).then(setSuggestions)
+            getSuggestions(text, buildSuggestionContext()).then(setSuggestions)
           }
           onSpecialtyChange={onSpecialtyChange}
           onPayerChange={onPayerChange}

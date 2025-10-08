@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from contextvars import ContextVar
 from contextlib import contextmanager
 from pathlib import Path
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone, date
 from typing import (
     List,
@@ -6822,6 +6822,49 @@ def _resolve_session_for_user(
     return user_id, session_state, sessions, payload
 
 
+def _resolve_encounter_context(
+    username: Optional[str],
+    encounter_id: Optional[str],
+    session_id: Optional[str],
+    *,
+    note_id: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Resolve encounter/session identifiers for streaming payloads."""
+
+    normalized_encounter = (encounter_id or "").strip() or None
+    normalized_session = (session_id or "").strip() or None
+    normalized_note = (note_id or "").strip() or None
+
+    if normalized_encounter:
+        return normalized_encounter, normalized_session, normalized_note
+
+    if normalized_session and username:
+        try:
+            _, _, _, payload = _resolve_session_for_user(str(username), normalized_session)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug(
+                "encounter_lookup_failed",
+                username=username,
+                sessionId=normalized_session,
+                error=str(exc),
+            )
+        else:
+            if isinstance(payload, dict):
+                candidate = payload.get("encounterId") or payload.get("encounter_id")
+                if candidate:
+                    candidate_text = str(candidate).strip()
+                    if candidate_text:
+                        normalized_encounter = candidate_text
+                if not normalized_note:
+                    note_candidate = payload.get("noteId") or payload.get("note_id")
+                    if note_candidate:
+                        note_text = str(note_candidate).strip()
+                        if note_text:
+                            normalized_note = note_text
+
+    return normalized_encounter, normalized_session, normalized_note
+
+
 def _collect_blocking_issues(issues: Dict[str, Any]) -> List[str]:
     blocking: List[str] = []
     for value in issues.values():
@@ -7586,6 +7629,8 @@ class NoteRequest(BaseModel):
     suggestModel: Optional[str] = None
     summarizeModel: Optional[str] = None
     noteId: Optional[str] = Field(None, alias="note_id")
+    encounterId: Optional[str] = Field(None, alias="encounter_id")
+    sessionId: Optional[str] = Field(None, alias="session_id")
 
     class Config:
         populate_by_name = True
@@ -7594,6 +7639,16 @@ class NoteRequest(BaseModel):
     @classmethod
     def sanitize_text_field(cls, v: str) -> str:  # noqa: D401,N805
         return sanitize_text(v)
+
+    @field_validator("encounterId", "sessionId", "noteId", mode="before")
+    @classmethod
+    def _normalize_optional_identifier(
+        cls, value: Optional[str]
+    ) -> Optional[str]:  # noqa: D401,N805
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 
@@ -7711,11 +7766,24 @@ class ComplianceCheckRequest(BaseModel):
     useLocalModels: Optional[bool] = False
     useOfflineMode: Optional[bool] = False
     transcript_cursor: Optional[str] = Field(None, alias="transcript_cursor")
+    encounterId: Optional[str] = Field(None, alias="encounter_id")
+    sessionId: Optional[str] = Field(None, alias="session_id")
+    noteId: Optional[str] = Field(None, alias="note_id")
 
     @field_validator("content")
     @classmethod
     def sanitize_content(cls, v: str) -> str:  # noqa: D401,N805
         return sanitize_text(v)
+
+    @field_validator("encounterId", "sessionId", "noteId", mode="before")
+    @classmethod
+    def _normalize_identifier(
+        cls, value: Optional[str]
+    ) -> Optional[str]:  # noqa: D401,N805
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 class DifferentialsGenerateRequest(BaseModel):
@@ -7859,6 +7927,117 @@ class SuggestionsResponse(BaseModel):
     differentials: List[DifferentialSuggestion]
     questions: List[Dict[str, Any]] = Field(default_factory=list)
     followUp: Optional[FollowUp] = None
+
+
+async def _publish_suggestions_event(
+    encounter_id: Optional[str],
+    session_id: Optional[str],
+    note_id: Optional[str],
+    response: SuggestionsResponse,
+) -> None:
+    """Broadcast suggestion results to encounter-scoped streams."""
+
+    if not encounter_id:
+        return
+
+    payload = response.model_dump(exclude_none=True)
+    timestamp = _iso_timestamp()
+    payload.update({
+        "type": "suggestions",
+        "timestamp": timestamp,
+        "source": "suggest",
+    })
+    if session_id:
+        payload["sessionId"] = session_id
+    if note_id:
+        payload["noteId"] = note_id
+
+    try:
+        await codes_stream.publish(encounter_id, payload)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning(
+            "codes_stream_publish_failed",
+            encounterId=encounter_id,
+            error=str(exc),
+        )
+
+    compliance_messages = [
+        item.strip()
+        for item in payload.get("compliance", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    if not compliance_messages:
+        return
+
+    compliance_payload: Dict[str, Any] = {
+        "type": "suggestions",
+        "source": "suggest",
+        "messages": compliance_messages,
+        "timestamp": timestamp,
+    }
+    if session_id:
+        compliance_payload["sessionId"] = session_id
+    if note_id:
+        compliance_payload["noteId"] = note_id
+
+    try:
+        await compliance_stream.publish(encounter_id, compliance_payload)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.debug(
+            "compliance_stream_publish_failed",
+            encounterId=encounter_id,
+            error=str(exc),
+        )
+
+
+async def _publish_compliance_alerts(
+    encounter_id: Optional[str],
+    session_id: Optional[str],
+    note_id: Optional[str],
+    response: ComplianceCheckResponse,
+    *,
+    source: str,
+) -> None:
+    """Broadcast compliance alerts to the encounter stream."""
+
+    if not encounter_id:
+        return
+
+    alerts = [alert.model_dump(exclude_none=True) for alert in response.alerts]
+    references = [ref.model_dump(exclude_none=True) for ref in response.ruleReferences]
+    timestamp = _iso_timestamp()
+    priority_counter = Counter(
+        (alert.get("priority") or "unspecified").strip().lower() or "unspecified"
+        for alert in alerts
+    )
+    summary = {
+        "total": len(alerts),
+        "byPriority": dict(priority_counter),
+        "hasAlerts": bool(alerts),
+        "timestamp": timestamp,
+    }
+
+    payload: Dict[str, Any] = {
+        "type": "compliance_check",
+        "source": source,
+        "alerts": alerts,
+        "ruleReferences": references,
+        "summary": summary,
+        "timestamp": timestamp,
+    }
+    if session_id:
+        payload["sessionId"] = session_id
+    if note_id:
+        payload["noteId"] = note_id
+
+    try:
+        await compliance_stream.publish(encounter_id, payload)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.warning(
+            "compliance_stream_publish_failed",
+            encounterId=encounter_id,
+            error=str(exc),
+        )
 
 
 class PlanRisk(BaseModel):
@@ -12757,6 +12936,12 @@ async def suggest(
     model_name = req.suggestModel or ("offline" if mode == "offline" else "gpt-4o")
     trace_id = current_trace_id()
     metadata = {"mode": mode, "lang": req.lang or "en"}
+    encounter_id, session_id, note_id = _resolve_encounter_context(
+        user.get("sub"),
+        req.encounterId,
+        req.sessionId,
+        note_id=req.noteId,
+    )
     with observe_ai_route(
         route="suggest",
         note_id=req.noteId,
@@ -12848,7 +13033,7 @@ async def suggest(
             questions_payload = data.get("questions") if isinstance(data, Mapping) else None
             if not isinstance(questions_payload, list):
                 questions_payload = []
-            return SuggestionsResponse(
+            response = SuggestionsResponse(
                 codes=codes,
                 compliance=data.get("compliance", []),
                 publicHealth=public_health,
@@ -12860,6 +13045,8 @@ async def suggest(
                 questions=questions_payload,
                 followUp=follow_up,
             )
+            await _publish_suggestions_event(encounter_id, session_id, note_id, response)
+            return response
 
         try:
             messages = build_suggest_prompt(
@@ -12975,7 +13162,7 @@ async def suggest(
             if not isinstance(questions_payload, list):
                 questions_payload = []
             _log_confidence_scores(user, req.noteId, logged_codes)
-            return SuggestionsResponse(
+            response = SuggestionsResponse(
                 codes=codes_list,
                 compliance=compliance,
                 publicHealth=public_health,
@@ -12983,6 +13170,8 @@ async def suggest(
                 questions=questions_payload,
                 followUp=follow_up,
             )
+            await _publish_suggestions_event(encounter_id, session_id, note_id, response)
+            return response
         except Exception as exc:
             logger.error("ai_suggest_failed", error=str(exc))
             observation.mark_failure(exc, trace_id=trace_id)
@@ -13147,7 +13336,7 @@ async def suggest(
                 req.specialty,
                 req.payer,
             )
-            return SuggestionsResponse(
+            response = SuggestionsResponse(
                 codes=codes,
                 compliance=compliance,
                 publicHealth=public_health,
@@ -13155,6 +13344,8 @@ async def suggest(
                 questions=[],
                 followUp=follow_up,
             )
+            await _publish_suggestions_event(encounter_id, session_id, note_id, response)
+            return response
 
 @app.post("/ai/plan", response_model=PlanResponse, response_model_exclude_none=True)
 async def generate_plan(
@@ -15869,7 +16060,10 @@ def _build_compliance_response(
 
 
 async def _compliance_check(
-    req: ComplianceCheckRequest, db: sqlite3.Connection | None = None
+    req: ComplianceCheckRequest,
+    db: sqlite3.Connection | None = None,
+    *,
+    username: Optional[str] = None,
 ) -> ComplianceCheckResponse:
     conn = db or db_conn
     cleaned = deidentify(req.content or "")
@@ -15878,6 +16072,13 @@ async def _compliance_check(
     model_name = "offline" if offline else "gpt-4o"
     trace_id = current_trace_id()
     metadata = {"mode": "offline" if offline else "remote"}
+    encounter_id, session_id, note_id = _resolve_encounter_context(
+        username,
+        req.encounterId,
+        req.sessionId,
+        note_id=req.noteId,
+    )
+    response: ComplianceCheckResponse
     with observe_ai_route(
         route="compliance_check",
         note_id=None,
@@ -15899,30 +16100,39 @@ async def _compliance_check(
                 )
                 for item in data.get("compliance", [])
             ]
-            return _build_compliance_response(alerts, conn)
-        try:
-            codes = json.dumps(req.codes or [])
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Note:\n{cleaned}\nCodes:{codes}",
-                },
-            ]
-            resp = call_openai(messages)
-            data = json.loads(resp)
-            alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
-            return _build_compliance_response(alerts, conn)
-        except Exception as exc:
-            logger.error("ai_compliance_check_failed", error=str(exc))
-            observation.mark_failure(exc, trace_id=trace_id)
-            _record_ai_error("compliance_check", exc, trace_id)
-            return ComplianceCheckResponse(alerts=[], ruleReferences=[])
+            response = _build_compliance_response(alerts, conn)
+        else:
+            try:
+                codes = json.dumps(req.codes or [])
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a compliance assistant. Return JSON {alerts:[{text,category,priority,confidence,reasoning}]}."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Note:\n{cleaned}\nCodes:{codes}",
+                    },
+                ]
+                resp = call_openai(messages)
+                data = json.loads(resp)
+                alerts = [ComplianceAlert(**a) for a in data.get("alerts", [])]
+                response = _build_compliance_response(alerts, conn)
+            except Exception as exc:
+                logger.error("ai_compliance_check_failed", error=str(exc))
+                observation.mark_failure(exc, trace_id=trace_id)
+                _record_ai_error("compliance_check", exc, trace_id)
+                response = ComplianceCheckResponse(alerts=[], ruleReferences=[])
+    await _publish_compliance_alerts(
+        encounter_id,
+        session_id,
+        note_id,
+        response,
+        source="compliance_check",
+    )
+    return response
 
 
 
@@ -15944,15 +16154,16 @@ async def compliance_check(
             content={"message": _NO_MEANINGFUL_CHANGES_MESSAGE},
         )
     conn = resolve_session_connection(session)
-    return await _compliance_check(req, conn)
+    return await _compliance_check(req, conn, username=user.get("sub"))
 
 
 @app.websocket("/ws/api/ai/compliance/check")
 async def ws_compliance_check(websocket: WebSocket):
-    await ws_require_role(websocket, "user")
+    user = await ws_require_role(websocket, "user")
     await websocket.accept()
     data = await websocket.receive_json()
-    resp = await _compliance_check(ComplianceCheckRequest(**data), db_conn)
+    req = ComplianceCheckRequest(**data)
+    resp = await _compliance_check(req, db_conn, username=user.get("sub"))
     await websocket.send_json(resp.model_dump())
     await websocket.close()
 
