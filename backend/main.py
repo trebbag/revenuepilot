@@ -8193,6 +8193,13 @@ class ComposeJobResponse(BaseModel):
     steps: List[Dict[str, Any]] = Field(default_factory=list)
     result: Optional[Dict[str, Any]] = None
     validation: Optional[Dict[str, Any]] = None
+    jobType: Optional[str] = None
+    sessionId: Optional[str] = None
+    encounterId: Optional[str] = None
+    noteId: Optional[str] = None
+    offline: Optional[bool] = None
+    useLocalModels: Optional[bool] = None
+    message: Optional[str] = None
 
 
 class AIGateJobMetadata(BaseModel):
@@ -13656,6 +13663,28 @@ def _compose_response_from_detail(
         progress_value = 0.0
     steps_value = detail.get("steps")
     steps_list = list(steps_value) if isinstance(steps_value, list) else []
+    session_id_value = detail.get("sessionId")
+    encounter_id_value = detail.get("encounterId")
+    note_id_value = detail.get("noteId")
+    job_type_value = detail.get("jobType")
+    offline_value = detail.get("offline")
+    use_local_models_value = detail.get("useLocalModels")
+    message_value = detail.get("message")
+    session_id = (
+        str(session_id_value)
+        if isinstance(session_id_value, (str, int)) and str(session_id_value)
+        else None
+    )
+    encounter_id = (
+        str(encounter_id_value)
+        if isinstance(encounter_id_value, (str, int)) and str(encounter_id_value)
+        else None
+    )
+    note_id = (
+        str(note_id_value)
+        if isinstance(note_id_value, (str, int)) and str(note_id_value)
+        else None
+    )
     return ComposeJobResponse(
         composeId=compose_id,
         status=status,
@@ -13664,6 +13693,15 @@ def _compose_response_from_detail(
         steps=steps_list,
         result=detail.get("result"),
         validation=detail.get("validation"),
+        jobType=job_type_value if isinstance(job_type_value, str) else None,
+        sessionId=session_id,
+        encounterId=encounter_id,
+        noteId=note_id,
+        offline=offline_value if isinstance(offline_value, bool) else None,
+        useLocalModels=use_local_models_value
+        if isinstance(use_local_models_value, bool)
+        else None,
+        message=message_value if isinstance(message_value, str) and message_value else None,
     )
 
 
