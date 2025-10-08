@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
+import { USE_MOCK_VISIT_STREAMS, USE_REAL_TRANSCRIBE_SOCKET } from './helpers/env'
 import {
-  USE_REAL_TRANSCRIBE_SOCKET,
   configureVisitStreamSockets,
   deliverVisitStreamPayloads,
   waitForMockSocketCount,
@@ -10,6 +10,8 @@ import {
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
 
 test.describe('Suggestion panel live websocket indicators', () => {
+  test.skip(!USE_MOCK_VISIT_STREAMS, 'Mocked visit stream sockets required for this spec')
+
   test.beforeEach(async ({ page }) => {
     await configureVisitStreamSockets(page)
 
