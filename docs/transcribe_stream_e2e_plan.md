@@ -35,17 +35,12 @@ This plan breaks the original request into a sequence of manageable tasks so tha
   - The spec opens the Full Transcript modal to assert the interim badge and transcript text before re-validating the mocked compliance and coding suggestions.
 
 ## 5. Validate the End-to-End Experience
-- [ ] Run the updated E2E suite in real mode against a staging environment to confirm that the live socket delivers interim and final transcripts.
-  - Pending: the container lacks Playwright browsers and staging credentials. Execute `USE_REAL_TRANSCRIBE_SOCKET=true npx playwright test` from a workstation that has already run `npx playwright install` against a reachable stack.
-- [ ] Run the suite in mock mode to ensure CI stability.
-  - CI continues to cover the mock branch. Local execution still requires installing the Playwright runtime, which is outside the scope of this container session.
-- [ ] Capture and document any flakiness or timing differences between modes.
-  - Gather latency and reconnection observations during staging validation and feed them back into this checklist.
+- [ ] **Next:** Run the real WebSocket regression pack (`e2e/real_ws_transcription.spec.ts`, `e2e/real_ws_codes_compliance.spec.ts`) against staging using `E2E_MOCK_WS=false npx playwright test` once credentials and browsers are available.
+- [ ] **Next:** Re-run the suite with `E2E_MOCK_WS=true` to reconfirm CI stability after the real-mode changes land.
+- [ ] **Next:** Capture and log any flakiness, latency, or retry requirements observed while exercising the real sockets so we can tune helper waits.
 
 ## 6. Clean Up and Follow-Up
 - [x] Backfill automated documentation (e.g., in repo docs or runbooks) describing how to switch modes.
-  - README now outlines how to toggle the harness, open the transcript modal, and stream fixtures when targeting the live socket.
-- [ ] Plan incremental rollout for other live streams once transcription is stable.
-  - Leave the remaining channels mocked until transcription is validated, then extend the harness to gate each stream individually.
-- [ ] Coordinate with QA to monitor for regressions after merging.
-  - Share staging run outputs with QA so they can watch for transcript latency regressions and suggestion panel drift post-merge.
+  - README and [`docs/e2e_real_ws_plan.md`](./e2e_real_ws_plan.md) now call out the env toggles and direct spec links.
+- [ ] **Next:** Plan the rollout for additional live streams after validating transcription, codes, and compliance in staging.
+- [ ] **Next:** Share real-mode run artifacts with QA so they can monitor transcript latency and suggestion panel accuracy post-merge.
