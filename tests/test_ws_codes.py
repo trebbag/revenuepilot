@@ -85,3 +85,40 @@ def test_codes_stream_delivers_deltas() -> None:
             assert snapshot["type"] == "selected"
             assert snapshot["eventId"] == 2
             assert snapshot["codes"][0]["code"] == "Z79.899"
+
+
+def test_suggest_endpoint_broadcasts_streams() -> None:
+    with TestClient(main.app) as client:
+        headers = _auth_headers()
+        with client.websocket_connect("/ws/codes?encounterId=E-77", headers=headers) as codes_ws, \
+            client.websocket_connect("/ws/compliance?encounterId=E-77", headers=headers) as compliance_ws:
+            codes_handshake = codes_ws.receive_json()
+            assert codes_handshake["channel"] == "codes"
+            compliance_handshake = compliance_ws.receive_json()
+            assert compliance_handshake["channel"] == "compliance"
+
+            payload = {
+                "text": "Patient with diabetes and hypertension.",
+                "useOfflineMode": True,
+                "encounterId": "E-77",
+                "sessionId": "sess-99",
+                "noteId": "note-abc",
+            }
+            response = client.post("/suggest", json=payload, headers=headers)
+            assert response.status_code == 200
+            body = response.json()
+
+            codes_event = codes_ws.receive_json()
+            assert codes_event["channel"] == "codes"
+            assert codes_event["type"] == "suggestions"
+            assert codes_event["encounterId"] == "E-77"
+            assert codes_event.get("sessionId") == "sess-99"
+            assert codes_event["codes"][0]["code"] == body["codes"][0]["code"]
+
+            compliance_event = compliance_ws.receive_json()
+            assert compliance_event["channel"] == "compliance"
+            assert compliance_event["type"] == "suggestions"
+            assert compliance_event["encounterId"] == "E-77"
+            assert compliance_event.get("sessionId") == "sess-99"
+            assert compliance_event["messages"]
+            assert compliance_event["messages"][0] in body["compliance"]

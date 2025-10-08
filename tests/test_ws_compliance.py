@@ -74,3 +74,51 @@ def test_compliance_stream_delivers_deltas() -> None:
             assert snapshot["type"] == "status"
             assert snapshot["eventId"] == 2
             assert snapshot["updatedAt"] == "2025-09-25T02:12:00Z"
+
+
+def test_compliance_check_endpoint_broadcasts_stream() -> None:
+    with TestClient(main.app) as client:
+        headers = _auth_headers()
+        with client.websocket_connect("/ws/compliance?encounterId=E-88", headers=headers) as ws:
+            ws.receive_json()
+            payload = {
+                "content": "Document chief complaint and ROS.",
+                "useOfflineMode": True,
+                "encounterId": "E-88",
+                "sessionId": "sess-88",
+                "noteId": "note-88",
+            }
+            resp = client.post("/api/ai/compliance/check", json=payload, headers=headers)
+            assert resp.status_code == 200
+            body = resp.json()
+            time.sleep(0.05)
+            event = ws.receive_json()
+            assert event["channel"] == "compliance"
+            assert event["type"] == "compliance_check"
+            assert event["encounterId"] == "E-88"
+            assert event.get("sessionId") == "sess-88"
+            assert isinstance(event.get("alerts"), list)
+            assert event["summary"]["total"] == len(body["alerts"])
+
+
+def test_ws_compliance_check_broadcasts_stream() -> None:
+    with TestClient(main.app) as client:
+        headers = _auth_headers()
+        with client.websocket_connect("/ws/compliance?encounterId=E-89", headers=headers) as stream_ws:
+            stream_ws.receive_json()
+            with client.websocket_connect("/ws/api/ai/compliance/check", headers=headers) as check_ws:
+                payload = {
+                    "content": "Vitals missing.",
+                    "useOfflineMode": True,
+                    "encounterId": "E-89",
+                    "sessionId": "sess-89",
+                    "noteId": "note-89",
+                }
+                check_ws.send_json(payload)
+                response_payload = check_ws.receive_json()
+                assert "alerts" in response_payload
+            time.sleep(0.05)
+            event = stream_ws.receive_json()
+            assert event["encounterId"] == "E-89"
+            assert event["type"] == "compliance_check"
+            assert event.get("sessionId") == "sess-89"

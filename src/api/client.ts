@@ -40,6 +40,9 @@ export interface SuggestContext {
   agencies?: string[];
   useLocalModels?: boolean;
   suggestModel?: string;
+  encounterId?: string;
+  sessionId?: string;
+  noteId?: string;
 }
 
 export interface CodeSuggestion {
