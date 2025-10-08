@@ -2,6 +2,10 @@ import { defineConfig, devices } from '@playwright/test';
 
 const FRONTEND_PORT = Number(process.env.FRONTEND_DEV_PORT || 4173);
 const API_PORT = Number(process.env.FRONTEND_API_PORT || 4010);
+const DEFAULT_E2E_MOCK_WS =
+  process.env.E2E_MOCK_WS ?? (process.env.CI ? 'true' : 'true');
+
+process.env.E2E_MOCK_WS = DEFAULT_E2E_MOCK_WS;
 
 export default defineConfig({
   testDir: '.',
@@ -29,6 +33,7 @@ export default defineConfig({
       timeout: 60_000,
       env: {
         FRONTEND_API_PORT: String(API_PORT),
+        E2E_MOCK_WS: process.env.E2E_MOCK_WS ?? DEFAULT_E2E_MOCK_WS,
       },
     },
     {
@@ -39,6 +44,7 @@ export default defineConfig({
       env: {
         VITE_API_URL: `http://127.0.0.1:${API_PORT}`,
         NODE_ENV: 'development',
+        E2E_MOCK_WS: process.env.E2E_MOCK_WS ?? DEFAULT_E2E_MOCK_WS,
       },
     },
   ],
