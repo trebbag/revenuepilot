@@ -193,6 +193,7 @@ import backend.scheduling as scheduling_module  # type: ignore
 from backend.time_utils import ensure_utc, utc_now
 from backend.ws_codes import CodesDeltaStream
 from backend.ws_compliance import ComplianceDeltaStream
+from backend.ws_compose import ComposeDeltaStream
 from backend.notifications_service import (
     NotificationEvent,
     NotificationNotFoundError,
@@ -17773,6 +17774,7 @@ codes_manager = ConnectionManager()
 schedule_manager = ConnectionManager()
 
 compliance_stream = ComplianceDeltaStream()
+compose_stream = ComposeDeltaStream()
 codes_stream = CodesDeltaStream()
 
 
@@ -18006,6 +18008,13 @@ async def ws_compliance(websocket: WebSocket) -> None:
     """Stream compliance deltas for a specific encounter."""
 
     await compliance_stream.handle(websocket, lambda ws: ws_require_role(ws, "user"))
+
+
+@app.websocket("/ws/compose")
+async def ws_compose(websocket: WebSocket) -> None:
+    """Stream compose deltas for a specific encounter."""
+
+    await compose_stream.handle(websocket, lambda ws: ws_require_role(ws, "user"))
 
 
 @app.websocket("/ws/collaboration")
