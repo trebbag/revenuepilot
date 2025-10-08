@@ -13854,9 +13854,35 @@ async def _compose_worker_loop() -> None:
 
 
 async def _process_compose_job(job: ComposeJobPayload) -> None:
+    from backend.ws_compose import compose_stream
+
     compose_id = job.compose_id
     pipeline = _get_compose_pipeline()
     last_event: Dict[str, Any] = {"stage": None, "status": None, "progress": None}
+
+    async def _publish_compose_detail(detail: Mapping[str, Any]) -> None:
+        encounter_value = job.encounter_id or detail.get("encounterId")
+        if not encounter_value:
+            return
+        payload_detail = copy.deepcopy(detail if isinstance(detail, Mapping) else {})
+        payload: Dict[str, Any] = {
+            "type": "compose_state",
+            "composeId": compose_id,
+            "sessionId": job.session_id or payload_detail.get("sessionId"),
+            "encounterId": encounter_value,
+            "noteId": job.note_id or payload_detail.get("noteId"),
+            "detail": payload_detail,
+        }
+        try:
+            await compose_stream.publish(str(encounter_value), payload)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "compose_stream_publish_failed",
+                composeId=compose_id,
+                encounterId=encounter_value,
+                sessionId=job.session_id,
+                error=str(exc),
+            )
 
     async def reporter(state: Any) -> None:
         state_dict = state.as_dict() if hasattr(state, "as_dict") else dict(state)
@@ -13864,6 +13890,7 @@ async def _process_compose_job(job: ComposeJobPayload) -> None:
         status_value = state_dict.get("status") or "in_progress"
         if status_value not in {"completed", "failed", "blocked", "cancelled"}:
             status_value = "in_progress"
+        await _publish_compose_detail(detail)
         _update_compose_record(compose_id, status_value, detail)
         stage = detail.get("stage")
         progress = detail.get("progress")
@@ -13890,6 +13917,7 @@ async def _process_compose_job(job: ComposeJobPayload) -> None:
         )
         final_detail = _compose_state_detail(job, final_state.as_dict())
         final_status = final_state.status
+        await _publish_compose_detail(final_detail)
         _update_compose_record(compose_id, final_status, final_detail)
         if job.username:
             _compose_update_session_state(job.username, final_detail, final_status)
@@ -13922,6 +13950,8 @@ async def _process_compose_job(job: ComposeJobPayload) -> None:
                     "steps": _compose_steps_template(),
                 },
             )
+        await _publish_compose_detail(detail_payload)
+        if record is None:
             _update_compose_record(compose_id, "cancelled", detail_payload)
         _record_compose_event(
             "compose_cancelled",
@@ -13952,6 +13982,7 @@ async def _process_compose_job(job: ComposeJobPayload) -> None:
                 "message": str(exc),
             },
         )
+        await _publish_compose_detail(fallback_detail)
         _update_compose_record(compose_id, "failed", fallback_detail)
         _record_compose_event(
             "compose_failed",
