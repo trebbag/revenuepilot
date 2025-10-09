@@ -45,6 +45,7 @@ vi.mock("lucide-react", () => ({
   Loader2: () => null,
   XIcon: () => null,
   BookOpen: () => null,
+  Copy: () => null,
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({

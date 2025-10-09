@@ -5,7 +5,19 @@ import { Input } from "./ui/input"
 import { Label } from "./ui/label"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
-import { CheckCircle, Save, Play, Square, Clock, Mic, MicOff, AlertTriangle, Loader2, BookOpen } from "lucide-react"
+import {
+  CheckCircle,
+  Save,
+  Play,
+  Square,
+  Clock,
+  Mic,
+  MicOff,
+  AlertTriangle,
+  Loader2,
+  BookOpen,
+  Copy,
+} from "lucide-react"
 import { toast } from "sonner"
 import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
@@ -970,6 +982,174 @@ const createComplianceSignature = (content: string, codes: string[]): string => 
   return JSON.stringify({ content: normalizedContent, codes: sortedCodes })
 }
 
+const CODE_CATEGORY_LABELS: Record<string, string> = {
+  codes: "Codes",
+  prevention: "Prevention",
+  diagnoses: "Diagnoses",
+  differentials: "Differentials",
+}
+
+const toSingleLine = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value.replace(/\s+/g, " ").trim()
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value)
+  }
+  return ""
+}
+
+const extractPlainText = (value: unknown): string => {
+  const raw = typeof value === "string" ? value : ""
+  if (!raw.trim()) {
+    return ""
+  }
+
+  const normalized = raw
+    .replace(/<br\s*\/?>(?=\s*<)/gi, "\n")
+    .replace(/<br\s*\/?>(?!\s*<)/gi, "\n")
+    .replace(/<\/(p|div|section|article|ul|ol|table|thead|tbody|tr|h[1-6])>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\u00a0/g, " ")
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n")
+    .trim()
+}
+
+const toCategoryKey = (value: unknown): keyof typeof CODE_CATEGORY_LABELS | null => {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (!normalized) {
+      return null
+    }
+    if (normalized.includes("prevent")) return "prevention"
+    if (normalized.includes("differential")) return "differentials"
+    if (normalized.includes("diagnos") || normalized.includes("icd")) return "diagnoses"
+    if (normalized.includes("cpt") || normalized.includes("procedure") || normalized === "code" || normalized === "codes") {
+      return "codes"
+    }
+  }
+  return null
+}
+
+interface CodeEntry {
+  category?: unknown;
+  codeType?: unknown;
+  type?: unknown;
+  classification?: unknown;
+  [key: string]: unknown;
+}
+
+function hasProp<T extends object, K extends PropertyKey>(obj: T, prop: K): obj is T & Record<K, unknown> {
+  return obj != null && typeof obj === "object" && prop in obj;
+}
+
+const deriveCategoryLabel = (entry: CodeEntry): string => {
+  const candidates: Array<{ key: keyof typeof CODE_CATEGORY_LABELS | null; raw: string | null }> = [];
+
+  const pushCandidate = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => pushCandidate(item));
+      return;
+    }
+    const raw = typeof value === "string" ? value.trim() : null;
+    const key = toCategoryKey(value);
+    candidates.push({ key, raw });
+  };
+
+  if (hasProp(entry, "category")) pushCandidate(entry.category);
+  if (hasProp(entry, "codeType")) pushCandidate(entry.codeType);
+  if (hasProp(entry, "type")) pushCandidate(entry.type);
+  if (hasProp(entry, "classification")) pushCandidate(entry.classification);
+
+  for (const candidate of candidates) {
+    if (candidate.key) {
+      return CODE_CATEGORY_LABELS[candidate.key];
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (candidate.raw) {
+      return candidate.raw.replace(/_/g, " ").replace(/\s+/g, " ");
+    }
+  }
+
+  return "General";
+}
+
+interface NoteWorkspaceClipboardOptions {
+  noteContent?: string | null
+  selectedCodes?: Array<Record<string, unknown>> | null
+}
+
+export const buildNoteWorkspaceClipboardText = ({
+  noteContent,
+  selectedCodes,
+}: NoteWorkspaceClipboardOptions): string => {
+  const sections: string[] = []
+  const noteText = extractPlainText(noteContent ?? "")
+  if (noteText) {
+    sections.push(`Note Content:\n${noteText}`)
+  }
+
+  const codeEntries = (Array.isArray(selectedCodes) ? selectedCodes : [])
+    .map((item) => {
+      const record = (item ?? {}) as Record<string, unknown>
+      const code = toSingleLine(record.code ?? (record as { id?: unknown }).id ?? null)
+      const description = toSingleLine(
+        record.description ?? (record as { title?: unknown }).title ?? (record as { details?: unknown }).details ?? null,
+      )
+      if (!code && !description) {
+        return null
+      }
+      const categoryLabel = deriveCategoryLabel(record)
+      return {
+        code,
+        description,
+        categoryLabel,
+      }
+    })
+    .filter((entry): entry is { code: string; description: string; categoryLabel: string } => entry !== null)
+
+  if (codeEntries.length > 0) {
+    const grouped = new Map<string, typeof codeEntries>()
+    codeEntries.forEach((entry) => {
+      const existing = grouped.get(entry.categoryLabel) ?? []
+      existing.push(entry)
+      grouped.set(entry.categoryLabel, existing)
+    })
+
+    const lines: string[] = []
+    Array.from(grouped.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .forEach(([category, entries]) => {
+        entries
+          .sort((first, second) => {
+            const firstKey = first.code || first.description
+            const secondKey = second.code || second.description
+            return firstKey.localeCompare(secondKey)
+          })
+          .forEach((entry) => {
+            const descriptionPart = entry.description ? ` — ${entry.description}` : ""
+            const detail = entry.code ? `${entry.code}${descriptionPart}` : entry.description
+            lines.push(`- [${category}] ${detail}`.trim())
+          })
+      })
+
+    if (lines.length > 0) {
+      sections.push(`Selected Codes:\n${lines.join("\n")}`)
+    }
+  }
+
+  return sections.join("\n\n").trim()
+}
+
 const hashTranscriptEntries = (entries: TranscriptEntry[]): string => {
   let hash = 0
   for (const entry of entries) {
@@ -1495,6 +1675,15 @@ export function NoteEditor({
     })
     return Array.from(unique).sort()
   }, [selectedCodesList])
+
+  const workspaceClipboardText = useMemo(
+    () =>
+      buildNoteWorkspaceClipboardText({
+        noteContent,
+        selectedCodes: selectedCodesList,
+      }),
+    [noteContent, selectedCodesList],
+  )
 
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -4792,6 +4981,27 @@ export function NoteEditor({
     setAutoSaveError,
   ])
 
+  const handleCopyWorkspace = useCallback(async () => {
+    if (!workspaceClipboardText) {
+      toast.error("Nothing to copy from note workspace")
+      return
+    }
+
+    const clipboardApi = navigator?.clipboard
+    if (!clipboardApi?.writeText) {
+      toast.error("Unable to copy note workspace")
+      return
+    }
+
+    try {
+      await clipboardApi.writeText(workspaceClipboardText)
+      toast.success("Note workspace copied to clipboard")
+    } catch (error) {
+      console.error("Failed to copy note workspace", error)
+      toast.error("Unable to copy note workspace")
+    }
+  }, [workspaceClipboardText])
+
   const canStartVisit = useMemo(() => {
     if (isFinalized) {
       return false
@@ -5098,6 +5308,17 @@ export function NoteEditor({
           >
             {saveDraftLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
             {saveDraftLoading ? "Saving Draft…" : "Save Draft & Exit"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              void handleCopyWorkspace()
+            }}
+            disabled={!workspaceClipboardText}
+            className="border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <Copy className="w-4 h-4 mr-2" />
+            Copy Workspace
           </Button>
           {saveDraftError && (
             <p className="text-xs text-destructive" role="alert">
