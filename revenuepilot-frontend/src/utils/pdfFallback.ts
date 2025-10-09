@@ -10,6 +10,11 @@ export interface PdfFallbackOptions {
   noteHtml?: string | null
   summaryHtml?: string | null
   offlineMessage?: string
+  /**
+   * Optional override for the request URL used to fetch the PDF.
+   * When explicitly set to `null`, the network request step is skipped.
+   */
+  requestUrl?: string | null
 }
 
 const getElectronApi = () =>
@@ -57,12 +62,23 @@ const getHtmlForVariant = (variant: PdfVariant, noteHtml?: string | null, summar
 }
 
 export async function downloadPdfWithFallback(options: PdfFallbackOptions): Promise<void> {
-  const { finalizedNoteId, variant, patientName, noteHtml, summaryHtml, offlineMessage = "PDF unavailable offline." } = options
+  const {
+    finalizedNoteId,
+    variant,
+    patientName,
+    noteHtml,
+    summaryHtml,
+    offlineMessage = "PDF unavailable offline.",
+    requestUrl: requestUrlOverride,
+  } = options
 
   const filename = buildFilename(patientName ?? undefined, variant)
-  const requestUrl = `/api/notes/${encodeURIComponent(finalizedNoteId)}/pdf?variant=${variant}`
+  const requestUrl =
+    requestUrlOverride === undefined
+      ? `/api/notes/${encodeURIComponent(finalizedNoteId)}/pdf?variant=${variant}`
+      : requestUrlOverride
 
-  if (typeof window !== "undefined" && window.navigator?.onLine !== false) {
+  if (requestUrl && typeof window !== "undefined" && window.navigator?.onLine !== false) {
     try {
       const response = await fetch(requestUrl, { credentials: "include" })
       if (!response.ok) {

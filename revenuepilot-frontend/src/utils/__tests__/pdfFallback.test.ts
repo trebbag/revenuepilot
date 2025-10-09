@@ -36,6 +36,7 @@ const { downloadPdfWithFallback } = await import("../pdfFallback")
 
 describe("downloadPdfWithFallback", () => {
   beforeEach(() => {
+    vi.mocked(global.fetch).mockClear()
     vi.mocked(global.fetch).mockRejectedValue(new Error("network"))
     html2pdfMocks.factory.mockClear()
     html2pdfMocks.chain.set.mockClear()
@@ -92,5 +93,19 @@ describe("downloadPdfWithFallback", () => {
     })
 
     expect(toastMocks.error).toHaveBeenCalledWith("PDF offline")
+  })
+
+  it("skips the network request when requestUrl is null", async () => {
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true })
+
+    await downloadPdfWithFallback({
+      finalizedNoteId: "fn-004",
+      variant: "note",
+      noteHtml: "<p>Note content</p>",
+      requestUrl: null,
+    })
+
+    expect(global.fetch).not.toHaveBeenCalled()
+    expect(html2pdfMocks.chain.save).toHaveBeenCalled()
   })
 })

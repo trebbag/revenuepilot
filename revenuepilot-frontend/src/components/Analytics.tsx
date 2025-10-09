@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { RefObject } from "react"
 import { motion } from "motion/react"
 import {
   TrendingUp,
@@ -33,6 +34,7 @@ import { DatePickerWithRange } from "./ui/date-picker-with-range"
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
 import { Skeleton } from "./ui/skeleton"
 import { apiFetch, apiFetchJson } from "../lib/api"
+import { downloadPdfWithFallback } from "../utils/pdfFallback"
 
 interface UsageTrendPoint {
   day: string
@@ -118,6 +120,8 @@ interface DataState<T> {
 }
 
 type DatePreset = "7days" | "30days" | "90days" | "custom"
+
+type DashboardKey = "billing" | "outcomes" | "quality" | "staff"
 
 interface AnalyticsFilters {
   datePreset: DatePreset
@@ -305,6 +309,8 @@ interface BillingCodingDashboardProps {
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onRefresh: () => void
+  containerRef: RefObject<HTMLDivElement>
+  onExport: () => void | Promise<void>
 }
 
 interface NoteQualityDashboardProps {
@@ -315,6 +321,8 @@ interface NoteQualityDashboardProps {
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onRefresh: () => void
+  containerRef: RefObject<HTMLDivElement>
+  onExport: () => void | Promise<void>
 }
 
 function MetricCard({ title, value, baseline, change, changeType, trend, icon: Icon, description, color = "blue" }: MetricCardProps) {
@@ -360,7 +368,7 @@ function MetricCard({ title, value, baseline, change, changeType, trend, icon: I
 interface DashboardFiltersProps {
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
-  onExport: () => void
+  onExport: () => void | Promise<void>
 }
 
 function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFiltersProps) {
@@ -452,7 +460,9 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
         </Select>
       </div>
 
-      <Button onClick={onExport} variant="outline" size="sm" className="ml-auto">
+      <Button onClick={() => {
+        void onExport()
+      }} variant="outline" size="sm" className="ml-auto">
         <Download className="w-4 h-4 mr-2" />
         Export PDF
       </Button>
@@ -460,7 +470,17 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
   )
 }
 
-function BillingCodingDashboard({ revenueState, codingState, usageState, currencyFormatter, filters, onFiltersChange, onRefresh }: BillingCodingDashboardProps) {
+function BillingCodingDashboard({
+  revenueState,
+  codingState,
+  usageState,
+  currencyFormatter,
+  filters,
+  onFiltersChange,
+  onRefresh,
+  containerRef,
+  onExport,
+}: BillingCodingDashboardProps) {
   const palette = useMemo(() => ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#6b7280", "#0ea5e9", "#f97316"], [])
 
   const revenueLineData = useMemo(() => {
@@ -528,8 +548,8 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
   const showEmptyDenialChart = denialData.length === 0
 
   return (
-    <div className="space-y-6">
-      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export billing dashboard")} />
+    <div ref={containerRef} data-dashboard-id="billing" className="space-y-6">
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={onExport} />
 
       {(revenueState.error || codingState.error || usageState.error) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">{revenueState.error || codingState.error || usageState.error}</div>
@@ -682,9 +702,11 @@ function BillingCodingDashboard({ revenueState, codingState, usageState, currenc
 interface HealthOutcomesDashboardProps {
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
+  containerRef: RefObject<HTMLDivElement>
+  onExport: () => void | Promise<void>
 }
 
-function HealthOutcomesDashboard({ filters, onFiltersChange }: HealthOutcomesDashboardProps) {
+function HealthOutcomesDashboard({ filters, onFiltersChange, containerRef, onExport }: HealthOutcomesDashboardProps) {
   const outcomeData = [
     { name: "Jan", satisfaction: 4.2, readmissions: 8, outcomes: 87 },
     { name: "Feb", satisfaction: 4.4, readmissions: 6, outcomes: 89 },
@@ -695,8 +717,8 @@ function HealthOutcomesDashboard({ filters, onFiltersChange }: HealthOutcomesDas
   ]
 
   return (
-    <div className="space-y-6">
-      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export health outcomes dashboard")} />
+    <div ref={containerRef} data-dashboard-id="outcomes" className="space-y-6">
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={onExport} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard title="Patient Satisfaction" value="4.7/5.0" baseline="4.2/5.0" change={11.9} changeType="increase" trend="up" icon={Stethoscope} color="green" description="Above national avg" />
@@ -746,7 +768,17 @@ function HealthOutcomesDashboard({ filters, onFiltersChange }: HealthOutcomesDas
   )
 }
 
-function NoteQualityDashboard({ usageState, complianceState, codingState, draftState, filters, onFiltersChange, onRefresh }: NoteQualityDashboardProps) {
+function NoteQualityDashboard({
+  usageState,
+  complianceState,
+  codingState,
+  draftState,
+  filters,
+  onFiltersChange,
+  onRefresh,
+  containerRef,
+  onExport,
+}: NoteQualityDashboardProps) {
   const usageTrend = usageState.data?.daily_trends ?? []
   const complianceTrendMap = useMemo(() => {
     const map = new Map<string, ComplianceTrendPoint>()
@@ -806,8 +838,8 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
   const showQualityChart = qualityData.length > 0
 
   return (
-    <div className="space-y-6">
-      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export note quality dashboard")} />
+    <div ref={containerRef} data-dashboard-id="quality" className="space-y-6">
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={onExport} />
 
       {(usageState.error || complianceState.error || draftState.error) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-sm text-amber-700">{usageState.error || complianceState.error || draftState.error}</div>
@@ -926,9 +958,11 @@ function NoteQualityDashboard({ usageState, complianceState, codingState, draftS
 interface StaffPerformanceDashboardProps {
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
+  containerRef: RefObject<HTMLDivElement>
+  onExport: () => void | Promise<void>
 }
 
-function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanceDashboardProps) {
+function StaffPerformanceDashboard({ filters, onFiltersChange, containerRef, onExport }: StaffPerformanceDashboardProps) {
   const staffData = [
     { name: "Dr. Johnson", notes: 145, accuracy: 94, efficiency: 87, revenue: 28450 },
     { name: "Dr. Smith", notes: 132, accuracy: 91, efficiency: 92, revenue: 25680 },
@@ -937,7 +971,7 @@ function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanc
   ]
 
   return (
-    <div className="space-y-6">
+    <div ref={containerRef} data-dashboard-id="staff" className="space-y-6">
       <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-amber-600" />
@@ -946,7 +980,7 @@ function StaffPerformanceDashboard({ filters, onFiltersChange }: StaffPerformanc
         <p className="text-sm text-amber-700 mt-1">This dashboard contains sensitive staff performance data and is only accessible to administrators.</p>
       </div>
 
-      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={() => console.log("Export staff performance dashboard")} />
+      <DashboardFilters filters={filters} onFiltersChange={onFiltersChange} onExport={onExport} />
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard title="Team Productivity" value="127%" baseline="100%" change={27.0} changeType="increase" trend="up" icon={TrendingUp} color="green" description="Above target" />
@@ -1015,7 +1049,46 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
   const [sessionHydrated, setSessionHydrated] = useState(false)
   const [refreshCounter, setRefreshCounter] = useState(0)
   const [filters, setFilters] = useState<AnalyticsFilters>(() => createDefaultFilters())
+  const billingDashboardRef = useRef<HTMLDivElement>(null)
+  const outcomesDashboardRef = useRef<HTMLDivElement>(null)
+  const qualityDashboardRef = useRef<HTMLDivElement>(null)
+  const staffDashboardRef = useRef<HTMLDivElement>(null)
   const serializedFilters = useMemo(() => serializeFilters(filters), [filters])
+
+  const exportDashboard = useCallback(
+    async (dashboard: DashboardKey) => {
+      const config: Record<DashboardKey, { ref: RefObject<HTMLDivElement>; label: string }> = {
+        billing: { ref: billingDashboardRef, label: "Billing & Coding" },
+        outcomes: { ref: outcomesDashboardRef, label: "Health Outcomes" },
+        quality: { ref: qualityDashboardRef, label: "Note Quality" },
+        staff: { ref: staffDashboardRef, label: "Staff Performance" },
+      }
+
+      const target = config[dashboard]
+      const element = target.ref.current
+      if (!element) {
+        console.warn(`Missing export element for ${dashboard} dashboard`)
+        return
+      }
+
+      const html = element.outerHTML
+
+      try {
+        await downloadPdfWithFallback({
+          finalizedNoteId: `analytics-${dashboard}`,
+          variant: "note",
+          patientName: `${target.label} Dashboard`,
+          noteHtml: html,
+          summaryHtml: html,
+          requestUrl: null,
+          offlineMessage: `Unable to export ${target.label.toLowerCase()} dashboard.`,
+        })
+      } catch (error) {
+        console.error(`Failed to export ${dashboard} analytics dashboard`, error)
+      }
+    },
+    [],
+  )
 
   const handleFiltersChange = useCallback((updates: Partial<AnalyticsFilters>) => {
     setFilters((prev) => {
@@ -1268,11 +1341,18 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
             filters={filters}
             onFiltersChange={handleFiltersChange}
             onRefresh={handleRefresh}
+            containerRef={billingDashboardRef}
+            onExport={() => exportDashboard("billing")}
           />
         </TabsContent>
 
         <TabsContent value="outcomes" className="space-y-6">
-          <HealthOutcomesDashboard filters={filters} onFiltersChange={handleFiltersChange} />
+          <HealthOutcomesDashboard
+            filters={filters}
+            onFiltersChange={handleFiltersChange}
+            containerRef={outcomesDashboardRef}
+            onExport={() => exportDashboard("outcomes")}
+          />
         </TabsContent>
 
         <TabsContent value="quality" className="space-y-6">
@@ -1284,11 +1364,18 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
             filters={filters}
             onFiltersChange={handleFiltersChange}
             onRefresh={handleRefresh}
+            containerRef={qualityDashboardRef}
+            onExport={() => exportDashboard("quality")}
           />
         </TabsContent>
 
         <TabsContent value="staff" className="space-y-6">
-          <StaffPerformanceDashboard filters={filters} onFiltersChange={handleFiltersChange} />
+          <StaffPerformanceDashboard
+            filters={filters}
+            onFiltersChange={handleFiltersChange}
+            containerRef={staffDashboardRef}
+            onExport={() => exportDashboard("staff")}
+          />
         </TabsContent>
       </Tabs>
     </div>
