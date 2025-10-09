@@ -1038,37 +1038,49 @@ const toCategoryKey = (value: unknown): keyof typeof CODE_CATEGORY_LABELS | null
   return null
 }
 
-const deriveCategoryLabel = (entry: Record<string, unknown>): string => {
-  const candidates: Array<{ key: keyof typeof CODE_CATEGORY_LABELS | null; raw: string | null }> = []
+interface CodeEntry {
+  category?: unknown;
+  codeType?: unknown;
+  type?: unknown;
+  classification?: unknown;
+  [key: string]: unknown;
+}
+
+function hasProp<T extends object, K extends PropertyKey>(obj: T, prop: K): obj is T & Record<K, unknown> {
+  return obj != null && typeof obj === "object" && prop in obj;
+}
+
+const deriveCategoryLabel = (entry: CodeEntry): string => {
+  const candidates: Array<{ key: keyof typeof CODE_CATEGORY_LABELS | null; raw: string | null }> = [];
 
   const pushCandidate = (value: unknown) => {
     if (Array.isArray(value)) {
-      value.forEach((item) => pushCandidate(item))
-      return
+      value.forEach((item) => pushCandidate(item));
+      return;
     }
-    const raw = typeof value === "string" ? value.trim() : null
-    const key = toCategoryKey(value)
-    candidates.push({ key, raw })
-  }
+    const raw = typeof value === "string" ? value.trim() : null;
+    const key = toCategoryKey(value);
+    candidates.push({ key, raw });
+  };
 
-  pushCandidate(entry.category)
-  pushCandidate((entry as { codeType?: unknown }).codeType)
-  pushCandidate((entry as { type?: unknown }).type)
-  pushCandidate((entry as { classification?: unknown }).classification)
+  if (hasProp(entry, "category")) pushCandidate(entry.category);
+  if (hasProp(entry, "codeType")) pushCandidate(entry.codeType);
+  if (hasProp(entry, "type")) pushCandidate(entry.type);
+  if (hasProp(entry, "classification")) pushCandidate(entry.classification);
 
   for (const candidate of candidates) {
     if (candidate.key) {
-      return CODE_CATEGORY_LABELS[candidate.key]
+      return CODE_CATEGORY_LABELS[candidate.key];
     }
   }
 
   for (const candidate of candidates) {
     if (candidate.raw) {
-      return candidate.raw.replace(/_/g, " ").replace(/\s+/g, " ")
+      return candidate.raw.replace(/_/g, " ").replace(/\s+/g, " ");
     }
   }
 
-  return "General"
+  return "General";
 }
 
 interface NoteWorkspaceClipboardOptions {
