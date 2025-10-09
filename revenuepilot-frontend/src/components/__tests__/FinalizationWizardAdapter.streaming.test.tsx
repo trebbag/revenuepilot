@@ -5,6 +5,40 @@ import { describe, expect, it, beforeEach, vi } from "vitest"
 import { FinalizationWizardAdapter } from "../FinalizationWizardAdapter"
 import type { StreamConnectionState } from "../NoteEditor"
 
+class MockWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
+
+  static instances: MockWebSocket[] = []
+
+  readyState = MockWebSocket.CONNECTING
+  onopen: ((event: Event) => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onclose: ((event: CloseEvent) => void) | null = null
+
+  constructor(public url: string) {
+    MockWebSocket.instances.push(this)
+    setTimeout(() => {
+      this.readyState = MockWebSocket.OPEN
+      this.onopen?.(new Event("open"))
+    }, 0)
+  }
+
+  send(_: unknown) {}
+
+  close() {
+    this.readyState = MockWebSocket.CLOSED
+    setTimeout(() => {
+      this.onclose?.(new Event("close") as CloseEvent)
+    }, 0)
+  }
+}
+
+vi.stubGlobal("WebSocket", MockWebSocket as unknown as typeof WebSocket)
+
 type FetchWithAuth = (input: RequestInfo | URL, init?: (RequestInit & { json?: boolean; jsonBody?: unknown }) | undefined) => Promise<Response>
 
 const wizardRenderSpy = vi.fn()
@@ -48,6 +82,13 @@ vi.mock("../../features/finalization", () => ({
     wizardRenderSpy(props)
     return <div data-testid="wizard-mock">{props.suggestedCodes?.length ?? 0} suggestions</div>
   },
+}))
+
+vi.mock("../../lib/api", () => ({
+  getStoredToken: vi.fn(() => null),
+  resolveWebsocketUrl: vi.fn((path: string) =>
+    path.startsWith("ws") || path.startsWith("wss") ? path : `ws://localhost${path}`,
+  ),
 }))
 
 const defaultConnection = (status: StreamConnectionState["status"], overrides?: Partial<StreamConnectionState>) =>
@@ -105,8 +146,12 @@ describe("FinalizationWizardAdapter streaming behaviour", () => {
       (typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url).includes("/api/ai/codes/suggest"),
     )
     expect(suggestionCall).toBeUndefined()
-    const liveBadges = screen.getAllByText((_, element) => element?.textContent === "Live" && element.parentElement?.getAttribute("data-slot") === "badge")
-    expect(liveBadges).toHaveLength(2)
+    await waitFor(() => {
+      const liveBadges = screen.getAllByText(
+        (_, element) => element?.textContent === "Live" && element.parentElement?.getAttribute("data-slot") === "badge",
+      )
+      expect(liveBadges).toHaveLength(3)
+    })
   })
 
   it("falls back to REST when live suggestions are unavailable", async () => {

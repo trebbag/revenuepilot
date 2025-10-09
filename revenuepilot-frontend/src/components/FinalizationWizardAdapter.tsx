@@ -21,6 +21,7 @@ import type {
   StoredFinalizationSession,
   WorkflowSessionResponsePayload,
 } from "../features/finalization/workflowTypes"
+import { getStoredToken, resolveWebsocketUrl } from "../lib/api"
 
 type FetchWithAuth = (input: RequestInfo | URL, init?: (RequestInit & { json?: boolean; jsonBody?: unknown }) | undefined) => Promise<Response>
 
@@ -720,6 +721,18 @@ export function FinalizationWizardAdapter({
   const composePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const composeFingerprintRef = useRef<string | null>(null)
   const composeActiveRef = useRef<boolean>(false)
+  const composeSocketRef = useRef<WebSocket | null>(null)
+  const composeSocketClosingRef = useRef<boolean>(false)
+  const composeReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [composeConnection, setComposeConnection] = useState<StreamConnectionState>({
+    status: "idle",
+    attempts: 0,
+    lastError: null,
+    lastConnectedAt: null,
+    nextRetryDelayMs: null,
+  })
+  const composeConnectionRef = useRef<StreamConnectionState>(composeConnection)
+  const [composeFallbackActive, setComposeFallbackActive] = useState<boolean>(false)
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId ?? initialSessionSnapshot?.encounterId
@@ -788,6 +801,10 @@ export function FinalizationWizardAdapter({
   useEffect(() => {
     preFinalizeResultRef.current = preFinalizeResult
   }, [preFinalizeResult])
+
+  useEffect(() => {
+    composeConnectionRef.current = composeConnection
+  }, [composeConnection])
 
   useEffect(() => {
     if (initialPreFinalizeResult) {
@@ -940,19 +957,57 @@ export function FinalizationWizardAdapter({
     }
   }, [])
 
+  const clearComposeReconnectTimer = useCallback(() => {
+    if (composeReconnectTimerRef.current !== null) {
+      clearTimeout(composeReconnectTimerRef.current)
+      composeReconnectTimerRef.current = null
+    }
+  }, [])
+
+  const closeComposeSocket = useCallback(() => {
+    composeSocketClosingRef.current = true
+    const socket = composeSocketRef.current
+    if (socket) {
+      try {
+        socket.onopen = null
+        socket.onmessage = null
+        socket.onerror = null
+        socket.onclose = null
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+          socket.close()
+        }
+      } catch {
+        // ignore close errors
+      }
+    }
+    composeSocketRef.current = null
+  }, [])
+
   useEffect(() => {
     return () => {
       clearComposePollTimer()
+      clearComposeReconnectTimer()
+      closeComposeSocket()
       composeActiveRef.current = false
     }
-  }, [clearComposePollTimer])
+  }, [clearComposePollTimer, clearComposeReconnectTimer, closeComposeSocket])
 
   useEffect(() => {
     if (!isOpen) {
       composeActiveRef.current = false
       clearComposePollTimer()
+      clearComposeReconnectTimer()
+      closeComposeSocket()
+      setComposeFallbackActive(false)
+      setComposeConnection((prev) => ({
+        status: "idle",
+        attempts: 0,
+        lastError: prev.lastError ?? null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null,
+      }))
     }
-  }, [clearComposePollTimer, isOpen])
+  }, [clearComposePollTimer, clearComposeReconnectTimer, closeComposeSocket, isOpen])
 
   const persistSession = useCallback(
     (session: WorkflowSessionResponsePayload | null | undefined, extras?: Partial<StoredFinalizationSession>) => {
@@ -971,6 +1026,60 @@ export function FinalizationWizardAdapter({
     [sanitizedTranscripts, sessionActions, sessionState.finalizationSessions],
   )
 
+  const applyComposeJobUpdate = useCallback(
+    (job: ComposeJobLike | null | undefined) => {
+      if (!job) {
+        return false
+      }
+
+      const composeIdValue =
+        typeof job.composeId === "number" && Number.isFinite(job.composeId)
+          ? job.composeId
+          : Number.isFinite(Number(job.composeId))
+            ? Number(job.composeId)
+            : null
+      if (composeIdValue !== null) {
+        composeJobIdRef.current = composeIdValue
+      }
+
+      setComposeJob(job)
+      setComposeError(null)
+
+      setSessionData((prev) => {
+        if (!prev) {
+          persistSession(sessionDataRef.current, {
+            composeJob: job,
+            composeResult: job.result,
+            composeValidation: job.validation,
+          })
+          return prev
+        }
+
+        const next: WorkflowSessionResponsePayload = {
+          ...prev,
+          composeJob: job,
+        }
+
+        persistSession(next, {
+          composeJob: job,
+          composeResult: job.result,
+          composeValidation: job.validation,
+        })
+        sessionDataRef.current = next
+        return next
+      })
+
+      const normalizedStatus = typeof job.status === "string" ? job.status.toLowerCase() : ""
+      const isTerminal = ["completed", "failed", "blocked", "cancelled"].includes(normalizedStatus)
+      composeActiveRef.current = !isTerminal
+      if (isTerminal) {
+        setComposeFallbackActive(false)
+      }
+      return isTerminal
+    },
+    [persistSession],
+  )
+
 
   const pollComposeJobStatus = useCallback(async () => {
     const composeId = composeJobIdRef.current
@@ -986,38 +1095,19 @@ export function FinalizationWizardAdapter({
       }
 
       const data = (await response.json()) as ComposeJobLike
-      setComposeJob(data)
-      setComposeError(null)
-      setSessionData((prev) => {
-        if (!prev) {
-          persistSession(sessionDataRef.current, {
-            composeJob: data,
-            composeResult: data.result,
-            composeValidation: data.validation,
-          })
-          return prev
-        }
+      const isTerminal = applyComposeJobUpdate(data)
 
-        const next: WorkflowSessionResponsePayload = {
-          ...prev,
-          composeJob: data,
-        }
-        persistSession(next, {
-          composeJob: data,
-          composeResult: data.result,
-          composeValidation: data.validation,
-        })
-        sessionDataRef.current = next
-        return next
-      })
-
-      const normalizedStatus = typeof data.status === "string" ? data.status.toLowerCase() : ""
-      if (["completed", "failed", "blocked", "cancelled"].includes(normalizedStatus)) {
-        composeActiveRef.current = false
+      if (isTerminal) {
         clearComposePollTimer()
+        setComposeFallbackActive(false)
+      } else if (composeConnectionRef.current.status === "open") {
+        clearComposePollTimer()
+        setComposeFallbackActive(false)
       } else {
         clearComposePollTimer()
+        setComposeFallbackActive(true)
         composePollTimerRef.current = window.setTimeout(() => {
+          composePollTimerRef.current = null
           void pollComposeJobStatus()
         }, 650)
       }
@@ -1026,9 +1116,309 @@ export function FinalizationWizardAdapter({
       clearComposePollTimer()
       const message = error instanceof Error ? error.message : "Unable to poll compose job"
       setComposeError(message)
+      setComposeFallbackActive(true)
       onError?.(message, error)
     }
-  }, [clearComposePollTimer, fetchWithAuth, onError, persistSession])
+  }, [applyComposeJobUpdate, clearComposePollTimer, fetchWithAuth, onError])
+
+  const normalizeComposeStreamPayload = useCallback((payload: unknown): ComposeJobLike | null => {
+    if (!payload || typeof payload !== "object") {
+      return null
+    }
+
+    const record = payload as Record<string, unknown>
+    const detailRaw = record.detail
+    const detail = detailRaw && typeof detailRaw === "object" ? (detailRaw as Record<string, unknown>) : {}
+
+    const composeIdSource = record.composeId ?? detail?.composeId
+    let composeId: number | null = null
+    if (typeof composeIdSource === "number" && Number.isFinite(composeIdSource)) {
+      composeId = composeIdSource
+    } else if (typeof composeIdSource === "string" && composeIdSource.trim().length > 0) {
+      const parsed = Number.parseInt(composeIdSource.trim(), 10)
+      if (Number.isFinite(parsed)) {
+        composeId = parsed
+      }
+    }
+    if (composeId === null) {
+      return null
+    }
+
+    const statusSource = detail?.status ?? record.status
+    const status = typeof statusSource === "string" && statusSource.trim().length > 0 ? statusSource : "in_progress"
+
+    const stageSource = detail?.stage ?? record.stage
+    const stage = typeof stageSource === "string" && stageSource.trim().length > 0 ? stageSource : null
+
+    const progressSource = detail?.progress ?? record.progress
+    let progress: number | null = null
+    if (typeof progressSource === "number" && Number.isFinite(progressSource)) {
+      progress = progressSource
+    } else if (typeof progressSource === "string" && progressSource.trim().length > 0) {
+      const parsedProgress = Number.parseFloat(progressSource.trim())
+      if (Number.isFinite(parsedProgress)) {
+        progress = parsedProgress
+      }
+    }
+
+    const stepsRaw = detail?.steps
+    const steps = Array.isArray(stepsRaw)
+      ? stepsRaw.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+      : undefined
+
+    const result = (detail?.result ?? record.result) as Record<string, unknown> | null | undefined
+    const validation = (detail?.validation ?? record.validation) as Record<string, unknown> | null | undefined
+
+    const messageSource = detail?.message ?? record.message
+    const message = typeof messageSource === "string" && messageSource.trim().length > 0 ? messageSource : undefined
+
+    return {
+      composeId,
+      status,
+      stage,
+      progress: progress ?? null,
+      steps,
+      result: result ?? undefined,
+      validation: validation ?? undefined,
+      message: message ?? undefined,
+    }
+  }, [])
+
+  const connectComposeSocket = useCallback(() => {
+    if (typeof window === "undefined" || !("WebSocket" in window)) {
+      setComposeConnection((prev) => ({
+        status: "error",
+        attempts: prev.attempts + 1,
+        lastError: "Live compose unavailable",
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null,
+      }))
+      setComposeFallbackActive(true)
+      return
+    }
+
+    if (!isOpen) {
+      return
+    }
+
+    const encounterValue =
+      typeof composeSnapshot.encounterId === "string" && composeSnapshot.encounterId.trim().length > 0
+        ? composeSnapshot.encounterId.trim()
+        : null
+    if (!encounterValue) {
+      return
+    }
+
+    const existing = composeSocketRef.current
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      return
+    }
+
+    clearComposeReconnectTimer()
+
+    setComposeConnection((prev) => ({
+      status: "connecting",
+      attempts: prev.attempts + 1,
+      lastError: prev.lastError ?? null,
+      lastConnectedAt: prev.lastConnectedAt ?? null,
+      nextRetryDelayMs: null,
+    }))
+
+    let target: URL
+    try {
+      target = new URL(resolveWebsocketUrl("/ws/compose"))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open compose stream"
+      setComposeConnection((prev) => ({
+        status: "error",
+        attempts: prev.attempts + 1,
+        lastError: message,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: null,
+      }))
+      setComposeFallbackActive(true)
+      if (composeActiveRef.current) {
+        clearComposePollTimer()
+        composePollTimerRef.current = window.setTimeout(() => {
+          composePollTimerRef.current = null
+          void pollComposeJobStatus()
+        }, 300)
+      }
+      return
+    }
+
+    target.searchParams.set("encounterId", encounterValue)
+    const token = getStoredToken()
+    if (token) {
+      target.searchParams.set("token", token)
+    }
+
+    let socket: WebSocket
+    try {
+      const protocols = token ? ["authorization", `Bearer ${token}`] : undefined
+      socket = protocols ? new WebSocket(target.toString(), protocols) : new WebSocket(target.toString())
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to open compose stream"
+      setComposeConnection((prev) => ({
+        status: "error",
+        attempts: prev.attempts + 1,
+        lastError: message,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: 5000,
+      }))
+      setComposeFallbackActive(true)
+      if (composeActiveRef.current) {
+        clearComposePollTimer()
+        composePollTimerRef.current = window.setTimeout(() => {
+          composePollTimerRef.current = null
+          void pollComposeJobStatus()
+        }, 300)
+      }
+      composeReconnectTimerRef.current = window.setTimeout(() => {
+        composeReconnectTimerRef.current = null
+        connectComposeSocket()
+      }, 5000)
+      return
+    }
+
+    composeSocketClosingRef.current = false
+    composeSocketRef.current = socket
+
+    socket.onopen = () => {
+      setComposeConnection({
+        status: "open",
+        attempts: 0,
+        lastError: null,
+        lastConnectedAt: Date.now(),
+        nextRetryDelayMs: null,
+      })
+      setComposeFallbackActive(false)
+      clearComposePollTimer()
+    }
+
+    const handleMessage = async (event: MessageEvent) => {
+      try {
+        let rawData: string | null = null
+        if (typeof event.data === "string") {
+          rawData = event.data
+        } else if (event.data instanceof Blob) {
+          rawData = await event.data.text()
+        } else if (event.data instanceof ArrayBuffer) {
+          rawData = new TextDecoder().decode(event.data)
+        }
+        if (!rawData) {
+          return
+        }
+        const payload = JSON.parse(rawData) as Record<string, unknown>
+        if (payload?.event === "connected") {
+          return
+        }
+        const job = normalizeComposeStreamPayload(payload)
+        if (!job) {
+          return
+        }
+        const isTerminal = applyComposeJobUpdate(job)
+        if (isTerminal) {
+          clearComposePollTimer()
+          setComposeFallbackActive(false)
+        }
+      } catch (error) {
+        console.error("Failed to process compose stream payload", error)
+        setComposeConnection((prev) => ({
+          ...prev,
+          status: prev.status === "open" ? prev.status : "error",
+          lastError: error instanceof Error ? error.message : "Failed to process compose stream payload",
+        }))
+      }
+    }
+
+    socket.onmessage = (event) => {
+      void handleMessage(event)
+    }
+
+    socket.onerror = (event) => {
+      if (composeSocketClosingRef.current) {
+        return
+      }
+      const message = event instanceof Event ? "Compose stream error" : ((event as ErrorEvent)?.message ?? "Compose stream error")
+      setComposeConnection((prev) => ({
+        ...prev,
+        status: "error",
+        lastError: message,
+      }))
+      setComposeFallbackActive(true)
+      try {
+        socket.close()
+      } catch {
+        // ignore
+      }
+      if (composeActiveRef.current) {
+        clearComposePollTimer()
+        composePollTimerRef.current = window.setTimeout(() => {
+          composePollTimerRef.current = null
+          void pollComposeJobStatus()
+        }, 300)
+      }
+    }
+
+    socket.onclose = () => {
+      composeSocketRef.current = null
+      const intentional = composeSocketClosingRef.current
+      composeSocketClosingRef.current = false
+      if (intentional) {
+        return
+      }
+      setComposeConnection((prev) => ({
+        status: "closed",
+        attempts: prev.attempts,
+        lastError: prev.lastError ?? null,
+        lastConnectedAt: prev.lastConnectedAt ?? null,
+        nextRetryDelayMs: 5000,
+      }))
+      setComposeFallbackActive(true)
+      if (composeActiveRef.current) {
+        clearComposePollTimer()
+        composePollTimerRef.current = window.setTimeout(() => {
+          composePollTimerRef.current = null
+          void pollComposeJobStatus()
+        }, 300)
+      }
+      if (typeof window !== "undefined") {
+        composeReconnectTimerRef.current = window.setTimeout(() => {
+          composeReconnectTimerRef.current = null
+          connectComposeSocket()
+        }, 5000)
+      }
+    }
+  }, [
+    applyComposeJobUpdate,
+    clearComposePollTimer,
+    clearComposeReconnectTimer,
+    composeSnapshot.encounterId,
+    isOpen,
+    normalizeComposeStreamPayload,
+    pollComposeJobStatus,
+  ])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return
+    }
+    if (!composeSnapshot.encounterId) {
+      return
+    }
+    connectComposeSocket()
+    return () => {
+      clearComposeReconnectTimer()
+      closeComposeSocket()
+    }
+  }, [
+    clearComposeReconnectTimer,
+    closeComposeSocket,
+    connectComposeSocket,
+    composeSnapshot.encounterId,
+    isOpen,
+  ])
 
   const handleComposeRequest = useCallback(
     (options?: { force?: boolean }) => {
@@ -1083,22 +1473,21 @@ export function FinalizationWizardAdapter({
             throw new Error(`Compose start failed (${response.status})`)
           }
           const data = (await response.json()) as ComposeJobLike
-          composeJobIdRef.current = data.composeId
-          setComposeJob(data)
-          setSessionData((prev) => {
-            if (!prev) {
-              persistSession(sessionDataRef.current, { composeJob: data })
-              return prev
-            }
-            const next: WorkflowSessionResponsePayload = { ...prev, composeJob: data }
-            persistSession(next, { composeJob: data })
-            sessionDataRef.current = next
-            return next
-          })
-          clearComposePollTimer()
-          composePollTimerRef.current = window.setTimeout(() => {
-            void pollComposeJobStatus()
-          }, 650)
+          const isTerminal = applyComposeJobUpdate(data)
+          if (isTerminal) {
+            clearComposePollTimer()
+            setComposeFallbackActive(false)
+          } else if (composeConnectionRef.current.status === "open") {
+            clearComposePollTimer()
+            setComposeFallbackActive(false)
+          } else {
+            clearComposePollTimer()
+            setComposeFallbackActive(true)
+            composePollTimerRef.current = window.setTimeout(() => {
+              composePollTimerRef.current = null
+              void pollComposeJobStatus()
+            }, 650)
+          }
         } catch (error) {
           composeActiveRef.current = false
           clearComposePollTimer()
@@ -1122,7 +1511,7 @@ export function FinalizationWizardAdapter({
       composeSnapshotFingerprint,
       fetchWithAuth,
       onError,
-      persistSession,
+      applyComposeJobUpdate,
       pollComposeJobStatus,
       sessionData?.sessionId,
     ],
@@ -2452,35 +2841,42 @@ export function FinalizationWizardAdapter({
     [onClose],
   )
 
-  const renderConnectionBadge = useCallback((label: string, state?: StreamConnectionState) => {
-    const status = state?.status ?? "idle"
-    let display = "Idle"
-    let className = "border-border bg-muted/60 text-muted-foreground"
-    if (status === "open") {
-      display = "Live"
-      className = "border-emerald-200 bg-emerald-100 text-emerald-700"
-    } else if (status === "connecting") {
-      display = "Connecting"
-      className = "border-amber-200 bg-amber-100 text-amber-700"
-    } else if (status === "error") {
-      display = "Offline"
+  const renderConnectionBadge = useCallback(
+    (label: string, state?: StreamConnectionState, options?: { fallback?: boolean }) => {
+      const status = state?.status ?? "idle"
+      let display = "Idle"
+      let className = "border-border bg-muted/60 text-muted-foreground"
+      if (status === "open") {
+        display = "Live"
+        className = "border-emerald-200 bg-emerald-100 text-emerald-700"
+      } else if (options?.fallback) {
+        display = "Polling"
+        className = "border-sky-200 bg-sky-100 text-sky-700"
+      } else if (status === "connecting") {
+        display = "Connecting"
+        className = "border-amber-200 bg-amber-100 text-amber-700"
+      } else if (status === "error") {
+        display = "Offline"
       className = "border-red-200 bg-red-100 text-red-700"
     } else if (status === "closed") {
       display = "Retrying"
       className = "border-slate-200 bg-slate-200 text-slate-700"
     }
-    return (
-      <Badge key={label} variant="outline" className={`gap-2 px-3 py-1 text-xs font-medium ${className}`}>
-        <span>{label}</span>
-        <span>{display}</span>
-      </Badge>
-    )
-  }, [])
+      return (
+        <Badge key={label} variant="outline" className={`gap-2 px-3 py-1 text-xs font-medium ${className}`}>
+          <span>{label}</span>
+          <span>{display}</span>
+        </Badge>
+      )
+    },
+    [],
+  )
 
   const connectionBanner = (
     <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border bg-muted/40 px-4 py-2">
       {renderConnectionBadge("Codes", codesConnection)}
       {renderConnectionBadge("Compliance", complianceConnection)}
+      {renderConnectionBadge("Compose", composeConnection, { fallback: composeFallbackActive })}
     </div>
   )
 
