@@ -16,8 +16,8 @@ users, notifications and analytics.
 Key capabilities include:
 
 - **Rich clinical workspace** with draft and beautified tabs, template
-  insertion, chart uploads, transcript review and clipboard/export
-  helpers.【F:revenuepilot-frontend/src/App.tsx†L1-L69】【F:revenuepilot-frontend/src/components/NoteEditor.tsx†L800-L870】
+  insertion, chart uploads, transcript review and a transcript copy
+  helper.【F:revenuepilot-frontend/src/App.tsx†L1-L69】【F:revenuepilot-frontend/src/components/FullTranscriptModal.tsx†L204-L237】
 - **Finalization workflow** guiding validation, attestation and dispatch
   from a dedicated wizard that preserves encounter context and returns the
   clinician to the previous view when complete.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L785-L820】【F:revenuepilot-frontend/src/components/FinalizationWizardAdapter.tsx†L1433-L1479】
@@ -193,10 +193,12 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 ### Administrative & operational views
 
 - **Dashboard** – Admin-only charts summarise baseline vs current usage,
-  revenue metrics and denial rates, with export to PDF support. Filter
-  controls persist per user, letting analysts scope analytics by date
-  presets or custom ranges alongside clinician, clinic and payer
-  selections that flow through to the backend query parameters.【F:revenuepilot-frontend/src/components/Analytics.tsx†L185-L314】【F:backend/main.py†L9206-L9706】
+  revenue metrics and denial rates. Export buttons currently rely on the
+  client-side PDF fallback and do not hit a dedicated backend endpoint.
+  Filter controls persist per user, letting analysts scope analytics by
+  date presets or custom ranges alongside clinician, clinic and payer
+  selections that flow through to the backend query
+  parameters.【F:revenuepilot-frontend/src/components/Analytics.tsx†L1058-L1120】【F:backend/main.py†L9206-L9706】
 - **Audit & activity logs** – Recent events stream from `/events` while
   structured audit entries are available under `/api/activity/log`.【F:revenuepilot-frontend/src/components/ActivityLog.tsx†L1-L156】【F:revenuepilot-frontend/src/hooks/useActivityLog.ts†L241-L276】
 - **Configuration & preferences** – Clinician settings, API keys, EHR integration,
@@ -205,8 +207,10 @@ and Prettier for the frontend plus Ruff/pytest on the backend.【F:package.json�
 - **Notifications** – Persistent notifications, unread counts and quick actions
   are surfaced in the shell and backed by `/api/notifications` endpoints and
   websocket updates.【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L388-L520】【F:revenuepilot-frontend/src/components/NavigationSidebar.tsx†L763-L819】
-- **Scheduling** – The schedule view combines follow-up recommendations with
-  appointment creation, exports and bulk status updates backed by the scheduling module.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L600-L653】【F:backend/scheduling.py†L500-L980】
+- **Scheduling** – The schedule view supports appointment creation and
+  bulk status updates. Follow-up recommendation wiring and ICS exports
+  are still pending integration with the backend scheduling
+  module.【F:revenuepilot-frontend/src/ProtectedApp.tsx†L600-L653】【F:backend/scheduling.py†L73-L210】
 
 ### Backend services
 

@@ -111,8 +111,9 @@ interfaces. `backend/main.py` ties together the modules listed below.
   issue-tracking and websocket monitors. Rule seeds live in
   `compliance.py` and `code_tables.py`.【F:backend/main.py†L11348-L11972】【F:backend/compliance.py†L1-L320】
 - **Public health & scheduling** – `public_health.py` fetches guidance
-  while `scheduling.py` determines follow-up intervals and exports ICS
-  data. Both feed the suggestion panel and scheduling UI.【F:backend/public_health.py†L1-L240】【F:backend/scheduling.py†L1-L240】
+  while `scheduling.py` determines follow-up intervals for future
+  integration. The current UI has not yet wired those recommendations or
+  ICS exports from the scheduling service.【F:backend/public_health.py†L1-L240】【F:backend/scheduling.py†L73-L210】
 - **Transcription** – `audio_processing.py` provides synchronous
   Whisper-based transcription and diarisation with optional
   `pyannote.audio`. `/transcribe` supports file uploads and websockets for
