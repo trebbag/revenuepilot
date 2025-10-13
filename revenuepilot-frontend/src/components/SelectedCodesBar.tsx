@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import type { SelectedCodeMetadata } from "./NoteEditor"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
@@ -88,9 +89,17 @@ interface SelectedCodesBarProps {
   selectedCodesList: any[]
   onRemoveCode?: (code: any, action: "clear" | "return", reasoning?: string) => void
   onChangeCategoryCode?: (code: any, newCategory: "diagnoses" | "differentials") => void
+  codeMeta?: Map<string, SelectedCodeMetadata> | null
 }
 
-export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesList, onRemoveCode, onChangeCategoryCode }: SelectedCodesBarProps) {
+export function SelectedCodesBar({
+  selectedCodes,
+  onUpdateCodes,
+  selectedCodesList,
+  onRemoveCode,
+  onChangeCategoryCode,
+  codeMeta = null,
+}: SelectedCodesBarProps) {
   const [activeCategories, setActiveCategories] = useState({
     codes: true,
     prevention: true,
@@ -638,7 +647,14 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
       const resolvedCategory = determineCategory(codeItem, detail)
       const categoryStyle = categoryInfo[(resolvedCategory as keyof typeof categoryInfo) || "diagnoses"] || categoryInfo.diagnoses
       const resolvedType = detail?.type || codeItem?.type
-      const confidence = sanitizeConfidence(detail?.confidence ?? codeItem?.confidence)
+      const metadata = normalized && codeMeta ? codeMeta.get(normalized) ?? null : null
+      const confidenceSource = (() => {
+        if (typeof metadata?.confidence === "number" && Number.isFinite(metadata.confidence)) {
+          return metadata.confidence
+        }
+        return detail?.confidence ?? codeItem?.confidence
+      })()
+      const confidence = sanitizeConfidence(confidenceSource)
       const reimbursement =
         breakdown?.amountFormatted && breakdown.amountFormatted.trim()
           ? breakdown.amountFormatted
@@ -700,6 +716,11 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
           contextIssues: conflictInfo.contextIssues,
           warnings: globalWarnings,
         },
+        flaggedForReview: Boolean(metadata?.flaggedForReview),
+        acceptedByUser: Boolean(metadata?.acceptedByUser),
+        accepted: Boolean(metadata?.accepted),
+        supportingSpans: metadata?.supportingSpans ?? [],
+        demotions: metadata?.demotions ?? [],
       }
     })
   }, [
@@ -714,6 +735,7 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
     sanitizeConfidence,
     selectedCodesList,
     combinationResult,
+    codeMeta,
   ])
 
   const computedCounts = useMemo(() => {
@@ -991,15 +1013,36 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                   <div
                     key={codeDetail.code ?? index}
                     className={`
-                      relative p-3 rounded-lg border cursor-pointer flex-shrink-0 min-w-[160px] group
+                      relative p-3 pb-8 rounded-lg border cursor-pointer flex-shrink-0 min-w-[160px] group
                       ${codeDetail.lightColor} hover:scale-105 transition-all duration-200
                       ${codeDetail.hasConflict ? "border-red-300 ring-1 ring-red-200/80" : "border-current/20"}
                       hover:shadow-md
                     `}
                   >
+                    {codeDetail.flaggedForReview && (
+                      <Badge variant="outline" className="absolute left-3 top-2 h-4 rounded-sm px-2 text-[10px] bg-amber-50 border-amber-200 text-amber-700">
+                        Needs review
+                      </Badge>
+                    )}
                     {codeDetail.hasConflict && (
-                      <Badge variant="destructive" className="absolute left-3 top-2 h-4 rounded-sm px-2 text-[10px]">
-                        Review
+                      <Badge variant="destructive" className="absolute right-3 top-2 h-4 rounded-sm px-2 text-[10px]">
+                        Conflict
+                      </Badge>
+                    )}
+                    {codeDetail.accepted && (
+                      <Badge
+                        variant="outline"
+                        className={`absolute bottom-2 left-3 h-4 rounded-sm px-2 text-[10px] bg-emerald-50 border-emerald-200 text-emerald-700 ${codeDetail.acceptedByUser ? "opacity-80" : ""}`}
+                      >
+                        AI accepted
+                      </Badge>
+                    )}
+                    {codeDetail.acceptedByUser && (
+                      <Badge
+                        variant="outline"
+                        className="absolute bottom-2 right-3 h-4 rounded-sm px-2 text-[10px] bg-blue-50 border-blue-200 text-blue-700"
+                      >
+                        Clinician accepted
                       </Badge>
                     )}
                     {/* Remove button - only visible on hover */}
@@ -1072,6 +1115,55 @@ export function SelectedCodesBar({ selectedCodes, onUpdateCodes, selectedCodesLi
                           {codeDetail.billingConsiderations && (
                             <div>
                               <span className="font-medium">Billing:</span> {codeDetail.billingConsiderations}
+                            </div>
+                          )}
+                          {codeDetail.supportingSpans && codeDetail.supportingSpans.length > 0 && (
+                            <div className="space-y-1">
+                              <div className="font-medium">Supporting evidence</div>
+                              <ul className="space-y-1">
+                                {codeDetail.supportingSpans.slice(0, 3).map((span, spanIndex) => {
+                                  const start =
+                                    typeof span?.start === "number" && Number.isFinite(span.start) ? Math.trunc(span.start) : null
+                                  const end =
+                                    typeof span?.end === "number" && Number.isFinite(span.end) ? Math.trunc(span.end) : null
+                                  const text =
+                                    typeof span?.text === "string" && span.text.trim().length > 0
+                                      ? span.text.trim()
+                                      : `Evidence ${spanIndex + 1}`
+                                  const confidence =
+                                    typeof span?.confidence === "number" && Number.isFinite(span.confidence)
+                                      ? Math.round(Math.max(0, Math.min(1, span.confidence)) * 100)
+                                      : null
+                                  return (
+                                    <li
+                                      key={`${codeDetail.code}-span-${spanIndex}`}
+                                      className="rounded-md border border-muted-foreground/20 bg-muted/30 px-2 py-1"
+                                    >
+                                      <div className="text-xs font-medium text-foreground">{text}</div>
+                                      {(start !== null || end !== null || confidence !== null) && (
+                                        <div className="mt-0.5 flex flex-wrap gap-2 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                          {start !== null && end !== null && (
+                                            <span>
+                                              Offsets {start}–{end}
+                                            </span>
+                                          )}
+                                          {confidence !== null && <span>Confidence {confidence}%</span>}
+                                        </div>
+                                      )}
+                                    </li>
+                                  )
+                                })}
+                              </ul>
+                              {codeDetail.supportingSpans.length > 3 && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  Showing first 3 of {codeDetail.supportingSpans.length} supporting spans.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {codeDetail.demotions && codeDetail.demotions.length > 0 && (
+                            <div>
+                              <span className="font-medium">Suggested demotions:</span> {codeDetail.demotions.join(", ")}
                             </div>
                           )}
                           {codeDetail.treatmentNotes && (

@@ -183,6 +183,11 @@ def suggest(
                 "rationale": "offline",
                 "upgrade_to": "00001",
                 "upgrade_path": "00000 → 00001 for demo",
+                "confidence": 0.72,
+                "accepted": False,
+                "accepted_by_user": False,
+                "demotions": [],
+                "supporting_spans": [],
                 "evidence": ["Patient visit documented"],
             }
         ],

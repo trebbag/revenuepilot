@@ -8,7 +8,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/t
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
 import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle, HelpCircle } from "lucide-react"
 import { apiFetchJson } from "../lib/api"
-import type { ComplianceIssue, LiveCodeSuggestion, NoteContextStageInfo, StreamConnectionState } from "./NoteEditor"
+import type {
+  CodeChangeLogEntry,
+  ComplianceIssue,
+  LiveCodeSuggestion,
+  NoteContextStageInfo,
+  StreamConnectionState,
+} from "./NoteEditor"
 
 interface SuggestionPanelProps {
   onClose: () => void
@@ -29,6 +35,7 @@ interface SuggestionPanelProps {
   codesConnection?: StreamConnectionState
   contextInfo?: NoteContextStageInfo | null
   transcriptCursor?: string | null
+  changeLog?: CodeChangeLogEntry[]
 }
 
 interface SelectedCodeItem {
@@ -71,6 +78,7 @@ interface CodeSuggestionItem {
   reasonsSuggested?: string[]
   potentialConcerns?: string[]
   evidence?: string[]
+  flaggedForReview?: boolean
 }
 
 interface ComplianceAlertItem {
@@ -139,6 +147,7 @@ export function SuggestionPanel({
   codesConnection,
   contextInfo,
   transcriptCursor,
+  changeLog = [],
 }: SuggestionPanelProps) {
   const [codeSuggestions, setCodeSuggestions] = useState<CodeSuggestionItem[]>([])
   const [codesLoading, setCodesLoading] = useState(false)
@@ -202,6 +211,10 @@ export function SuggestionPanel({
     [differentialSuggestions, addedCodes],
   )
 
+  const changeLogEntries = useMemo(() => (Array.isArray(changeLog) ? changeLog.slice(0, 6) : []), [changeLog])
+  const totalChangeLogCount = Array.isArray(changeLog) ? changeLog.length : 0
+  const hasMoreChangeLogEntries = totalChangeLogCount > changeLogEntries.length
+
   const codesStreamStatus = codesConnection?.status ?? "idle"
   const complianceStreamStatus = complianceConnection?.status ?? "idle"
 
@@ -249,6 +262,8 @@ export function SuggestionPanel({
           usageRules: [],
           reasonsSuggested: [],
           potentialConcerns: [],
+          flaggedForReview:
+            Boolean(entry.flaggedForReview) || Boolean(entry.demotions && entry.demotions.length > 0),
         } satisfies CodeSuggestionItem
       })
       .filter((entry): entry is CodeSuggestionItem => Boolean(entry))
@@ -775,6 +790,60 @@ export function SuggestionPanel({
         <div className="flex-1 overflow-hidden">
           <ScrollArea className="h-full">
             <div className="p-4 space-y-4">
+              {changeLogEntries.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center justify-between text-sm">
+                      <span>Change log</span>
+                      <Badge variant="outline" className="text-xs">
+                        {totalChangeLogCount}
+                      </Badge>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <ul className="space-y-2">
+                      {changeLogEntries.map((entry) => {
+                        const typeLabel =
+                          entry.type === "accepted"
+                            ? { text: "Accepted", className: "bg-emerald-50 border-emerald-200 text-emerald-700" }
+                            : entry.type === "flagged"
+                              ? { text: "Needs review", className: "bg-amber-50 border-amber-200 text-amber-700" }
+                              : { text: "Update", className: "bg-slate-50 border-slate-200 text-slate-600" }
+                        const hasTimestamp = typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
+                        const formattedTime = hasTimestamp
+                          ? new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          : ""
+                        const hasConfidence = typeof entry.confidence === "number" && Number.isFinite(entry.confidence)
+                        return (
+                          <li key={entry.id} className="flex items-start gap-3">
+                            <Badge variant="outline" className={`text-[10px] ${typeLabel.className}`}>
+                              {typeLabel.text}
+                            </Badge>
+                            <div className="flex-1 space-y-1">
+                              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                <span className="font-medium text-foreground">{entry.code ?? "Code update"}</span>
+                                {formattedTime && <span>{formattedTime}</span>}
+                              </div>
+                              <div className="text-xs text-muted-foreground">{entry.message}</div>
+                              {hasConfidence && (
+                                <div className="text-[10px] text-muted-foreground">
+                                  Confidence {Math.round(Math.max(0, Math.min(1, entry.confidence!)) * 100)}%
+                                </div>
+                              )}
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                    {hasMoreChangeLogEntries && (
+                      <div className="mt-2 text-[10px] text-muted-foreground">
+                        Showing latest {changeLogEntries.length} of {totalChangeLogCount} updates.
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               {cardConfigs.map((config) => (
                 <Card key={config.key} className="overflow-hidden">
                   <Collapsible open={expandedCards[config.key]} onOpenChange={() => toggleCard(config.key)}>
@@ -850,7 +919,14 @@ export function SuggestionPanel({
                                               </Badge>
                                               <span className="font-mono text-sm font-medium">{code.code}</span>
                                             </div>
-                                            <ConfidenceGauge confidence={code.confidence} size={24} />
+                                            <div className="flex items-center gap-2">
+                                              {code.flaggedForReview && (
+                                                <Badge variant="outline" className="text-[10px] bg-amber-50 border-amber-200 text-amber-700">
+                                                  Needs review
+                                                </Badge>
+                                              )}
+                                              <ConfidenceGauge confidence={code.confidence} size={24} />
+                                            </div>
                                           </div>
 
                                           {code.description && <p className="text-sm font-medium">{code.description}</p>}
