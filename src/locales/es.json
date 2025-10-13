@@ -125,6 +125,32 @@
       "traceLink": "Ver traza",
       "traceId": "ID de traza",
       "errorDetail": "Detalle"
+    },
+    "aiGate": {
+      "title": "Resumen de compuerta de IA",
+      "description": "Decisiones recientes de la compuerta en la ventana seleccionada.",
+      "counts": {
+        "allowed": "Permitidas",
+        "blocked": "Bloqueadas"
+      },
+      "countShare": "{{percent}} de las decisiones",
+      "noDecisions": "No hay decisiones registradas",
+      "avgEdits": "Prom. ediciones por ejecución permitida",
+      "totalDecisions": "Decisiones totales: {{count}}",
+      "blockedReasons": "Motivos de bloqueo",
+      "allowedReasons": "Motivos permitidos",
+      "reason": "Motivo",
+      "count": "Cantidad",
+      "share": "Proporción",
+      "noReasons": "No hubo bloqueos en este intervalo.",
+      "noAllowedReasons": "No se registraron decisiones permitidas.",
+      "costTitle": "Costo por ruta/modelo",
+      "route": "Ruta",
+      "model": "Modelo",
+      "calls": "Llamadas",
+      "totalCost": "Costo total",
+      "avgCost": "Costo prom.",
+      "noCostData": "Sin datos de costo para este intervalo."
     }
   },
   "drafts": {

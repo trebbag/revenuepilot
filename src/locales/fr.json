@@ -125,6 +125,32 @@
       "traceLink": "View trace",
       "traceId": "Trace ID",
       "errorDetail": "Detail"
+    },
+    "aiGate": {
+      "title": "Vue d'ensemble du gating IA",
+      "description": "Décisions de gating récentes pour la fenêtre sélectionnée.",
+      "counts": {
+        "allowed": "Autorisées",
+        "blocked": "Bloquées"
+      },
+      "countShare": "{{percent}} des décisions",
+      "noDecisions": "Aucune décision enregistrée",
+      "avgEdits": "Édits moyens par exécution autorisée",
+      "totalDecisions": "Décisions totales : {{count}}",
+      "blockedReasons": "Raisons de blocage",
+      "allowedReasons": "Déclencheurs autorisés",
+      "reason": "Raison",
+      "count": "Nombre",
+      "share": "Part",
+      "noReasons": "Aucun blocage sur cette période.",
+      "noAllowedReasons": "Aucune décision autorisée enregistrée.",
+      "costTitle": "Coût par route/modèle",
+      "route": "Route",
+      "model": "Modèle",
+      "calls": "Appels",
+      "totalCost": "Coût total",
+      "avgCost": "Coût moyen",
+      "noCostData": "Aucune donnée de coût pour cette période."
     }
   },
   "drafts": {

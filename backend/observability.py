@@ -274,6 +274,59 @@ class ObservabilityRecorder:
             observation.set_model(model)
 
     # ------------------------------------------------------------------
+    # AI gate decision recording
+    # ------------------------------------------------------------------
+
+    def record_gate_decision(
+        self,
+        *,
+        route: str,
+        allowed: bool,
+        reason: Optional[str],
+        model: Optional[str],
+        clinician_id: Optional[int],
+        note_id: Optional[str],
+        delta_chars: Optional[int],
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        sanitized_route = _sanitize_value(route, limit=64) or "unknown"
+        sanitized_reason = _sanitize_value(reason, limit=64) if reason else None
+        sanitized_model = _sanitize_value(model, limit=80) if model else None
+        note_hash = _hash_identifier(note_id)
+        clinician_hash = _hash_identifier(str(clinician_id)) if clinician_id is not None else None
+
+        metadata_payload: Dict[str, Any] | None = None
+        if metadata:
+            cleaned: Dict[str, Any] = {}
+            for key, value in metadata.items():
+                safe_key = _sanitize_value(key, limit=48)
+                if not safe_key:
+                    continue
+                if isinstance(value, (int, float, bool)):
+                    cleaned[safe_key] = value
+                elif value is None:
+                    continue
+                else:
+                    cleaned[safe_key] = _sanitize_value(value)
+            if cleaned:
+                metadata_payload = cleaned
+
+        conn = self._get_connection()
+        with session_scope(conn) as session:
+            row = db_models.AIGateDecisionRecord(
+                decision_id=uuid4_hex(),
+                route=sanitized_route,
+                allowed=bool(allowed),
+                reason=sanitized_reason,
+                model=sanitized_model,
+                note_hash=note_hash,
+                clinician_hash=clinician_hash,
+                delta_chars=int(delta_chars) if delta_chars is not None else None,
+                metadata_payload=metadata_payload,
+            )
+            session.add(row)
+
+    # ------------------------------------------------------------------
     # Data persistence and aggregation
     # ------------------------------------------------------------------
 
@@ -427,6 +480,7 @@ class ObservabilityRecorder:
         route_payload: List[Dict[str, Any]] = []
         route_trends: Dict[str, List[Dict[str, Any]]] = {}
         recent_failures: List[Dict[str, Any]] = []
+        cost_by_route_model: List[Dict[str, Any]] = []
 
         for route_name, items in sorted(by_route.items()):
             runs = len(items)
@@ -493,6 +547,9 @@ class ObservabilityRecorder:
                 }
             )
 
+            model_costs: Dict[str, Dict[str, Any]] = defaultdict(
+                lambda: {"route": route_name, "model": "unknown", "calls": 0, "total_usd": 0.0}
+            )
             bucket_map: Dict[str, List[float]] = defaultdict(list)
             bucket_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: {"runs": 0, "errors": 0})
             for item in items:
@@ -504,6 +561,11 @@ class ObservabilityRecorder:
                 bucket_counts[bucket_key]["runs"] += 1
                 if item.status != "success":
                     bucket_counts[bucket_key]["errors"] += 1
+                model_name = _sanitize_value(item.model, limit=80) if item.model else "unknown"
+                group = model_costs[model_name]
+                group["model"] = model_name
+                group["calls"] += 1
+                group["total_usd"] += float(item.price_usd or 0.0)
             trend_points = []
             for bucket_key in sorted(bucket_map.keys()):
                 durations_bucket = bucket_map[bucket_key]
@@ -515,14 +577,31 @@ class ObservabilityRecorder:
                         "p95_latency_ms": round(_percentile(durations_bucket, 0.95), 3),
                         "avg_latency_ms": round(sum(durations_bucket) / len(durations_bucket), 3),
                     }
-                )
+            )
             route_trends[route_name] = trend_points
+
+            for model_name in sorted(model_costs.keys()):
+                entry = model_costs[model_name]
+                calls = entry["calls"] or 0
+                total_cost = entry["total_usd"]
+                avg_cost = (total_cost / calls) if calls else 0.0
+                cost_by_route_model.append(
+                    {
+                        "route": entry["route"],
+                        "model": entry["model"],
+                        "calls": calls,
+                        "totalUsd": round(total_cost, 6),
+                        "avgUsd": round(avg_cost, 6),
+                    }
+                )
 
         recent_failures.sort(key=lambda item: item.get("occurredAt") or "", reverse=True)
         if len(recent_failures) > failure_limit:
             recent_failures = recent_failures[:failure_limit]
 
         queue_metrics = self._queue_snapshot(window_start)
+        gate_metrics = self._gate_summary(window_start, sanitized_route)
+        gate_metrics["costByRouteModel"] = cost_by_route_model
 
         return {
             "generatedAt": now.isoformat(),
@@ -535,6 +614,7 @@ class ObservabilityRecorder:
             "recentFailures": recent_failures,
             "availableRoutes": available_routes,
             "queue": queue_metrics,
+            "gate": gate_metrics,
         }
 
     def _queue_snapshot(self, window_start: datetime) -> Dict[str, Any]:
@@ -575,6 +655,58 @@ class ObservabilityRecorder:
             )
         stage_payload.sort(key=lambda item: item["stage"])
         return {"stages": stage_payload}
+
+    def _gate_summary(
+        self, window_start: datetime, route: Optional[str]
+    ) -> Dict[str, Any]:
+        conn = self._get_connection()
+        sanitized_route = _sanitize_value(route, limit=64) if route else None
+        with session_scope(conn) as session:
+            query = session.query(db_models.AIGateDecisionRecord).filter(
+                db_models.AIGateDecisionRecord.created_at >= window_start
+            )
+            if sanitized_route:
+                query = query.filter(db_models.AIGateDecisionRecord.route == sanitized_route)
+            decisions: List[db_models.AIGateDecisionRecord] = query.all()
+
+        allowed_reasons: Dict[str, int] = defaultdict(int)
+        blocked_reasons: Dict[str, int] = defaultdict(int)
+        allowed_count = 0
+        blocked_count = 0
+        total_delta_allowed = 0.0
+
+        for decision in decisions:
+            if decision.allowed:
+                allowed_count += 1
+                reason_label = decision.reason or "allowed"
+                allowed_reasons[reason_label] += 1
+                if decision.delta_chars is not None:
+                    total_delta_allowed += max(0.0, float(decision.delta_chars))
+            else:
+                blocked_count += 1
+                reason_label = decision.reason or "unknown"
+                blocked_reasons[reason_label] += 1
+
+        def _format_reason_counts(mapping: Dict[str, int]) -> List[Dict[str, Any]]:
+            return [
+                {"reason": key, "count": mapping[key]}
+                for key in sorted(mapping.keys(), key=lambda name: (-mapping[name], name))
+            ]
+
+        avg_edits = 0.0
+        if allowed_count:
+            avg_edits = total_delta_allowed / allowed_count
+
+        return {
+            "counts": {
+                "allowed": allowed_count,
+                "blocked": blocked_count,
+                "total": allowed_count + blocked_count,
+            },
+            "allowedReasons": _format_reason_counts(allowed_reasons),
+            "blockedReasons": _format_reason_counts(blocked_reasons),
+            "avgEditsPerAllowed": round(avg_edits, 2),
+        }
 
     # ------------------------------------------------------------------
     # Lookup helpers
@@ -627,6 +759,7 @@ class ObservabilityRecorder:
         conn = self._get_connection()
         with session_scope(conn) as session:
             session.query(db_models.AIRouteInvocation).delete()
+            session.query(db_models.AIGateDecisionRecord).delete()
 
 
 # ---------------------------------------------------------------------------
@@ -669,6 +802,31 @@ def capture_prompt_estimate(messages: Iterable[Mapping[str, Any]], *, model: Opt
     _RECORDER.capture_prompt_estimate(messages, model=model)
 
 
+def record_gate_decision(
+    *,
+    route: str,
+    allowed: bool,
+    reason: Optional[str],
+    model: Optional[str],
+    clinician_id: Optional[int] = None,
+    note_id: Optional[str] = None,
+    delta_chars: Optional[int] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> None:
+    if _RECORDER is None:
+        return
+    _RECORDER.record_gate_decision(
+        route=route,
+        allowed=allowed,
+        reason=reason,
+        model=model,
+        clinician_id=clinician_id,
+        note_id=note_id,
+        delta_chars=delta_chars,
+        metadata=metadata,
+    )
+
+
 def build_observability_dashboard(*, hours: int = 24, route: Optional[str] = None) -> Dict[str, Any]:
     if _RECORDER is None:
         return {
@@ -679,6 +837,13 @@ def build_observability_dashboard(*, hours: int = 24, route: Optional[str] = Non
             "recentFailures": [],
             "availableRoutes": [],
             "queue": {"stages": []},
+            "gate": {
+                "counts": {"allowed": 0, "blocked": 0, "total": 0},
+                "allowedReasons": [],
+                "blockedReasons": [],
+                "avgEditsPerAllowed": 0.0,
+                "costByRouteModel": [],
+            },
         }
     return _RECORDER.build_dashboard(hours=hours, route=route)
 

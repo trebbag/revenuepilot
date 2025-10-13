@@ -125,6 +125,32 @@
       "traceLink": "View trace",
       "traceId": "Trace ID",
       "errorDetail": "Detail"
+    },
+    "aiGate": {
+      "title": "AI gating overview",
+      "description": "Recent gating decisions for the selected window.",
+      "counts": {
+        "allowed": "Allowed",
+        "blocked": "Blocked"
+      },
+      "countShare": "{{percent}} of decisions",
+      "noDecisions": "No decisions recorded",
+      "avgEdits": "Avg edits per allowed run",
+      "totalDecisions": "Total decisions: {{count}}",
+      "blockedReasons": "Blocked reasons",
+      "allowedReasons": "Allowed triggers",
+      "reason": "Reason",
+      "count": "Count",
+      "share": "Share",
+      "noReasons": "No blocked decisions in this window.",
+      "noAllowedReasons": "No allowed decisions recorded.",
+      "costTitle": "Cost by route/model",
+      "route": "Route",
+      "model": "Model",
+      "calls": "Calls",
+      "totalCost": "Total cost",
+      "avgCost": "Avg cost",
+      "noCostData": "No cost data for this window."
     }
   },
   "drafts": {
