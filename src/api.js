@@ -1370,6 +1370,13 @@ export async function getObservabilityStatus(filters = {}) {
       recentFailures: [],
       availableRoutes: [],
       queue: { stages: [] },
+      gate: {
+        counts: { allowed: 0, blocked: 0, total: 0 },
+        allowedReasons: [],
+        blockedReasons: [],
+        avgEditsPerAllowed: 0,
+        costByRouteModel: [],
+      },
     };
   }
   const params = new URLSearchParams();

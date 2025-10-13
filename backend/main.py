@@ -322,6 +322,7 @@ from backend.observability import (
     get_observability_trace,
     reset_observability_for_tests,
     RouteObservation,
+    record_gate_decision,
 )
 
 
@@ -15775,6 +15776,11 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
 
     detail_dict = decision.detail.asdict()
     detail_dict["force"] = bool(req.force)
+    delta_value: Optional[int]
+    try:
+        delta_value = int(detail_dict.get("delta_chars")) if detail_dict.get("delta_chars") is not None else None
+    except (TypeError, ValueError):
+        delta_value = None
 
     if decision.allowed:
         AI_GATE_DECISIONS.labels(route=decision.route, decision="allowed", reason="allowed").inc()
@@ -15791,6 +15797,19 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
             model=decision.model,
             route=decision.route,
             job_id=job_payload["jobId"],
+        )
+        record_gate_decision(
+            route=decision.route,
+            allowed=True,
+            reason=decision.reason,
+            model=decision.model,
+            clinician_id=clinician_id,
+            note_id=req.noteId,
+            delta_chars=delta_value,
+            metadata={
+                "force": bool(req.force),
+                "request_type": req.requestType,
+            },
         )
         response = JSONResponse(
             status_code=decision.status_code,
@@ -15813,6 +15832,20 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
         route=decision.route,
         reason=reason,
         detail=detail_dict,
+    )
+    record_gate_decision(
+        route=decision.route,
+        allowed=False,
+        reason=reason,
+        model=decision.model,
+        clinician_id=clinician_id,
+        note_id=req.noteId,
+        delta_chars=delta_value,
+        metadata={
+            "force": bool(req.force),
+            "request_type": req.requestType,
+            "detail_reason": detail_dict.get("reason"),
+        },
     )
     response = JSONResponse(
         status_code=decision.status_code,

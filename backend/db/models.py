@@ -1280,6 +1280,27 @@ class AIClinicianAggregate(Base):
     )
 
 
+class AIGateDecisionRecord(Base):
+    __tablename__ = "ai_gate_decisions"
+
+    decision_id = sa.Column(String, primary_key=True)
+    route = sa.Column(String, nullable=False, index=True)
+    allowed = sa.Column(Boolean, nullable=False, default=False)
+    reason = sa.Column(String, nullable=True)
+    model = sa.Column(String, nullable=True)
+    note_hash = sa.Column(String, nullable=True, index=True)
+    clinician_hash = sa.Column(String, nullable=True, index=True)
+    delta_chars = sa.Column(Integer, nullable=True)
+    created_at = sa.Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=sa.func.now(),
+        index=True,
+    )
+    metadata_payload = sa.Column("metadata", sa.JSON, nullable=True)
+
+
 class AIRouteInvocation(Base):
     __tablename__ = "ai_route_invocations"
 

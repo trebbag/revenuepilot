@@ -141,6 +141,13 @@ function Dashboard() {
     });
   };
 
+  const formatPercent = (value, digits = 1) => {
+    if (value === null || value === undefined) return '–';
+    const num = Number(value);
+    if (Number.isNaN(num)) return '–';
+    return `${num.toFixed(digits)}%`;
+  };
+
   const formatStateSummary = (states) => {
     if (!states) return '–';
     const entries = Object.entries(states).filter(
@@ -330,6 +337,33 @@ function Dashboard() {
   };
   const queueStages = observability?.queue?.stages || [];
   const recentFailures = observability?.recentFailures || [];
+  const gateMetrics = observability?.gate || {};
+  const gateCounts = gateMetrics.counts || {};
+  const totalGateDecisions =
+    typeof gateCounts.total === 'number'
+      ? gateCounts.total
+      : (gateCounts.allowed || 0) + (gateCounts.blocked || 0);
+  const gateAllowed = gateCounts.allowed || 0;
+  const gateBlocked = gateCounts.blocked || 0;
+  const gateAllowedPct =
+    totalGateDecisions > 0 ? (gateAllowed / totalGateDecisions) * 100 : null;
+  const gateBlockedPct =
+    totalGateDecisions > 0 ? (gateBlocked / totalGateDecisions) * 100 : null;
+  const gateAvgEdits =
+    typeof gateMetrics.avgEditsPerAllowed === 'number'
+      ? gateMetrics.avgEditsPerAllowed
+      : 0;
+  const gateAllowedReasons = gateMetrics.allowedReasons || [];
+  const gateBlockedReasons = gateMetrics.blockedReasons || [];
+  const gateCostByRouteModel = gateMetrics.costByRouteModel || [];
+  const totalBlockedReasons = gateBlockedReasons.reduce(
+    (acc, item) => acc + (item?.count || 0),
+    0,
+  );
+  const totalAllowedReasons = gateAllowedReasons.reduce(
+    (acc, item) => acc + (item?.count || 0),
+    0,
+  );
   const backendBaseUrl =
     import.meta?.env?.VITE_API_URL ||
     (typeof window !== 'undefined' && window.__BACKEND_URL__) ||
@@ -1526,6 +1560,287 @@ function Dashboard() {
             <p>
               {t('dashboard.observability.recentNone', {
                 defaultValue: 'No failures in this window.',
+              })}
+            </p>
+          )}
+        </div>
+      </section>
+      <section
+        className="dashboard-ai-gate"
+        style={{
+          marginBottom: '1.5rem',
+          border: '1px solid #d1d5db',
+          borderRadius: '0.5rem',
+          padding: '1rem',
+          background: '#fff',
+        }}
+      >
+        <h3>
+          {t('dashboard.aiGate.title', {
+            defaultValue: 'AI gating overview',
+          })}
+        </h3>
+        <p style={{ marginTop: 0 }}>
+          {t('dashboard.aiGate.description', {
+            defaultValue: 'Recent gating decisions for the selected window.',
+          })}
+        </p>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            gap: '1rem',
+            marginTop: '1rem',
+          }}
+        >
+          <div
+            style={{
+              border: '1px solid #e5e7eb',
+              borderRadius: '0.5rem',
+              padding: '0.75rem',
+              background: '#f9fafb',
+            }}
+          >
+            <h4 style={{ margin: 0 }}>
+              {t('dashboard.aiGate.counts.allowed', { defaultValue: 'Allowed' })}
+            </h4>
+            <p style={{ fontSize: '1.75rem', fontWeight: 600, margin: '0.35rem 0' }}>
+              {formatNumber(gateAllowed)}
+            </p>
+            <p style={{ margin: 0, color: '#4b5563' }}>
+              {totalGateDecisions
+                ? t('dashboard.aiGate.countShare', {
+                    defaultValue: '{{percent}} of decisions',
+                    percent: formatPercent(gateAllowedPct),
+                  })
+                : t('dashboard.aiGate.noDecisions', {
+                    defaultValue: 'No decisions recorded',
+                  })}
+            </p>
+          </div>
+          <div
+            style={{
+              border: '1px solid #e5e7eb',
+              borderRadius: '0.5rem',
+              padding: '0.75rem',
+              background: '#f9fafb',
+            }}
+          >
+            <h4 style={{ margin: 0 }}>
+              {t('dashboard.aiGate.counts.blocked', { defaultValue: 'Blocked' })}
+            </h4>
+            <p style={{ fontSize: '1.75rem', fontWeight: 600, margin: '0.35rem 0' }}>
+              {formatNumber(gateBlocked)}
+            </p>
+            <p style={{ margin: 0, color: '#4b5563' }}>
+              {totalGateDecisions
+                ? t('dashboard.aiGate.countShare', {
+                    defaultValue: '{{percent}} of decisions',
+                    percent: formatPercent(gateBlockedPct),
+                  })
+                : t('dashboard.aiGate.noDecisions', {
+                    defaultValue: 'No decisions recorded',
+                  })}
+            </p>
+          </div>
+          <div
+            style={{
+              border: '1px solid #e5e7eb',
+              borderRadius: '0.5rem',
+              padding: '0.75rem',
+              background: '#f9fafb',
+            }}
+          >
+            <h4 style={{ margin: 0 }}>
+              {t('dashboard.aiGate.avgEdits', {
+                defaultValue: 'Avg edits per allowed run',
+              })}
+            </h4>
+            <p style={{ fontSize: '1.75rem', fontWeight: 600, margin: '0.35rem 0' }}>
+              {formatNumber(gateAvgEdits, 1)}
+            </p>
+            <p style={{ margin: 0, color: '#4b5563' }}>
+              {t('dashboard.aiGate.totalDecisions', {
+                defaultValue: 'Total decisions: {{count}}',
+                count: formatNumber(totalGateDecisions),
+              })}
+            </p>
+          </div>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+            gap: '1rem',
+            marginTop: '1.5rem',
+          }}
+        >
+          <div>
+            <h4>
+              {t('dashboard.aiGate.blockedReasons', {
+                defaultValue: 'Blocked reasons',
+              })}
+            </h4>
+            {gateBlockedReasons.length ? (
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: '0.95rem',
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.reason', { defaultValue: 'Reason' })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.count', { defaultValue: 'Count' })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.share', { defaultValue: 'Share' })}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gateBlockedReasons.map((item) => {
+                    const share =
+                      totalBlockedReasons > 0
+                        ? (item.count / totalBlockedReasons) * 100
+                        : null;
+                    return (
+                      <tr key={`blocked-${item.reason}`} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        <td style={{ padding: '0.5rem' }}>{item.reason || '–'}</td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                          {formatNumber(item.count)}
+                        </td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                          {share !== null ? formatPercent(share) : '–'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <p>
+                {t('dashboard.aiGate.noReasons', {
+                  defaultValue: 'No blocked decisions in this window.',
+                })}
+              </p>
+            )}
+          </div>
+          <div>
+            <h4>
+              {t('dashboard.aiGate.allowedReasons', {
+                defaultValue: 'Allowed triggers',
+              })}
+            </h4>
+            {gateAllowedReasons.length ? (
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: '0.95rem',
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.reason', { defaultValue: 'Reason' })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.count', { defaultValue: 'Count' })}
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                      {t('dashboard.aiGate.share', { defaultValue: 'Share' })}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {gateAllowedReasons.map((item) => {
+                    const share =
+                      totalAllowedReasons > 0
+                        ? (item.count / totalAllowedReasons) * 100
+                        : null;
+                    return (
+                      <tr key={`allowed-${item.reason}`} style={{ borderTop: '1px solid #e5e7eb' }}>
+                        <td style={{ padding: '0.5rem' }}>{item.reason || '–'}</td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                          {formatNumber(item.count)}
+                        </td>
+                        <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                          {share !== null ? formatPercent(share) : '–'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <p>
+                {t('dashboard.aiGate.noAllowedReasons', {
+                  defaultValue: 'No allowed decisions recorded.',
+                })}
+              </p>
+            )}
+          </div>
+        </div>
+        <div style={{ marginTop: '1.5rem' }}>
+          <h4>
+            {t('dashboard.aiGate.costTitle', {
+              defaultValue: 'Cost by route/model',
+            })}
+          </h4>
+          {gateCostByRouteModel.length ? (
+            <table
+              style={{
+                width: '100%',
+                borderCollapse: 'collapse',
+                fontSize: '0.95rem',
+              }}
+            >
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                    {t('dashboard.aiGate.route', { defaultValue: 'Route' })}
+                  </th>
+                  <th style={{ textAlign: 'left', padding: '0.5rem' }}>
+                    {t('dashboard.aiGate.model', { defaultValue: 'Model' })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.aiGate.calls', { defaultValue: 'Calls' })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.aiGate.totalCost', { defaultValue: 'Total cost' })}
+                  </th>
+                  <th style={{ textAlign: 'right', padding: '0.5rem' }}>
+                    {t('dashboard.aiGate.avgCost', { defaultValue: 'Avg cost' })}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {gateCostByRouteModel.map((row, index) => (
+                  <tr key={`${row.route || 'route'}-${row.model || 'model'}-${index}`} style={{ borderTop: '1px solid #e5e7eb' }}>
+                    <td style={{ padding: '0.5rem' }}>{row.route || '–'}</td>
+                    <td style={{ padding: '0.5rem' }}>{row.model || '–'}</td>
+                    <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                      {formatNumber(row.calls)}
+                    </td>
+                    <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                      {formatCurrency(row.totalUsd, 4)}
+                    </td>
+                    <td style={{ padding: '0.5rem', textAlign: 'right' }}>
+                      {formatCurrency(row.avgUsd, 4)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>
+              {t('dashboard.aiGate.noCostData', {
+                defaultValue: 'No cost data for this window.',
               })}
             </p>
           )}
