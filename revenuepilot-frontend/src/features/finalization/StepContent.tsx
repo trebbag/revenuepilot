@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { PatientQuestionsPopup } from "./PatientQuestionsPopup"
+import type { WizardPatientQuestion } from "./patientQuestions"
 
 interface Item {
   id: number
@@ -48,15 +49,6 @@ interface Item {
   [key: string]: unknown
 }
 
-interface PatientQuestion {
-  id: number
-  question: string
-  source: string
-  priority: "high" | "medium" | "low"
-  codeRelated: string
-  category: "clinical" | "administrative" | "documentation"
-}
-
 interface Step {
   id: number
   title: string
@@ -68,7 +60,7 @@ interface Step {
   items?: Item[]
   existingCodes?: any[]
   suggestedCodes?: any[]
-  patientQuestions?: PatientQuestion[]
+  patientQuestions?: WizardPatientQuestion[]
 }
 
 interface StepContentProps {
@@ -78,8 +70,9 @@ interface StepContentProps {
   onActiveItemChange?: (item: Item | null) => void
   onShowEvidence?: (show: boolean) => void
   onItemStatusChange?: (itemId: number, status: Item["status"], item: Item | null) => void
-  patientQuestions?: PatientQuestion[]
-  onUpdatePatientQuestions?: (questions: PatientQuestion[]) => void
+  patientQuestions?: WizardPatientQuestion[]
+  onAnswerPatientQuestion?: (questionId: number | string, answer: string) => Promise<void> | void
+  onUpdatePatientQuestionStatus?: (questionId: number | string, status: string) => Promise<void> | void
   showPatientTray?: boolean
   onShowPatientTray?: (show: boolean) => void
   onInsertToNote?: (text: string) => void
@@ -148,7 +141,8 @@ export function StepContent({
   onShowEvidence,
   onItemStatusChange,
   patientQuestions = [],
-  onUpdatePatientQuestions,
+  onAnswerPatientQuestion,
+  onUpdatePatientQuestionStatus,
   showPatientTray: externalShowPatientTray,
   onShowPatientTray,
   onInsertToNote,
@@ -1604,7 +1598,8 @@ export function StepContent({
         questions={patientQuestions}
         isOpen={showPatientTray}
         onClose={() => setShowPatientTray(false)}
-        onUpdateQuestions={onUpdatePatientQuestions || (() => {})}
+        onAnswerQuestion={onAnswerPatientQuestion}
+        onUpdateQuestionStatus={onUpdatePatientQuestionStatus}
         onInsertToNote={(text, questionId) => {
           if (onInsertToNote) {
             onInsertToNote(text)

@@ -18,6 +18,12 @@ import { ProgressIndicator } from "./ProgressIndicator"
 import { NoteEditor } from "./NoteEditor"
 import { StepContent } from "./StepContent"
 import { DualRichTextEditor } from "./DualRichTextEditor"
+import {
+  normalizePatientQuestion,
+  normalizePatientQuestionList,
+  PatientQuestionInactiveStatuses,
+  type WizardPatientQuestion,
+} from "./patientQuestions"
 
 type CodeStatus = "pending" | "confirmed" | "completed" | "in-progress"
 
@@ -72,15 +78,6 @@ export interface VisitTranscriptEntry extends Record<string, unknown> {
   text?: string
   timestamp?: number | string
   confidence?: number
-}
-
-export interface WizardPatientQuestion {
-  id: number
-  question: string
-  source: string
-  priority: "high" | "medium" | "low"
-  codeRelated: string
-  category: "clinical" | "administrative" | "documentation"
 }
 
 export interface WizardProgressStep {
@@ -1284,6 +1281,7 @@ export function FinalizationWizard({
   const [isShowingEvidence, setIsShowingEvidence] = useState(false)
   const [anchorCache, setAnchorCache] = useState<Map<string, EvidenceAnchor[]>>(new Map())
   const [patientQuestions, setPatientQuestions] = useState<WizardPatientQuestion[]>([])
+  const [patientQuestionsSessionId, setPatientQuestionsSessionId] = useState<string | null>(null)
   const [showPatientQuestions, setShowPatientQuestions] = useState(false)
   const [isFinalizing, setIsFinalizing] = useState(false)
   const [finalizeError, setFinalizeError] = useState<string | null>(null)
@@ -1607,51 +1605,145 @@ export function FinalizationWizard({
     onStepChange?.(currentStepData.id, currentStepData)
   }, [currentStepData, onStepChange])
 
-  const generatePatientQuestions = useCallback((stepsData: WizardStepData[]): WizardPatientQuestion[] => {
-    const questions: WizardPatientQuestion[] = []
-    const selectedStep = stepsData.find((step) => step.id === 1)
-    selectedStep?.items?.forEach((item, itemIndex) => {
-      item.gaps.forEach((gap, gapIndex) => {
-        const idBase = item.id || itemIndex + 1
-        const questionId = Number.isFinite(idBase) ? Number(`${idBase}${gapIndex}`) : Date.now() + gapIndex
-        const lowerGap = gap.toLowerCase()
-        const priority: WizardPatientQuestion["priority"] = lowerGap.includes("smok") ? "high" : lowerGap.includes("lab") || lowerGap.includes("lipid") ? "medium" : "medium"
-        questions.push({
-          id: Number.isFinite(questionId) ? questionId : itemIndex * 100 + gapIndex,
-          question: gap.endsWith("?") ? gap : `Can you clarify: ${gap}?`,
-          source: `Code Gap: ${item.title}`,
-          priority,
-          codeRelated: item.code || item.title,
-          category: "clinical",
-        })
-      })
-    })
+  const resolvedEncounterId = useMemo(() => {
+    const metadataEncounter =
+      typeof patientMetadata?.encounterId === "string" && patientMetadata.encounterId.trim().length > 0
+        ? patientMetadata.encounterId.trim()
+        : ""
+    return metadataEncounter || undefined
+  }, [patientMetadata?.encounterId])
 
-    const suggestedStep = stepsData.find((step) => step.id === 2)
-    suggestedStep?.items?.forEach((item, itemIndex) => {
-      if (item.classifications.includes("prevention")) {
-        const idBase = item.id || itemIndex + 1
-        const questionId = Number.isFinite(idBase) ? Number(`${idBase}90`) : Date.now() + itemIndex
-        questions.push({
-          id: Number.isFinite(questionId) ? questionId : itemIndex * 200,
-          question: `What preventive documentation supports ${item.title}?`,
-          source: `Prevention Opportunity: ${item.title}`,
-          priority: "low",
-          codeRelated: item.code || item.title,
-          category: "clinical",
-        })
+  const refreshPatientQuestions = useCallback(async () => {
+    if (!resolvedEncounterId) {
+      setPatientQuestions([])
+      setPatientQuestionsSessionId(null)
+      return
+    }
+
+    const controller = new AbortController()
+    try {
+      const response = await apiFetchJson<{ sessionId?: string | null; questions?: unknown }>(
+        `/api/v1/questions/${encodeURIComponent(resolvedEncounterId)}`,
+        { unwrapData: true, signal: controller.signal },
+      )
+      const normalized = normalizePatientQuestionList(response?.questions ?? [])
+      setPatientQuestions(normalized)
+      setPatientQuestionsSessionId(
+        typeof response?.sessionId === "string" && response.sessionId.trim()
+          ? response.sessionId.trim()
+          : null,
+      )
+    } catch (error) {
+      if ((error as Error)?.name !== "AbortError") {
+        console.error("Failed to load patient questions", error)
+        setPatientQuestions([])
+        setPatientQuestionsSessionId(null)
       }
-    })
+    }
 
-    return questions
-  }, [])
+    return () => {
+      controller.abort()
+    }
+  }, [resolvedEncounterId])
 
   useEffect(() => {
-    if (!steps.length) return
-    if (currentStep === 1 || currentStep === 2) {
-      setPatientQuestions(generatePatientQuestions(steps))
+    let cleanup: (() => void) | undefined
+    void (async () => {
+      cleanup = await refreshPatientQuestions()
+    })()
+    return () => {
+      cleanup?.()
     }
-  }, [currentStep, steps, generatePatientQuestions])
+  }, [refreshPatientQuestions])
+
+  const updatePatientQuestionInState = useCallback(
+    (question: WizardPatientQuestion | null, fallbackId?: number | string) => {
+      if (!question && fallbackId === undefined) {
+        return
+      }
+
+      setPatientQuestions((prev) => {
+        if (question) {
+          const targetId = question.id
+          const exists = prev.findIndex((entry) => String(entry.id) === String(targetId))
+          if (PatientQuestionInactiveStatuses.has((question.status ?? "").toLowerCase())) {
+            return prev.filter((entry) => String(entry.id) !== String(targetId))
+          }
+          if (exists >= 0) {
+            const next = [...prev]
+            next[exists] = { ...prev[exists], ...question }
+            return next
+          }
+          return [...prev, question]
+        }
+        const normalizedId = fallbackId ?? null
+        if (normalizedId === null) {
+          return prev
+        }
+        return prev.filter((entry) => String(entry.id) !== String(normalizedId))
+      })
+    },
+    [],
+  )
+
+  const handleAnswerPatientQuestion = useCallback(
+    async (questionId: number | string, answerText: string) => {
+      const trimmed = answerText.trim()
+      if (!trimmed) {
+        return
+      }
+
+      try {
+        const response = await apiFetchJson<{ question?: unknown; session?: { sessionId?: string } | null }>(
+          `/api/v1/questions/${encodeURIComponent(String(questionId))}/answer`,
+          {
+            method: "POST",
+            jsonBody: {
+              sessionId: patientQuestionsSessionId ?? undefined,
+              answer: trimmed,
+            },
+            unwrapData: true,
+          },
+        )
+        if (response?.session?.sessionId) {
+          setPatientQuestionsSessionId(response.session.sessionId)
+        }
+        const normalized = normalizePatientQuestion(response?.question ?? null, 0, { includeInactive: true })
+        updatePatientQuestionInState(normalized, questionId)
+      } catch (error) {
+        console.error("Failed to submit patient question answer", error)
+        await refreshPatientQuestions()
+      }
+    },
+    [patientQuestionsSessionId, refreshPatientQuestions, updatePatientQuestionInState],
+  )
+
+  const handlePatientQuestionStatusChange = useCallback(
+    async (questionId: number | string, status: string) => {
+      try {
+        const response = await apiFetchJson<{ question?: unknown; session?: { sessionId?: string } | null }>(
+          `/api/v1/questions/${encodeURIComponent(String(questionId))}/status`,
+          {
+            method: "PUT",
+            jsonBody: {
+              sessionId: patientQuestionsSessionId ?? undefined,
+              status,
+            },
+            unwrapData: true,
+          },
+        )
+        if (response?.session?.sessionId) {
+          setPatientQuestionsSessionId(response.session.sessionId)
+        }
+        const normalized = normalizePatientQuestion(response?.question ?? null, 0, { includeInactive: true })
+        updatePatientQuestionInState(normalized, questionId)
+      } catch (error) {
+        console.error("Failed to update patient question status", error)
+        await refreshPatientQuestions()
+      }
+    },
+    [patientQuestionsSessionId, refreshPatientQuestions, updatePatientQuestionInState],
+  )
 
   const handleNoteChange = useCallback(
     (value: string) => {
@@ -2488,7 +2580,8 @@ export function FinalizationWizard({
                           )
                         }
                         patientQuestions={patientQuestions}
-                        onUpdatePatientQuestions={setPatientQuestions}
+                        onAnswerPatientQuestion={handleAnswerPatientQuestion}
+                        onUpdatePatientQuestionStatus={handlePatientQuestionStatusChange}
                         showPatientTray={showPatientQuestions}
                         onShowPatientTray={setShowPatientQuestions}
                         onInsertToNote={handleInsertTextToNote}

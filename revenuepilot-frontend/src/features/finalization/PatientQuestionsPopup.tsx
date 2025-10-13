@@ -3,67 +3,83 @@ import { AnimatePresence, motion } from "motion/react"
 import { MessageSquare, X, Edit3, Send, Users, HelpCircle, Plus, Check, User, UserCheck, FileText, AlertTriangle } from "lucide-react"
 import { Button } from "../../components/ui/button"
 import { Card } from "../../components/ui/card"
-
-interface PatientQuestion {
-  id: number
-  question: string
-  source: string
-  priority: "high" | "medium" | "low"
-  codeRelated: string
-  category: "clinical" | "administrative" | "documentation"
-  explanation?: string
-}
+import type { WizardPatientQuestion } from "./patientQuestions"
 
 interface PatientQuestionsPopupProps {
-  questions: PatientQuestion[]
+  questions: WizardPatientQuestion[]
   isOpen: boolean
   onClose: () => void
-  onUpdateQuestions: (questions: PatientQuestion[]) => void
-  onInsertToNote?: (text: string, questionId: number) => void
+  onAnswerQuestion?: (questionId: number | string, answer: string) => Promise<void> | void
+  onUpdateQuestionStatus?: (questionId: number | string, status: string) => Promise<void> | void
+  onInsertToNote?: (text: string, questionId: number | string) => void
 }
 
-export function PatientQuestionsPopup({ questions, isOpen, onClose, onUpdateQuestions, onInsertToNote }: PatientQuestionsPopupProps) {
-  const [activeTextEditor, setActiveTextEditor] = useState<number | null>(null)
+export function PatientQuestionsPopup({
+  questions,
+  isOpen,
+  onClose,
+  onAnswerQuestion,
+  onUpdateQuestionStatus,
+  onInsertToNote,
+}: PatientQuestionsPopupProps) {
+  const [activeTextEditor, setActiveTextEditor] = useState<number | string | null>(null)
   const [editorText, setEditorText] = useState("")
-  const [hoveredQuestion, setHoveredQuestion] = useState<number | null>(null)
+  const [hoveredQuestion, setHoveredQuestion] = useState<number | string | null>(null)
   const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | null>(null)
 
-  const handleDismissQuestion = (questionId: number) => {
-    const updatedQuestions = questions.filter((q) => q.id !== questionId)
-    onUpdateQuestions(updatedQuestions)
+  const handleDismissQuestion = async (questionId: number | string) => {
+    try {
+      await onUpdateQuestionStatus?.(questionId, "dismissed")
+    } catch (error) {
+      console.error("Failed to dismiss patient question", error)
+    }
   }
 
-  const handleOpenTextEditor = (questionId: number, initialText: string) => {
+  const handleOpenTextEditor = (questionId: number | string, initialText: string) => {
     setActiveTextEditor(questionId)
     setEditorText(initialText)
   }
 
-  const handleInsertText = (questionId: number) => {
-    if (onInsertToNote && editorText.trim()) {
-      onInsertToNote(editorText, questionId)
+  const handleInsertText = async (questionId: number | string) => {
+    const trimmed = editorText.trim()
+    if (!trimmed) {
+      return
+    }
+
+    if (onInsertToNote) {
+      onInsertToNote(trimmed, questionId)
+    }
+
+    try {
+      await onAnswerQuestion?.(questionId, trimmed)
+    } catch (error) {
+      console.error("Failed to submit patient question answer", error)
+    } finally {
       setActiveTextEditor(null)
       setEditorText("")
-      // Mark question as addressed
-      handleDismissQuestion(questionId)
     }
   }
 
-  const handleSendToPatientPortal = (questionId: number) => {
-    // Simulate sending to patient portal
-    console.log("Sending question to patient portal:", questionId)
-    // You could add a toast notification here
+  const handleSendToPatientPortal = async (questionId: number | string) => {
+    try {
+      await onUpdateQuestionStatus?.(questionId, "sent_to_portal")
+    } catch (error) {
+      console.error("Failed to send patient question to portal", error)
+    }
   }
 
-  const handleForwardToStaff = (questionId: number) => {
-    // Simulate forwarding to staff
-    console.log("Forwarding question to staff:", questionId)
-    // You could add a toast notification here
+  const handleForwardToStaff = async (questionId: number | string) => {
+    try {
+      await onUpdateQuestionStatus?.(questionId, "forwarded_to_staff")
+    } catch (error) {
+      console.error("Failed to forward patient question to staff", error)
+    }
   }
 
-  const getQuestionExplanation = (question: PatientQuestion) => {
+  const getQuestionExplanation = (question: WizardPatientQuestion) => {
     // Generate detailed clinical explanation based on the question content and source
-    const questionLower = question.question.toLowerCase()
-    const sourceLower = question.source.toLowerCase()
+    const questionLower = (question.question || question.questionText || "").toLowerCase()
+    const sourceLower = (question.source || "").toLowerCase()
 
     if (questionLower.includes("smoking") || sourceLower.includes("smoking") || questionLower.includes("tobacco")) {
       return {
@@ -168,28 +184,77 @@ export function PatientQuestionsPopup({ questions, isOpen, onClose, onUpdateQues
             {/* Questions List */}
             <div className="p-6 max-h-[60vh] overflow-y-auto">
               <div className="space-y-4">
-                {questions.map((question, index) => (
-                  <motion.div key={question.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.1 }} className="relative">
-                    <Card className="p-5 hover:shadow-md transition-all duration-200 border border-slate-200/60 bg-gradient-to-r from-white to-slate-50/30">
-                      {/* Question Header */}
-                      <div className="flex items-start gap-4 mb-4">
-                        <div
-                          className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                            question.priority === "high" ? "bg-red-100 text-red-600" : question.priority === "medium" ? "bg-amber-100 text-amber-600" : "bg-blue-100 text-blue-600"
-                          }`}
-                        >
+                {questions.map((question, index) => {
+                  const priorityKey =
+                    typeof question.priority === "string" && question.priority.trim().length > 0
+                      ? question.priority.trim().toLowerCase()
+                      : "medium"
+                  const normalizedPriority =
+                    priorityKey === "high" || priorityKey === "low" ? priorityKey : priorityKey === "medium" ? "medium" : "medium"
+                  const priorityLabel =
+                    typeof question.priority === "string" && question.priority.trim().length > 0
+                      ? question.priority
+                      : normalizedPriority.charAt(0).toUpperCase() + normalizedPriority.slice(1)
+                  const priorityBadgeClass =
+                    normalizedPriority === "high"
+                      ? "bg-red-100 text-red-600"
+                      : normalizedPriority === "medium"
+                        ? "bg-amber-100 text-amber-600"
+                        : "bg-blue-100 text-blue-600"
+                  const priorityPillClass =
+                    normalizedPriority === "high"
+                      ? "bg-red-100 text-red-700"
+                      : normalizedPriority === "medium"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-blue-100 text-blue-700"
+                  const sourceLabel =
+                    typeof question.source === "string" && question.source.trim().length > 0
+                      ? question.source
+                      : question.codeRelated
+                        ? `Related code: ${question.codeRelated}`
+                        : "Follow-up"
+                  const questionText = (question.question || question.questionText || "").trim()
+                  const codeRelatedLabel =
+                    typeof question.codeRelated === "string" && question.codeRelated.trim().length > 0
+                      ? question.codeRelated
+                      : "General documentation"
+                  const statusLabel = (() => {
+                    const raw = typeof question.status === "string" ? question.status.trim() : ""
+                    if (!raw) return null
+                    const lowered = raw.toLowerCase()
+                    if (lowered === "pending" || lowered === "in_progress") {
+                      return null
+                    }
+                    return raw.replace(/_/g, " ")
+                  })()
+
+                  return (
+                    <motion.div
+                      key={question.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.1 }}
+                      className="relative"
+                    >
+                      <Card className="p-5 hover:shadow-md transition-all duration-200 border border-slate-200/60 bg-gradient-to-r from-white to-slate-50/30">
+                        {/* Question Header */}
+                        <div className="flex items-start gap-4 mb-4">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${priorityBadgeClass}`}>
                           <User size={16} />
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-3 mb-2">
                             <span
-                              className={`text-xs px-3 py-1 rounded-full font-medium ${
-                                question.priority === "high" ? "bg-red-100 text-red-700" : question.priority === "medium" ? "bg-amber-100 text-amber-700" : "bg-blue-100 text-blue-700"
-                              }`}
+                              className={`text-xs px-3 py-1 rounded-full font-medium ${priorityPillClass}`}
                             >
-                              {question.priority} priority
+                              {priorityLabel} priority
                             </span>
-                            <span className="text-xs text-slate-500">{question.source}</span>
+                            <span className="text-xs text-slate-500">{sourceLabel}</span>
+                            {statusLabel && (
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 capitalize">
+                                {statusLabel}
+                              </span>
+                            )}
 
                             {/* Explanation Hover Trigger */}
                             <div
@@ -261,11 +326,11 @@ export function PatientQuestionsPopup({ questions, isOpen, onClose, onUpdateQues
                           </div>
 
                           <div className="mb-3">
-                            <p className="text-slate-800 font-medium leading-relaxed">"{question.question}"</p>
+                            <p className="text-slate-800 font-medium leading-relaxed">"{questionText}"</p>
                           </div>
 
                           <div className="text-xs text-slate-500">
-                            Related to: <span className="font-medium text-slate-700">{question.codeRelated}</span>
+                            Related to: <span className="font-medium text-slate-700">{codeRelatedLabel}</span>
                           </div>
                         </div>
                       </div>
@@ -307,7 +372,14 @@ export function PatientQuestionsPopup({ questions, isOpen, onClose, onUpdateQues
                       <div className="flex items-center gap-2">
                         <Button
                           size="sm"
-                          onClick={() => handleOpenTextEditor(question.id, `Patient response: ${question.question.toLowerCase()}`)}
+                          onClick={() =>
+                            handleOpenTextEditor(
+                              question.id,
+                              questionText
+                                ? `Patient response: ${questionText.toLowerCase()}`
+                                : "Patient response:",
+                            )
+                          }
                           disabled={activeTextEditor === question.id}
                           className="h-8 px-3 text-xs bg-emerald-600 hover:bg-emerald-700 flex-1"
                         >
@@ -332,7 +404,8 @@ export function PatientQuestionsPopup({ questions, isOpen, onClose, onUpdateQues
                       </div>
                     </Card>
                   </motion.div>
-                ))}
+                  )
+                })}
               </div>
             </div>
 
