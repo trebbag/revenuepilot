@@ -11,7 +11,14 @@ import { Drafts } from "./components/Drafts"
 import { Schedule } from "./components/Schedule"
 import { Builder } from "./components/Builder"
 import { NoteEditor } from "./components/NoteEditor"
-import type { CollaborationStreamState, ComplianceIssue, LiveCodeSuggestion, StreamConnectionState } from "./components/NoteEditor"
+import type {
+  CollaborationStreamState,
+  CodeChangeLogEntry,
+  ComplianceIssue,
+  LiveCodeSuggestion,
+  SelectedCodeMetadata,
+  StreamConnectionState,
+} from "./components/NoteEditor"
 import type { BeautifyResultState, EhrExportState } from "./components/BeautifiedView"
 import { SuggestionPanel } from "./components/SuggestionPanel"
 import { SelectedCodesBar } from "./components/SelectedCodesBar"
@@ -203,6 +210,8 @@ export function ProtectedApp() {
     lastConnectedAt: null,
     nextRetryDelayMs: null,
   })
+  const [selectedCodesMeta, setSelectedCodesMeta] = useState<Map<string, SelectedCodeMetadata> | null>(null)
+  const [selectedCodesChangeLog, setSelectedCodesChangeLog] = useState<CodeChangeLogEntry[]>([])
   const [collaborationState, setCollaborationState] = useState<CollaborationStreamState | null>(null)
   const [contextStageInfo, setContextStageInfo] = useState<NoteContextStageInfo | null>(null)
   const [chartDrawerState, setChartDrawerState] = useState<{
@@ -249,6 +258,41 @@ export function ProtectedApp() {
   const handleCodeStreamUpdate = useCallback((suggestions: LiveCodeSuggestion[], state: StreamConnectionState) => {
     setLiveCodeSuggestions(suggestions)
     setCodeStreamState(state)
+  }, [])
+
+  const handleSelectedCodesMetaChange = useCallback((meta: Map<string, SelectedCodeMetadata>) => {
+    if (!(meta instanceof Map)) {
+      return
+    }
+    setSelectedCodesMeta((previous) => {
+      if (previous && previous.size === meta.size) {
+        let identical = true
+        for (const [key, value] of meta.entries()) {
+          const prior = previous.get(key)
+          if (!prior || prior.lastUpdated !== value.lastUpdated) {
+            identical = false
+            break
+          }
+        }
+        if (identical) {
+          return previous
+        }
+      }
+      return new Map(meta)
+    })
+  }, [])
+
+  const handleSelectedCodesChangeLog = useCallback((entries: CodeChangeLogEntry[]) => {
+    if (!Array.isArray(entries)) {
+      setSelectedCodesChangeLog([])
+      return
+    }
+    setSelectedCodesChangeLog((previous) => {
+      if (previous.length === entries.length && previous.every((item, index) => item.id === entries[index]?.id)) {
+        return previous
+      }
+      return [...entries]
+    })
   }, [])
 
   const handleCollaborationStreamUpdate = useCallback((state: CollaborationStreamState) => {
@@ -1649,6 +1693,8 @@ export function ProtectedApp() {
                       onCollaborationStreamUpdate={handleCollaborationStreamUpdate}
                       onContextStageChange={setContextStageInfo}
                       onOpenChartContext={handleOpenChartContext}
+                      onSelectedCodesMetaChange={handleSelectedCodesMetaChange}
+                      onSelectedCodesChangeLog={handleSelectedCodesChangeLog}
                     />
                     <SelectedCodesBar
                       selectedCodes={selectedCodes}
@@ -1656,6 +1702,7 @@ export function ProtectedApp() {
                       selectedCodesList={selectedCodesList}
                       onRemoveCode={handleRemoveCode}
                       onChangeCategoryCode={handleChangeCategoryCode}
+                      codeMeta={selectedCodesMeta}
                     />
                   </div>
                 </ResizablePanel>
@@ -1678,6 +1725,7 @@ export function ProtectedApp() {
                         codesConnection={codeStreamState}
                         contextInfo={contextStageInfo}
                         transcriptCursor={transcriptCursor}
+                        changeLog={selectedCodesChangeLog}
                       />
                     </ResizablePanel>
                   </>

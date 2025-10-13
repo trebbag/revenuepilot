@@ -2633,6 +2633,25 @@ def _normalise_confidence(value: Any) -> Optional[float]:
     return None
 
 
+def _coerce_bool(value: Any) -> Optional[bool]:
+    """Best-effort conversion of ``value`` to ``True``/``False``."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return True
+        if lowered in {"false", "0", "no", "n"}:
+            return False
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+    return None
+
+
 def _log_confidence_scores(
     user: Dict[str, Any],
     note_id: str | None,
@@ -8144,6 +8163,33 @@ def _validate_code(value: str) -> str:
 
 
 
+class SupportingSpan(BaseModel):
+    """Span of text supporting a coding decision."""
+
+    start: Optional[int] = None
+    end: Optional[int] = None
+    text: Optional[str] = None
+    confidence: Optional[float] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @field_validator("start", "end", mode="before")
+    @classmethod
+    def _validate_index(cls, value: Any) -> Optional[int]:  # noqa: D401,N805
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _validate_confidence(cls, value: Any) -> Optional[float]:  # noqa: D401,N805
+        normalised = _normalise_confidence(value)
+        if normalised is None:
+            return None
+        return float(max(0.0, min(1.0, normalised)))
+
+
 class CodeSuggestion(BaseModel):
     """Represents a single coding suggestion with rationale and upgrade."""
 
@@ -8151,11 +8197,71 @@ class CodeSuggestion(BaseModel):
     rationale: Optional[str] = None
     upgrade_to: Optional[str] = None
     upgradePath: Optional[str] = Field(None, alias="upgrade_path")
+    accepted: Optional[bool] = None
+    accepted_by_user: Optional[bool] = Field(None, alias="accepted_by_user")
+    demotions: List[str] = Field(default_factory=list)
+    confidence: Optional[float] = None
+    supporting_spans: List[SupportingSpan] = Field(default_factory=list, alias="supporting_spans")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_aliases(cls, values: Any) -> Any:  # noqa: D401
+        if not isinstance(values, dict):
+            return values
+        data = dict(values)
+        if "acceptedByUser" in data and "accepted_by_user" not in data:
+            data["accepted_by_user"] = data.pop("acceptedByUser")
+        if "supportingSpans" in data and "supporting_spans" not in data:
+            data["supporting_spans"] = data.pop("supportingSpans")
+        if "demotion" in data and "demotions" not in data:
+            data["demotions"] = data.pop("demotion")
+        return data
 
     @field_validator("code")
     @classmethod
     def validate_code(cls, v: str) -> str:  # noqa: D401,N805
         return _validate_code(v)
+
+    @field_validator("demotions", mode="before")
+    @classmethod
+    def _validate_demotions(cls, value: Any) -> List[str]:  # noqa: D401,N805
+        if value is None:
+            return []
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            return [text] if text else []
+        if isinstance(value, (set, tuple)):
+            iterable = list(value)
+        elif isinstance(value, list):
+            iterable = value
+        else:
+            return []
+        result: List[str] = []
+        for item in iterable:
+            if isinstance(item, str):
+                trimmed = item.strip()
+                if trimmed:
+                    result.append(trimmed)
+            elif isinstance(item, (int, float)):
+                result.append(str(item))
+        return result
+
+    @field_validator("supporting_spans", mode="before")
+    @classmethod
+    def _validate_supporting_spans(cls, value: Any) -> List[Mapping[str, Any]]:  # noqa: D401,N805
+        if value is None:
+            return []
+        if isinstance(value, Mapping):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+        spans: List[Mapping[str, Any]] = []
+        for item in value:
+            if isinstance(item, Mapping):
+                spans.append(dict(item))
+        return spans
 
 
 class PublicHealthSuggestion(BaseModel):
@@ -8205,7 +8311,7 @@ async def _publish_suggestions_event(
     if not encounter_id:
         return
 
-    payload = response.model_dump(exclude_none=True)
+    payload = response.model_dump(mode="json", by_alias=True, exclude_none=True)
     timestamp = _iso_timestamp()
     payload.update({
         "type": "suggestions",
@@ -13371,6 +13477,12 @@ async def suggest(
                 confidence_val = _normalise_confidence(
                     item.get("confidence") or item.get("Confidence")
                 )
+                accepted_flag = _coerce_bool(item.get("accepted"))
+                accepted_user_flag = _coerce_bool(
+                    item.get("accepted_by_user") or item.get("acceptedByUser")
+                )
+                demotions_raw = item.get("demotions") or item.get("demotion")
+                supporting_spans_raw = item.get("supporting_spans") or item.get("supportingSpans")
                 if code_str:
                     logged_codes.append((code_str, confidence_val))
                     codes_list.append(
@@ -13379,6 +13491,11 @@ async def suggest(
                             rationale=rationale,
                             upgrade_to=upgrade,
                             upgradePath=upgrade_path,
+                            accepted=accepted_flag,
+                            accepted_by_user=accepted_user_flag,
+                            demotions=demotions_raw,
+                            confidence=confidence_val,
+                            supporting_spans=supporting_spans_raw,
                         )
                     )
             compliance = [str(x) for x in data.get("compliance", [])]

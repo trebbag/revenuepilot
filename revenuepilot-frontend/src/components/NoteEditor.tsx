@@ -934,6 +934,208 @@ export interface LiveCodeSuggestion {
   category?: string | null
   receivedAt: number
   source?: string | null
+  accepted?: boolean
+  acceptedByUser?: boolean
+  flaggedForReview?: boolean
+  demotions?: string[]
+  supportingSpans?: SupportingSpan[]
+}
+
+export interface SupportingSpan {
+  start?: number | null
+  end?: number | null
+  text?: string
+  confidence?: number | null
+}
+
+export interface SelectedCodeMetadata {
+  code: string
+  accepted: boolean
+  acceptedByUser: boolean
+  flaggedForReview: boolean
+  confidence: number | null
+  supportingSpans: SupportingSpan[]
+  demotions: string[]
+  lastUpdated: number
+}
+
+export type CodeChangeLogType = "accepted" | "flagged" | "info"
+
+export interface CodeChangeLogEntry {
+  id: string
+  code?: string
+  type: CodeChangeLogType
+  message: string
+  timestamp: number
+  confidence?: number | null
+}
+
+const MAX_CHANGE_LOG_ENTRIES = 50
+
+const normalizeCodeKey = (value: string): string => value.trim().toUpperCase()
+
+const parseBoolean = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") {
+    return value
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase()
+    if (["true", "1", "yes", "y"].includes(normalized)) {
+      return true
+    }
+    if (["false", "0", "no", "n"].includes(normalized)) {
+      return false
+    }
+  }
+  if (typeof value === "number") {
+    if (value === 1) {
+      return true
+    }
+    if (value === 0) {
+      return false
+    }
+  }
+  return undefined
+}
+
+const parseDemotions = (input: unknown): string[] => {
+  if (input == null) {
+    return []
+  }
+  const values = Array.isArray(input) ? input : [input]
+  const normalized = new Set<string>()
+  values.forEach((entry) => {
+    if (typeof entry === "string") {
+      const trimmed = entry.trim()
+      if (trimmed.length > 0) {
+        normalized.add(trimmed)
+      }
+    } else if (typeof entry === "number" && Number.isFinite(entry)) {
+      normalized.add(String(entry))
+    }
+  })
+  return Array.from(normalized).sort()
+}
+
+const parseSupportingSpans = (input: unknown): SupportingSpan[] => {
+  if (!input) {
+    return []
+  }
+  const values = Array.isArray(input) ? input : [input]
+  const spans: SupportingSpan[] = []
+  const parseIndex = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.trunc(value)
+    }
+    if (typeof value === "string") {
+      const parsed = Number.parseInt(value, 10)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  }
+  const parseConfidence = (value: unknown): number | null => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const normalized = value > 1 ? value / 100 : value
+      return normalized >= 0 && normalized <= 1 ? normalized : null
+    }
+    if (typeof value === "string") {
+      const cleaned = value.trim().replace(/%$/, "")
+      if (!cleaned) {
+        return null
+      }
+      const parsed = Number.parseFloat(cleaned)
+      if (!Number.isFinite(parsed)) {
+        return null
+      }
+      const normalized = parsed > 1 ? parsed / 100 : parsed
+      return normalized >= 0 && normalized <= 1 ? normalized : null
+    }
+    return null
+  }
+  values.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return
+    }
+    const record = entry as Record<string, unknown>
+    const start = parseIndex(record.start ?? record.begin ?? record.offset)
+    const end = parseIndex(record.end ?? record.finish ?? record.limit)
+    const text = typeof record.text === "string" ? record.text : typeof record.phrase === "string" ? record.phrase : undefined
+    const confidence = parseConfidence(record.confidence ?? record.score)
+    spans.push({
+      start,
+      end,
+      text,
+      confidence,
+    })
+  })
+  return spans.sort((a, b) => {
+    const startA = a.start ?? Number.MIN_SAFE_INTEGER
+    const startB = b.start ?? Number.MIN_SAFE_INTEGER
+    if (startA !== startB) {
+      return startA - startB
+    }
+    const endA = a.end ?? Number.MIN_SAFE_INTEGER
+    const endB = b.end ?? Number.MIN_SAFE_INTEGER
+    return endA - endB
+  })
+}
+
+const createEmptyMetadata = (code: string, timestamp: number): SelectedCodeMetadata => ({
+  code,
+  accepted: false,
+  acceptedByUser: false,
+  flaggedForReview: false,
+  confidence: null,
+  supportingSpans: [],
+  demotions: [],
+  lastUpdated: timestamp,
+})
+
+const metadataChanged = (prev: SelectedCodeMetadata | undefined, next: SelectedCodeMetadata): boolean => {
+  if (!prev) {
+    return true
+  }
+  if (prev.code !== next.code) {
+    return true
+  }
+  if (prev.accepted !== next.accepted) {
+    return true
+  }
+  if (prev.acceptedByUser !== next.acceptedByUser) {
+    return true
+  }
+  if (prev.flaggedForReview !== next.flaggedForReview) {
+    return true
+  }
+  const prevConfidence = Number.isFinite(prev.confidence ?? NaN) ? prev.confidence : null
+  const nextConfidence = Number.isFinite(next.confidence ?? NaN) ? next.confidence : null
+  if (prevConfidence !== nextConfidence) {
+    return true
+  }
+  if (prev.demotions.length !== next.demotions.length) {
+    return true
+  }
+  for (let index = 0; index < prev.demotions.length; index += 1) {
+    if (prev.demotions[index] !== next.demotions[index]) {
+      return true
+    }
+  }
+  if (prev.supportingSpans.length !== next.supportingSpans.length) {
+    return true
+  }
+  for (let index = 0; index < prev.supportingSpans.length; index += 1) {
+    const prevSpan = prev.supportingSpans[index]
+    const nextSpan = next.supportingSpans[index]
+    if (
+      prevSpan.start !== nextSpan.start ||
+      prevSpan.end !== nextSpan.end ||
+      prevSpan.text !== nextSpan.text ||
+      prevSpan.confidence !== nextSpan.confidence
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 export interface CollaborationPresence {
@@ -1278,6 +1480,8 @@ interface NoteEditorProps {
   onContextStageChange?: (info: NoteContextStageInfo | null) => void
   onTranscriptCursorChange?: (cursor: string | null) => void
   onOpenChartContext?: (patientId: string, options?: { patientName?: string | null }) => void
+  onSelectedCodesMetaChange?: (meta: Map<string, SelectedCodeMetadata>) => void
+  onSelectedCodesChangeLog?: (entries: CodeChangeLogEntry[]) => void
 }
 
 export interface NoteContextStageInfo {
@@ -1310,6 +1514,8 @@ export function NoteEditor({
   onContextStageChange,
   onTranscriptCursorChange,
   onOpenChartContext,
+  onSelectedCodesMetaChange,
+  onSelectedCodesChangeLog,
 }: NoteEditorProps) {
   const { t } = useTranslation()
   const auth = useAuth()
@@ -1455,6 +1661,7 @@ export function NoteEditor({
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null)
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [transcriptionIndex, setTranscriptionIndex] = useState(-1)
+  const [, setShouldSnapTranscriptToEnd] = useState(true)
   const [showFullTranscript, setShowFullTranscript] = useState(false)
   const noteEditorContainerRef = useRef<HTMLDivElement | null>(null)
   const activeNoteTextareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -1684,6 +1891,23 @@ export function NoteEditor({
       }),
     [noteContent, selectedCodesList],
   )
+
+  const selectedCodesMapRef = useRef<Map<string, SelectedCodeMetadata>>(new Map())
+  const [selectedCodesVersion, setSelectedCodesVersion] = useState(0)
+  const [selectedCodesChangeLog, setSelectedCodesChangeLog] = useState<CodeChangeLogEntry[]>([])
+  const changeLogCounterRef = useRef(0)
+
+  useEffect(() => {
+    if (typeof onSelectedCodesMetaChange === "function") {
+      onSelectedCodesMetaChange(new Map(selectedCodesMapRef.current))
+    }
+  }, [selectedCodesVersion, onSelectedCodesMetaChange])
+
+  useEffect(() => {
+    if (typeof onSelectedCodesChangeLog === "function") {
+      onSelectedCodesChangeLog(selectedCodesChangeLog)
+    }
+  }, [selectedCodesChangeLog, onSelectedCodesChangeLog])
 
   const patientSearchAbortRef = useRef<AbortController | null>(null)
   const patientSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2090,6 +2314,220 @@ export function NoteEditor({
       .filter((item): item is ComplianceIssue => Boolean(item))
   }, [])
 
+  const recordChangeLog = useCallback(
+    (entry: { code?: string; message: string; type: CodeChangeLogType; confidence?: number | null }) => {
+      setSelectedCodesChangeLog((previous) => {
+        const timestamp = Date.now()
+        const duplicate = previous.find(
+          (item) =>
+            item.code === entry.code &&
+            item.type === entry.type &&
+            item.message === entry.message &&
+            Math.abs(item.timestamp - timestamp) < 500,
+        )
+        if (duplicate) {
+          return previous
+        }
+        const id = `log-${timestamp}-${changeLogCounterRef.current++}`
+        const nextEntry: CodeChangeLogEntry = {
+          id,
+          timestamp,
+          ...entry,
+        }
+        const combined = [nextEntry, ...previous]
+        if (combined.length > MAX_CHANGE_LOG_ENTRIES) {
+          combined.length = MAX_CHANGE_LOG_ENTRIES
+        }
+        return combined
+      })
+    },
+    [],
+  )
+
+  const syncSelectedCodesMapWithList = useCallback(
+    (list: any[]) => {
+      const map = selectedCodesMapRef.current
+      const seen = new Set<string>()
+      const now = Date.now()
+      let changed = false
+
+      list.forEach((item) => {
+        if (!item || typeof item !== "object") {
+          return
+        }
+        const rawCode = (item as { code?: unknown }).code
+        const normalizedCode =
+          typeof rawCode === "string"
+            ? rawCode.trim()
+            : typeof rawCode === "number" && Number.isFinite(rawCode)
+              ? String(rawCode)
+              : ""
+        if (!normalizedCode) {
+          return
+        }
+        const key = normalizeCodeKey(normalizedCode)
+        seen.add(key)
+        const previous = map.get(key)
+        const accepted = parseBoolean((item as any).accepted)
+        const acceptedByUser = parseBoolean((item as any).accepted_by_user ?? (item as any).acceptedByUser)
+        const confidenceValue =
+          typeof (item as any).confidence === "number" && Number.isFinite((item as any).confidence)
+            ? (item as any).confidence
+            : previous?.confidence ?? null
+
+        const nextMeta: SelectedCodeMetadata = {
+          code: normalizedCode,
+          accepted: typeof accepted === "boolean" ? accepted : previous?.accepted ?? false,
+          acceptedByUser:
+            typeof acceptedByUser === "boolean" ? acceptedByUser : previous?.acceptedByUser ?? false,
+          flaggedForReview: previous?.flaggedForReview ?? false,
+          confidence: typeof confidenceValue === "number" ? confidenceValue : previous?.confidence ?? null,
+          supportingSpans: previous?.supportingSpans ?? [],
+          demotions: previous?.demotions ?? [],
+          lastUpdated: now,
+        }
+
+        if (metadataChanged(previous, nextMeta)) {
+          map.set(key, nextMeta)
+          changed = true
+        }
+      })
+
+      for (const [key, meta] of map.entries()) {
+        if (!seen.has(key) && !meta.acceptedByUser) {
+          map.delete(key)
+          changed = true
+        }
+      }
+
+      if (changed) {
+        setSelectedCodesVersion((prev) => prev + 1)
+      }
+    },
+    [],
+  )
+
+  useEffect(() => {
+    syncSelectedCodesMapWithList(Array.isArray(selectedCodesList) ? selectedCodesList : [])
+  }, [selectedCodesList, syncSelectedCodesMapWithList])
+
+  const applySuggestionMetadata = useCallback(
+    (entries: LiveCodeSuggestion[]) => {
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return
+      }
+      const map = selectedCodesMapRef.current
+      const now = Date.now()
+      let changed = false
+
+      const ensureMetadata = (code: string) => {
+        const normalized = code.trim()
+        if (!normalized) {
+          return null
+        }
+        const key = normalizeCodeKey(normalized)
+        const previous = map.get(key)
+        const meta = previous ? { ...previous } : createEmptyMetadata(normalized, now)
+        meta.code = normalized
+        meta.lastUpdated = now
+        if (!meta.demotions) {
+          meta.demotions = []
+        }
+        if (!meta.supportingSpans) {
+          meta.supportingSpans = []
+        }
+        return { key, previous, meta }
+      }
+
+      entries.forEach((entry) => {
+        const demotions = parseDemotions(entry.demotions)
+        if (entry.code) {
+          const ensured = ensureMetadata(entry.code)
+          if (ensured) {
+            const { key, previous, meta } = ensured
+            if (typeof entry.accepted === "boolean") {
+              meta.accepted = entry.accepted
+            }
+            if (typeof entry.acceptedByUser === "boolean") {
+              meta.acceptedByUser = entry.acceptedByUser
+            }
+            if (typeof entry.flaggedForReview === "boolean") {
+              meta.flaggedForReview = entry.flaggedForReview
+            }
+            if (typeof entry.confidence === "number" && Number.isFinite(entry.confidence)) {
+              meta.confidence = entry.confidence
+            }
+            if (entry.supportingSpans && entry.supportingSpans.length > 0) {
+              meta.supportingSpans = entry.supportingSpans.map((span) => ({ ...span }))
+            }
+            if (demotions.length > 0) {
+              meta.demotions = Array.from(new Set([...(meta.demotions ?? []), ...demotions])).sort()
+              meta.flaggedForReview = true
+            } else if (!meta.demotions) {
+              meta.demotions = []
+            }
+
+            if (metadataChanged(previous, meta)) {
+              map.set(key, meta)
+              changed = true
+            }
+
+            if (previous?.accepted !== meta.accepted && meta.accepted) {
+              recordChangeLog({
+                code: meta.code,
+                message: "Marked as accepted",
+                type: "accepted",
+                confidence: meta.confidence,
+              })
+            }
+
+            if (!previous?.flaggedForReview && meta.flaggedForReview) {
+              const origin = demotions.length > 0 && entry.code ? `Suggested demotion from ${entry.code}` : "Flagged for review"
+              recordChangeLog({
+                code: meta.code,
+                message: origin,
+                type: "flagged",
+                confidence: meta.confidence,
+              })
+            }
+          }
+        }
+
+        demotions.forEach((code) => {
+          const ensured = ensureMetadata(code)
+          if (!ensured) {
+            return
+          }
+          const { key, previous, meta } = ensured
+          const merged = new Set(meta.demotions ?? [])
+          merged.add(code)
+          meta.demotions = Array.from(merged).sort()
+          if (!meta.flaggedForReview) {
+            meta.flaggedForReview = true
+          }
+          if (metadataChanged(previous, meta)) {
+            map.set(key, meta)
+            changed = true
+          }
+          if (!previous?.flaggedForReview) {
+            const origin = entry.code ? `Suggested demotion from ${entry.code}` : "Flagged for review"
+            recordChangeLog({
+              code: meta.code,
+              message: origin,
+              type: "flagged",
+              confidence: meta.confidence,
+            })
+          }
+        })
+      })
+
+      if (changed) {
+        setSelectedCodesVersion((prev) => prev + 1)
+      }
+    },
+    [recordChangeLog],
+  )
+
   const normalizeComplianceStreamPayload = useCallback(
     (payload: any): ComplianceIssue[] => {
       if (!payload) {
@@ -2235,6 +2673,18 @@ export function NoteEditor({
             ? payload.source.trim()
             : undefined
 
+      const accepted = parseBoolean((entry as any).accepted ?? (payload as any).accepted)
+      const acceptedByUser = parseBoolean(
+        (entry as any).acceptedByUser ?? (entry as any).accepted_by_user ?? (payload as any).acceptedByUser ?? (payload as any).accepted_by_user,
+      )
+      const flagged = parseBoolean(
+        (entry as any).flaggedForReview ?? (entry as any).flagged_for_review ?? (payload as any).flaggedForReview ?? (payload as any).flagged_for_review,
+      )
+      const demotions = parseDemotions((entry as any).demotions ?? (payload as any).demotions)
+      const supportingSpans = parseSupportingSpans(
+        (entry as any).supportingSpans ?? (entry as any).supporting_spans ?? (payload as any).supportingSpans ?? (payload as any).supporting_spans,
+      )
+
       suggestions.push({
         id: String(idSource),
         code: codeSource || undefined,
@@ -2245,6 +2695,12 @@ export function NoteEditor({
         category: categorySource || undefined,
         source: sourceLabel || undefined,
         receivedAt: now,
+        accepted: typeof accepted === "boolean" ? accepted : undefined,
+        acceptedByUser: typeof acceptedByUser === "boolean" ? acceptedByUser : undefined,
+        flaggedForReview:
+          typeof flagged === "boolean" ? flagged : demotions.length > 0 ? true : undefined,
+        demotions: demotions.length > 0 ? demotions : undefined,
+        supportingSpans: supportingSpans.length > 0 ? supportingSpans : undefined,
       })
     })
 
@@ -3182,6 +3638,7 @@ export function NoteEditor({
             if (!normalized.length) {
               return
             }
+            applySuggestionMetadata(normalized)
             setLiveCodeSuggestions((prev) => {
               const map = new Map(prev.map((item) => [item.id, item]))
               normalized.forEach((item) => {
