@@ -1198,6 +1198,7 @@ class AINoteState(Base):
     note_id = sa.Column(String, primary_key=True)
     clinician_id = sa.Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     last_note_hash = sa.Column(String, nullable=True)
+    last_call_note_hash = sa.Column(String, nullable=True)
     last_note_snapshot = sa.Column(Text, nullable=True)
     last_transcript_cursor = sa.Column(String, nullable=True)
     last_section_map = sa.Column(sa.JSON, nullable=True)
