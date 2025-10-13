@@ -146,7 +146,7 @@ from backend.compose_job import (
     STAGE_PROGRESS as COMPOSE_STAGE_PROGRESS,
     STAGE_SEQUENCE as COMPOSE_STAGE_SEQUENCE,
 )
-from backend.openai_client import call_openai  # type: ignore
+from backend.openai_client import call_openai, get_embedding_client  # type: ignore
 from backend.encryption import encrypt_artifact
 from backend.security import (
     PromptPrivacyGuard,
@@ -170,6 +170,7 @@ from backend.key_manager import (
 )  # type: ignore
 import backend.db.models as db_models
 from backend.db.models import (
+    AINoteState,
     CPTCode,
     CPTReference,
     ComplianceRuleCatalogEntry,
@@ -285,7 +286,20 @@ from backend import patients  # type: ignore
 from backend import visits  # type: ignore
 from backend.charts import process_chart  # type: ignore
 from backend.context_pipeline import ChartContextPipeline
-from backend.ai_gating import AIGatingService, AIGateInput, normalize_note_text
+from backend.ai_gating import (
+    AIGatingService,
+    AIGateInput,
+    DiffSpan,
+    EMBED_SENTINEL_NEW,
+    EMBED_SENTINEL_OLD,
+    SentenceBoundary,
+    normalize_note_text,
+    _diff_spans as ai_diff_spans,
+    trigram_dice,
+    embedding_distance,
+    compute_json_hash,
+    compute_hash as ai_compute_hash,
+)
 from backend.codes_data import load_code_metadata, load_conflicts  # type: ignore
 from backend.auth import (  # type: ignore
     LOCKOUT_DURATION_SECONDS,
@@ -1527,6 +1541,253 @@ def _get_ai_gate_service() -> AIGatingService:
         )
         _ai_gate_conn_id = conn_id
     return _ai_gate_service
+
+
+@dataclass
+class SuggestGateResult:
+    allowed: bool
+    reason: Optional[str]
+    model: Optional[str]
+    detail: Dict[str, Any]
+    status_code: int
+
+
+_suggest_embedder: Any | None = None
+_SUGGEST_INTENT_MODELS: Dict[str, str] = {
+    "auto": "gpt-4o",
+    "finalize": "gpt-4o",
+    "manual": "gpt-4o-mini",
+}
+_SUGGEST_SALIENCE_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(bp|blood pressure|heart rate|pulse|resp(iratory)? rate|spo2|oxygen|o2 sat|temperature|temp|weight|height)\b", re.I),
+    re.compile(r"\b(cbc|cmp|a1c|glucose|labs?|labwork|wbc|platelets|hemoglobin|creatinine|potassium)\b", re.I),
+    re.compile(r"\b(meds?|medication|rx|prescription|dose|mg|tablet|injection|insulin|therapy)\b", re.I),
+    re.compile(r"\b(procedure|surgery|biopsy|imaging|ct|mri|x-?ray|ultrasound|echocardiogram)\b", re.I),
+    re.compile(r"\b(diagnosis|diagnostic|dx|impression|assessment|plan|differential)\b", re.I),
+)
+_NEGATION_NEG_RE = re.compile(r"\b(no|denies|without|negative for)\b", re.I)
+_NEGATION_POS_RE = re.compile(r"\b(with|positive|present|reports|notes|endorses|has)\b", re.I)
+
+
+def _get_suggest_embedder() -> Any:
+    global _suggest_embedder
+    if _suggest_embedder is None:
+        _suggest_embedder = get_embedding_client("text-embedding-3-small")
+    return _suggest_embedder
+
+
+def _has_sentence_or_newline(text: str) -> bool:
+    if "\n" in text:
+        return True
+    return any(boundary in text for boundary in SentenceBoundary)
+
+
+def _span_has_salience(span: DiffSpan) -> bool:
+    text_old = span.old_text or ""
+    text_new = span.new_text or ""
+    combined = f"{text_old} {text_new}"
+    for pattern in _SUGGEST_SALIENCE_PATTERNS:
+        if pattern.search(combined):
+            return True
+    old_lower = text_old.lower()
+    new_lower = text_new.lower()
+    if _NEGATION_NEG_RE.search(old_lower) and _NEGATION_POS_RE.search(new_lower):
+        return True
+    if _NEGATION_POS_RE.search(old_lower) and _NEGATION_NEG_RE.search(new_lower):
+        return True
+    return False
+
+
+def _evaluate_suggest_gate(
+    *,
+    note_id: Optional[str],
+    clinician_id: int,
+    normalized: str,
+    intent: str,
+    transcript_cursor: Optional[str],
+    accepted_json: Optional[Mapping[str, Any]],
+    embedder: Any | None = None,
+) -> SuggestGateResult:
+    intent_normalized = (intent or "auto").strip().lower()
+    if intent_normalized not in _SUGGEST_INTENT_MODELS:
+        raise ValueError(f"Unsupported suggest intent: {intent}")
+
+    effective_note_id = note_id or f"suggest:{clinician_id}"
+    now = datetime.now(timezone.utc)
+    normalized = normalized or ""
+    L = len(normalized)
+    auto_threshold = max(100, math.ceil(0.10 * L))
+    manual_threshold = max(60, math.ceil(0.05 * L))
+    detail: Dict[str, Any] = {
+        "L": L,
+        "delta": 0,
+        "autoThreshold": auto_threshold,
+        "manualThreshold": manual_threshold,
+        "intent": intent_normalized,
+        "salient": False,
+    }
+
+    with session_scope(db_conn) as session:
+        state = session.get(AINoteState, effective_note_id)
+        if state is None:
+            state = AINoteState(note_id=effective_note_id, clinician_id=clinician_id)
+            session.add(state)
+            session.flush()
+        elif state.clinician_id != clinician_id:
+            state.clinician_id = clinician_id
+
+        salted_hash = ai_compute_hash(normalized, AI_GATING_HASH_SALT)
+        plain_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        state.last_input_ts = now
+
+        def _store_common_state() -> None:
+            state.last_note_snapshot = normalized
+            state.last_note_hash = salted_hash
+            state.last_transcript_cursor = transcript_cursor
+            if isinstance(accepted_json, Mapping):
+                state.last_accepted_json_hash = compute_json_hash(accepted_json, AI_GATING_HASH_SALT)
+
+        detail["coldStartCompleted"] = bool(state.cold_start_completed)
+
+        if not _has_sentence_or_newline(normalized):
+            detail["reason"] = "STRUCTURE"
+            _store_common_state()
+            session.add(state)
+            return SuggestGateResult(
+                allowed=False,
+                reason="STRUCTURE",
+                model=None,
+                detail=detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        previous = state.last_note_snapshot or ""
+        spans = ai_diff_spans(previous, normalized)
+        total_delta = sum(span.delta_chars for span in spans)
+        detail["delta"] = total_delta
+
+        if state.last_call_note_hash and state.last_call_note_hash == plain_hash:
+            detail["reason"] = "DUPLICATE_STATE"
+            _store_common_state()
+            session.add(state)
+            return SuggestGateResult(
+                allowed=False,
+                reason="DUPLICATE_STATE",
+                model=None,
+                detail=detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        if not spans or total_delta == 0:
+            detail["reason"] = "NO_CHANGES"
+            _store_common_state()
+            session.add(state)
+            return SuggestGateResult(
+                allowed=False,
+                reason="NO_CHANGES",
+                model=None,
+                detail=detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        if not state.cold_start_completed and L < 500:
+            detail["reason"] = "COLD_START"
+            _store_common_state()
+            session.add(state)
+            return SuggestGateResult(
+                allowed=False,
+                reason="COLD_START",
+                model=None,
+                detail=detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        embed_client = embedder
+        meaningful = False
+        salient_override = False
+
+        for span in spans:
+            if not span.new_text.strip() and not span.old_text.strip():
+                continue
+            if _span_has_salience(span):
+                detail["salient"] = True
+                salient_override = True
+                meaningful = True
+                continue
+            if embed_client is None:
+                embed_client = _get_suggest_embedder()
+            distance = embedding_distance(
+                embed_client,
+                f"{EMBED_SENTINEL_OLD}\n{span.old_text}",
+                f"{EMBED_SENTINEL_NEW}\n{span.new_text}",
+            )
+            if distance is None:
+                meaningful = True
+                continue
+            dice = trigram_dice(span.old_text, span.new_text)
+            delta = span.delta_chars
+            if delta < 40 or dice > 0.90:
+                if distance >= 0.08:
+                    meaningful = True
+            else:
+                if distance >= 0.08:
+                    meaningful = True
+            if meaningful:
+                break
+
+        if not meaningful:
+            detail["reason"] = "NOT_MEANINGFUL"
+            _store_common_state()
+            session.add(state)
+            return SuggestGateResult(
+                allowed=False,
+                reason="NOT_MEANINGFUL",
+                model=None,
+                detail=detail,
+                status_code=status.HTTP_409_CONFLICT,
+            )
+
+        if not salient_override:
+            if intent_normalized in {"auto", "finalize"} and total_delta < auto_threshold:
+                detail["reason"] = "AUTO_THRESHOLD"
+                _store_common_state()
+                session.add(state)
+                return SuggestGateResult(
+                    allowed=False,
+                    reason="AUTO_THRESHOLD",
+                    model=None,
+                    detail=detail,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            if intent_normalized == "manual" and total_delta < manual_threshold:
+                detail["reason"] = "MANUAL_THRESHOLD"
+                _store_common_state()
+                session.add(state)
+                return SuggestGateResult(
+                    allowed=False,
+                    reason="MANUAL_THRESHOLD",
+                    model=None,
+                    detail=detail,
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+
+        if L >= 500:
+            state.cold_start_completed = True
+
+        state.last_call_note_hash = plain_hash
+        _store_common_state()
+        detail["reason"] = None
+        detail["coldStartCompleted"] = bool(state.cold_start_completed)
+        session.add(state)
+
+        model = _SUGGEST_INTENT_MODELS[intent_normalized]
+        return SuggestGateResult(
+            allowed=True,
+            reason=None,
+            model=model,
+            detail=detail,
+            status_code=status.HTTP_202_ACCEPTED,
+        )
 
 # Set up a SQLite database for persistent analytics storage.  The database
 # location and connection management are centralised in ``backend.database_legacy`` so the
@@ -7632,6 +7893,9 @@ class NoteRequest(BaseModel):
     noteId: Optional[str] = Field(None, alias="note_id")
     encounterId: Optional[str] = Field(None, alias="encounter_id")
     sessionId: Optional[str] = Field(None, alias="session_id")
+    intent: Literal["auto", "manual", "finalize"] = "auto"
+    transcriptCursor: Optional[str] = Field(None, alias="transcriptCursor")
+    acceptedJson: Optional[Dict[str, Any]] = Field(None, alias="acceptedJson")
 
     class Config:
         populate_by_name = True
@@ -12941,7 +13205,36 @@ async def suggest(
 
     mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
     cache_state = "warm" if mode == "offline" else "cold"
-    model_name = req.suggestModel or ("offline" if mode == "offline" else "gpt-4o")
+    normalized_note = normalize_note_text(cleaned)
+    model_name: Optional[str]
+    gate_result: Optional[SuggestGateResult] = None
+    if mode == "offline":
+        model_name = req.suggestModel or "offline"
+    else:
+        clinician_id = _get_user_db_id(user.get("sub"))
+        if clinician_id is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        try:
+            gate_result = _evaluate_suggest_gate(
+                note_id=req.noteId,
+                clinician_id=clinician_id,
+                normalized=normalized_note,
+                intent=req.intent,
+                transcript_cursor=req.transcriptCursor,
+                accepted_json=req.acceptedJson,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        if not gate_result.allowed:
+            return JSONResponse(
+                status_code=gate_result.status_code,
+                content={
+                    "blocked": True,
+                    "reason": gate_result.reason,
+                    "detail": gate_result.detail,
+                },
+            )
+        model_name = req.suggestModel or gate_result.model or "gpt-4o"
     trace_id = current_trace_id()
     metadata = {"mode": mode, "lang": req.lang or "en"}
     encounter_id, session_id, note_id = _resolve_encounter_context(
