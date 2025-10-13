@@ -139,6 +139,7 @@ from backend.prompts import (
     build_suggest_prompt,
     build_summary_prompt,
 )  # type: ignore
+from backend.prompt_builder import SuggestPromptBuilder
 from backend.compose_job import (
     ComposeJobCancelled,
     ComposeJobPayload,
@@ -462,6 +463,7 @@ TRANSCRIBE_WS_INTERIM_DROPPED_TOTAL = Counter(
     "Number of interim transcription events dropped due to backpressure.",
 )
 PROMPT_GUARD = PromptPrivacyGuard()
+SUGGEST_PROMPT_BUILDER = SuggestPromptBuilder()
 
 
 _TRACE_ID_CTX: ContextVar[str | None] = ContextVar("trace_id", default=None)
@@ -1665,6 +1667,17 @@ def _evaluate_suggest_gate(
         spans = ai_diff_spans(previous, normalized)
         total_delta = sum(span.delta_chars for span in spans)
         detail["delta"] = total_delta
+        detail["diffSpanCount"] = len(spans)
+        detail["previousSnapshot"] = DEID_POLICY.apply(previous)
+        detail["diffSpans"] = [
+            {
+                "old": DEID_POLICY.apply(span.old_text),
+                "new": DEID_POLICY.apply(span.new_text),
+                "oldRange": [span.old_range[0], span.old_range[1]],
+                "newRange": [span.new_range[0], span.new_range[1]],
+            }
+            for span in spans[:20]
+        ]
 
         if state.last_call_note_hash and state.last_call_note_hash == plain_hash:
             detail["reason"] = "DUPLICATE_STATE"
@@ -13243,6 +13256,31 @@ async def suggest(
         req.sessionId,
         note_id=req.noteId,
     )
+
+    pmh_entries: Sequence[Any] = []
+    if mode != "offline":
+        patient_identifier: Optional[str] = None
+        session_payload: Optional[Dict[str, Any]] = None
+        if session_id and user.get("sub"):
+            try:
+                _, _, _, session_payload = _resolve_session_for_user(user.get("sub"), session_id)
+            except Exception:
+                session_payload = None
+        if isinstance(session_payload, dict):
+            patient_identifier = session_payload.get("patientId") or session_payload.get("patient_id")
+            if not patient_identifier:
+                context_blob = session_payload.get("context")
+                if isinstance(context_blob, dict):
+                    patient_identifier = context_blob.get("patientId") or context_blob.get("patient_id")
+        if patient_identifier:
+            try:
+                snapshot = context_pipeline.get_snapshot(str(patient_identifier), "superficial")
+            except Exception:
+                snapshot = None
+            if isinstance(snapshot, dict):
+                entries = snapshot.get("pmh")
+                if isinstance(entries, list):
+                    pmh_entries = entries
     with observe_ai_route(
         route="suggest",
         note_id=req.noteId,
@@ -13350,15 +13388,26 @@ async def suggest(
             return response
 
         try:
-            messages = build_suggest_prompt(
-                cleaned_for_prompt,
-                req.lang,
-                req.specialty,
-                req.payer,
-                req.age,
-                req.sex,
-                req.region,
+            diff_spans = gate_result.detail.get("diffSpans") if gate_result else []
+            previous_snapshot = gate_result.detail.get("previousSnapshot") if gate_result else ""
+            accepted_payload = req.acceptedJson if isinstance(req.acceptedJson, Mapping) else None
+            builder_blocks = SUGGEST_PROMPT_BUILDER.build(
+                lang=req.lang or "en",
+                specialty=req.specialty,
+                payer=req.payer,
+                sanitized_note=cleaned,
+                sanitized_previous=previous_snapshot or "",
+                diff_spans=diff_spans or [],
+                accepted_json=accepted_payload,
+                transcript=req.audio,
+                pmh_entries=pmh_entries,
+                rules=prompt_context.rules,
+                age=req.age,
+                sex=req.sex,
+                region=req.region,
             )
+            observation.add_metadata("promptCache", builder_blocks.cache_state)
+            messages = builder_blocks.stable + builder_blocks.dynamic
             response_content = call_openai(messages)
             data = json.loads(response_content)
             codes_list: List[CodeSuggestion] = []
