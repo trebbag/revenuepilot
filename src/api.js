@@ -738,6 +738,10 @@ export async function getSuggestions(text, context = {}) {
       context.agencies.length > 0
     )
       payload.agencies = context.agencies;
+    if (context.intent) payload.intent = context.intent;
+    if (context.transcriptCursor) payload.transcriptCursor = context.transcriptCursor;
+    if (context.acceptedJson) payload.acceptedJson = context.acceptedJson;
+    if (context.force) payload.force = Boolean(context.force);
     if (context.encounterId) {
       const encounterValue = String(context.encounterId).trim();
       if (encounterValue) payload.encounterId = encounterValue;
@@ -819,6 +823,56 @@ export async function getSuggestions(text, context = {}) {
   };
   cacheCodes(stub.codes);
   return stub;
+}
+
+export async function gateNoteSuggestions(payload) {
+  const {
+    noteId,
+    noteContent,
+    requestType = 'auto',
+    transcriptCursor,
+    acceptedJson,
+    force = false,
+    inputTimestamp,
+  } = payload || {};
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const body = {
+    noteId: noteId || 'suggestion-draft',
+    noteContent: typeof noteContent === 'string' ? noteContent : '',
+    requestType,
+    force: Boolean(force),
+  };
+  if (transcriptCursor) body.transcriptCursor = transcriptCursor;
+  if (acceptedJson) body.acceptedJson = acceptedJson;
+  if (typeof inputTimestamp === 'number') body.inputTimestamp = inputTimestamp;
+
+  const resp = await fetch(`${baseUrl}/api/notes/ai/gate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  let data = null;
+  try {
+    data = await resp.json();
+  } catch (err) {
+    data = null;
+  }
+
+  const status = resp.status;
+  if (!resp.ok && status !== 202) {
+    return {
+      status,
+      blocked: true,
+      reason: data?.reason,
+      detail: data?.detail,
+    };
+  }
+  if (data && typeof data === 'object') {
+    return { status, ...data };
+  }
+  return { status, allowed: resp.ok };
 }
 
 /**

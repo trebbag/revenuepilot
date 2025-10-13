@@ -21,6 +21,7 @@ import {
   connectComplianceStream,
   connectCodesStream,
   connectCollaborationStream,
+  gateNoteSuggestions,
 } from '../api.js';
 import SuggestionPanel from './SuggestionPanel.jsx';
 import { beautifyNote, getSuggestions } from '../api/client.ts';
@@ -251,6 +252,48 @@ const NoteEditor = forwardRef(function NoteEditor(
       sessionId: sessionValue || undefined,
       noteId: noteValue || undefined,
     };
+  };
+
+  const runSuggestionFetch = (noteText, extra = {}) => {
+    const baseContext = buildSuggestionContext();
+    const requestContext = {
+      ...baseContext,
+      specialty,
+      payer,
+      ...(extra || {}),
+    };
+    return getSuggestions(typeof noteText === 'string' ? noteText : '', requestContext).then(
+      (result) => {
+        if (!result?.blocked) setSuggestions(result);
+        return result;
+      },
+    );
+  };
+
+  const runSuggestionGate = (noteText, extra = {}) => {
+    const baseContext = buildSuggestionContext();
+    const requestContext = {
+      ...baseContext,
+      specialty,
+      payer,
+      ...(extra || {}),
+    };
+    const intentRaw = (extra?.intent || requestContext.intent || 'auto').toString().toLowerCase();
+    const requestType = intentRaw === 'manual' ? 'manual_mini' : 'auto';
+    const noteIdentifier =
+      requestContext.noteId ||
+      requestContext.sessionId ||
+      requestContext.encounterId ||
+      'suggestion-draft';
+    return gateNoteSuggestions({
+      noteId: noteIdentifier,
+      noteContent: typeof noteText === 'string' ? noteText : '',
+      requestType,
+      transcriptCursor: requestContext.transcriptCursor,
+      acceptedJson: requestContext.acceptedJson,
+      force: Boolean(requestContext.force || extra?.force),
+      inputTimestamp: requestContext.inputTimestamp,
+    });
   };
   const resetStreamSessions = () => {
     streamSessionsRef.current = {
@@ -2370,11 +2413,8 @@ const NoteEditor = forwardRef(function NoteEditor(
                 }
                 settingsState={settingsState}
                 text={value}
-                fetchSuggestions={(text) =>
-                  getSuggestions(text, buildSuggestionContext()).then(
-                    setSuggestions,
-                  )
-                }
+                fetchSuggestions={runSuggestionFetch}
+                gateSuggestions={runSuggestionGate}
                 onSpecialtyChange={onSpecialtyChange}
                 onPayerChange={onPayerChange}
                 onInsert={(text) => {
@@ -2632,9 +2672,8 @@ const NoteEditor = forwardRef(function NoteEditor(
           settingsState={settingsState}
           /* Provide text so internal debounce logic may run if needed */
           text={localValue}
-          fetchSuggestions={(text) =>
-            getSuggestions(text, buildSuggestionContext()).then(setSuggestions)
-          }
+          fetchSuggestions={runSuggestionFetch}
+          gateSuggestions={runSuggestionGate}
           onSpecialtyChange={onSpecialtyChange}
           onPayerChange={onPayerChange}
           onInsert={(text) => {

@@ -5,9 +5,45 @@
 // `text` prop changes.  To avoid overwhelming the backend while the user is
 // typing, these calls are debounced so that only the final value after a short
 // pause results in a request.
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { exportFollowUp } from '../api.js';
+
+const BOUNDARY_REGEX = /[.!?\n]/g;
+
+function hashText(value) {
+  const text = typeof value === 'string' ? value : '';
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = (hash * 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function countBoundaries(value) {
+  if (!value) return 0;
+  const matches = value.match(BOUNDARY_REGEX);
+  return matches ? matches.length : 0;
+}
+
+function shouldTriggerBoundary(previous = '', next = '') {
+  if (!next || next === previous) return false;
+  const prevText = previous || '';
+  const nextText = next || '';
+  const prevCount = countBoundaries(prevText);
+  const nextCount = countBoundaries(nextText);
+  if (nextCount > prevCount) return true;
+  if (nextText.length > prevText.length) {
+    const windowStart = Math.max(0, prevText.length - 8);
+    const deltaSegment = nextText.slice(windowStart);
+    const prevSegment = prevText.slice(windowStart);
+    if (BOUNDARY_REGEX.test(deltaSegment) && !BOUNDARY_REGEX.test(prevSegment)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function SuggestionPanel({
   suggestions,
@@ -16,10 +52,10 @@ function SuggestionPanel({
   className = '',
   onInsert,
   // Optional text input that, when provided with `fetchSuggestions`, will
-  // trigger backend suggestion fetching.  Calls are debounced to reduce
-  // latency and unnecessary network load.
+  // trigger backend suggestion gating and fetching when boundaries are added.
   text,
   fetchSuggestions,
+  gateSuggestions,
   calendarSummary,
   onSpecialtyChange: parentSpecialtyChange,
   onPayerChange: parentPayerChange,
@@ -30,10 +66,22 @@ function SuggestionPanel({
   const parentPayer = (settingsState && settingsState.payer) || '';
   const [specialty, setSpecialty] = useState(parentSpecialty);
   const [payer, setPayer] = useState(parentPayer);
-  // Debounce backend suggestion calls.  When `text` changes rapidly we clear
-  // the previous timeout and only invoke `fetchSuggestions` once the user has
-  // paused typing for 300ms.
-  const debounceRef = useRef();
+  const [gateState, setGateState] = useState({
+    status: 'idle',
+    detail: null,
+    reason: null,
+    raw: null,
+  });
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [currentHash, setCurrentHash] = useState(
+    hashText(typeof text === 'string' ? text : ''),
+  );
+  const lastCallHashRef = useRef('');
+  const previousTextRef = useRef(typeof text === 'string' ? text : '');
+  const lastContextRef = useRef({ specialty: parentSpecialty, payer: parentPayer });
+  const gateInFlightRef = useRef(false);
+  const lastAutoSignatureRef = useRef('');
   useEffect(() => {
     setSpecialty((prev) => (prev === parentSpecialty ? prev : parentSpecialty));
   }, [parentSpecialty]);
@@ -41,16 +89,150 @@ function SuggestionPanel({
     setPayer((prev) => (prev === parentPayer ? prev : parentPayer));
   }, [parentPayer]);
   useEffect(() => {
-    if (!fetchSuggestions || typeof text !== 'string') return undefined;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      fetchSuggestions(text, {
+    const normalized = typeof text === 'string' ? text : '';
+    setCurrentHash(hashText(normalized));
+  }, [text]);
+
+  const buildContextPayload = useCallback(
+    (extra = {}) => {
+      const { reason: _unusedReason, ...rest } = extra || {};
+      return {
         specialty,
         payer,
-      });
-    }, 300);
-    return () => clearTimeout(debounceRef.current);
-  }, [text, fetchSuggestions, specialty, payer]);
+        ...rest,
+      };
+    },
+    [specialty, payer],
+  );
+
+  const triggerAuto = useCallback(
+    async (noteText, extra = {}) => {
+      if (typeof noteText !== 'string' || !noteText.trim()) return;
+      const force = Boolean(extra.force);
+      const context = buildContextPayload({ intent: 'auto', ...extra });
+      const signatureBase = `${hashText(noteText)}::${context.specialty || ''}::${
+        context.payer || ''
+      }::${context.intent || 'auto'}`;
+      if (!force && signatureBase === lastAutoSignatureRef.current) return;
+      if (gateInFlightRef.current && !force) return;
+      lastAutoSignatureRef.current = signatureBase;
+
+      if (!gateSuggestions) {
+        if (fetchSuggestions) {
+          await fetchSuggestions(noteText, context);
+          lastCallHashRef.current = hashText(noteText);
+        }
+        return;
+      }
+
+      gateInFlightRef.current = true;
+      setAutoBusy(true);
+      try {
+        const gateResult = await gateSuggestions(noteText, context);
+        const detail =
+          gateResult?.detail || gateResult?.data?.detail || gateResult?.detail || null;
+        const reason =
+          gateResult?.reason ||
+          detail?.reason ||
+          (gateResult?.data && gateResult.data.reason) ||
+          null;
+        const status =
+          typeof gateResult?.status === 'number'
+            ? gateResult.status
+            : gateResult?.blocked
+              ? 409
+              : gateResult?.allowed
+                ? 202
+                : null;
+        const allowed =
+          gateResult?.allowed === true ||
+          status === 200 ||
+          status === 202 ||
+          (!gateResult?.blocked && status === null);
+        setGateState({ status: allowed ? 'allowed' : 'blocked', detail, reason, raw: gateResult });
+        if (allowed && fetchSuggestions) {
+          await fetchSuggestions(noteText, context);
+          lastCallHashRef.current = hashText(noteText);
+        }
+      } catch (err) {
+        lastAutoSignatureRef.current = '';
+        setGateState({
+          status: 'error',
+          detail: null,
+          reason: err instanceof Error ? err.message : 'error',
+          raw: null,
+        });
+      } finally {
+        gateInFlightRef.current = false;
+        setAutoBusy(false);
+      }
+    },
+    [buildContextPayload, gateSuggestions, fetchSuggestions],
+  );
+
+  useEffect(() => {
+    const prev = previousTextRef.current || '';
+    const next = typeof text === 'string' ? text : '';
+    if (shouldTriggerBoundary(prev, next)) {
+      void triggerAuto(next);
+    }
+    previousTextRef.current = next;
+  }, [text, triggerAuto]);
+
+  useEffect(() => {
+    const prev = lastContextRef.current;
+    if (prev.specialty === specialty && prev.payer === payer) return;
+    lastContextRef.current = { specialty, payer };
+    if (typeof text === 'string' && text.trim()) {
+      void triggerAuto(text, { force: true });
+    }
+  }, [specialty, payer, text, triggerAuto]);
+
+  const safeNumber = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (value === null || value === undefined) return 0;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const gateDetail = gateState.detail || {};
+  const deltaValue = safeNumber(
+    gateDetail.delta ?? gateDetail.delta_chars ?? gateDetail.deltaChars ?? 0,
+  );
+  const manualThreshold = safeNumber(
+    gateDetail.manualThreshold ??
+      gateDetail.manual_threshold ??
+      gateDetail.full_threshold ??
+      gateDetail.manual,
+  );
+  const salientChange = Boolean(gateDetail.salient || gateDetail.salience);
+  const contextFlip = Boolean(
+    gateDetail.contextFlip || gateDetail.context_flip || gateDetail.salienceContextFlip,
+  );
+  const meaningfulChange =
+    salientChange || contextFlip || (manualThreshold > 0 && deltaValue >= manualThreshold);
+  const canRefresh = Boolean(
+    meaningfulChange && currentHash && currentHash !== lastCallHashRef.current,
+  );
+  const refreshDisabled = manualBusy || autoBusy || loading || !canRefresh;
+
+  const handleManualRefresh = async () => {
+    if (refreshDisabled || !fetchSuggestions || typeof text !== 'string') return;
+    setManualBusy(true);
+    try {
+      await fetchSuggestions(text, buildContextPayload({ intent: 'manual' }));
+      lastCallHashRef.current = hashText(text);
+      setGateState((prev) => ({ ...prev, status: 'manual' }));
+    } catch (err) {
+      setGateState((prev) => ({
+        ...prev,
+        status: 'error',
+        reason: err instanceof Error ? err.message : 'error',
+      }));
+    } finally {
+      setManualBusy(false);
+    }
+  };
   // suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [], followUp: {interval, ics} }
 
   const cards = [];
@@ -389,6 +571,20 @@ function SuggestionPanel({
             ))}
           </select>
         </label>
+        <button
+          type="button"
+          onClick={handleManualRefresh}
+          disabled={refreshDisabled}
+          style={{
+            alignSelf: 'flex-end',
+            padding: '0.35rem 0.75rem',
+            cursor: refreshDisabled ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {manualBusy
+            ? t('suggestion.refreshing', 'Refreshing…')
+            : t('app.refresh', 'Refresh')}
+        </button>
       </div>
       {cards.map(({ type, key, title, items }) => (
         <div key={type} className={`card ${type}`}>

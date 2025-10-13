@@ -64,6 +64,9 @@ vi.mock('../../api.js', () => ({
     }
     return { close: vi.fn() };
   }),
+  gateNoteSuggestions: vi
+    .fn()
+    .mockResolvedValue({ status: 202, allowed: true, detail: { delta: 120, manualThreshold: 60 } }),
 }));
 
 // mock typed client wrappers

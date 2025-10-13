@@ -43,6 +43,10 @@ export interface SuggestContext {
   encounterId?: string;
   sessionId?: string;
   noteId?: string;
+  intent?: 'auto' | 'manual' | 'finalize';
+  transcriptCursor?: string;
+  acceptedJson?: Record<string, unknown> | null;
+  force?: boolean;
 }
 
 export interface CodeSuggestion {

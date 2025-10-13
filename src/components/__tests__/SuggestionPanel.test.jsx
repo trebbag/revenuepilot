@@ -143,63 +143,136 @@ test('renders differential scores as percentages', () => {
   expect(getByText('Flu — 42%')).toBeTruthy();
 });
 
-test('debounces backend calls on rapid input', async () => {
-  vi.useFakeTimers();
+test('small edits do not trigger auto gating', async () => {
   const fetchSuggestions = vi.fn();
+  const gateSuggestions = vi.fn();
   const baseProps = {
     suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] },
     settingsState: null,
     fetchSuggestions,
+    gateSuggestions,
+    text: 'Initial note',
   };
-  const { rerender } = render(
-    <SuggestionPanel {...baseProps} text="a" />,
-  );
-  // Simulate rapid consecutive updates
-  rerender(<SuggestionPanel {...baseProps} text="ab" />);
-  rerender(<SuggestionPanel {...baseProps} text="abc" />);
-  // No call should happen until the debounce period elapses
+  const { rerender } = render(<SuggestionPanel {...baseProps} />);
+  rerender(<SuggestionPanel {...baseProps} text="Initial note updated" />);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(gateSuggestions).not.toHaveBeenCalled();
   expect(fetchSuggestions).not.toHaveBeenCalled();
-  vi.advanceTimersByTime(300);
-  expect(fetchSuggestions).toHaveBeenCalledTimes(1);
-  expect(fetchSuggestions).toHaveBeenCalledWith('abc', { specialty: '', payer: '' });
-  vi.useRealTimers();
 });
 
-test('changing specialty or payer triggers fetch and notifies parent', () => {
-  vi.useFakeTimers();
-  try {
-    const fetchSuggestions = vi.fn();
-    const handleSpecialtyChange = vi.fn();
-    const handlePayerChange = vi.fn();
-    const { getByLabelText } = render(
-      <SuggestionPanel
-        suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
-        settingsState={{ specialty: '', payer: '' }}
-        text="note"
-        fetchSuggestions={fetchSuggestions}
-        onSpecialtyChange={handleSpecialtyChange}
-        onPayerChange={handlePayerChange}
-      />,
-    );
-    fireEvent.change(getByLabelText('Specialty'), { target: { value: 'cardiology' } });
-    expect(handleSpecialtyChange).toHaveBeenCalledWith('cardiology');
-    vi.advanceTimersByTime(300);
-    expect(fetchSuggestions).toHaveBeenCalledTimes(1);
-    expect(fetchSuggestions).toHaveBeenLastCalledWith('note', {
-      specialty: 'cardiology',
-      payer: '',
-    });
-    fireEvent.change(getByLabelText('Payer'), { target: { value: 'medicare' } });
-    expect(handlePayerChange).toHaveBeenCalledWith('medicare');
-    vi.advanceTimersByTime(300);
-    expect(fetchSuggestions).toHaveBeenCalledTimes(2);
-    expect(fetchSuggestions).toHaveBeenLastCalledWith('note', {
-      specialty: 'cardiology',
-      payer: 'medicare',
-    });
-  } finally {
-    vi.useRealTimers();
-  }
+test('salient newline triggers auto gating', async () => {
+  const fetchSuggestions = vi.fn().mockResolvedValue({});
+  const gateSuggestions = vi
+    .fn()
+    .mockResolvedValue({ status: 409, blocked: true, detail: { delta: 20, manualThreshold: 80, salient: true } });
+  const baseProps = {
+    suggestions: { codes: [], compliance: [], publicHealth: [], differentials: [] },
+    settingsState: null,
+    fetchSuggestions,
+    gateSuggestions,
+    text: 'Start.',
+  };
+  const { rerender } = render(<SuggestionPanel {...baseProps} />);
+  rerender(
+    <SuggestionPanel
+      {...baseProps}
+      text={'Start.\nBP 120/80 recorded'}
+      gateSuggestions={gateSuggestions}
+      fetchSuggestions={fetchSuggestions}
+    />,
+  );
+  await waitFor(() => expect(gateSuggestions).toHaveBeenCalledTimes(1));
+});
+
+test('refresh button enables on salient gate and calls manual intent', async () => {
+  const fetchSuggestions = vi.fn().mockResolvedValue({});
+  const gateSuggestions = vi
+    .fn()
+    .mockResolvedValue({ status: 409, blocked: true, detail: { delta: 10, manualThreshold: 60, salient: true } });
+  const { rerender, getByRole } = render(
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={null}
+      text="Baseline."
+      fetchSuggestions={fetchSuggestions}
+      gateSuggestions={gateSuggestions}
+    />,
+  );
+  rerender(
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={null}
+      text={'Baseline.\nNew salient entry'}
+      fetchSuggestions={fetchSuggestions}
+      gateSuggestions={gateSuggestions}
+    />,
+  );
+  await waitFor(() => expect(gateSuggestions).toHaveBeenCalledTimes(1));
+  const refreshButton = getByRole('button', { name: /refresh/i });
+  expect(refreshButton).not.toBeDisabled();
+  fireEvent.click(refreshButton);
+  await waitFor(() =>
+    expect(fetchSuggestions).toHaveBeenCalledWith(
+      'Baseline.\nNew salient entry',
+      expect.objectContaining({ specialty: '', payer: '', intent: 'manual' }),
+    ),
+  );
+});
+
+test('changing specialty or payer triggers gate, fetch, and notifies parent', async () => {
+  const fetchSuggestions = vi.fn().mockResolvedValue({});
+  const gateSuggestions = vi
+    .fn()
+    .mockResolvedValue({ status: 202, allowed: true, detail: { delta: 120, manualThreshold: 60 } });
+  const handleSpecialtyChange = vi.fn();
+  const handlePayerChange = vi.fn();
+  const { getByLabelText, rerender } = render(
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={{ specialty: '', payer: '' }}
+      text={'note.\n'}
+      fetchSuggestions={fetchSuggestions}
+      gateSuggestions={gateSuggestions}
+      onSpecialtyChange={handleSpecialtyChange}
+      onPayerChange={handlePayerChange}
+    />,
+  );
+  await waitFor(() => expect(gateSuggestions).toHaveBeenCalled());
+  gateSuggestions.mockClear();
+  fetchSuggestions.mockClear();
+
+  fireEvent.change(getByLabelText('Specialty'), { target: { value: 'cardiology' } });
+  expect(handleSpecialtyChange).toHaveBeenCalledWith('cardiology');
+  await waitFor(() => expect(gateSuggestions).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(fetchSuggestions).toHaveBeenCalledWith(
+      'note.\n',
+      expect.objectContaining({ specialty: 'cardiology', payer: '', intent: 'auto' }),
+    ),
+  );
+
+  gateSuggestions.mockClear();
+  fetchSuggestions.mockClear();
+  rerender(
+    <SuggestionPanel
+      suggestions={{ codes: [], compliance: [], publicHealth: [], differentials: [] }}
+      settingsState={{ specialty: 'cardiology', payer: '' }}
+      text={'note.\n'}
+      fetchSuggestions={fetchSuggestions}
+      gateSuggestions={gateSuggestions}
+      onSpecialtyChange={handleSpecialtyChange}
+      onPayerChange={handlePayerChange}
+    />,
+  );
+  fireEvent.change(getByLabelText('Payer'), { target: { value: 'medicare' } });
+  expect(handlePayerChange).toHaveBeenCalledWith('medicare');
+  await waitFor(() => expect(gateSuggestions).toHaveBeenCalledTimes(1));
+  await waitFor(() =>
+    expect(fetchSuggestions).toHaveBeenCalledWith(
+      'note.\n',
+      expect.objectContaining({ specialty: 'cardiology', payer: 'medicare', intent: 'auto' }),
+    ),
+  );
 });
 
 test('handles missing or invalid differential scores gracefully', () => {
