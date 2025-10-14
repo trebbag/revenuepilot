@@ -8305,6 +8305,31 @@ class FollowUp(BaseModel):
     reason: Optional[str] = None
 
 
+class DemotionRecommendation(BaseModel):
+    """Represents a recommended demotion for a previously selected code."""
+
+    code: str
+    confidence: Optional[float] = None
+    reason: Optional[str] = None
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, value: Any) -> str:  # noqa: D401,N805
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                return trimmed
+        raise ValueError("demotion code must be a non-empty string")
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalise_confidence(cls, value: Any) -> Optional[float]:  # noqa: D401,N805
+        normalised = _normalise_confidence(value)
+        if normalised is None:
+            return None
+        return float(max(0.0, min(1.0, normalised)))
+
+
 class SuggestionsResponse(BaseModel):
     """Schema for the suggestions returned to the frontend."""
 
@@ -8314,6 +8339,11 @@ class SuggestionsResponse(BaseModel):
     differentials: List[DifferentialSuggestion]
     questions: List[Dict[str, Any]] = Field(default_factory=list)
     followUp: Optional[FollowUp] = None
+    confidence: Optional[float] = None
+    demotions: List[DemotionRecommendation] = Field(default_factory=list)
+    supportingSpans: Dict[str, List[SupportingSpan]] = Field(
+        default_factory=dict, alias="supporting_spans"
+    )
 
 
 async def _publish_suggestions_event(
@@ -13455,6 +13485,108 @@ async def suggest(
                             existing.add(rec_name)
             code_items = data.get("codes", [])
             codes = [CodeSuggestion(**item) for item in code_items]
+            supporting_map: Dict[str, List[SupportingSpan]] = {}
+            demotion_suggestions: List[DemotionRecommendation] = []
+            demotion_seen: Set[Tuple[str, Optional[str], Optional[float]]] = set()
+
+            def _register_cached_demotion(
+                code_value: Any,
+                *,
+                confidence_value: Any = None,
+                reason_value: Any = None,
+            ) -> None:
+                if isinstance(code_value, str):
+                    code_text = code_value.strip()
+                else:
+                    code_text = str(code_value).strip() if code_value is not None else ""
+                if not code_text:
+                    return
+                confidence_normalised = _normalise_confidence(confidence_value)
+                reason_text = None
+                if isinstance(reason_value, str):
+                    reason_text = reason_value.strip() or None
+                elif reason_value not in (None, ""):
+                    reason_text = str(reason_value)
+                key = (
+                    code_text.upper(),
+                    reason_text or "",
+                    confidence_normalised if confidence_normalised is not None else None,
+                )
+                if key in demotion_seen:
+                    return
+                try:
+                    demotion_suggestions.append(
+                        DemotionRecommendation(
+                            code=code_text,
+                            confidence=confidence_normalised,
+                            reason=reason_text,
+                        )
+                    )
+                except ValidationError:
+                    return
+                demotion_seen.add(key)
+
+            def _collect_cached_demotions(raw_value: Any, *, default_reason: Any = None) -> None:
+                if raw_value is None:
+                    return
+                if isinstance(raw_value, Mapping):
+                    code_value = raw_value.get("code") or raw_value.get("Code")
+                    confidence_value = raw_value.get("confidence") or raw_value.get("Confidence")
+                    reason_value = (
+                        raw_value.get("reason")
+                        or raw_value.get("Reason")
+                        or default_reason
+                    )
+                    if code_value is not None:
+                        _register_cached_demotion(
+                            code_value,
+                            confidence_value=confidence_value,
+                            reason_value=reason_value,
+                        )
+                    elif len(raw_value) == 1:
+                        [(code_key, reason_val)] = raw_value.items()
+                        _register_cached_demotion(
+                            code_key,
+                            confidence_value=confidence_value,
+                            reason_value=reason_val,
+                        )
+                    return
+                if isinstance(raw_value, (list, tuple, set)):
+                    for entry in raw_value:
+                        _collect_cached_demotions(entry, default_reason=default_reason)
+                    return
+                _register_cached_demotion(raw_value, reason_value=default_reason)
+
+            raw_supporting_map = (
+                data.get("supporting_spans")
+                or data.get("supportingSpans")
+                or {}
+            )
+            if isinstance(raw_supporting_map, Mapping):
+                for raw_code, raw_spans in raw_supporting_map.items():
+                    if not isinstance(raw_code, str):
+                        continue
+                    spans: List[SupportingSpan] = []
+                    span_candidates = raw_spans if isinstance(raw_spans, list) else [raw_spans]
+                    for candidate in span_candidates:
+                        if isinstance(candidate, Mapping):
+                            try:
+                                spans.append(SupportingSpan(**candidate))
+                            except ValidationError:
+                                continue
+                    if spans:
+                        supporting_map[raw_code.strip()] = spans
+
+            for suggestion in codes:
+                if suggestion.supporting_spans:
+                    supporting_map.setdefault(suggestion.code, suggestion.supporting_spans)
+                if suggestion.demotions:
+                    _collect_cached_demotions(
+                        suggestion.demotions,
+                        default_reason=suggestion.rationale,
+                    )
+
+            _collect_cached_demotions(data.get("demotions") or data.get("Demotions"))
             _log_confidence_scores(
                 user,
                 req.noteId,
@@ -13490,6 +13622,11 @@ async def suggest(
                 ],
                 questions=questions_payload,
                 followUp=follow_up,
+                confidence=_normalise_confidence(
+                    data.get("confidence") or data.get("Confidence")
+                ),
+                demotions=demotion_suggestions,
+                supportingSpans=supporting_map,
             )
             await _publish_suggestions_event(encounter_id, session_id, note_id, response)
             return response
@@ -13519,6 +13656,95 @@ async def suggest(
             data = json.loads(response_content)
             codes_list: List[CodeSuggestion] = []
             logged_codes: List[Tuple[str, Optional[float]]] = []
+            demotion_suggestions: List[DemotionRecommendation] = []
+            demotion_seen: Set[Tuple[str, Optional[str], Optional[float]]] = set()
+            supporting_map: Dict[str, List[SupportingSpan]] = {}
+
+            def _register_demotion_entry(
+                code_value: Any,
+                *,
+                confidence_value: Any = None,
+                reason_value: Any = None,
+            ) -> None:
+                if isinstance(code_value, str):
+                    code_text = code_value.strip()
+                else:
+                    code_text = str(code_value).strip() if code_value is not None else ""
+                if not code_text:
+                    return
+                confidence_normalised = _normalise_confidence(confidence_value)
+                reason_text = None
+                if isinstance(reason_value, str):
+                    reason_text = reason_value.strip() or None
+                elif reason_value not in (None, ""):
+                    reason_text = str(reason_value)
+                key = (
+                    code_text.upper(),
+                    reason_text or "",
+                    confidence_normalised if confidence_normalised is not None else None,
+                )
+                if key in demotion_seen:
+                    return
+                try:
+                    demotion_suggestions.append(
+                        DemotionRecommendation(
+                            code=code_text,
+                            confidence=confidence_normalised,
+                            reason=reason_text,
+                        )
+                    )
+                except ValidationError:
+                    return
+                demotion_seen.add(key)
+
+            def _collect_demotion_entries(raw_value: Any, *, default_reason: Any = None) -> None:
+                if raw_value is None:
+                    return
+                if isinstance(raw_value, Mapping):
+                    code_value = raw_value.get("code") or raw_value.get("Code")
+                    confidence_value = raw_value.get("confidence") or raw_value.get("Confidence")
+                    reason_value = (
+                        raw_value.get("reason")
+                        or raw_value.get("Reason")
+                        or default_reason
+                    )
+                    if code_value is not None:
+                        _register_demotion_entry(
+                            code_value,
+                            confidence_value=confidence_value,
+                            reason_value=reason_value,
+                        )
+                    elif len(raw_value) == 1:
+                        [(code_key, reason_val)] = raw_value.items()
+                        _register_demotion_entry(
+                            code_key,
+                            confidence_value=confidence_value,
+                            reason_value=reason_val,
+                        )
+                    return
+                if isinstance(raw_value, (list, tuple, set)):
+                    for entry in raw_value:
+                        _collect_demotion_entries(entry, default_reason=default_reason)
+                    return
+                _register_demotion_entry(raw_value, reason_value=default_reason)
+
+            def _merge_supporting_spans(
+                code_value: Any, spans: Iterable[SupportingSpan]
+            ) -> None:
+                if isinstance(code_value, str):
+                    code_text = code_value.strip()
+                else:
+                    code_text = str(code_value).strip() if code_value is not None else ""
+                if not code_text:
+                    return
+                normalised: List[SupportingSpan] = []
+                for span in spans:
+                    if isinstance(span, SupportingSpan):
+                        normalised.append(span)
+                if not normalised:
+                    return
+                supporting_map.setdefault(code_text, normalised)
+
             for item in data.get("codes", []):
                 code_str = item.get("code") or item.get("Code") or ""
                 rationale = item.get("rationale") or item.get("Rationale") or None
@@ -13535,6 +13761,7 @@ async def suggest(
                 supporting_spans_raw = item.get("supporting_spans") or item.get("supportingSpans")
                 if code_str:
                     logged_codes.append((code_str, confidence_val))
+                    _collect_demotion_entries(demotions_raw, default_reason=rationale)
                     codes_list.append(
                         CodeSuggestion(
                             code=code_str,
@@ -13548,6 +13775,17 @@ async def suggest(
                             supporting_spans=supporting_spans_raw,
                         )
                     )
+                    if supporting_spans_raw:
+                        try:
+                            candidate = CodeSuggestion(
+                                code=code_str,
+                                supporting_spans=supporting_spans_raw,
+                            )
+                            _merge_supporting_spans(
+                                candidate.code, candidate.supporting_spans
+                            )
+                        except ValidationError:
+                            pass
             compliance = [str(x) for x in data.get("compliance", [])]
             public_health: List[PublicHealthSuggestion] = []
             for item in data.get("publicHealth", data.get("public_health", [])):
@@ -13630,6 +13868,29 @@ async def suggest(
             if not isinstance(questions_payload, list):
                 questions_payload = []
             _log_confidence_scores(user, req.noteId, logged_codes)
+            raw_supporting_map = (
+                data.get("supporting_spans")
+                or data.get("supportingSpans")
+                or {}
+            )
+            if isinstance(raw_supporting_map, Mapping):
+                for raw_code, raw_spans in raw_supporting_map.items():
+                    if not isinstance(raw_code, str):
+                        continue
+                    spans_list: List[SupportingSpan] = []
+                    span_candidates = raw_spans if isinstance(raw_spans, list) else [raw_spans]
+                    for candidate in span_candidates:
+                        if isinstance(candidate, Mapping):
+                            try:
+                                spans_list.append(SupportingSpan(**candidate))
+                            except ValidationError:
+                                continue
+                    if spans_list:
+                        supporting_map[raw_code.strip()] = spans_list
+
+            raw_demotions = data.get("demotions") or data.get("Demotions")
+            _collect_demotion_entries(raw_demotions)
+
             response = SuggestionsResponse(
                 codes=codes_list,
                 compliance=compliance,
@@ -13637,6 +13898,11 @@ async def suggest(
                 differentials=diffs,
                 questions=questions_payload,
                 followUp=follow_up,
+                confidence=_normalise_confidence(
+                    data.get("confidence") or data.get("Confidence")
+                ),
+                demotions=demotion_suggestions,
+                supportingSpans=supporting_map,
             )
             await _publish_suggestions_event(encounter_id, session_id, note_id, response)
             return response
