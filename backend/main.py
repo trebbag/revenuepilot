@@ -148,6 +148,7 @@ from backend.compose_job import (
     STAGE_SEQUENCE as COMPOSE_STAGE_SEQUENCE,
 )
 from backend.openai_client import call_openai, get_embedding_client  # type: ignore
+from backend.ai_gate import AIGate
 from backend.encryption import encrypt_artifact
 from backend.security import (
     PromptPrivacyGuard,
@@ -1561,6 +1562,7 @@ _SUGGEST_INTENT_MODELS: Dict[str, str] = {
     "finalize": "gpt-4o",
     "manual": "gpt-4o-mini",
 }
+SUGGEST_MEANINGFUL_GATE = AIGate()
 _SUGGEST_SALIENCE_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(bp|blood pressure|heart rate|pulse|resp(iratory)? rate|spo2|oxygen|o2 sat|temperature|temp|weight|height)\b", re.I),
     re.compile(r"\b(cbc|cmp|a1c|glucose|labs?|labwork|wbc|platelets|hemoglobin|creatinine|potassium)\b", re.I),
@@ -13325,9 +13327,7 @@ async def suggest(
 
     mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
     cache_state = "warm" if mode == "offline" else "cold"
-    normalized_note = normalize_note_text(cleaned)
     model_name: Optional[str]
-    gate_result: Optional[SuggestGateResult] = None
     if mode == "offline":
         model_name = req.suggestModel or "offline"
     else:
@@ -13335,26 +13335,26 @@ async def suggest(
         if clinician_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         try:
-            gate_result = _evaluate_suggest_gate(
+            gate_decision = SUGGEST_MEANINGFUL_GATE.evaluate(
                 note_id=req.noteId,
                 clinician_id=clinician_id,
-                normalized=normalized_note,
+                text=cleaned,
                 intent=req.intent,
                 transcript_cursor=req.transcriptCursor,
                 accepted_json=req.acceptedJson,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        if not gate_result.allowed:
+        if not gate_decision.allowed:
             return JSONResponse(
-                status_code=gate_result.status_code,
+                status_code=gate_decision.status_code,
                 content={
                     "blocked": True,
-                    "reason": gate_result.reason,
-                    "detail": gate_result.detail,
+                    "reason": gate_decision.reason,
+                    "detail": gate_decision.detail.asdict(),
                 },
             )
-        model_name = req.suggestModel or gate_result.model or "gpt-4o"
+        model_name = req.suggestModel or gate_decision.model or "gpt-4o"
     trace_id = current_trace_id()
     metadata = {"mode": mode, "lang": req.lang or "en"}
     encounter_id, session_id, note_id = _resolve_encounter_context(
