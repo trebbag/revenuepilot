@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import hashlib
+import json
 import re
 import threading
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -23,6 +25,21 @@ def _sanitize_text(value: Any) -> str:
         return ""
     cleaned = DEID_POLICY.apply(text)
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _short_hash(value: str) -> str:
+    if not value:
+        return ""
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _hash_json(payload: Mapping[str, Any]) -> str:
+    try:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return ""
+    return _short_hash(canonical)
 
 
 def _split_sentences(text: str) -> List[Tuple[int, int, str]]:
@@ -57,35 +74,48 @@ def _extract_items(payload: Mapping[str, Any], keys: Iterable[str]) -> List[Any]
     return []
 
 
-def _format_item_list(items: Sequence[Any]) -> str:
-    labels: List[str] = []
+def _format_disposition_items(items: Sequence[Any], *, limit: int = 6) -> List[str]:
+    lines: List[str] = []
     for item in items:
         label = None
+        rationale = None
         if isinstance(item, Mapping):
-            for key in ("code", "name", "title", "description", "text"):
-                value = item.get(key)
-                if value:
-                    label = _sanitize_text(value)
-                    break
+            code = _sanitize_text(
+                item.get("code")
+                or item.get("Code")
+                or item.get("identifier")
+                or item.get("id")
+            )
+            description = _sanitize_text(
+                item.get("description")
+                or item.get("text")
+                or item.get("name")
+                or item.get("title")
+            )
+            rationale = _sanitize_text(
+                item.get("rationale")
+                or item.get("reason")
+                or item.get("why")
+                or item.get("note")
+                or item.get("summary")
+            )
+            if code and description:
+                label = f"{code} — {description}"
+            else:
+                label = code or description
+            if not label and item.get("code") is None:
+                label = _sanitize_text(item.get("label"))
         elif isinstance(item, (str, int, float)):
             label = _sanitize_text(item)
-        if label:
-            labels.append(label)
-    deduped: List[str] = []
-    for label in labels:
-        if label and label not in deduped:
-            deduped.append(label)
-    if not deduped:
-        return f"{len(items)} items"
-    if len(items) > len(deduped):
-        total = len(items)
-    else:
-        total = len(deduped)
-    if len(deduped) > 3:
-        preview = ", ".join(deduped[:3]) + ", …"
-    else:
-        preview = ", ".join(deduped)
-    return f"{preview} ({total} total)" if total > len(deduped) else preview
+        if not label:
+            continue
+        if rationale:
+            lines.append(f"- {label} ({rationale})")
+        else:
+            lines.append(f"- {label}")
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def _format_pmh_entries(entries: Sequence[Any], *, limit: int = 3) -> str:
@@ -207,6 +237,10 @@ class SuggestPromptBuilder:
         age: Optional[int] = None,
         sex: Optional[str] = None,
         region: Optional[str] = None,
+        note_id: Optional[str] = None,
+        encounter_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        transcript_cursor: Optional[str] = None,
     ) -> PromptBlocks:
         key = (lang or "en", specialty or "", payer or "")
 
@@ -235,6 +269,10 @@ class SuggestPromptBuilder:
             age=age,
             sex=sex,
             region=region,
+            note_id=note_id,
+            encounter_id=encounter_id,
+            session_id=session_id,
+            transcript_cursor=transcript_cursor,
         )
         return PromptBlocks(
             stable=stable_messages,
@@ -255,6 +293,10 @@ class SuggestPromptBuilder:
         age: Optional[int],
         sex: Optional[str],
         region: Optional[str],
+        note_id: Optional[str],
+        encounter_id: Optional[str],
+        session_id: Optional[str],
+        transcript_cursor: Optional[str],
     ) -> Dict[str, str]:
         sections: List[str] = []
 
@@ -273,6 +315,33 @@ class SuggestPromptBuilder:
                 fallback = "\n".join(f"- {line}" for line in fallback_sentences)
                 sections.append(f"Key note sentences:\n{fallback}")
 
+        state_parts: List[str] = []
+        for label, value in (
+            ("noteId", _sanitize_text(note_id)),
+            ("encounterId", _sanitize_text(encounter_id)),
+            ("sessionId", _sanitize_text(session_id)),
+        ):
+            if value:
+                state_parts.append(f"{label}={value}")
+
+        note_hash = _short_hash(sanitized_note)
+        if note_hash:
+            state_parts.append(f"noteHash={note_hash}")
+        previous_hash = _short_hash(sanitized_previous)
+        if previous_hash:
+            state_parts.append(f"previousHash={previous_hash}")
+        if transcript_cursor:
+            cursor = _sanitize_text(transcript_cursor)
+            if cursor:
+                state_parts.append(f"cursor={cursor}")
+        if isinstance(accepted_json, Mapping):
+            accepted_hash = _hash_json(accepted_json)
+            if accepted_hash:
+                state_parts.append(f"acceptedHash={accepted_hash}")
+
+        if state_parts:
+            sections.append("State summary: " + ", ".join(state_parts))
+
         if rules:
             rule_lines = [f"- {_sanitize_text(rule)}" for rule in rules if _sanitize_text(rule)]
             if rule_lines:
@@ -287,13 +356,20 @@ class SuggestPromptBuilder:
                 accepted_json,
                 ("denied", "rejected", "dismissed", "declined"),
             )
-            parts: List[str] = []
-            if accepted:
-                parts.append(f"accepted {_format_item_list(accepted)}")
-            if denied:
-                parts.append(f"denied {_format_item_list(denied)}")
-            if parts:
-                sections.append("Suggestion disposition: " + "; ".join(parts))
+            disposition_lines: List[str] = []
+            accepted_lines = _format_disposition_items(accepted)
+            denied_lines = _format_disposition_items(denied)
+            if accepted_lines:
+                disposition_lines.append("Accepted:")
+                disposition_lines.extend(accepted_lines)
+            if denied_lines:
+                if disposition_lines:
+                    disposition_lines.append("Denied:")
+                else:
+                    disposition_lines.append("Denied:")
+                disposition_lines.extend(denied_lines)
+            if disposition_lines:
+                sections.append("Suggestion disposition:\n" + "\n".join(disposition_lines))
 
         transcript_snippet = _sanitize_text(transcript)
         if transcript_snippet:

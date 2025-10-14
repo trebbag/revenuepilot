@@ -13649,6 +13649,10 @@ async def suggest(
                 age=req.age,
                 sex=req.sex,
                 region=req.region,
+                note_id=note_id or req.noteId,
+                encounter_id=encounter_id,
+                session_id=session_id,
+                transcript_cursor=req.transcriptCursor,
             )
             observation.add_metadata("promptCache", builder_blocks.cache_state)
             messages = builder_blocks.stable + builder_blocks.dynamic
