@@ -86,6 +86,8 @@ function SuggestionPanel({
   }));
   const [autoBusy, setAutoBusy] = useState(false);
   const [manualBusy, setManualBusy] = useState(false);
+  const [serverManualReady, setServerManualReady] = useState(false);
+  const [showHighAccuracyCTA, setShowHighAccuracyCTA] = useState(false);
   const [currentHash, setCurrentHash] = useState(
     hashText(typeof text === 'string' ? text : ''),
   );
@@ -216,6 +218,21 @@ function SuggestionPanel({
     return Number.isFinite(parsed) ? parsed : 0;
   };
 
+  const isTruthyFlag = (value) => {
+    if (value === true) return true;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return normalized === 'true' || normalized === '1' || normalized === 'yes';
+    }
+    if (typeof value === 'number') return value !== 0;
+    return false;
+  };
+
+  const extractFlag = (source, keys) => {
+    if (!source || typeof source !== 'object') return false;
+    return keys.some((key) => isTruthyFlag(source[key]));
+  };
+
   const gateDetail = gateState.detail || {};
   const deltaValue = safeNumber(
     gateDetail.delta ?? gateDetail.delta_chars ?? gateDetail.deltaChars ?? 0,
@@ -232,10 +249,44 @@ function SuggestionPanel({
   );
   const meaningfulChange =
     salientChange || contextFlip || (manualThreshold > 0 && deltaValue >= manualThreshold);
-  const canRefresh = Boolean(
-    meaningfulChange && currentHash && currentHash !== lastCallHashRef.current,
-  );
-  const refreshDisabled = manualBusy || autoBusy || loading || !canRefresh;
+  const manualReadyFromServer = Boolean(serverManualReady);
+  const hashChanged = Boolean(currentHash && currentHash !== lastCallHashRef.current);
+  const allowManualByLocal = Boolean(meaningfulChange && hashChanged);
+  const allowManual = Boolean((manualReadyFromServer || allowManualByLocal) && currentHash);
+  const refreshDisabled = manualBusy || autoBusy || loading || !allowManual;
+
+  useEffect(() => {
+    const manualFlagCandidates = [
+      suggestions,
+      suggestions?.meta,
+      suggestions?.detail,
+      suggestions?.manual,
+      suggestions?.signals,
+      gateState.detail || {},
+    ];
+    const enableManual = manualFlagCandidates.some((candidate) =>
+      extractFlag(candidate, [
+        'enableManual',
+        'manualEnabled',
+        'manual_enable',
+        'manualReady',
+        'manual_ready',
+        'readyManual',
+      ]),
+    );
+    const lowConfidence = manualFlagCandidates.some((candidate) =>
+      extractFlag(candidate, ['lowConfidence', 'low_confidence', 'confidenceLow']),
+    );
+    const materialDivergence = manualFlagCandidates.some((candidate) =>
+      extractFlag(candidate, [
+        'materialDivergence',
+        'material_divergence',
+        'materialDifference',
+      ]),
+    );
+    setServerManualReady(enableManual);
+    setShowHighAccuracyCTA(lowConfidence || materialDivergence);
+  }, [suggestions, gateState.detail]);
 
   const handleManualRefresh = async () => {
     if (refreshDisabled || !fetchSuggestions || typeof text !== 'string') return;
@@ -598,20 +649,34 @@ function SuggestionPanel({
             ))}
           </select>
         </label>
-        <button
-          type="button"
-          onClick={handleManualRefresh}
-          disabled={refreshDisabled}
-          style={{
-            alignSelf: 'flex-end',
-            padding: '0.35rem 0.75rem',
-            cursor: refreshDisabled ? 'not-allowed' : 'pointer',
-          }}
-        >
-          {manualBusy
-            ? t('suggestion.refreshing', 'Refreshing…')
-            : t('app.refresh', 'Refresh')}
-        </button>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+          <button
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={refreshDisabled}
+            title="Runs a low-cost update when you’ve added meaningful info."
+            style={{
+              alignSelf: 'flex-end',
+              padding: '0.35rem 0.75rem',
+              cursor: refreshDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {manualBusy
+              ? t('suggestion.refreshing', 'Refreshing…')
+              : t('suggestion.refreshQuick', 'Refresh (quick)')}
+          </button>
+          {showHighAccuracyCTA ? (
+            <span
+              style={{
+                marginTop: '0.25rem',
+                fontSize: '0.8em',
+                color: '#2563eb',
+              }}
+            >
+              {t('suggestion.considerHighAccuracy', 'Consider High-Accuracy')}
+            </span>
+          ) : null}
+        </div>
       </div>
       {cards.map(({ type, key, title, items }) => (
         <div key={type} className={`card ${type}`}>
