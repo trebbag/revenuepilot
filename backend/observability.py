@@ -14,7 +14,7 @@ import os
 import re
 import time
 import sys
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 import structlog
 
@@ -235,6 +235,7 @@ class ObservabilityRecorder:
     def finish_observation(self, observation: RouteObservation) -> None:
         observation._finalise()
         self._persist(observation)
+        self._record_gate_usage_for_observation(observation)
         if self._metrics_callback:
             try:
                 self._metrics_callback(observation)
@@ -287,6 +288,11 @@ class ObservabilityRecorder:
         clinician_id: Optional[int],
         note_id: Optional[str],
         delta_chars: Optional[int],
+        dice: Optional[float] = None,
+        cosine: Optional[float] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        cost_estimate_usd: Optional[float] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
         sanitized_route = _sanitize_value(route, limit=64) or "unknown"
@@ -310,6 +316,51 @@ class ObservabilityRecorder:
                     cleaned[safe_key] = _sanitize_value(value)
             if cleaned:
                 metadata_payload = cleaned
+
+        extra_metadata: Dict[str, Any] = {}
+        if delta_chars is not None:
+            extra_metadata["deltaChars"] = int(delta_chars)
+        if dice is not None:
+            extra_metadata["dice"] = float(dice)
+        if cosine is not None:
+            extra_metadata["cosine"] = float(cosine)
+        if note_id:
+            extra_metadata["noteId"] = _sanitize_value(note_id, limit=80)
+        if clinician_id is not None:
+            extra_metadata["clinicianId"] = _sanitize_value(str(clinician_id), limit=80)
+        if prompt_tokens is not None:
+            extra_metadata["promptTokens"] = int(prompt_tokens)
+        if completion_tokens is not None:
+            extra_metadata["completionTokens"] = int(completion_tokens)
+        if cost_estimate_usd is not None:
+            extra_metadata["costEstimateUsd"] = round(float(cost_estimate_usd), 6)
+
+        if metadata_payload is None:
+            metadata_payload = extra_metadata or None
+        elif extra_metadata:
+            metadata_payload.update(extra_metadata)
+
+        logger.info(
+            "ai_gate_decision_recorded",
+            route=sanitized_route,
+            allowed=bool(allowed),
+            reason=sanitized_reason or ("allowed" if allowed else "blocked"),
+            model=sanitized_model,
+            note_id=_sanitize_value(note_id, limit=80) if note_id else None,
+            clinician_id=_sanitize_value(str(clinician_id), limit=64)
+            if clinician_id is not None
+            else None,
+            delta_chars=int(delta_chars) if delta_chars is not None else None,
+            dice=float(dice) if dice is not None else None,
+            cosine=float(cosine) if cosine is not None else None,
+            prompt_tokens=int(prompt_tokens) if prompt_tokens is not None else None,
+            completion_tokens=int(completion_tokens)
+            if completion_tokens is not None
+            else None,
+            cost_estimate_usd=round(float(cost_estimate_usd), 6)
+            if cost_estimate_usd is not None
+            else None,
+        )
 
         conn = self._get_connection()
         with session_scope(conn) as session:
@@ -352,6 +403,51 @@ class ObservabilityRecorder:
                 finished_at=observation.finished_at,
             )
             session.add(row)
+
+    def _record_gate_usage_for_observation(self, observation: RouteObservation) -> None:
+        if not observation.note_hash:
+            return
+        clinician_value = observation.metadata.get("clinicianId") if observation.metadata else None
+        clinician_hash = _hash_identifier(str(clinician_value)) if clinician_value else None
+        conn = self._get_connection()
+        with session_scope(conn) as session:
+            query = session.query(db_models.AIGateDecisionRecord).filter(
+                db_models.AIGateDecisionRecord.note_hash == observation.note_hash,
+                db_models.AIGateDecisionRecord.allowed.is_(True),
+            )
+            if clinician_hash:
+                query = query.filter(
+                    db_models.AIGateDecisionRecord.clinician_hash == clinician_hash
+                )
+            record = query.order_by(db_models.AIGateDecisionRecord.created_at.desc()).first()
+            if record is None:
+                return
+            metadata_payload = record.metadata_payload or {}
+            if not isinstance(metadata_payload, dict):
+                metadata_payload = {}
+            metadata_payload.update(
+                {
+                    "promptTokens": int(observation.prompt_tokens or 0),
+                    "completionTokens": int(observation.completion_tokens or 0),
+                    "costEstimateUsd": round(observation.price_usd or 0.0, 6),
+                }
+            )
+            if observation.model:
+                metadata_payload.setdefault("model", observation.model)
+            record.metadata_payload = metadata_payload
+            if not record.model and observation.model:
+                record.model = _sanitize_value(observation.model, limit=80)
+            session.add(record)
+        logger.info(
+            "ai_gate_usage_recorded",
+            route=record.route if record else None,
+            note_hash=observation.note_hash,
+            clinician_id=clinician_value,
+            prompt_tokens=int(observation.prompt_tokens or 0),
+            completion_tokens=int(observation.completion_tokens or 0),
+            cost_estimate_usd=round(observation.price_usd or 0.0, 6),
+            model=observation.model,
+        )
 
     def _emit_alerts(self, observation: RouteObservation) -> None:
         if not self._alert_callback:
@@ -481,6 +577,16 @@ class ObservabilityRecorder:
         route_trends: Dict[str, List[Dict[str, Any]]] = {}
         recent_failures: List[Dict[str, Any]] = []
         cost_by_route_model: List[Dict[str, Any]] = []
+        clinician_day_totals: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(
+            lambda: {
+                "clinicianId": "",
+                "day": "",
+                "calls": 0,
+                "promptTokens": 0.0,
+                "completionTokens": 0.0,
+                "totalUsd": 0.0,
+            }
+        )
 
         for route_name, items in sorted(by_route.items()):
             runs = len(items)
@@ -499,6 +605,29 @@ class ObservabilityRecorder:
                 total_cost += item.price_usd or 0.0
                 if item.note_hash and item.status == "success":
                     note_cost[item.note_hash] += item.price_usd or 0.0
+                metadata_blob = item.metadata_payload or {}
+                clinician_identifier: Optional[str] = None
+                if isinstance(metadata_blob, dict):
+                    clinician_identifier = metadata_blob.get("clinicianId")
+                if clinician_identifier:
+                    clinician_str = str(clinician_identifier)
+                    started_time = _ensure_timezone(item.started_at) or now
+                    day_key = started_time.date().isoformat()
+                    entry = clinician_day_totals[(clinician_str, day_key)]
+                    entry["clinicianId"] = clinician_str
+                    entry["day"] = day_key
+                    entry["calls"] = int(entry.get("calls", 0)) + 1
+                    entry["promptTokens"] = (
+                        float(entry.get("promptTokens", 0.0))
+                        + float(item.prompt_tokens or 0)
+                    )
+                    entry["completionTokens"] = (
+                        float(entry.get("completionTokens", 0.0))
+                        + float(item.completion_tokens or 0)
+                    )
+                    entry["totalUsd"] = (
+                        float(entry.get("totalUsd", 0.0)) + float(item.price_usd or 0.0)
+                    )
                 if item.status != "success" and len(recent_failures) < failure_limit:
                     failure_payload = {
                         "route": route_name,
@@ -602,6 +731,27 @@ class ObservabilityRecorder:
         queue_metrics = self._queue_snapshot(window_start)
         gate_metrics = self._gate_summary(window_start, sanitized_route)
         gate_metrics["costByRouteModel"] = cost_by_route_model
+        cost_by_clinician_day: List[Dict[str, Any]] = []
+        for (_, day), payload in sorted(
+            clinician_day_totals.items(),
+            key=lambda kv: (kv[0][1], kv[0][0]),
+        ):
+            calls = int(payload.get("calls", 0)) or 0
+            prompt_total = float(payload.get("promptTokens", 0.0))
+            completion_total = float(payload.get("completionTokens", 0.0))
+            total_usd = float(payload.get("totalUsd", 0.0))
+            cost_by_clinician_day.append(
+                {
+                    "clinicianId": payload.get("clinicianId"),
+                    "day": payload.get("day", day),
+                    "calls": calls,
+                    "promptTokens": int(prompt_total),
+                    "completionTokens": int(completion_total),
+                    "totalUsd": round(total_usd, 6),
+                    "avgUsd": round(total_usd / calls, 6) if calls else 0.0,
+                }
+            )
+        gate_metrics["costByClinicianDay"] = cost_by_clinician_day
 
         return {
             "generatedAt": now.isoformat(),
@@ -674,6 +824,11 @@ class ObservabilityRecorder:
         allowed_count = 0
         blocked_count = 0
         total_delta_allowed = 0.0
+        prompt_tokens_total = 0.0
+        completion_tokens_total = 0.0
+        cost_estimate_total = 0.0
+        dice_samples: List[float] = []
+        cosine_samples: List[float] = []
 
         for decision in decisions:
             if decision.allowed:
@@ -682,6 +837,37 @@ class ObservabilityRecorder:
                 allowed_reasons[reason_label] += 1
                 if decision.delta_chars is not None:
                     total_delta_allowed += max(0.0, float(decision.delta_chars))
+                metadata_blob = decision.metadata_payload or {}
+                dice_value = metadata_blob.get("dice") if isinstance(metadata_blob, dict) else None
+                cosine_value = metadata_blob.get("cosine") if isinstance(metadata_blob, dict) else None
+                prompt_value = metadata_blob.get("promptTokens") if isinstance(metadata_blob, dict) else None
+                completion_value = metadata_blob.get("completionTokens") if isinstance(metadata_blob, dict) else None
+                cost_value = metadata_blob.get("costEstimateUsd") if isinstance(metadata_blob, dict) else None
+                try:
+                    if dice_value is not None:
+                        dice_samples.append(float(dice_value))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    if cosine_value is not None:
+                        cosine_samples.append(float(cosine_value))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    if prompt_value is not None:
+                        prompt_tokens_total += float(prompt_value)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    if completion_value is not None:
+                        completion_tokens_total += float(completion_value)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    if cost_value is not None:
+                        cost_estimate_total += float(cost_value)
+                except (TypeError, ValueError):
+                    pass
             else:
                 blocked_count += 1
                 reason_label = decision.reason or "unknown"
@@ -697,6 +883,29 @@ class ObservabilityRecorder:
         if allowed_count:
             avg_edits = total_delta_allowed / allowed_count
 
+        usage_payload = {
+            "promptTokens": {
+                "total": int(prompt_tokens_total),
+                "avg": round(prompt_tokens_total / allowed_count, 2) if allowed_count else 0.0,
+            },
+            "completionTokens": {
+                "total": int(completion_tokens_total),
+                "avg": round(completion_tokens_total / allowed_count, 2) if allowed_count else 0.0,
+            },
+            "costUsd": {
+                "total": round(cost_estimate_total, 6),
+                "avg": round(cost_estimate_total / allowed_count, 6) if allowed_count else 0.0,
+            },
+            "similarity": {
+                "diceAvg": round(sum(dice_samples) / len(dice_samples), 4)
+                if dice_samples
+                else 0.0,
+                "cosineAvg": round(sum(cosine_samples) / len(cosine_samples), 4)
+                if cosine_samples
+                else 0.0,
+            },
+        }
+
         return {
             "counts": {
                 "allowed": allowed_count,
@@ -706,6 +915,7 @@ class ObservabilityRecorder:
             "allowedReasons": _format_reason_counts(allowed_reasons),
             "blockedReasons": _format_reason_counts(blocked_reasons),
             "avgEditsPerAllowed": round(avg_edits, 2),
+            "usage": usage_payload,
         }
 
     # ------------------------------------------------------------------

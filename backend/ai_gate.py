@@ -18,6 +18,16 @@ from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Tuple
 
 from backend.embeddings import cosine_distance, get_embedding_client
+from backend.ai_gating import (
+    AI_AUTO_THRESHOLD_CHARS,
+    AI_AUTO_THRESHOLD_PCT,
+    AI_COLD_START_CHARS,
+    AI_EMBEDDING_MODEL,
+    AI_MANUAL_THRESHOLD_CHARS,
+    AI_MANUAL_THRESHOLD_PCT,
+    AI_SEMANTIC_DISTANCE_AUTO_MIN,
+    AI_SEMANTIC_DISTANCE_MANUAL_MIN,
+)
 
 
 ZERO_WIDTH_REPLACEMENTS = str.maketrans({
@@ -213,7 +223,7 @@ class AIGate:
         if not old_span.strip() or not new_span.strip():
             return 1.0
         if self._embed_client is None:
-            self._embed_client = get_embedding_client("text-embedding-3-small")
+            self._embed_client = get_embedding_client(AI_EMBEDDING_MODEL)
         vectors = self._embed_client.embed_many([old_span, new_span])
         if len(vectors) != 2:
             raise RuntimeError("Embedding client returned unexpected response")
@@ -234,8 +244,14 @@ class AIGate:
         normalized = normalize(text)
         note_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         L = len(normalized)
-        auto_threshold = max(100, math.ceil(0.10 * L))
-        manual_threshold = max(60, math.ceil(0.05 * L))
+        auto_threshold = max(
+            AI_AUTO_THRESHOLD_CHARS,
+            math.ceil(AI_AUTO_THRESHOLD_PCT * L),
+        )
+        manual_threshold = max(
+            AI_MANUAL_THRESHOLD_CHARS,
+            math.ceil(AI_MANUAL_THRESHOLD_PCT * L),
+        )
         detail = GateDetail(length=L, auto_threshold=auto_threshold, manual_threshold=manual_threshold)
 
         if not _has_boundary(text):
@@ -268,8 +284,10 @@ class AIGate:
         salient = _has_salience(old_span, new_span)
         detail.salient = salient
 
+        intent_normalized = (intent or "auto").strip().lower()
+
         if not state.cold_start_completed:
-            if L < 500:
+            if L < AI_COLD_START_CHARS:
                 self._update_state(state, normalized, note_hash, transcript_cursor, accepted_json)
                 return GateDecision(
                     allowed=False,
@@ -282,7 +300,12 @@ class AIGate:
 
         if not salient:
             lexical_trigger = delta < 40 or dice > 0.90
-            if distance < 0.08:
+            distance_threshold = (
+                AI_SEMANTIC_DISTANCE_MANUAL_MIN
+                if intent_normalized == "manual"
+                else AI_SEMANTIC_DISTANCE_AUTO_MIN
+            )
+            if distance < distance_threshold:
                 if lexical_trigger or delta < L:
                     self._update_state(state, normalized, note_hash, transcript_cursor, accepted_json)
                     return GateDecision(
@@ -293,7 +316,6 @@ class AIGate:
                         status_code=409,
                     )
 
-            intent_normalized = (intent or "auto").strip().lower()
             if intent_normalized == "manual":
                 threshold = manual_threshold
             else:

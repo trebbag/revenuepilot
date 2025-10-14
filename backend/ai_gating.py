@@ -14,6 +14,7 @@ import difflib
 import hashlib
 import json
 import math
+import os
 import statistics
 import uuid
 from dataclasses import dataclass
@@ -48,6 +49,30 @@ ZERO_WIDTH_REPLACEMENTS = str.maketrans({
     "\u200d": "",
     "\ufeff": "",
 })
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+AI_COLD_START_CHARS = _env_int("AI_COLD_START_CHARS", 500)
+AI_AUTO_THRESHOLD_CHARS = _env_int("AI_AUTO_THRESHOLD_CHARS", 100)
+AI_AUTO_THRESHOLD_PCT = _env_float("AI_AUTO_THRESHOLD_PCT", 0.10)
+AI_MANUAL_THRESHOLD_CHARS = _env_int("AI_MANUAL_THRESHOLD_CHARS", 60)
+AI_MANUAL_THRESHOLD_PCT = _env_float("AI_MANUAL_THRESHOLD_PCT", 0.05)
+AI_SEMANTIC_DISTANCE_AUTO_MIN = _env_float("AI_SEMANTIC_DISTANCE_AUTO_MIN", 0.08)
+AI_SEMANTIC_DISTANCE_MANUAL_MIN = _env_float("AI_SEMANTIC_DISTANCE_MANUAL_MIN", 0.15)
+AI_EMBEDDING_MODEL = os.getenv("AI_EMBEDDING_MODEL", os.getenv("AI_EMBED_MODEL", "text-embedding-3-small"))
 
 
 SECTION_PATTERNS: Dict[str, Tuple[str, ...]] = {
@@ -105,6 +130,8 @@ class GateDetail:
     cap_daily_manual4o: int = 6
     auto4o_count: int = 0
     manual4o_count_day: int = 0
+    dice: float = 0.0
+    cosine: float = 0.0
 
     def asdict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -338,7 +365,7 @@ class AIGatingService:
         if embedding_client is not None:
             self._embedder = embedding_client
         else:
-            model_name = embed_model or "text-embedding-3-small"
+            model_name = embed_model or AI_EMBEDDING_MODEL
             self._embedder = get_embedding_client(model_name)
         self._cost_high_cents = 0.2  # heuristic per thousand tokens
         self._cost_mini_cents = 0.05
@@ -455,8 +482,14 @@ class AIGatingService:
         now = datetime.now(timezone.utc)
         normalized = normalize_note_text(payload.text)
         L = len(normalized)
-        mini_threshold = max(60, math.ceil(0.05 * L))
-        full_threshold = max(100, math.ceil(0.10 * L))
+        mini_threshold = max(
+            AI_MANUAL_THRESHOLD_CHARS,
+            math.ceil(AI_MANUAL_THRESHOLD_PCT * L),
+        )
+        full_threshold = max(
+            AI_AUTO_THRESHOLD_CHARS,
+            math.ceil(AI_AUTO_THRESHOLD_PCT * L),
+        )
 
         detail = GateDetail(
             L=L,
@@ -480,9 +513,27 @@ class AIGatingService:
 
             previous_snapshot = state.last_note_snapshot or ""
             spans = _diff_spans(previous_snapshot, normalized)
-            delta_chars = sum(span.delta_chars for span in spans)
+            span_metrics: List[Tuple[DiffSpan, float, Optional[float]]] = []
+            max_dice = 0.0
+            max_distance = 0.0
+            delta_chars = 0
+            for span in spans:
+                delta_chars += span.delta_chars
+                dice_val = trigram_dice(span.old_text, span.new_text)
+                distance_val = embedding_distance(
+                    self._embedder,
+                    f"{EMBED_SENTINEL_OLD}\n{span.old_text}",
+                    f"{EMBED_SENTINEL_NEW}\n{span.new_text}",
+                )
+                if dice_val > max_dice:
+                    max_dice = dice_val
+                if distance_val is not None and distance_val > max_distance:
+                    max_distance = distance_val
+                span_metrics.append((span, dice_val, distance_val))
             sections = parse_sections(normalized)
             detail.delta_chars = delta_chars
+            detail.dice = round(max_dice, 6)
+            detail.cosine = round(max_distance, 6)
 
             today = now.date()
             daily = (
@@ -536,7 +587,7 @@ class AIGatingService:
             state.last_input_ts = input_time
 
             # Cold start gate -------------------------------------------------
-            cold_ready = L >= 500 and _has_boundary(payload.text)
+            cold_ready = L >= AI_COLD_START_CHARS and _has_boundary(payload.text)
             if not state.cold_start_completed and payload.request_type != "finalization":
                 if not cold_ready and not payload.force:
                     detail.reason = "BELOW_THRESHOLD"
@@ -606,7 +657,11 @@ class AIGatingService:
 
             meaningful = True
             if not payload.force:
-                meaningful = self._is_meaningful(spans, sections)
+                meaningful = self._is_meaningful(
+                    span_metrics,
+                    sections,
+                    request_type=payload.request_type,
+                )
                 if not meaningful:
                     detail.reason = "NOT_MEANINGFUL"
                     return AIGateDecision(
@@ -736,26 +791,31 @@ class AIGatingService:
 
     # Internal helpers ------------------------------------------------
 
-    def _is_meaningful(self, spans: Sequence[DiffSpan], sections: Mapping[str, Sequence[int]]) -> bool:
-        if not spans:
+    def _is_meaningful(
+        self,
+        span_metrics: Sequence[Tuple[DiffSpan, float, Optional[float]]],
+        sections: Mapping[str, Sequence[int]],
+        *,
+        request_type: str,
+    ) -> bool:
+        if not span_metrics:
             return False
-        for span in spans:
+        distance_threshold = (
+            AI_SEMANTIC_DISTANCE_MANUAL_MIN
+            if request_type in {"manual", "manual_full", "manual_mini"}
+            else AI_SEMANTIC_DISTANCE_AUTO_MIN
+        )
+        for span, dice, distance in span_metrics:
             touched = _touches_sections(span, sections)
             if {"PE", "A/P"} & touched:
                 return True
             if span.delta_chars < 40:
                 continue
-            dice = trigram_dice(span.old_text, span.new_text)
             if dice > 0.90:
                 continue
-            distance = embedding_distance(
-                self._embedder,
-                f"{EMBED_SENTINEL_OLD}\n{span.old_text}",
-                f"{EMBED_SENTINEL_NEW}\n{span.new_text}",
-            )
             if distance is None:
                 return True
-            if distance >= 0.08:
+            if distance >= distance_threshold:
                 return True
         return False
 

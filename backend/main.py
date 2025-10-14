@@ -357,7 +357,9 @@ def _env_float(name: str, default: float) -> float:
 
 AI_MODEL_HIGH = os.getenv("AI_MODEL_HIGH", "gpt-4o")
 AI_MODEL_MINI = os.getenv("AI_MODEL_MINI", "gpt-4o-mini")
-AI_EMBED_MODEL = os.getenv("AI_EMBED_MODEL", "text-embedding-3-small")
+AI_EMBED_MODEL = os.getenv("AI_EMBEDDING_MODEL") or os.getenv(
+    "AI_EMBED_MODEL", "text-embedding-3-small"
+)
 AI_GATING_HASH_SALT = os.getenv("AI_NOTE_HASH_SALT", "revpilot")
 AI_GATE_MIN_SECS = max(0.1, _env_float("AI_GATE_MIN_SECS", 0.7))
 AI_GATE_COOLDOWN_FULL = max(0.0, _env_float("AI_GATE_4O_COOLDOWN", 7.0))
@@ -12828,17 +12830,21 @@ async def summarize(
         except sqlite3.OperationalError:
             pass
 
+    clinician_id = _get_user_db_id(user.get("sub")) if user.get("sub") else None
     mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
     cache_state = "warm" if mode == "offline" else "cold"
     model_name = req.summarizeModel or ("offline" if mode == "offline" else "gpt-4o")
     trace_id = current_trace_id()
+    metadata: Dict[str, Any] = {"mode": mode, "lang": req.lang or "en"}
+    if clinician_id is not None:
+        metadata["clinicianId"] = clinician_id
     with observe_ai_route(
         route="summary",
         note_id=req.noteId,
         cache_state=cache_state,
         model=model_name,
         trace_id=trace_id,
-        metadata={"mode": mode, "lang": req.lang or "en"},
+        metadata=metadata,
     ) as observation:
         if mode == "offline":
             from backend.offline_model import summarize as offline_summarize
@@ -13264,13 +13270,17 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
     cache_state = "warm" if mode == "offline" else "cold"
     model_name = req.beautifyModel or ("offline" if mode == "offline" else "gpt-4o")
     trace_id = current_trace_id()
+    clinician_id = _get_user_db_id(user.get("sub")) if user.get("sub") else None
+    metadata: Dict[str, Any] = {"mode": mode, "lang": req.lang or "en"}
+    if clinician_id is not None:
+        metadata["clinicianId"] = clinician_id
     with observe_ai_route(
         route="beautify",
         note_id=req.noteId,
         cache_state=cache_state,
         model=model_name,
         trace_id=trace_id,
-        metadata={"mode": mode, "lang": req.lang or "en"},
+        metadata=metadata,
     ) as observation:
         if mode == "offline":
             from backend.offline_model import beautify as offline_beautify
@@ -13358,10 +13368,10 @@ async def suggest(
     mode = "offline" if offline_active or USE_OFFLINE_MODEL else "remote"
     cache_state = "warm" if mode == "offline" else "cold"
     model_name: Optional[str]
+    clinician_id: Optional[int] = _get_user_db_id(user.get("sub")) if user.get("sub") else None
     if mode == "offline":
         model_name = req.suggestModel or "offline"
     else:
-        clinician_id = _get_user_db_id(user.get("sub"))
         if clinician_id is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         try:
@@ -13387,6 +13397,8 @@ async def suggest(
         model_name = req.suggestModel or gate_decision.model or "gpt-4o"
     trace_id = current_trace_id()
     metadata = {"mode": mode, "lang": req.lang or "en"}
+    if clinician_id is not None:
+        metadata["clinicianId"] = clinician_id
     encounter_id, session_id, note_id = _resolve_encounter_context(
         user.get("sub"),
         req.encounterId,
@@ -16051,6 +16063,14 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
         delta_value = int(detail_dict.get("delta_chars")) if detail_dict.get("delta_chars") is not None else None
     except (TypeError, ValueError):
         delta_value = None
+    try:
+        dice_value = float(detail_dict.get("dice")) if detail_dict.get("dice") is not None else None
+    except (TypeError, ValueError):
+        dice_value = None
+    try:
+        cosine_value = float(detail_dict.get("cosine")) if detail_dict.get("cosine") is not None else None
+    except (TypeError, ValueError):
+        cosine_value = None
 
     if decision.allowed:
         AI_GATE_DECISIONS.labels(route=decision.route, decision="allowed", reason="allowed").inc()
@@ -16076,6 +16096,8 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
             clinician_id=clinician_id,
             note_id=req.noteId,
             delta_chars=delta_value,
+            dice=dice_value,
+            cosine=cosine_value,
             metadata={
                 "force": bool(req.force),
                 "request_type": req.requestType,
@@ -16111,6 +16133,8 @@ async def gate_note_ai(req: AIGateRequest, user=Depends(require_role("user"))):
         clinician_id=clinician_id,
         note_id=req.noteId,
         delta_chars=delta_value,
+        dice=dice_value,
+        cosine=cosine_value,
         metadata={
             "force": bool(req.force),
             "request_type": req.requestType,
@@ -16903,7 +16927,10 @@ async def _compliance_check(
     cache_state = "warm" if offline else "cold"
     model_name = "offline" if offline else "gpt-4o"
     trace_id = current_trace_id()
+    clinician_id = _get_user_db_id(username) if username else None
     metadata = {"mode": "offline" if offline else "remote"}
+    if clinician_id is not None:
+        metadata["clinicianId"] = clinician_id
     encounter_id, session_id, note_id = _resolve_encounter_context(
         username,
         req.encounterId,
