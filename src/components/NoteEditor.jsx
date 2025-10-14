@@ -5,6 +5,7 @@ import {
   forwardRef,
   useImperativeHandle,
   useMemo,
+  useCallback,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -225,6 +226,29 @@ const NoteEditor = forwardRef(function NoteEditor(
   const sessionStateRef = useRef(null);
   const sessionKeyRef = useRef('');
   const sessionTimerRef = useRef(null);
+
+  const mergeSuggestionPayload = useCallback((previous, incoming) => {
+    if (!incoming) return previous || null;
+    if (!previous) return incoming;
+    const merged = { ...previous, ...incoming };
+    const arrayKeys = ['codes', 'compliance', 'publicHealth', 'differentials'];
+    arrayKeys.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+        const value = incoming[key];
+        if (Array.isArray(value)) {
+          merged[key] = [...value];
+        } else if (value == null) {
+          merged[key] = [];
+        } else {
+          merged[key] = value;
+        }
+      }
+    });
+    if (Object.prototype.hasOwnProperty.call(incoming, 'followUp')) {
+      merged.followUp = incoming.followUp ?? null;
+    }
+    return merged;
+  }, []);
   const buildSuggestionContext = () => {
     const sessionContext = sessionStateRef.current || visitSession;
     const encounterSource =
@@ -262,9 +286,23 @@ const NoteEditor = forwardRef(function NoteEditor(
       payer,
       ...(extra || {}),
     };
+    const intentRaw =
+      (extra?.intent || requestContext.intent || '').toString().toLowerCase();
     return getSuggestions(typeof noteText === 'string' ? noteText : '', requestContext).then(
       (result) => {
-        if (!result?.blocked) setSuggestions(result);
+        if (!result?.blocked) {
+          let finalResult = result;
+          if (intentRaw === 'manual') {
+            setSuggestions((prev) => {
+              const merged = mergeSuggestionPayload(prev, result);
+              finalResult = merged;
+              return merged;
+            });
+          } else {
+            setSuggestions(result);
+          }
+          return finalResult;
+        }
         return result;
       },
     );

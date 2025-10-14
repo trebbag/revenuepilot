@@ -764,7 +764,10 @@ export async function getSuggestions(text, context = {}) {
     if (typeof context.useOfflineMode === 'boolean')
       payload.useOfflineMode = context.useOfflineMode;
     if (context.suggestModel) payload.suggestModel = context.suggestModel;
-    const resp = await fetch(`${baseUrl}/suggest`, {
+    const rawIntent =
+      typeof context.intent === 'string' ? context.intent.toLowerCase() : '';
+    const suggestPath = rawIntent === 'manual' ? '/suggest?intent=manual' : '/suggest';
+    const resp = await fetch(`${baseUrl}${suggestPath}`, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),

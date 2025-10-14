@@ -219,6 +219,28 @@ test('refresh button enables on salient gate and calls manual intent', async () 
   );
 });
 
+test('refresh button honors server enable flag and shows CTA when confidence is low', async () => {
+  const fetchSuggestions = vi.fn().mockResolvedValue({});
+  const { getByRole, findByText } = render(
+    <SuggestionPanel
+      suggestions={{
+        codes: [],
+        compliance: [],
+        publicHealth: [],
+        differentials: [],
+        enableManual: true,
+        lowConfidence: true,
+      }}
+      settingsState={null}
+      text={'Baseline.\nMeaningful change'}
+      fetchSuggestions={fetchSuggestions}
+    />,
+  );
+  const refreshButton = getByRole('button', { name: /refresh/i });
+  await waitFor(() => expect(refreshButton).not.toBeDisabled());
+  expect(await findByText('Consider High-Accuracy')).toBeTruthy();
+});
+
 test('changing specialty or payer triggers gate, fetch, and notifies parent', async () => {
   const fetchSuggestions = vi.fn().mockResolvedValue({});
   const gateSuggestions = vi
