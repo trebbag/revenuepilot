@@ -10,10 +10,13 @@ from backend import main
 from backend.db.models import AIJsonSnapshot, AINoteState
 from backend.migrations import create_all_tables, session_scope
 from backend.ai_gating import (
+    AIGateInput,
     AIGatingService,
     DiffSpan,
     EMBED_SENTINEL_NEW,
     EMBED_SENTINEL_OLD,
+    embedding_distance,
+    trigram_dice,
 )
 from backend.migrations import create_all_tables
 from backend.encryption import decrypt_ai_payload
@@ -78,6 +81,7 @@ def gating_client(monkeypatch, mock_embedding_client):
     monkeypatch.setattr(main, "AI_GATE_COOLDOWN_FULL", 0.1)
     monkeypatch.setattr(main, "AI_GATE_COOLDOWN_MINI", 0.1)
     monkeypatch.setattr(main, "AI_GATE_MIN_SECS", 0.0)
+    monkeypatch.setattr(main, "record_gate_decision", lambda **_: None)
 
     client = TestClient(main.app)
     try:
@@ -369,6 +373,35 @@ def _make_service(db, embed_client):
     )
 
 
+class _DistanceController:
+    def __init__(self) -> None:
+        self.mapping: Dict[str, float] = {}
+        self.default: float = 0.0
+
+    def set(self, marker: str, value: float) -> None:
+        self.mapping[marker] = value
+
+    def set_default(self, value: float) -> None:
+        self.default = value
+
+    def resolve(self, needle: str) -> float:
+        for marker, value in self.mapping.items():
+            if marker in needle:
+                return value
+        return self.default
+
+
+@pytest.fixture
+def embedding_distance_stub(monkeypatch) -> _DistanceController:
+    controller = _DistanceController()
+
+    def fake_distance(embedder, a: str, b: str) -> float:
+        return controller.resolve(b)
+
+    monkeypatch.setattr("backend.ai_gating.embedding_distance", fake_distance)
+    return controller
+
+
 def test_is_meaningful_uses_embedding_sentinels(mock_embedding_client):
     mock_embedding_client.reset()
     db = sqlite3.connect(":memory:")
@@ -386,7 +419,15 @@ def test_is_meaningful_uses_embedding_sentinels(mock_embedding_client):
         mock_embedding_client.set_vector(old_payload, [1.0, 0.0, 0.0])
         mock_embedding_client.set_vector(new_payload, [1.0, 0.0, 0.0])
 
-        assert service._is_meaningful([span], {}) is False
+        metrics = [
+            (
+                span,
+                trigram_dice(span.old_text, span.new_text),
+                embedding_distance(mock_embedding_client, old_payload, new_payload),
+            )
+        ]
+
+        assert service._is_meaningful(metrics, {}, request_type="auto") is False
         assert mock_embedding_client.calls[-1] == (old_payload, new_payload)
     finally:
         db.close()
@@ -410,8 +451,283 @@ def test_is_meaningful_treats_embedding_failure_as_meaningful(mock_embedding_cli
         with pytest.raises(RuntimeError):
             mock_embedding_client.embed_many([old_payload, new_payload])
 
-        assert service._is_meaningful([span], {}) is True
+        metrics = [
+            (
+                span,
+                trigram_dice(span.old_text, span.new_text),
+                embedding_distance(mock_embedding_client, old_payload, new_payload),
+            )
+        ]
+
+        assert service._is_meaningful(metrics, {}, request_type="auto") is True
         assert mock_embedding_client.calls[-1] == (old_payload, new_payload)
+    finally:
+        db.close()
+
+
+def test_evaluate_enforces_cold_start_and_boundary_requirements(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 101
+        note_id = "note-cold-start"
+
+        without_boundary = "Sentence " * 90
+        decision_block = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=without_boundary,
+                request_type="auto",
+            )
+        )
+        assert decision_block.allowed is False
+        assert decision_block.reason == "BELOW_THRESHOLD"
+        assert decision_block.detail.reason == "BELOW_THRESHOLD"
+
+        with_boundary = ("Sentence. " * 80).strip()
+        decision_allow = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=with_boundary,
+                request_type="auto",
+            )
+        )
+        assert decision_allow.allowed is True
+        assert decision_allow.model == service._model_high
+
+        no_boundary_followup = with_boundary.rstrip(".")
+        decision_no_boundary = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=no_boundary_followup,
+                request_type="auto",
+            )
+        )
+        assert decision_no_boundary.allowed is False
+        assert decision_no_boundary.reason == "NOT_MEANINGFUL"
+        assert decision_no_boundary.detail.reason == "NOT_MEANINGFUL"
+
+        with session_scope(db) as session:
+            state = session.get(AINoteState, note_id)
+            assert state is not None
+            assert state.cold_start_completed is True
+    finally:
+        db.close()
+
+
+def test_evaluate_blocks_high_similarity_edit_via_lexical_threshold(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 7
+        note_id = "note-lexical"
+
+        base_text = ("AB" * 260) + "."
+        decision_initial = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_initial.allowed is True
+
+        embedding_distance_stub.set("BABA", 0.0)
+        similar_text = ("BA" * 260) + "."
+        decision_similar = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=similar_text,
+                request_type="auto",
+            )
+        )
+        assert decision_similar.allowed is False
+        assert decision_similar.reason == "NOT_MEANINGFUL"
+        assert decision_similar.detail.reason == "NOT_MEANINGFUL"
+    finally:
+        db.close()
+
+
+def test_evaluate_respects_embedding_distance_threshold(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 11
+        note_id = "note-embedding"
+
+        base_text = ("CD" * 260) + "."
+        decision_initial = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_initial.allowed is True
+
+        updated_text = ("EF" * 260) + "."
+        embedding_distance_stub.set("EFEF", 0.01)
+        decision_low_distance = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=updated_text,
+                request_type="auto",
+            )
+        )
+        assert decision_low_distance.allowed is False
+        assert decision_low_distance.reason == "NOT_MEANINGFUL"
+
+        embedding_distance_stub.set("EFEF", 0.5)
+        decision_high_distance = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=updated_text,
+                request_type="auto",
+            )
+        )
+        assert decision_high_distance.allowed is True
+        assert decision_high_distance.model == service._model_high
+    finally:
+        db.close()
+
+
+def test_evaluate_allows_salient_section_changes(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 19
+        note_id = "note-salience"
+
+        hpi_body = "History of present illness: " + ("symptoms stable. " * 18)
+        ap_body = "Assessment and Plan: " + ("AB" * 200)
+        base_text = f"{hpi_body}\n\n{ap_body}."
+        decision_initial = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_initial.allowed is True
+
+        embedding_distance_stub.set("Assessment and Plan", 0.0)
+        updated_ap = "Assessment and Plan: " + ("BA" * 200)
+        updated_text = f"{hpi_body}\n\n{updated_ap}."
+        decision_salient = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=updated_text,
+                request_type="auto",
+            )
+        )
+        assert decision_salient.allowed is True
+    finally:
+        db.close()
+
+
+def test_evaluate_preserves_state_on_duplicate_submission(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 23
+        note_id = "note-duplicate"
+
+        base_text = ("Sentence. " * 80).strip()
+        decision_initial = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_initial.allowed is True
+
+        with session_scope(db) as session:
+            state = session.get(AINoteState, note_id)
+            assert state is not None
+            assert state.allowed_count == 1
+
+        decision_repeat = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_repeat.allowed is False
+        assert decision_repeat.reason == "NOT_MEANINGFUL"
+
+        with session_scope(db) as session:
+            state = session.get(AINoteState, note_id)
+            assert state is not None
+            assert state.allowed_count == 1
+    finally:
+        db.close()
+
+
+def test_evaluate_routes_manual_and_auto_requests_to_correct_models(embedding_distance_stub):
+    db = sqlite3.connect(":memory:", check_same_thread=False)
+    db.row_factory = sqlite3.Row
+    try:
+        service = _make_service(db, object())
+        clinician_id = 31
+        note_id = "note-routing"
+
+        base_text = ("Sentence. " * 80).strip()
+        embedding_distance_stub.set_default(0.5)
+        decision_auto = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=base_text,
+                request_type="auto",
+            )
+        )
+        assert decision_auto.allowed is True
+        assert decision_auto.model == service._model_high
+
+        mini_text = base_text + "\nMini delta update: " + ("X" * 120) + "."
+        embedding_distance_stub.set("Mini delta update", 0.5)
+        decision_manual_mini = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=mini_text,
+                request_type="manual_mini",
+            )
+        )
+        assert decision_manual_mini.allowed is True
+        assert decision_manual_mini.model == service._model_mini
+
+        full_text = mini_text + "\nManual full addition: " + ("Y" * 160) + "."
+        embedding_distance_stub.set("Manual full addition", 0.5)
+        decision_manual_full = service.evaluate(
+            AIGateInput(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                text=full_text,
+                request_type="manual_full",
+            )
+        )
+        assert decision_manual_full.allowed is True
+        assert decision_manual_full.model == service._model_high
     finally:
         db.close()
 
