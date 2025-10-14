@@ -22,6 +22,7 @@ import {
   connectCodesStream,
   connectCollaborationStream,
   gateNoteSuggestions,
+  fetchAutoSuggestions,
 } from '../api.js';
 import SuggestionPanel from './SuggestionPanel.jsx';
 import { beautifyNote, getSuggestions } from '../api/client.ts';
@@ -221,7 +222,6 @@ const NoteEditor = forwardRef(function NoteEditor(
   const [visitSession, rawSetVisitSession] = useState(null);
   const [sessionError, setSessionError] = useState('');
   const [sessionElapsedSeconds, setSessionElapsedSeconds] = useState(0);
-  const suggestionDebounceRef = useRef(null);
   const sessionStateRef = useRef(null);
   const sessionKeyRef = useRef('');
   const sessionTimerRef = useRef(null);
@@ -254,7 +254,7 @@ const NoteEditor = forwardRef(function NoteEditor(
     };
   };
 
-  const runSuggestionFetch = (noteText, extra = {}) => {
+  const runSuggestionFetch = async (noteText, extra = {}) => {
     const baseContext = buildSuggestionContext();
     const requestContext = {
       ...baseContext,
@@ -262,12 +262,23 @@ const NoteEditor = forwardRef(function NoteEditor(
       payer,
       ...(extra || {}),
     };
-    return getSuggestions(typeof noteText === 'string' ? noteText : '', requestContext).then(
-      (result) => {
-        if (!result?.blocked) setSuggestions(result);
+    const normalizedText = typeof noteText === 'string' ? noteText : '';
+    const intentRaw = (requestContext.intent || '').toString().toLowerCase();
+    setSuggestLoading(true);
+    try {
+      if (intentRaw === 'auto') {
+        const result = await fetchAutoSuggestions(normalizedText, requestContext);
+        if (!result?.blocked && result?.data) {
+          setSuggestions(result.data);
+        }
         return result;
-      },
-    );
+      }
+      const result = await getSuggestions(normalizedText, requestContext);
+      if (!result?.blocked) setSuggestions(result);
+      return result;
+    } finally {
+      setSuggestLoading(false);
+    }
   };
 
   const runSuggestionGate = (noteText, extra = {}) => {
@@ -2069,19 +2080,6 @@ const NoteEditor = forwardRef(function NoteEditor(
     }
     return undefined;
   }, [activeTab, value, specialty, payer]);
-
-  useEffect(() => {
-    if (suggestionDebounceRef.current)
-      clearTimeout(suggestionDebounceRef.current);
-    suggestionDebounceRef.current = setTimeout(() => {
-      setSuggestLoading(true);
-      getSuggestions(value || '', buildSuggestionContext())
-        .then((res) => setSuggestions(res))
-        .catch(() => setSuggestions(null))
-        .finally(() => setSuggestLoading(false));
-    }, 400);
-    return () => clearTimeout(suggestionDebounceRef.current);
-  }, [value, specialty, payer]);
 
   const handleUndo = () => {
     setHistoryIndex((idx) => {
