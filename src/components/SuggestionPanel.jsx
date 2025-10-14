@@ -2,14 +2,14 @@
 // inserts it into the note editor via the onInsert callback.
 //
 // The component can optionally trigger backend suggestion fetching when the
-// `text` prop changes.  To avoid overwhelming the backend while the user is
-// typing, these calls are debounced so that only the final value after a short
-// pause results in a request.
+// `text` prop changes.  Instead of relying on a debounce timer, it now submits
+// automatic suggestion requests whenever the user completes a sentence or
+// inserts a newline.
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { exportFollowUp } from '../api.js';
 
-const BOUNDARY_REGEX = /[.!?\n]/g;
+const BOUNDARY_END_REGEX = /[.!?]\s*$/;
 
 function hashText(value) {
   const text = typeof value === 'string' ? value : '';
@@ -21,28 +21,40 @@ function hashText(value) {
   return hash.toString(16).padStart(8, '0');
 }
 
-function countBoundaries(value) {
-  if (!value) return 0;
-  const matches = value.match(BOUNDARY_REGEX);
-  return matches ? matches.length : 0;
+function isBoundaryInsertion(previous = '', next = '') {
+  const prevText = typeof previous === 'string' ? previous : '';
+  const nextText = typeof next === 'string' ? next : '';
+  if (!nextText || nextText === prevText) return false;
+  if (nextText.length <= prevText.length) {
+    if (nextText.endsWith('\n') && !prevText.endsWith('\n')) return true;
+    return false;
+  }
+  if (!nextText.startsWith(prevText)) {
+    return nextText.endsWith('\n') && !prevText.endsWith('\n');
+  }
+  const appended = nextText.slice(prevText.length);
+  if (!appended) return false;
+  if (appended.includes('\n')) return true;
+  if (!BOUNDARY_END_REGEX.test(nextText)) return false;
+  const prevBoundary = BOUNDARY_END_REGEX.test(prevText);
+  if (!prevBoundary) return true;
+  return /[.!?]/.test(appended);
 }
 
-function shouldTriggerBoundary(previous = '', next = '') {
-  if (!next || next === previous) return false;
-  const prevText = previous || '';
-  const nextText = next || '';
-  const prevCount = countBoundaries(prevText);
-  const nextCount = countBoundaries(nextText);
-  if (nextCount > prevCount) return true;
-  if (nextText.length > prevText.length) {
-    const windowStart = Math.max(0, prevText.length - 8);
-    const deltaSegment = nextText.slice(windowStart);
-    const prevSegment = prevText.slice(windowStart);
-    if (BOUNDARY_REGEX.test(deltaSegment) && !BOUNDARY_REGEX.test(prevSegment)) {
-      return true;
-    }
-  }
-  return false;
+function buildDetail(currentText, referenceText) {
+  const current = typeof currentText === 'string' ? currentText : '';
+  const reference = typeof referenceText === 'string' ? referenceText : '';
+  const delta = Math.abs(current.length - reference.length);
+  const baseLength = Math.max(reference.length, current.length, 1);
+  const autoThreshold = Math.max(24, Math.round(baseLength * 0.05));
+  const manualThreshold = Math.max(autoThreshold * 2, Math.round(baseLength * 0.1));
+  return {
+    delta,
+    autoThreshold,
+    manualThreshold,
+    salient: delta >= autoThreshold,
+    contextFlip: false,
+  };
 }
 
 function SuggestionPanel({
@@ -55,7 +67,6 @@ function SuggestionPanel({
   // trigger backend suggestion gating and fetching when boundaries are added.
   text,
   fetchSuggestions,
-  gateSuggestions,
   calendarSummary,
   onSpecialtyChange: parentSpecialtyChange,
   onPayerChange: parentPayerChange,
@@ -66,12 +77,13 @@ function SuggestionPanel({
   const parentPayer = (settingsState && settingsState.payer) || '';
   const [specialty, setSpecialty] = useState(parentSpecialty);
   const [payer, setPayer] = useState(parentPayer);
-  const [gateState, setGateState] = useState({
+  const lastAcceptedTextRef = useRef(typeof text === 'string' ? text : '');
+  const [gateState, setGateState] = useState(() => ({
     status: 'idle',
-    detail: null,
+    detail: buildDetail(typeof text === 'string' ? text : '', lastAcceptedTextRef.current),
     reason: null,
     raw: null,
-  });
+  }));
   const [autoBusy, setAutoBusy] = useState(false);
   const [manualBusy, setManualBusy] = useState(false);
   const [serverManualReady, setServerManualReady] = useState(false);
@@ -82,7 +94,7 @@ function SuggestionPanel({
   const lastCallHashRef = useRef('');
   const previousTextRef = useRef(typeof text === 'string' ? text : '');
   const lastContextRef = useRef({ specialty: parentSpecialty, payer: parentPayer });
-  const gateInFlightRef = useRef(false);
+  const autoInFlightRef = useRef(false);
   const lastAutoSignatureRef = useRef('');
   useEffect(() => {
     setSpecialty((prev) => (prev === parentSpecialty ? prev : parentSpecialty));
@@ -116,66 +128,57 @@ function SuggestionPanel({
         context.payer || ''
       }::${context.intent || 'auto'}`;
       if (!force && signatureBase === lastAutoSignatureRef.current) return;
-      if (gateInFlightRef.current && !force) return;
+      if (autoInFlightRef.current && !force) return;
       lastAutoSignatureRef.current = signatureBase;
 
-      if (!gateSuggestions) {
-        if (fetchSuggestions) {
-          await fetchSuggestions(noteText, context);
-          lastCallHashRef.current = hashText(noteText);
-        }
-        return;
-      }
-
-      gateInFlightRef.current = true;
+      autoInFlightRef.current = true;
       setAutoBusy(true);
       try {
-        const gateResult = await gateSuggestions(noteText, context);
-        const detail =
-          gateResult?.detail || gateResult?.data?.detail || gateResult?.detail || null;
-        const reason =
-          gateResult?.reason ||
-          detail?.reason ||
-          (gateResult?.data && gateResult.data.reason) ||
-          null;
-        const status =
-          typeof gateResult?.status === 'number'
-            ? gateResult.status
-            : gateResult?.blocked
-              ? 409
-              : gateResult?.allowed
-                ? 202
-                : null;
-        const allowed =
-          gateResult?.allowed === true ||
-          status === 200 ||
-          status === 202 ||
-          (!gateResult?.blocked && status === null);
-        setGateState({ status: allowed ? 'allowed' : 'blocked', detail, reason, raw: gateResult });
-        if (allowed && fetchSuggestions) {
-          await fetchSuggestions(noteText, context);
-          lastCallHashRef.current = hashText(noteText);
+        const baselineDetail = buildDetail(noteText, lastAcceptedTextRef.current);
+        if (!fetchSuggestions) {
+          setGateState({ status: 'error', detail: baselineDetail, reason: 'No fetch handler', raw: null });
+          return;
         }
+        const result = await fetchSuggestions(noteText, context);
+        if (result?.blocked) {
+          setGateState({
+            status: 'blocked',
+            detail: baselineDetail,
+            reason: result?.reason || null,
+            raw: result,
+          });
+          return;
+        }
+        lastCallHashRef.current = hashText(noteText);
+        lastAcceptedTextRef.current = typeof noteText === 'string' ? noteText : '';
+        const successDetail = buildDetail(noteText, lastAcceptedTextRef.current);
+        setGateState({
+          status: 'allowed',
+          detail: successDetail,
+          reason: null,
+          raw: result,
+        });
       } catch (err) {
         lastAutoSignatureRef.current = '';
+        const detail = buildDetail(noteText, lastAcceptedTextRef.current);
         setGateState({
           status: 'error',
-          detail: null,
+          detail,
           reason: err instanceof Error ? err.message : 'error',
           raw: null,
         });
       } finally {
-        gateInFlightRef.current = false;
+        autoInFlightRef.current = false;
         setAutoBusy(false);
       }
     },
-    [buildContextPayload, gateSuggestions, fetchSuggestions],
+    [buildContextPayload, fetchSuggestions],
   );
 
   useEffect(() => {
     const prev = previousTextRef.current || '';
     const next = typeof text === 'string' ? text : '';
-    if (shouldTriggerBoundary(prev, next)) {
+    if (isBoundaryInsertion(prev, next)) {
       void triggerAuto(next);
     }
     previousTextRef.current = next;
@@ -189,6 +192,24 @@ function SuggestionPanel({
       void triggerAuto(text, { force: true });
     }
   }, [specialty, payer, text, triggerAuto]);
+
+  useEffect(() => {
+    const normalized = typeof text === 'string' ? text : '';
+    setGateState((prev) => {
+      const nextDetail = buildDetail(normalized, lastAcceptedTextRef.current);
+      const currentDetail = prev.detail || {};
+      if (
+        currentDetail.delta === nextDetail.delta &&
+        currentDetail.autoThreshold === nextDetail.autoThreshold &&
+        currentDetail.manualThreshold === nextDetail.manualThreshold &&
+        currentDetail.salient === nextDetail.salient &&
+        currentDetail.contextFlip === nextDetail.contextFlip
+      ) {
+        return prev;
+      }
+      return { ...prev, detail: nextDetail };
+    });
+  }, [text]);
 
   const safeNumber = (value) => {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -273,8 +294,13 @@ function SuggestionPanel({
     try {
       await fetchSuggestions(text, buildContextPayload({ intent: 'manual' }));
       lastCallHashRef.current = hashText(text);
-      setServerManualReady(false);
-      setGateState((prev) => ({ ...prev, status: 'manual' }));
+      lastAcceptedTextRef.current = typeof text === 'string' ? text : '';
+      setGateState((prev) => ({
+        ...prev,
+        status: 'manual',
+        detail: buildDetail(text, lastAcceptedTextRef.current),
+        reason: null,
+      }));
     } catch (err) {
       setGateState((prev) => ({
         ...prev,

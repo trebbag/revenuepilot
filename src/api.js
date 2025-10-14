@@ -828,6 +828,101 @@ export async function getSuggestions(text, context = {}) {
   return stub;
 }
 
+function buildAutoSuggestPayload(noteText, context = {}) {
+  const payload = {
+    note_text: typeof noteText === 'string' ? noteText : '',
+  };
+
+  const contextPayload = {};
+  if (context && typeof context === 'object') {
+    Object.entries(context).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      if (key === 'intent') return;
+      if (key === 'accepted_codes_hash' || key === 'acceptedCodesHash') {
+        payload.accepted_codes_hash = value;
+        return;
+      }
+      if (key === 'acceptedJson') {
+        payload.acceptedJson = value;
+        return;
+      }
+      if (key === 'force') {
+        payload.force = Boolean(value);
+        return;
+      }
+      if (key === 'inputTimestamp') {
+        payload.inputTimestamp = value;
+        return;
+      }
+      contextPayload[key] = value;
+    });
+  }
+
+  if (Object.keys(contextPayload).length > 0) {
+    payload.context = contextPayload;
+  }
+
+  return payload;
+}
+
+export async function fetchAutoSuggestions(noteText, context = {}) {
+  const baseUrl = resolveBaseUrl();
+  const headers = getAuthHeader({ 'Content-Type': 'application/json' });
+  const query = new URLSearchParams({ intent: 'auto' });
+  const payload = buildAutoSuggestPayload(noteText, context);
+
+  const resp = await fetch(`${baseUrl}/suggest?${query.toString()}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  let data = null;
+  if (resp.status !== 204) {
+    try {
+      data = await resp.json();
+    } catch (err) {
+      data = null;
+    }
+  }
+
+  if (resp.status === 409) {
+    const detail = data?.detail && typeof data.detail === 'object' ? data.detail : null;
+    const reason =
+      data?.reason ||
+      detail?.reason ||
+      (typeof data?.message === 'string' ? data.message : null);
+    return {
+      status: 409,
+      blocked: true,
+      reason: reason || null,
+      detail,
+      data: null,
+    };
+  }
+
+  if (!resp.ok) {
+    const message =
+      (data && (data.detail || data.message || data.error)) ||
+      'Failed to fetch auto suggestions';
+    const error = new Error(message);
+    error.status = resp.status;
+    throw error;
+  }
+
+  if (data && typeof data === 'object' && data !== null) {
+    cacheCodes(data.codes);
+  }
+
+  return {
+    status: resp.status,
+    blocked: false,
+    reason: null,
+    detail: data?.detail && typeof data.detail === 'object' ? data.detail : null,
+    data: data || null,
+  };
+}
+
 export async function gateNoteSuggestions(payload) {
   const {
     noteId,
