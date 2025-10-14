@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import type { SelectedCodeMetadata } from "./NoteEditor"
+import type { DemotionNotice, SelectedCodeMetadata } from "./NoteEditor"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
@@ -76,6 +76,31 @@ interface CategorizationRules {
   autoCategories?: Record<string, Record<string, string>>
   userOverrides?: Record<string, Record<string, string>>
   rules?: CategorizationRule[]
+}
+
+const formatDemotionNotice = (notice: DemotionNotice): string => {
+  const details: string[] = []
+  if (typeof notice.reason === "string" && notice.reason.trim().length > 0) {
+    details.push(notice.reason.trim())
+  }
+  if (typeof notice.confidence === "number" && Number.isFinite(notice.confidence)) {
+    details.push(`Confidence ${Math.round(Math.max(0, Math.min(1, notice.confidence)) * 100)}%`)
+  }
+  if (notice.negatingEvidence) {
+    details.push("Negating evidence detected")
+  }
+  if (typeof notice.source === "string" && notice.source.trim().length > 0) {
+    details.push(`Source ${notice.source.trim()}`)
+  }
+  if (details.length === 0) {
+    return "Review required"
+  }
+  return details.join(" • ")
+}
+
+const demotionNoticeKey = (notice: DemotionNotice, index: number): string => {
+  const parts = [notice.code ?? "", notice.reason ?? "", notice.source ?? "", String(notice.confidence ?? ""), notice.negatingEvidence ? "neg" : "", String(index)]
+  return parts.join("|")
 }
 
 interface SelectedCodesBarProps {
@@ -1162,8 +1187,18 @@ export function SelectedCodesBar({
                             </div>
                           )}
                           {codeDetail.demotions && codeDetail.demotions.length > 0 && (
-                            <div>
-                              <span className="font-medium">Suggested demotions:</span> {codeDetail.demotions.join(", ")}
+                            <div className="space-y-1">
+                              <div className="text-xs font-medium text-amber-700 flex items-center gap-2">
+                                <AlertTriangle className="h-3.5 w-3.5" /> Pushback detected
+                              </div>
+                              <ul className="list-disc list-inside text-[11px] text-amber-600 space-y-0.5">
+                                {codeDetail.demotions.map((notice, index) => (
+                                  <li key={demotionNoticeKey(notice, index)}>{formatDemotionNotice(notice)}</li>
+                                ))}
+                              </ul>
+                              <p className="text-[11px] text-amber-600">
+                                Review supporting documentation before finalizing this code.
+                              </p>
                             </div>
                           )}
                           {codeDetail.treatmentNotes && (

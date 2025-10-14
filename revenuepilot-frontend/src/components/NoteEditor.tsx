@@ -6,6 +6,16 @@ import { Label } from "./ui/label"
 import { Badge } from "./ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog"
+import {
   CheckCircle,
   Save,
   Play,
@@ -924,6 +934,14 @@ export interface StreamConnectionState {
   nextRetryDelayMs?: number | null
 }
 
+export interface DemotionNotice {
+  code: string
+  reason?: string | null
+  confidence?: number | null
+  source?: string | null
+  negatingEvidence?: boolean | null
+}
+
 export interface LiveCodeSuggestion {
   id: string
   code?: string
@@ -937,8 +955,21 @@ export interface LiveCodeSuggestion {
   accepted?: boolean
   acceptedByUser?: boolean
   flaggedForReview?: boolean
-  demotions?: string[]
+  demotions?: DemotionNotice[]
   supportingSpans?: SupportingSpan[]
+}
+
+interface NormalizedSuggestionPayload {
+  suggestions: LiveCodeSuggestion[]
+  demotions: DemotionNotice[]
+  supportingSpanMap: Record<string, SupportingSpan[]>
+}
+
+interface FinalizeContradiction {
+  code: string
+  reason?: string | null
+  confidence?: number | null
+  negating?: boolean
 }
 
 export interface SupportingSpan {
@@ -955,7 +986,7 @@ export interface SelectedCodeMetadata {
   flaggedForReview: boolean
   confidence: number | null
   supportingSpans: SupportingSpan[]
-  demotions: string[]
+  demotions: DemotionNotice[]
   lastUpdated: number
 }
 
@@ -998,23 +1029,135 @@ const parseBoolean = (value: unknown): boolean | undefined => {
   return undefined
 }
 
-const parseDemotions = (input: unknown): string[] => {
+const createDemotionKey = (notice: DemotionNotice): string => {
+  const codeKey = normalizeCodeKey(notice.code)
+  const reasonKey = (notice.reason ?? "").trim().toLowerCase()
+  const sourceKey = (notice.source ?? "").trim().toUpperCase()
+  const negatingKey = notice.negatingEvidence ? "neg" : ""
+  const confidenceKey =
+    typeof notice.confidence === "number" && Number.isFinite(notice.confidence)
+      ? notice.confidence.toFixed(4)
+      : ""
+  return `${codeKey}|${reasonKey}|${sourceKey}|${negatingKey}|${confidenceKey}`
+}
+
+const normaliseConfidenceValue = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const adjusted = value > 1 ? value / 100 : value
+    return adjusted >= 0 && adjusted <= 1 ? adjusted : null
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().replace(/%$/, "")
+    if (!trimmed) {
+      return null
+    }
+    const parsed = Number.parseFloat(trimmed)
+    if (!Number.isFinite(parsed)) {
+      return null
+    }
+    const adjusted = parsed > 1 ? parsed / 100 : parsed
+    return adjusted >= 0 && adjusted <= 1 ? adjusted : null
+  }
+  return null
+}
+
+const parseDemotionNotices = (
+  input: unknown,
+  options?: { sourceCode?: string | null },
+): DemotionNotice[] => {
   if (input == null) {
     return []
   }
-  const values = Array.isArray(input) ? input : [input]
-  const normalized = new Set<string>()
-  values.forEach((entry) => {
-    if (typeof entry === "string") {
-      const trimmed = entry.trim()
-      if (trimmed.length > 0) {
-        normalized.add(trimmed)
-      }
-    } else if (typeof entry === "number" && Number.isFinite(entry)) {
-      normalized.add(String(entry))
+  const notices = new Map<string, DemotionNotice>()
+  const sourceCode = typeof options?.sourceCode === "string" ? options.sourceCode.trim() : undefined
+
+  const register = (notice: DemotionNotice) => {
+    if (!notice.code || notice.code.trim().length === 0) {
+      return
     }
+    const normalizedNotice: DemotionNotice = {
+      ...notice,
+      code: notice.code.trim(),
+      source: notice.source ?? sourceCode ?? undefined,
+    }
+    const key = createDemotionKey(normalizedNotice)
+    if (!notices.has(key)) {
+      notices.set(key, normalizedNotice)
+    }
+  }
+
+  const processEntry = (entry: unknown) => {
+    if (entry == null) {
+      return
+    }
+    if (typeof entry === "string" || typeof entry === "number") {
+      const codeValue = String(entry).trim()
+      if (codeValue.length > 0) {
+        register({ code: codeValue })
+      }
+      return
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((item) => processEntry(item))
+      return
+    }
+    if (typeof entry === "object") {
+      const record = entry as Record<string, unknown>
+      const codeValue = record.code ?? record.Code ?? record.target ?? record.Target
+      if (typeof codeValue === "string" && codeValue.trim().length > 0) {
+        register({
+          code: codeValue,
+          reason:
+            typeof record.reason === "string"
+              ? record.reason
+              : typeof record.Reason === "string"
+                ? record.Reason
+                : undefined,
+          confidence: normaliseConfidenceValue(record.confidence ?? record.Confidence),
+          source:
+            typeof record.source === "string"
+              ? record.source
+              : typeof record.Source === "string"
+                ? record.Source
+                : sourceCode,
+          negatingEvidence: parseBoolean(record.negating ?? record.negated ?? record.negation ?? record.contradiction) ?? undefined,
+        })
+        return
+      }
+      const keys = Object.keys(record)
+      if (keys.length === 1) {
+        const [key] = keys
+        const value = record[key]
+        if (typeof key === "string" && key.trim().length > 0) {
+          register({
+            code: key,
+            reason: typeof value === "string" ? value : undefined,
+            confidence: normaliseConfidenceValue(record.confidence ?? record.Confidence),
+          })
+        }
+        return
+      }
+    }
+  }
+
+  processEntry(input)
+
+  return Array.from(notices.values()).sort((a, b) => {
+    const codeCompare = normalizeCodeKey(a.code).localeCompare(normalizeCodeKey(b.code))
+    if (codeCompare !== 0) {
+      return codeCompare
+    }
+    const reasonCompare = (a.reason ?? "").localeCompare(b.reason ?? "")
+    if (reasonCompare !== 0) {
+      return reasonCompare
+    }
+    const confidenceA = typeof a.confidence === "number" && Number.isFinite(a.confidence) ? a.confidence : -1
+    const confidenceB = typeof b.confidence === "number" && Number.isFinite(b.confidence) ? b.confidence : -1
+    if (confidenceA !== confidenceB) {
+      return confidenceB - confidenceA
+    }
+    return (a.source ?? "").localeCompare(b.source ?? "")
   })
-  return Array.from(normalized).sort()
 }
 
 const parseSupportingSpans = (input: unknown): SupportingSpan[] => {
@@ -1080,6 +1223,24 @@ const parseSupportingSpans = (input: unknown): SupportingSpan[] => {
   })
 }
 
+const parseSupportingSpanMap = (input: unknown): Record<string, SupportingSpan[]> => {
+  if (!input || typeof input !== "object") {
+    return {}
+  }
+  const result: Record<string, SupportingSpan[]> = {}
+  const entries = input as Record<string, unknown>
+  Object.entries(entries).forEach(([code, spans]) => {
+    if (typeof code !== "string" || code.trim().length === 0) {
+      return
+    }
+    const parsed = parseSupportingSpans(spans)
+    if (parsed.length > 0) {
+      result[code.trim()] = parsed
+    }
+  })
+  return result
+}
+
 const createEmptyMetadata = (code: string, timestamp: number): SelectedCodeMetadata => ({
   code,
   accepted: false,
@@ -1112,11 +1273,13 @@ const metadataChanged = (prev: SelectedCodeMetadata | undefined, next: SelectedC
   if (prevConfidence !== nextConfidence) {
     return true
   }
-  if (prev.demotions.length !== next.demotions.length) {
+  const prevDemotions = prev.demotions.map(createDemotionKey)
+  const nextDemotions = next.demotions.map(createDemotionKey)
+  if (prevDemotions.length !== nextDemotions.length) {
     return true
   }
-  for (let index = 0; index < prev.demotions.length; index += 1) {
-    if (prev.demotions[index] !== next.demotions[index]) {
+  for (let index = 0; index < prevDemotions.length; index += 1) {
+    if (prevDemotions[index] !== nextDemotions[index]) {
       return true
     }
   }
@@ -1896,6 +2059,9 @@ export function NoteEditor({
   const [selectedCodesVersion, setSelectedCodesVersion] = useState(0)
   const [selectedCodesChangeLog, setSelectedCodesChangeLog] = useState<CodeChangeLogEntry[]>([])
   const changeLogCounterRef = useRef(0)
+  const [finalizeConfirmOpen, setFinalizeConfirmOpen] = useState(false)
+  const [finalizeContradictions, setFinalizeContradictions] = useState<FinalizeContradiction[]>([])
+  const pendingFinalizeActionRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     if (typeof onSelectedCodesMetaChange === "function") {
@@ -2387,6 +2553,24 @@ export function NoteEditor({
           lastUpdated: now,
         }
 
+        const incomingSpans = parseSupportingSpans(
+          (item as any).supportingSpans ?? (item as any).supporting_spans ?? null,
+        )
+        if (incomingSpans.length > 0) {
+          nextMeta.supportingSpans = incomingSpans
+        }
+
+        const incomingDemotions = parseDemotionNotices(
+          (item as any).demotions ?? (item as any).demotion ?? null,
+          { sourceCode: normalizedCode },
+        )
+        if (incomingDemotions.length > 0) {
+          nextMeta.demotions = incomingDemotions
+          if (!nextMeta.flaggedForReview) {
+            nextMeta.flaggedForReview = true
+          }
+        }
+
         if (metadataChanged(previous, nextMeta)) {
           map.set(key, nextMeta)
           changed = true
@@ -2411,8 +2595,46 @@ export function NoteEditor({
     syncSelectedCodesMapWithList(Array.isArray(selectedCodesList) ? selectedCodesList : [])
   }, [selectedCodesList, syncSelectedCodesMapWithList])
 
+  const computeFinalizeContradictions = useCallback((): FinalizeContradiction[] => {
+    const results: FinalizeContradiction[] = []
+    const map = selectedCodesMapRef.current
+    for (const meta of map.values()) {
+      if (!meta) {
+        continue
+      }
+      const hasSupporting = Array.isArray(meta.supportingSpans) && meta.supportingSpans.length > 0
+      const demotions = Array.isArray(meta.demotions) ? meta.demotions : []
+      demotions.forEach((notice) => {
+        if (!notice) {
+          return
+        }
+        const confidence =
+          typeof notice.confidence === "number" && Number.isFinite(notice.confidence)
+            ? notice.confidence
+            : null
+        if (confidence !== null && confidence >= 0.85) {
+          if (!hasSupporting || notice.negatingEvidence) {
+            results.push({
+              code: meta.code,
+              reason: notice.reason ?? null,
+              confidence,
+              negating: Boolean(notice.negatingEvidence),
+            })
+          }
+        }
+      })
+    }
+    return results
+  }, [])
+
   const applySuggestionMetadata = useCallback(
-    (entries: LiveCodeSuggestion[]) => {
+    (
+      entries: LiveCodeSuggestion[],
+      context?: {
+        demotions?: DemotionNotice[]
+        supportingSpanMap?: Record<string, SupportingSpan[]>
+      },
+    ) => {
       if (!Array.isArray(entries) || entries.length === 0) {
         return
       }
@@ -2439,17 +2661,62 @@ export function NoteEditor({
         return { key, previous, meta }
       }
 
+      const mergeDemotionArrays = (
+        existing: DemotionNotice[] | undefined,
+        incoming: DemotionNotice[],
+      ): DemotionNotice[] => {
+        const combined = new Map<string, DemotionNotice>()
+        ;(existing ?? []).forEach((notice) => combined.set(createDemotionKey(notice), notice))
+        incoming.forEach((notice) => combined.set(createDemotionKey(notice), notice))
+        return Array.from(combined.values()).sort((a, b) => createDemotionKey(a).localeCompare(createDemotionKey(b)))
+      }
+
+      const demotionTargets = new Map<string, { code: string; notices: DemotionNotice[] }>()
+
+      const registerTargetDemotions = (list: DemotionNotice[] | undefined, origin?: string | null) => {
+        if (!Array.isArray(list) || list.length === 0) {
+          return
+        }
+        list.forEach((notice) => {
+          if (!notice || typeof notice.code !== "string") {
+            return
+          }
+          const trimmed = notice.code.trim()
+          if (!trimmed) {
+            return
+          }
+          const key = normalizeCodeKey(trimmed)
+          const enriched: DemotionNotice = {
+            ...notice,
+            code: trimmed,
+            source: notice.source ?? origin ?? undefined,
+          }
+          if (!demotionTargets.has(key)) {
+            demotionTargets.set(key, { code: trimmed, notices: [enriched] })
+          } else {
+            demotionTargets.get(key)!.notices.push(enriched)
+          }
+        })
+      }
+
       entries.forEach((entry) => {
-        const demotions = parseDemotions(entry.demotions)
+        const demotions = Array.isArray(entry.demotions) ? entry.demotions : []
         if (entry.code) {
           const ensured = ensureMetadata(entry.code)
           if (ensured) {
             const { key, previous, meta } = ensured
             if (typeof entry.accepted === "boolean") {
-              meta.accepted = entry.accepted
+              if (entry.accepted || !meta.acceptedByUser) {
+                meta.accepted = entry.accepted
+              }
             }
             if (typeof entry.acceptedByUser === "boolean") {
-              meta.acceptedByUser = entry.acceptedByUser
+              if (entry.acceptedByUser) {
+                meta.acceptedByUser = true
+                meta.accepted = true
+              } else if (!meta.acceptedByUser) {
+                meta.acceptedByUser = false
+              }
             }
             if (typeof entry.flaggedForReview === "boolean") {
               meta.flaggedForReview = entry.flaggedForReview
@@ -2461,7 +2728,7 @@ export function NoteEditor({
               meta.supportingSpans = entry.supportingSpans.map((span) => ({ ...span }))
             }
             if (demotions.length > 0) {
-              meta.demotions = Array.from(new Set([...(meta.demotions ?? []), ...demotions])).sort()
+              meta.demotions = mergeDemotionArrays(meta.demotions, demotions)
               meta.flaggedForReview = true
             } else if (!meta.demotions) {
               meta.demotions = []
@@ -2482,7 +2749,12 @@ export function NoteEditor({
             }
 
             if (!previous?.flaggedForReview && meta.flaggedForReview) {
-              const origin = demotions.length > 0 && entry.code ? `Suggested demotion from ${entry.code}` : "Flagged for review"
+              const flaggedNotice = meta.demotions[0]
+              const origin = flaggedNotice?.reason
+                ? flaggedNotice.reason
+                : demotions.length > 0 && entry.code
+                  ? `Suggested demotion from ${entry.code}`
+                  : "Flagged for review"
               recordChangeLog({
                 code: meta.code,
                 message: origin,
@@ -2493,32 +2765,59 @@ export function NoteEditor({
           }
         }
 
-        demotions.forEach((code) => {
-          const ensured = ensureMetadata(code)
-          if (!ensured) {
-            return
+        registerTargetDemotions(demotions, entry.code)
+      })
+
+      registerTargetDemotions(context?.demotions)
+
+      const supportingSpanMap = context?.supportingSpanMap ?? {}
+      Object.entries(supportingSpanMap).forEach(([code, spans]) => {
+        const ensured = ensureMetadata(code)
+        if (!ensured) {
+          return
+        }
+        const { key, previous, meta } = ensured
+        if (Array.isArray(spans) && spans.length > 0) {
+          meta.supportingSpans = spans.map((span) => ({ ...span }))
+        }
+        if (metadataChanged(previous, meta)) {
+          map.set(key, meta)
+          changed = true
+        }
+      })
+
+      demotionTargets.forEach(({ code, notices }) => {
+        const ensured = ensureMetadata(code)
+        if (!ensured) {
+          return
+        }
+        const { key, previous, meta } = ensured
+        const merged = mergeDemotionArrays(meta.demotions, notices)
+        meta.demotions = merged
+        if (merged.length > 0) {
+          meta.flaggedForReview = true
+          if (meta.acceptedByUser) {
+            meta.accepted = true
           }
-          const { key, previous, meta } = ensured
-          const merged = new Set(meta.demotions ?? [])
-          merged.add(code)
-          meta.demotions = Array.from(merged).sort()
-          if (!meta.flaggedForReview) {
-            meta.flaggedForReview = true
-          }
-          if (metadataChanged(previous, meta)) {
-            map.set(key, meta)
-            changed = true
-          }
-          if (!previous?.flaggedForReview) {
-            const origin = entry.code ? `Suggested demotion from ${entry.code}` : "Flagged for review"
-            recordChangeLog({
-              code: meta.code,
-              message: origin,
-              type: "flagged",
-              confidence: meta.confidence,
-            })
-          }
-        })
+        }
+        if (metadataChanged(previous, meta)) {
+          map.set(key, meta)
+          changed = true
+        }
+        if (!previous?.flaggedForReview && meta.flaggedForReview) {
+          const flaggedNotice = merged[0]
+          const message = flaggedNotice?.reason
+            ? flaggedNotice.reason
+            : flaggedNotice?.source
+              ? `Demotion suggested by ${flaggedNotice.source}`
+              : "Flagged for review"
+          recordChangeLog({
+            code: meta.code,
+            message,
+            type: "flagged",
+            confidence: meta.confidence,
+          })
+        }
       })
 
       if (changed) {
@@ -2591,15 +2890,20 @@ export function NoteEditor({
     [convertComplianceResponse],
   )
 
-  const normalizeLiveCodeSuggestions = useCallback((payload: any): LiveCodeSuggestion[] => {
+  const normalizeLiveCodeSuggestions = useCallback((payload: any): NormalizedSuggestionPayload => {
     if (!payload) {
-      return []
+      return { suggestions: [], demotions: [], supportingSpanMap: {} }
     }
 
     const now = Date.now()
     const entries = Array.isArray(payload?.suggestions) && payload.suggestions.length > 0 ? payload.suggestions : [payload]
 
     const suggestions: LiveCodeSuggestion[] = []
+    const aggregateDemotions = new Map<string, DemotionNotice>()
+    const payloadLevelDemotions = parseDemotionNotices(
+      payload?.demotions ?? payload?.Demotions ?? null,
+    )
+    payloadLevelDemotions.forEach((notice) => aggregateDemotions.set(createDemotionKey(notice), notice))
 
     entries.forEach((entry: any, index: number) => {
       if (!entry) {
@@ -2680,7 +2984,11 @@ export function NoteEditor({
       const flagged = parseBoolean(
         (entry as any).flaggedForReview ?? (entry as any).flagged_for_review ?? (payload as any).flaggedForReview ?? (payload as any).flagged_for_review,
       )
-      const demotions = parseDemotions((entry as any).demotions ?? (payload as any).demotions)
+      const demotions = parseDemotionNotices(
+        (entry as any).demotions ?? (entry as any).demotion ?? null,
+        { sourceCode: codeSource || undefined },
+      )
+      demotions.forEach((notice) => aggregateDemotions.set(createDemotionKey(notice), notice))
       const supportingSpans = parseSupportingSpans(
         (entry as any).supportingSpans ?? (entry as any).supporting_spans ?? (payload as any).supportingSpans ?? (payload as any).supporting_spans,
       )
@@ -2704,7 +3012,15 @@ export function NoteEditor({
       })
     })
 
-    return suggestions
+    return {
+      suggestions,
+      demotions: Array.from(aggregateDemotions.values()).sort((a, b) =>
+        createDemotionKey(a).localeCompare(createDemotionKey(b)),
+      ),
+      supportingSpanMap: parseSupportingSpanMap(
+        (payload as any).supportingSpans ?? (payload as any).supporting_spans ?? null,
+      ),
+    }
   }, [])
 
   const normalizeCollaborator = useCallback((entry: any): CollaborationPresence | null => {
@@ -3635,13 +3951,20 @@ export function NoteEditor({
               return
             }
             const normalized = normalizeLiveCodeSuggestions(payload)
-            if (!normalized.length) {
+            if (
+              normalized.suggestions.length === 0 &&
+              normalized.demotions.length === 0 &&
+              Object.keys(normalized.supportingSpanMap).length === 0
+            ) {
               return
             }
-            applySuggestionMetadata(normalized)
+            applySuggestionMetadata(normalized.suggestions, {
+              demotions: normalized.demotions,
+              supportingSpanMap: normalized.supportingSpanMap,
+            })
             setLiveCodeSuggestions((prev) => {
               const map = new Map(prev.map((item) => [item.id, item]))
-              normalized.forEach((item) => {
+              normalized.suggestions.forEach((item) => {
                 map.set(item.id, item)
               })
               return Array.from(map.values())
@@ -5253,14 +5576,7 @@ export function NoteEditor({
     [noteContentRef, onNoteContentChange, resolveNoteTextarea, setNoteContent],
   )
 
-  const handleFinalize = useCallback(async () => {
-    if (isFinalized) {
-      toast.info("Note already finalized", {
-        description: "Editing is locked after finalization.",
-      })
-      return
-    }
-
+  const launchFinalizationWizard = useCallback(async () => {
     if (!onOpenFinalization) {
       toast.error("Unable to open finalization wizard", {
         description: "Finalization flow is not available in this view.",
@@ -5311,7 +5627,6 @@ export function NoteEditor({
     handleFinalizationClose,
     handleFinalizationError,
     handlePreFinalizeResult,
-    isFinalized,
     noteContent,
     onOpenFinalization,
     patientDisplayName,
@@ -5325,6 +5640,58 @@ export function NoteEditor({
     codeStreamState,
     complianceStreamState,
   ])
+
+  const handleFinalize = useCallback(async () => {
+    if (isFinalized) {
+      toast.info("Note already finalized", {
+        description: "Editing is locked after finalization.",
+      })
+      return
+    }
+
+    if (!onOpenFinalization) {
+      toast.error("Unable to open finalization wizard", {
+        description: "Finalization flow is not available in this view.",
+      })
+      return
+    }
+
+    const contradictions = computeFinalizeContradictions()
+
+    const proceed = async () => {
+      await launchFinalizationWizard()
+    }
+
+    if (contradictions.length > 0) {
+      setFinalizeContradictions(contradictions)
+      pendingFinalizeActionRef.current = () => {
+        void proceed()
+      }
+      setFinalizeConfirmOpen(true)
+      return
+    }
+
+    await proceed()
+  }, [
+    computeFinalizeContradictions,
+    isFinalized,
+    launchFinalizationWizard,
+    onOpenFinalization,
+  ])
+
+  const handleFinalizeConfirm = useCallback(() => {
+    setFinalizeConfirmOpen(false)
+    const action = pendingFinalizeActionRef.current
+    pendingFinalizeActionRef.current = null
+    if (action) {
+      action()
+    }
+  }, [])
+
+  const handleFinalizeCancel = useCallback(() => {
+    setFinalizeConfirmOpen(false)
+    pendingFinalizeActionRef.current = null
+  }, [])
 
   const handleSaveDraft = useCallback(async () => {
     if (saveDraftLoading) {
@@ -5644,7 +6011,8 @@ export function NoteEditor({
   ])
 
   return (
-    <div ref={noteEditorContainerRef} className="flex flex-col flex-1">
+    <>
+      <div ref={noteEditorContainerRef} className="flex flex-col flex-1">
       {/* Toolbar */}
       <div className="border-b bg-background p-4 space-y-4">
         <div className="flex flex-wrap gap-4 items-end">
@@ -6077,6 +6445,50 @@ export function NoteEditor({
         swapSpeakers={swapSpeakers}
         onToggleSpeakers={handleToggleSpeakerRoles}
       />
-    </div>
+      </div>
+      <AlertDialog
+        open={finalizeConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            handleFinalizeCancel()
+          } else {
+            setFinalizeConfirmOpen(true)
+          }
+        }}
+      >
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm finalization</AlertDialogTitle>
+            <AlertDialogDescription>
+              High-confidence contradictions were detected for accepted codes. Confirm to continue with export.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <ul className="list-disc list-inside space-y-1 text-foreground">
+              {finalizeContradictions.map((entry, index) => {
+                const confidenceLabel =
+                  typeof entry.confidence === "number" && Number.isFinite(entry.confidence)
+                    ? ` (Confidence ${Math.round(Math.max(0, Math.min(1, entry.confidence)) * 100)}%)`
+                    : ""
+                const negatingLabel = entry.negating ? " • Negating evidence" : ""
+                const reasonLabel = entry.reason && entry.reason.trim().length > 0 ? ` — ${entry.reason.trim()}` : " — Review documentation"
+                return (
+                  <li key={`${entry.code}-${index}`}>
+                    <span className="font-medium">{entry.code}</span>
+                    {reasonLabel}
+                    {confidenceLabel}
+                    {negatingLabel}
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleFinalizeCancel}>Review first</AlertDialogCancel>
+            <AlertDialogAction onClick={handleFinalizeConfirm}>Finalize anyway</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }

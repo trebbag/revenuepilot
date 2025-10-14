@@ -186,7 +186,6 @@ def suggest(
                 "confidence": 0.72,
                 "accepted": False,
                 "accepted_by_user": False,
-                "demotions": [],
                 "supporting_spans": [],
                 "evidence": ["Patient visit documented"],
             }
@@ -200,6 +199,9 @@ def suggest(
             }
         ],
         "compliance": ["offline compliance"],
+        "confidence": 0.62,
+        "demotions": [],
+        "supporting_spans": {"00000": []},
         "publicHealth": [
             {
                 "recommendation": "offline public health",
