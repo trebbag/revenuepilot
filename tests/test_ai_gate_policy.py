@@ -128,3 +128,41 @@ def test_not_meaningful_small_edit_blocks(gate):
     assert decision.allowed is False
     assert decision.reason == "NOT_MEANINGFUL"
     assert decision.detail.delta < decision.detail.auto_threshold
+
+
+def test_small_mid_sentence_edit_blocks_below_threshold(gate):
+    gate_instance, embedder = gate
+    base = _long_note()
+    gate_instance.evaluate(note_id="n7", clinician_id=1, text=base, intent="auto")
+
+    updated = base.replace("sentence 20.", "sentence 20 with minor update.", 1)
+    normalized_base = ai_gate.normalize(base)
+    normalized_updated = ai_gate.normalize(updated)
+    old_span, new_span, _ = ai_gate.extract_changed_spans(normalized_base, normalized_updated)
+    embedder.set_vector(old_span, (1.0, 0.0, 0.0))
+    embedder.set_vector(new_span, (0.0, 1.0, 0.0))
+
+    decision = gate_instance.evaluate(
+        note_id="n7",
+        clinician_id=1,
+        text=updated,
+        intent="auto",
+    )
+    assert decision.allowed is False
+    assert decision.reason == "BELOW_THRESHOLD"
+
+
+def test_salient_vital_addition_allows_even_when_short(gate):
+    gate_instance, _ = gate
+    base = _long_note()
+    gate_instance.evaluate(note_id="n8", clinician_id=1, text=base, intent="auto")
+
+    vital_note = base + "SpO2 88%\n"
+    decision = gate_instance.evaluate(
+        note_id="n8",
+        clinician_id=1,
+        text=vital_note,
+        intent="auto",
+    )
+    assert decision.allowed is True
+    assert decision.detail.salient is True

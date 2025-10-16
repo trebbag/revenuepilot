@@ -8,7 +8,11 @@ from typing import Dict
 import pytest
 
 from prometheus_client import REGISTRY
-from backend.ai_gating import AUDIO_AUTO_ROUTE, AUDIO_SALIENCE_SCORE_MIN
+from backend.ai_gating import (
+    AUDIO_AUTO_ROUTE,
+    AUDIO_SALIENCE_SCORE_MIN,
+    _parse_audio_override_rules,
+)
 from backend.db.models import AINoteState
 from backend.migrations import session_scope
 
@@ -192,4 +196,61 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     assert metric("revenuepilot_ai_audio_ascore_count", ascore_count) == pytest.approx(ascore_before + 2.0)
     assert metric("revenuepilot_ai_audio_dcb_count", dcb_count) == pytest.approx(dcb_before + 2.0)
     assert metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count) == pytest.approx(confidence_before + 2.0)
+
+
+def test_audio_gate_blocks_conversational_diet_chat(gating_service_state) -> None:
+    conn, service, clinician_id = gating_service_state
+    note_id = "audio-diet-chat"
+    _ensure_state(conn, note_id, clinician_id)
+
+    conversational = "…we chatted about diet and walking."
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        state.last_transcript_cursor = conversational
+        session.add(state)
+
+    segment = {
+        "text": conversational,
+        "tokens": [{"confidence": 0.92}, {"confidence": 0.9}],
+    }
+    diar = {"speaker": "patient"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is False
+    assert detail["reason"] == "NOT_MEANINGFUL"
+    assert detail["criticalOverride"] is None
+
+
+def test_audio_gate_critical_override_hypertensive_troponin(
+    monkeypatch, gating_service_state
+) -> None:
+    conn, service, clinician_id = gating_service_state
+    monkeypatch.setattr(
+        "backend.ai_gating.AUDIO_CRITICAL_OVERRIDES",
+        _parse_audio_override_rules("bp>=180/120,troponin_abnormal>0"),
+    )
+
+    note_id = "audio-hypertensive"
+    _ensure_state(conn, note_id, clinician_id)
+
+    segment = {
+        "text": "Discussed severe hypertension and abnormal troponin.",
+        "tokens": [{"confidence": 0.94}, {"confidence": 0.96}],
+        "cursor": "cursor-hbp",
+        "vitals": {"bp": "182/124", "troponin_abnormal": 1},
+    }
+    diar = {"speaker": "clinician"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is True
+    assert detail["criticalOverride"] == "bp>=180/120"
+    assert detail["reason"] is None
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        assert state.last_transcript_cursor == "cursor-hbp"
 

@@ -541,6 +541,30 @@ def test_reconcile_json_skips_merge_for_large_divergence(gating_service_state):
         payload = decrypt_ai_payload(snapshot.payload)
         assert payload == merged
 
+
+def test_ai_gate_force_allows_salient_symptom(gating_client):
+    client = gating_client
+    token = main.create_token("doc", "user")
+
+    resp = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": "note-force-acs",
+            "noteContent": "jaw pain with diaphoresis concerning for NSTEMI.\n",
+            "requestType": "auto",
+            "force": True,
+        },
+        headers=_auth_header(token),
+    )
+    assert resp.status_code == 202
+    payload = resp.json()
+    assert payload["allowed"] is True
+    assert payload.get("route") == "auto"
+    detail = payload.get("detail") or {}
+    assert detail.get("force") is True
+    assert detail.get("salient") is True
+
+
 def _make_service(db, embed_client):
     create_all_tables(db)
     return AIGatingService(
