@@ -8,7 +8,11 @@ from typing import Any, Dict
 import pytest
 
 from prometheus_client import REGISTRY
-from backend.ai_gating import AUDIO_AUTO_ROUTE, AUDIO_SALIENCE_SCORE_MIN
+from backend.ai_gating import (
+    AUDIO_AUTO_ROUTE,
+    AUDIO_SALIENCE_SCORE_MIN,
+    _parse_audio_override_rules,
+)
 from backend.db.models import AINoteState
 from backend.migrations import session_scope
 from backend.dcsb_features import compute_dcb
@@ -29,6 +33,11 @@ def _ensure_state(conn, note_id: str, clinician_id: int) -> None:
             state.clinician_id = clinician_id
         state.cold_start_completed = True
         session.add(state)
+
+
+def _metric_value(name: str, labels: Dict[str, str]) -> float:
+    value = REGISTRY.get_sample_value(name, labels)
+    return 0.0 if value is None else float(value)
 
 
 def test_audio_gate_allows_on_critical_override(gating_service_state) -> None:
@@ -57,6 +66,53 @@ def test_audio_gate_allows_on_critical_override(gating_service_state) -> None:
         assert state is not None
         assert state.last_transcript_cursor == "cursor-critical"
         assert state.last_accepted_json_hash is not None
+
+
+def test_audio_gate_allows_on_bp_tuple_override(gating_service_state) -> None:
+    conn, service, clinician_id = gating_service_state
+    note_id = "audio-critical-bp"
+    _ensure_state(conn, note_id, clinician_id)
+
+    segment = {
+        "text": "Blood pressure remains elevated.",
+        "tokens": [{"confidence": 0.91}, {"confidence": 0.92}],
+        "cursor": "cursor-critical-bp",
+        "vitals": {"sbp": 184, "dbp": 122},
+    }
+    diar = {"speaker": "clinician"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is True
+    assert detail["criticalOverride"] == "bp>=180/120"
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        assert state.last_transcript_cursor == "cursor-critical-bp"
+
+
+def test_audio_gate_allows_on_troponin_override_with_synonym(gating_service_state) -> None:
+    conn, service, clinician_id = gating_service_state
+    note_id = "audio-critical-troponin"
+    _ensure_state(conn, note_id, clinician_id)
+
+    segment = {
+        "text": "Reviewed lab results.",
+        "tokens": [{"confidence": 0.9}, {"confidence": 0.91}],
+        "cursor": "cursor-critical-trop",
+    }
+    diar = {"speaker": "clinician", "troponin_i": "0.12"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is True
+    assert detail["criticalOverride"] == "troponin>0"
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        assert state.last_transcript_cursor == "cursor-critical-trop"
 
 
 def test_audio_gate_scores_medication_plan(gating_service_state) -> None:
@@ -89,6 +145,8 @@ def test_audio_gate_scores_medication_plan(gating_service_state) -> None:
         "medical_density_bonus": 0.1,
         "medical_density_threshold": 0.3,
         "differential_features": differential_features,
+        "dcb": 0.9,
+
     }
 
     allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
@@ -111,10 +169,6 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
     note_id = "audio-pe-repeat"
     _ensure_state(conn, note_id, clinician_id)
 
-    def metric(name: str, labels: Dict[str, str]) -> float:
-        value = REGISTRY.get_sample_value(name, labels)
-        return 0.0 if value is None else float(value)
-
     route = AUDIO_AUTO_ROUTE
     blocked_reason = {"route": route, "decision": "blocked", "reason": "NOT_MEANINGFUL"}
     allowed_reason = {"route": route, "decision": "allowed", "reason": "allowed"}
@@ -122,11 +176,11 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
     dcb_count = {"route": route}
     confidence_count = {"route": route}
 
-    blocked_before = metric("revenuepilot_ai_audio_decisions_total", blocked_reason)
-    allowed_before = metric("revenuepilot_ai_audio_decisions_total", allowed_reason)
-    ascore_before = metric("revenuepilot_ai_audio_ascore_count", ascore_count)
-    dcb_before = metric("revenuepilot_ai_audio_dcb_count", dcb_count)
-    confidence_before = metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
+    blocked_before = _metric_value("revenuepilot_ai_audio_decisions_total", blocked_reason)
+    allowed_before = _metric_value("revenuepilot_ai_audio_decisions_total", allowed_reason)
+    ascore_before = _metric_value("revenuepilot_ai_audio_ascore_count", ascore_count)
+    dcb_before = _metric_value("revenuepilot_ai_audio_dcb_count", dcb_count)
+    confidence_before = _metric_value("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
 
     segment = {
         "text": "Physical exam reveals diffuse wheezing.",
@@ -155,6 +209,7 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
         "medical_density_bonus": 0.08,
         "medical_density_threshold": 0.3,
         "differential_features": differential_features,
+        "dcb": 1.15,
     }
 
     allowed_first, detail_first = service.should_allow_audio_auto(
@@ -192,6 +247,7 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     note_id = "audio-smalltalk"
     _ensure_state(conn, note_id, clinician_id)
 
+
     def metric(name: str, labels: Dict[str, str]) -> float:
         value = REGISTRY.get_sample_value(name, labels)
         return 0.0 if value is None else float(value)
@@ -208,6 +264,7 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     ascore_before = metric("revenuepilot_ai_audio_ascore_count", ascore_count)
     dcb_before = metric("revenuepilot_ai_audio_dcb_count", dcb_count)
     confidence_before = metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
+
 
     with session_scope(conn) as session:
         state = session.get(AINoteState, note_id)
@@ -227,9 +284,66 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     assert detail["reason"] == "NOT_MEANINGFUL"
     assert detail["hint"] is False
 
-    assert metric("revenuepilot_ai_audio_decisions_total", blocked_reason) == pytest.approx(blocked_before + 1.0)
-    assert metric("revenuepilot_ai_audio_decisions_total", allowed_reason) == pytest.approx(allowed_before)
-    assert metric("revenuepilot_ai_audio_ascore_count", ascore_count) == pytest.approx(ascore_before)
-    assert metric("revenuepilot_ai_audio_dcb_count", dcb_count) == pytest.approx(dcb_before)
-    assert metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count) == pytest.approx(confidence_before + 1.0)
+    assert _metric_value("revenuepilot_ai_audio_decisions_total", blocked_reason) == pytest.approx(blocked_before + 1.0)
+    assert _metric_value("revenuepilot_ai_audio_decisions_total", allowed_reason) == pytest.approx(allowed_before)
+    assert _metric_value("revenuepilot_ai_audio_ascore_count", ascore_count) == pytest.approx(ascore_before)
+    assert _metric_value("revenuepilot_ai_audio_dcb_count", dcb_count) == pytest.approx(dcb_before)
+    assert _metric_value("revenuepilot_ai_audio_asr_confidence_count", confidence_count) == pytest.approx(confidence_before + 1.0)
+
+
+def test_audio_gate_blocks_conversational_diet_chat(gating_service_state) -> None:
+    conn, service, clinician_id = gating_service_state
+    note_id = "audio-diet-chat"
+    _ensure_state(conn, note_id, clinician_id)
+
+    conversational = "…we chatted about diet and walking."
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        state.last_transcript_cursor = conversational
+        session.add(state)
+
+    segment = {
+        "text": conversational,
+        "tokens": [{"confidence": 0.92}, {"confidence": 0.9}],
+    }
+    diar = {"speaker": "patient"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is False
+    assert detail["reason"] == "NOT_MEANINGFUL"
+    assert detail["criticalOverride"] is None
+
+
+def test_audio_gate_critical_override_hypertensive_troponin(
+    monkeypatch, gating_service_state
+) -> None:
+    conn, service, clinician_id = gating_service_state
+    monkeypatch.setattr(
+        "backend.ai_gating.AUDIO_CRITICAL_OVERRIDES",
+        _parse_audio_override_rules("bp>=180/120,troponin_abnormal>0"),
+    )
+
+    note_id = "audio-hypertensive"
+    _ensure_state(conn, note_id, clinician_id)
+
+    segment = {
+        "text": "Discussed severe hypertension and abnormal troponin.",
+        "tokens": [{"confidence": 0.94}, {"confidence": 0.96}],
+        "cursor": "cursor-hbp",
+        "vitals": {"bp": "182/124", "troponin_abnormal": 1},
+    }
+    diar = {"speaker": "clinician"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is True
+    assert detail["criticalOverride"] == "bp>=180/120"
+    assert detail["reason"] is None
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        assert state.last_transcript_cursor == "cursor-hbp"
 

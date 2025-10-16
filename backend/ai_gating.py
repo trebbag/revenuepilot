@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import dataclasses
+import builtins
 import difflib
 import hashlib
 import json
@@ -62,7 +63,10 @@ def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames)
     return metric_cls(name, documentation, labelnames=labelnames)
 
 
-setattr(builtins, "_get_or_create_metric", _get_or_create_metric)
+
+if not hasattr(builtins, "_get_or_create_metric"):
+    setattr(builtins, "_get_or_create_metric", _get_or_create_metric)
+
 
 
 def _env_int(name: str, default: int) -> int:
@@ -88,7 +92,7 @@ AI_SEMANTIC_DISTANCE_AUTO_MIN = _env_float("AI_SEMANTIC_DISTANCE_AUTO_MIN", 0.08
 AI_SEMANTIC_DISTANCE_MANUAL_MIN = _env_float("AI_SEMANTIC_DISTANCE_MANUAL_MIN", 0.15)
 AI_EMBEDDING_MODEL = os.getenv("AI_EMBEDDING_MODEL", os.getenv("AI_EMBED_MODEL", "text-embedding-3-small"))
 ASR_CONFIDENCE_MIN = _env_float("ASR_CONFIDENCE_MIN", 0.85)
-AUDIO_SALIENCE_SCORE_MIN = _env_float("AUDIO_SALIENCE_SCORE_MIN", 0.75)
+AUDIO_SALIENCE_SCORE_MIN = _env_float("AUDIO_SALIENCE_SCORE_MIN", 1.60)
 
 
 AI_GATE_ALLOWED_REASON_TOTAL = _get_or_create_metric(
@@ -146,7 +150,7 @@ def _parse_audio_override_rules(value: str) -> Tuple[Dict[str, Any], ...]:
         match = re.match(r"(?P<field>[a-z0-9_/]+)\s*(?P<op><=|>=|<|>)\s*(?P<value>[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?)", rule, re.I)
         if not match:
             continue
-        field = match.group("field").lower()
+        field = _normalize_measurement_name(match.group("field"))
         op = match.group("op")
         raw_value = match.group("value")
         if "/" in raw_value:
@@ -164,10 +168,34 @@ def _parse_audio_override_rules(value: str) -> Tuple[Dict[str, Any], ...]:
     return tuple(rules)
 
 
+_MEASUREMENT_SYNONYMS: Dict[str, Tuple[str, ...]] = {
+    "spo2": ("spo2", "oxygen_saturation", "o2sat", "sat"),
+    "hr": ("hr", "heart_rate", "pulse"),
+    "rr": ("rr", "resp", "respiratory_rate", "resp_rate"),
+    "bp": ("bp", "blood_pressure", "bloodpressure"),
+    "sbp": ("sbp", "systolic", "systolic_bp"),
+    "dbp": ("dbp", "diastolic", "diastolic_bp"),
+    "temp": ("temp", "temperature"),
+    "na": ("na", "sodium"),
+    "k": ("k", "potassium"),
+    "cr": ("cr", "creatinine"),
+    "hba1c": ("hba1c", "a1c", "hgb_a1c", "hemoglobin_a1c"),
+    "troponin": ("troponin", "trop", "troponin_i", "troponin_t"),
+}
+
+
+def _normalize_measurement_name(name: str) -> str:
+    key = str(name).lower()
+    for canonical, aliases in _MEASUREMENT_SYNONYMS.items():
+        if key == canonical or key in aliases:
+            return canonical
+    return key
+
+
 AUDIO_CRITICAL_OVERRIDES = _parse_audio_override_rules(
     os.getenv(
         "AUDIO_CRITICAL_OVERRIDES",
-        "spo2<90,hr>130,sbp<90,dbp<50",
+        "spo2<90,bp>=180/120,hr>=130,temp>=38.5,k>=6.0,na<125,cr>=2.0,hba1c>=9.0,troponin>0",
     )
 )
 
@@ -426,15 +454,53 @@ def _collect_measurements(segment: Mapping[str, Any], diar: Mapping[str, Any]) -
         vitals = source.get("vitals") if isinstance(source, MappingABC) else None
         if isinstance(vitals, MappingABC):
             for key, value in vitals.items():
-                key_lower = str(key).lower()
+                key_lower = _normalize_measurement_name(key)
+                measurement = _extract_measurement(value)
                 if key_lower not in measurements:
-                    measurements[key_lower] = _extract_measurement(value)
+                    measurements[key_lower] = measurement
+                original_key = str(key).lower()
+                if original_key not in measurements:
+                    measurements[original_key] = measurement
         if isinstance(source, MappingABC):
-            for key in ("spo2", "hr", "rr", "resp", "bp", "sbp", "dbp", "temp"):
-                if key in measurements:
-                    continue
+            for key in (
+                "spo2",
+                "hr",
+                "rr",
+                "resp",
+                "bp",
+                "sbp",
+                "dbp",
+                "temp",
+                "na",
+                "k",
+                "cr",
+                "hba1c",
+                "troponin",
+            ):
                 if key in source:
-                    measurements[key] = _extract_measurement(source.get(key))
+                    measurement = _extract_measurement(source.get(key))
+                    normalized = _normalize_measurement_name(key)
+                    if normalized not in measurements:
+                        measurements[normalized] = measurement
+                    if key not in measurements:
+                        measurements[key] = measurement
+            for alias in ("temperature", "sodium", "potassium", "creatinine", "a1c"):
+                if alias in source:
+                    normalized = _normalize_measurement_name(alias)
+                    if normalized not in measurements:
+                        measurements[normalized] = _extract_measurement(source.get(alias))
+            for alias in ("troponin_i", "troponin_t"):
+                if alias in source:
+                    if "troponin" not in measurements:
+                        measurements["troponin"] = _extract_measurement(source.get(alias))
+    if "bp" not in measurements:
+        sbp = measurements.get("sbp")
+        dbp = measurements.get("dbp")
+        if sbp is not None and dbp is not None:
+            try:
+                measurements["bp"] = (float(sbp), float(dbp))
+            except (TypeError, ValueError):
+                pass
     return measurements
 
 

@@ -44,3 +44,7 @@ assets/*.png
 # Local certificates
 *.pem
 *.p12
+# RevenuePilot launcher logs
+/RevenuePilot.app
+*.log
+*.err

@@ -139,7 +139,12 @@ from backend.prompts import (
     build_suggest_prompt,
     build_summary_prompt,
 )  # type: ignore
-from backend.prompt_builder import SuggestPromptBuilder
+from backend.prompt_builder import (
+    DynamicPromptContext,
+    SUGGEST_SCHEMA_VERSION,
+    build_dynamic_block,
+    build_stable_block,
+)
 from backend.compose_job import (
     ComposeJobCancelled,
     ComposeJobPayload,
@@ -486,8 +491,6 @@ TRANSCRIBE_WS_INTERIM_DROPPED_TOTAL = Counter(
     "Number of interim transcription events dropped due to backpressure.",
 )
 PROMPT_GUARD = PromptPrivacyGuard()
-SUGGEST_PROMPT_BUILDER = SuggestPromptBuilder()
-
 
 _STABLE_PROMPT_CACHE_LOCK = threading.Lock()
 _STABLE_PROMPT_CACHE_SIZE = 128
@@ -14393,40 +14396,54 @@ async def suggest(
             diff_spans = gate_result.detail.get("diffSpans") if gate_result else []
             previous_snapshot = gate_result.detail.get("previousSnapshot") if gate_result else ""
             accepted_payload = req.acceptedJson if isinstance(req.acceptedJson, Mapping) else None
-            builder_blocks = SUGGEST_PROMPT_BUILDER.build(
-                lang=req.lang or "en",
-                specialty=req.specialty,
-                payer=req.payer,
-                sanitized_note=cleaned,
-                sanitized_previous=previous_snapshot or "",
-                diff_spans=diff_spans or [],
-                accepted_json=accepted_payload,
-                transcript=req.audio,
-                pmh_entries=pmh_entries,
-                rules=prompt_context.rules,
-                age=req.age,
-                sex=req.sex,
-                region=req.region,
-                note_id=note_id or req.noteId,
-                encounter_id=encounter_id,
-                session_id=session_id,
-                transcript_cursor=req.transcriptCursor,
-                policy_version=_prompt_policy_version(),
+            policy_version = _prompt_policy_version()
+            stable_messages, cache_state, stable_tokens = build_stable_block(
+                model=model_name or "gpt-4o",
+                schema_version=SUGGEST_SCHEMA_VERSION,
+                policy_version=policy_version,
             )
             logger.info(
                 "prompt_stable_cache",
                 route="suggest",
-                cache_state=builder_blocks.cache_state,
+                cache_state=cache_state,
                 lang=req.lang or "en",
                 specialty=req.specialty or "default",
                 payer=req.payer or "default",
                 region=req.region or "default",
-                policy_version=_prompt_policy_version(),
+                model=model_name or "gpt-4o",
+                schema_version=SUGGEST_SCHEMA_VERSION,
+                policy_version=policy_version,
+                token_savings=stable_tokens if cache_state == "hit" else 0,
             )
-            observation.add_metadata("promptCache", builder_blocks.cache_state)
-            messages = builder_blocks.stable + builder_blocks.dynamic
+            observation.add_metadata("promptCache", cache_state)
+            observation.add_metadata("stablePromptTokens", stable_tokens)
+            if cache_state == "hit" and stable_tokens:
+                observation.add_metadata("promptTokenSavings", stable_tokens)
+            dynamic_message = build_dynamic_block(
+                DynamicPromptContext(
+                    sanitized_note=cleaned,
+                    sanitized_previous=previous_snapshot or "",
+                    diff_spans=diff_spans or [],
+                    accepted_json=accepted_payload,
+                    transcript=req.audio,
+                    pmh_entries=pmh_entries,
+                    rules=prompt_context.rules,
+                    age=req.age,
+                    sex=req.sex,
+                    region=req.region,
+                    note_id=note_id or req.noteId,
+                    encounter_id=encounter_id,
+                    session_id=session_id,
+                    transcript_cursor=req.transcriptCursor,
+                    attachments={
+                        "chart": req.chart,
+                        "audio": req.audio,
+                    },
+                )
+            )
+            messages = stable_messages + [dynamic_message]
             response_content = call_openai(messages, model=model_name or "gpt-4o")
-            _record_prompt_usage("suggest", observation, builder_blocks.cache_state)
+            _record_prompt_usage("suggest", observation, cache_state)
             data = json.loads(response_content)
             codes_list: List[CodeSuggestion] = []
             logged_codes: List[Tuple[str, Optional[float]]] = []

@@ -1697,13 +1697,14 @@ export function NoteEditor({
   const [patientInputValue, setPatientInputValue] = useState(initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(initialNoteData?.patientId || prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
-  const [manualHint, setManualHint] = useState<{ enableManual: boolean; reason?: string }>({ enableManual: false })
-  const [manualBusy, setManualBusy] = useState(false)
-  const manualBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const clearManualBusyTimeout = useCallback(() => {
-    if (manualBusyTimeoutRef.current) {
-      clearTimeout(manualBusyTimeoutRef.current)
-      manualBusyTimeoutRef.current = null
+  const [refreshEnabled, setRefreshEnabled] = useState(false)
+  const [refreshReason, setRefreshReason] = useState("")
+  const [refreshBusy, setRefreshBusy] = useState(false)
+  const refreshBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearRefreshBusyTimeout = useCallback(() => {
+    if (refreshBusyTimeoutRef.current) {
+      clearTimeout(refreshBusyTimeoutRef.current)
+      refreshBusyTimeoutRef.current = null
     }
   }, [])
 
@@ -1745,34 +1746,38 @@ export function NoteEditor({
     const handleHint = (event: Event) => {
       const custom = event as CustomEvent<{ enableManual?: unknown; reason?: unknown }>
       const enableManual = Boolean(custom?.detail?.enableManual)
-      const reason =
-        typeof custom?.detail?.reason === "string" ? custom.detail.reason : undefined
-      setManualHint({ enableManual, reason })
+      const reason = typeof custom?.detail?.reason === "string" ? custom.detail.reason : ""
+      setRefreshEnabled(enableManual)
+      setRefreshReason(enableManual ? reason : "")
+      if (!enableManual) {
+        setRefreshBusy(false)
+        clearRefreshBusyTimeout()
+      }
     }
 
     window.addEventListener("rp-manual-refresh-hint", handleHint as EventListener)
     return () => {
       window.removeEventListener("rp-manual-refresh-hint", handleHint as EventListener)
     }
-  }, [])
+  }, [clearRefreshBusyTimeout])
 
   useEffect(() => {
     const handleComplete = () => {
-      clearManualBusyTimeout()
-      setManualBusy(false)
+      clearRefreshBusyTimeout()
+      setRefreshBusy(false)
     }
 
     window.addEventListener("rp-manual-refresh-complete", handleComplete)
     return () => {
       window.removeEventListener("rp-manual-refresh-complete", handleComplete)
     }
-  }, [clearManualBusyTimeout])
+  }, [clearRefreshBusyTimeout])
 
   useEffect(() => {
     return () => {
-      clearManualBusyTimeout()
+      clearRefreshBusyTimeout()
     }
-  }, [clearManualBusyTimeout])
+  }, [clearRefreshBusyTimeout])
 
   const contextStageDisplay = useMemo(() => {
     const result: Record<string, string> = {}
@@ -5903,18 +5908,20 @@ export function NoteEditor({
   }, [workspaceClipboardText])
 
   const handleManualRefresh = useCallback(() => {
-    if (!manualHint.enableManual || manualBusy) {
+    if (!refreshEnabled || refreshBusy) {
       return
     }
 
-    setManualBusy(true)
+    setRefreshBusy(true)
     window.dispatchEvent(new CustomEvent("rp-manual-refresh"))
-    clearManualBusyTimeout()
-    manualBusyTimeoutRef.current = setTimeout(() => {
-      setManualBusy(false)
-      manualBusyTimeoutRef.current = null
+    clearRefreshBusyTimeout()
+    refreshBusyTimeoutRef.current = setTimeout(() => {
+      setRefreshBusy(false)
+      refreshBusyTimeoutRef.current = null
     }, 3000)
-  }, [manualHint.enableManual, manualBusy, clearManualBusyTimeout])
+    setRefreshEnabled(false)
+    setRefreshReason("")
+  }, [refreshEnabled, refreshBusy, clearRefreshBusyTimeout])
 
   const canStartVisit = useMemo(() => {
     if (isFinalized) {
@@ -6258,9 +6265,9 @@ export function NoteEditor({
         </div>
 
         <RefreshQuickButton
-          enabled={manualHint.enableManual}
-          reason={manualHint.reason}
-          busy={manualBusy}
+          enabled={refreshEnabled}
+          reason={refreshReason}
+          busy={refreshBusy}
           onClick={handleManualRefresh}
         />
 
