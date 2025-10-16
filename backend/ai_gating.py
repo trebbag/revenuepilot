@@ -9,6 +9,7 @@ rules can evolve without touching the API surface.
 
 from __future__ import annotations
 
+import builtins
 import dataclasses
 import builtins
 import difflib
@@ -28,6 +29,7 @@ import structlog
 from prometheus_client import Counter, Histogram, REGISTRY
 
 from backend.openai_client import get_embedding_client
+from backend.dcsb_features import compute_dcb
 from backend.db.models import (
     AIClinicianAggregate,
     AIClinicianDailyStat,
@@ -61,8 +63,10 @@ def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames)
     return metric_cls(name, documentation, labelnames=labelnames)
 
 
+
 if not hasattr(builtins, "_get_or_create_metric"):
     setattr(builtins, "_get_or_create_metric", _get_or_create_metric)
+
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1234,18 +1238,45 @@ class AIGatingService:
 
         text = str(segment.get("text") or "").strip()
         route_label = AUDIO_AUTO_ROUTE
+        dcb_features = None
+        for key in (
+            "differential_features",
+            "differentialFeatures",
+            "features_by_dx",
+            "dcb_features",
+        ):
+            value = focus_set.get(key)
+            if value is not None:
+                dcb_features = value
+                break
+
+        computed_dcb: Optional[float] = None
+        speaker_value = diar.get("speaker") or segment.get("speaker")
+        if dcb_features is not None:
+            try:
+                computed = compute_dcb(text, speaker_value, dcb_features)
+            except Exception:  # pragma: no cover - defensive guard
+                computed = 0.0
+            computed_dcb = float(max(0.0, computed))
         detail: Dict[str, Any] = {
             "medianConfidence": 0.0,
             "dice": 0.0,
             "distance": None,
             "ascore": 0.0,
-            "dcb": float(focus_set.get("dcb", 0.0)) if isinstance(focus_set.get("dcb"), (int, float)) else 0.0,
+            "dcb": 0.0,
             "score": 0.0,
             "components": {},
             "criticalOverride": None,
             "hint": False,
             "reason": None,
         }
+
+        if computed_dcb is not None:
+            detail["dcb"] = computed_dcb
+        else:
+            fallback = focus_set.get("dcb")
+            if isinstance(fallback, (int, float)):
+                detail["dcb"] = float(fallback)
 
         if not text:
             detail["reason"] = "EMPTY_SEGMENT"

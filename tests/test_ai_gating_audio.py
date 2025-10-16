@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict
+from typing import Any, Dict
 
 import pytest
 
@@ -15,6 +15,7 @@ from backend.ai_gating import (
 )
 from backend.db.models import AINoteState
 from backend.migrations import session_scope
+from backend.dcsb_features import compute_dcb
 
 pytest_plugins = ["tests.test_ai_gating"]
 
@@ -52,7 +53,7 @@ def test_audio_gate_allows_on_critical_override(gating_service_state) -> None:
         "accepted_json": {"type": "alert", "metric": "spo2", "value": 86},
     }
     diar = {"speaker": "clinician"}
-    focus_set: Dict[str, float] = {}
+    focus_set: Dict[str, Any] = {}
 
     allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
     assert allowed is True
@@ -128,13 +129,24 @@ def test_audio_gate_scores_medication_plan(gating_service_state) -> None:
         "section": "plan",
     }
     diar = {"speaker": "clinician", "section": "plan"}
+    differential_features = {
+        "dx-otitis": {
+            "dx": {"id": "dx-otitis", "name": "Acute otitis"},
+            "kbVersion": "2024.1",
+            "features": {
+                "major": ["amoxicillin"],
+            },
+        }
+    }
     focus_set = {
         "entity_weights": {"medication": 0.7},
         "speaker_multipliers": {"clinician": 1.1},
         "plan_bonus": 0.15,
         "medical_density_bonus": 0.1,
         "medical_density_threshold": 0.3,
+        "differential_features": differential_features,
         "dcb": 0.9,
+
     }
 
     allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
@@ -143,6 +155,8 @@ def test_audio_gate_scores_medication_plan(gating_service_state) -> None:
     assert detail["components"].get("plan", 0.0) == pytest.approx(0.15)
     assert detail["components"].get("entities", 0.0) == pytest.approx(0.7 * 0.95 * 1.1)
     assert detail["components"].get("medical_density", 0.0) == pytest.approx(0.1)
+    expected_dcb = compute_dcb(segment["text"], diar["speaker"], differential_features)
+    assert detail["dcb"] == pytest.approx(expected_dcb)
 
     with session_scope(conn) as session:
         state = session.get(AINoteState, note_id)
@@ -177,6 +191,16 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
         "section": "pe",
     }
     diar_first = {"speaker": "clinician", "section": "pe", "repetitions": 0}
+    differential_features = {
+        "dx-asthma": {
+            "dx": {"id": "dx-asthma", "name": "Asthma"},
+            "kbVersion": "2024.1",
+            "features": {
+                "minor": ["wheezing"],
+            },
+            "speakerMultiplier": 1.0,
+        }
+    }
     focus_set = {
         "entity_weights": {"exam": 0.4},
         "speaker_multipliers": {"clinician": 1.0},
@@ -184,6 +208,7 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
         "repetition_cap": 3,
         "medical_density_bonus": 0.08,
         "medical_density_threshold": 0.3,
+        "differential_features": differential_features,
         "dcb": 1.15,
     }
 
@@ -193,7 +218,8 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
     assert allowed_first is False
     assert detail_first["reason"] == "LOW_SALIENCE"
     assert detail_first["hint"] is True
-    assert pytest.approx(detail_first["dcb"], rel=1e-6) == 1.15
+    expected_dcb_first = compute_dcb(segment["text"], diar_first["speaker"], differential_features)
+    assert pytest.approx(detail_first["dcb"], rel=1e-6) == expected_dcb_first
     assert math.isclose(
         AUDIO_SALIENCE_SCORE_MIN - detail_first["score"],
         0.01,
@@ -221,6 +247,11 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     note_id = "audio-smalltalk"
     _ensure_state(conn, note_id, clinician_id)
 
+
+    def metric(name: str, labels: Dict[str, str]) -> float:
+        value = REGISTRY.get_sample_value(name, labels)
+        return 0.0 if value is None else float(value)
+
     route = AUDIO_AUTO_ROUTE
     blocked_reason = {"route": route, "decision": "blocked", "reason": "NOT_MEANINGFUL"}
     allowed_reason = {"route": route, "decision": "allowed", "reason": "allowed"}
@@ -228,11 +259,12 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     dcb_count = {"route": route}
     confidence_count = {"route": route}
 
-    blocked_before = _metric_value("revenuepilot_ai_audio_decisions_total", blocked_reason)
-    allowed_before = _metric_value("revenuepilot_ai_audio_decisions_total", allowed_reason)
-    ascore_before = _metric_value("revenuepilot_ai_audio_ascore_count", ascore_count)
-    dcb_before = _metric_value("revenuepilot_ai_audio_dcb_count", dcb_count)
-    confidence_before = _metric_value("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
+    blocked_before = metric("revenuepilot_ai_audio_decisions_total", blocked_reason)
+    allowed_before = metric("revenuepilot_ai_audio_decisions_total", allowed_reason)
+    ascore_before = metric("revenuepilot_ai_audio_ascore_count", ascore_count)
+    dcb_before = metric("revenuepilot_ai_audio_dcb_count", dcb_count)
+    confidence_before = metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
+
 
     with session_scope(conn) as session:
         state = session.get(AINoteState, note_id)
@@ -245,7 +277,7 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
         "tokens": [{"confidence": 0.91}, {"confidence": 0.92}],
     }
     diar = {"speaker": "patient"}
-    focus_set: Dict[str, float] = {}
+    focus_set: Dict[str, Any] = {}
 
     allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
     assert allowed is False
