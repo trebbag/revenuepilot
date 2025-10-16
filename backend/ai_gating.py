@@ -24,6 +24,7 @@ from collections.abc import Mapping as MappingABC
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import structlog
+from prometheus_client import Counter, Histogram, REGISTRY
 
 from backend.openai_client import get_embedding_client
 from backend.db.models import (
@@ -52,6 +53,13 @@ ZERO_WIDTH_REPLACEMENTS = str.maketrans({
 })
 
 
+def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames):
+    existing = REGISTRY._names_to_collectors.get(name)
+    if existing is not None:
+        return existing
+    return metric_cls(name, documentation, labelnames=labelnames)
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, default))
@@ -76,6 +84,50 @@ AI_SEMANTIC_DISTANCE_MANUAL_MIN = _env_float("AI_SEMANTIC_DISTANCE_MANUAL_MIN", 
 AI_EMBEDDING_MODEL = os.getenv("AI_EMBEDDING_MODEL", os.getenv("AI_EMBED_MODEL", "text-embedding-3-small"))
 ASR_CONFIDENCE_MIN = _env_float("ASR_CONFIDENCE_MIN", 0.85)
 AUDIO_SALIENCE_SCORE_MIN = _env_float("AUDIO_SALIENCE_SCORE_MIN", 0.75)
+
+
+AI_GATE_ALLOWED_REASON_TOTAL = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_allowed_reason_total",
+    "AI gating allowances grouped by route and reason",
+    ("route", "reason"),
+)
+AI_GATE_BLOCKED_REASON_TOTAL = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_blocked_reason_total",
+    "AI gating denials grouped by route and reason",
+    ("route", "reason"),
+)
+AI_GATE_ROUTE_DECISIONS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_gate_route_decisions_total",
+    "AI gating decision counts by route and outcome",
+    ("route", "decision"),
+)
+AI_AUDIO_DECISIONS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_ai_audio_decisions_total",
+    "Audio gating decisions by route and outcome",
+    ("route", "decision", "reason"),
+)
+AI_AUDIO_ASCORE = _get_or_create_metric(
+    Histogram,
+    "revenuepilot_ai_audio_ascore",
+    "Audio salience scores contributing to gating decisions",
+    ("route",),
+)
+AI_AUDIO_DCB = _get_or_create_metric(
+    Histogram,
+    "revenuepilot_ai_audio_dcb",
+    "Documentation context boost values for audio gating",
+    ("route",),
+)
+AI_AUDIO_ASR_CONFIDENCE = _get_or_create_metric(
+    Histogram,
+    "revenuepilot_ai_audio_asr_confidence",
+    "Median ASR confidence observed during audio gating",
+    ("route",),
+)
 
 
 def _parse_audio_override_rules(value: str) -> Tuple[Dict[str, Any], ...]:
@@ -113,6 +165,8 @@ AUDIO_CRITICAL_OVERRIDES = _parse_audio_override_rules(
         "spo2<90,hr>130,sbp<90,dbp<50",
     )
 )
+
+AUDIO_AUTO_ROUTE = "audio_auto"
 
 
 SECTION_PATTERNS: Dict[str, Tuple[str, ...]] = {
@@ -664,6 +718,39 @@ class AIGatingService:
         self._cost_high_cents = 0.2  # heuristic per thousand tokens
         self._cost_mini_cents = 0.05
 
+    def _record_allowed_metrics(
+        self,
+        payload: AIGateInput,
+        *,
+        reason: Optional[str],
+    ) -> None:
+        route = payload.request_type or "unknown"
+        reason_value = reason or ("FORCE" if payload.force else "ALLOWED")
+        AI_GATE_ROUTE_DECISIONS.labels(route=route, decision="allowed").inc()
+        AI_GATE_ALLOWED_REASON_TOTAL.labels(route=route, reason=str(reason_value)).inc()
+
+    def _blocked_decision(
+        self,
+        payload: AIGateInput,
+        detail: GateDetail,
+        *,
+        status_code: int,
+        reason: str,
+        metrics_reason: Optional[str] = None,
+    ) -> AIGateDecision:
+        route = payload.request_type or "unknown"
+        reason_value = metrics_reason or detail.reason or reason or "UNKNOWN"
+        AI_GATE_ROUTE_DECISIONS.labels(route=route, decision="blocked").inc()
+        AI_GATE_BLOCKED_REASON_TOTAL.labels(route=route, reason=str(reason_value)).inc()
+        return AIGateDecision(
+            allowed=False,
+            model=None,
+            route=payload.request_type,
+            status_code=status_code,
+            detail=detail,
+            reason=reason,
+        )
+
     def reconcile_structured_json(
         self,
         note_id: str,
@@ -885,12 +972,10 @@ class AIGatingService:
             if not state.cold_start_completed and payload.request_type != "finalization":
                 if not cold_ready and not payload.force:
                     detail.reason = "BELOW_THRESHOLD"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="BELOW_THRESHOLD",
                     )
                 if cold_ready:
@@ -930,22 +1015,18 @@ class AIGatingService:
             if elapsed_since_input is not None and elapsed_since_input < self._min_secs:
                 detail.reason = "minSecs"
                 detail.cooldown_remaining_ms = int((self._min_secs - elapsed_since_input) * 1000)
-                return AIGateDecision(
-                    allowed=False,
-                    model=None,
-                    route=payload.request_type,
+                return self._blocked_decision(
+                    payload,
+                    detail,
                     status_code=409,
-                    detail=detail,
                     reason="minSecs",
                 )
             if not _has_boundary(payload.text):
                 detail.reason = "NOT_MEANINGFUL"
-                return AIGateDecision(
-                    allowed=False,
-                    model=None,
-                    route=payload.request_type,
+                return self._blocked_decision(
+                    payload,
+                    detail,
                     status_code=409,
-                    detail=detail,
                     reason="NOT_MEANINGFUL",
                 )
 
@@ -960,12 +1041,10 @@ class AIGatingService:
                 detail.salient = salient
                 if not meaningful:
                     detail.reason = "NOT_MEANINGFUL"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="NOT_MEANINGFUL",
                     )
             else:
@@ -974,34 +1053,28 @@ class AIGatingService:
             if payload.request_type in {"auto", "manual_full"}:
                 if not payload.force and not detail.salient and delta_chars < full_threshold:
                     detail.reason = "minChars"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="minChars",
                     )
 
                 if payload.request_type == "auto" and state.auto4o_count >= cap_auto:
                     detail.reason = "CAP_REACHED"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="CAP_REACHED",
                     )
 
                 if payload.request_type == "manual_full" and daily.manual4o_count >= cap_manual:
                     detail.reason = "CAP_REACHED"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="CAP_REACHED",
                     )
 
@@ -1012,12 +1085,10 @@ class AIGatingService:
                     if since_last < cooldown:
                         detail.reason = "COOLDOWN"
                         detail.cooldown_remaining_ms = int((cooldown - since_last) * 1000)
-                        return AIGateDecision(
-                            allowed=False,
-                            model=None,
-                            route=payload.request_type,
+                        return self._blocked_decision(
+                            payload,
+                            detail,
                             status_code=409,
-                            detail=detail,
                             reason="COOLDOWN",
                         )
 
@@ -1039,12 +1110,10 @@ class AIGatingService:
             if payload.request_type == "manual_mini":
                 if not payload.force and not detail.salient and delta_chars < mini_threshold:
                     detail.reason = "minChars"
-                    return AIGateDecision(
-                        allowed=False,
-                        model=None,
-                        route=payload.request_type,
+                    return self._blocked_decision(
+                        payload,
+                        detail,
                         status_code=409,
-                        detail=detail,
                         reason="minChars",
                     )
                 last_mini = _ensure_aware(state.last_mini_call_ts)
@@ -1053,12 +1122,10 @@ class AIGatingService:
                     if since_last < self._cooldown_mini:
                         detail.reason = "COOLDOWN"
                         detail.cooldown_remaining_ms = int((self._cooldown_mini - since_last) * 1000)
-                        return AIGateDecision(
-                            allowed=False,
-                            model=None,
-                            route=payload.request_type,
+                        return self._blocked_decision(
+                            payload,
+                            detail,
                             status_code=409,
-                            detail=detail,
                             reason="COOLDOWN",
                         )
 
@@ -1078,12 +1145,10 @@ class AIGatingService:
                 return decision
 
         detail.reason = "NOT_MEANINGFUL"
-        return AIGateDecision(
-            allowed=False,
-            model=None,
-            route=payload.request_type,
+        return self._blocked_decision(
+            payload,
+            detail,
             status_code=409,
-            detail=detail,
             reason="NOT_MEANINGFUL",
         )
 
@@ -1101,6 +1166,7 @@ class AIGatingService:
         focus_set = focus_set if isinstance(focus_set, MappingABC) else {}
 
         text = str(segment.get("text") or "").strip()
+        route_label = AUDIO_AUTO_ROUTE
         detail: Dict[str, Any] = {
             "medianConfidence": 0.0,
             "dice": 0.0,
@@ -1116,15 +1182,19 @@ class AIGatingService:
 
         if not text:
             detail["reason"] = "EMPTY_SEGMENT"
+            AI_AUDIO_DECISIONS.labels(route=route_label, decision="blocked", reason="EMPTY_SEGMENT").inc()
             return False, detail
         if not _has_boundary(text):
             detail["reason"] = "NO_BOUNDARY"
+            AI_AUDIO_DECISIONS.labels(route=route_label, decision="blocked", reason="NO_BOUNDARY").inc()
             return False, detail
 
         median_conf = _median_confidence(segment)
         detail["medianConfidence"] = median_conf
+        AI_AUDIO_ASR_CONFIDENCE.labels(route=route_label).observe(float(median_conf))
         if median_conf < ASR_CONFIDENCE_MIN:
             detail["reason"] = "LOW_CONFIDENCE"
+            AI_AUDIO_DECISIONS.labels(route=route_label, decision="blocked", reason="LOW_CONFIDENCE").inc()
             return False, detail
 
         with session_scope(self._connection) as session:
@@ -1151,6 +1221,7 @@ class AIGatingService:
             detail["distance"] = distance
             if previous_text and dice >= 0.92 and (distance is None or distance < 0.05):
                 detail["reason"] = "NOT_MEANINGFUL"
+                AI_AUDIO_DECISIONS.labels(route=route_label, decision="blocked", reason="NOT_MEANINGFUL").inc()
                 return False, detail
 
             override = _critical_override(segment, diar)
@@ -1163,6 +1234,9 @@ class AIGatingService:
             total_score = ascore + dcb
             detail["score"] = total_score
 
+            AI_AUDIO_ASCORE.labels(route=route_label).observe(float(ascore))
+            AI_AUDIO_DCB.labels(route=route_label).observe(float(dcb))
+
             if override:
                 allowed = True
             else:
@@ -1173,6 +1247,7 @@ class AIGatingService:
                 if margin <= 0.05:
                     detail["hint"] = True
                 detail["reason"] = "LOW_SALIENCE"
+                AI_AUDIO_DECISIONS.labels(route=route_label, decision="blocked", reason="LOW_SALIENCE").inc()
                 return False, detail
 
             cursor_value = segment.get("cursor") or diar.get("cursor") or text
@@ -1193,6 +1268,7 @@ class AIGatingService:
 
             detail["hint"] = False
             detail["reason"] = None
+            AI_AUDIO_DECISIONS.labels(route=route_label, decision="allowed", reason="allowed").inc()
             return True, detail
 
     # Internal helpers ------------------------------------------------
@@ -1299,6 +1375,7 @@ class AIGatingService:
         session.add(aggregate)
 
         job_id = uuid.uuid4().hex
+        self._record_allowed_metrics(payload, reason=detail.reason)
         detail.reason = None
 
         from backend import main as backend_main
@@ -1468,6 +1545,14 @@ __all__ = [
     "compute_json_divergence",
     "EMBED_SENTINEL_NEW",
     "EMBED_SENTINEL_OLD",
+    "AI_GATE_ALLOWED_REASON_TOTAL",
+    "AI_GATE_BLOCKED_REASON_TOTAL",
+    "AI_GATE_ROUTE_DECISIONS",
+    "AI_AUDIO_DECISIONS",
+    "AI_AUDIO_ASCORE",
+    "AI_AUDIO_DCB",
+    "AI_AUDIO_ASR_CONFIDENCE",
+    "AUDIO_AUTO_ROUTE",
 ]
 VITALS_RE = re.compile(r"(bp\s*\d{2,3}/\d{2,3}|hr\s*\d{2,3}|spo2\s*\d{2,3}%)", re.I)
 LABS_RE = re.compile(
