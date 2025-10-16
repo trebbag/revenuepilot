@@ -202,6 +202,7 @@ from backend.notifications_service import (
     NotificationNotFoundError,
     NotificationService,
 )
+from backend.dcsb_features import DifferentialDx, Features as DcsbFeatures, normalise_features
 from backend.ws_notifications import NotificationWebSocketManager
 from backend.pdf_render import render_note_pdf, render_summary_pdf, render_pdf_from_html, render_pdf_from_text
 from backend.notes_service import (
@@ -9495,20 +9496,81 @@ def _dedupe_code_suggestions(
     return result
 
 
+def _coerce_dx_confidence(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    if number > 1.0:
+        number = number / 100.0 if number <= 100.0 else 1.0
+    return max(0.0, min(number, 1.0))
+
+
+def _dedupe_sanitized_strings(values: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    result: List[str] = []
+    for value in values:
+        cleaned = sanitize_text(value).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
+
+
+def _coerce_differential_dx(raw_dx: Any, index: int) -> DifferentialDx:
+    if isinstance(raw_dx, DifferentialDx):
+        return raw_dx
+    if isinstance(raw_dx, Mapping):
+        name = _coerce_string(
+            raw_dx.get("name")
+            or raw_dx.get("diagnosis")
+            or raw_dx.get("dx")
+            or raw_dx.get("label")
+        )
+        identifier = _coerce_string(raw_dx.get("id")) or None
+        icd = _coerce_string(raw_dx.get("icdCode") or raw_dx.get("icd_code")) or None
+        confidence = _coerce_dx_confidence(raw_dx.get("confidence"))
+    else:
+        name = _coerce_string(raw_dx)
+        identifier = None
+        icd = None
+        confidence = None
+    if not name:
+        name = f"Differential {index + 1}"
+    return DifferentialDx(id=identifier, icdCode=icd, name=name, confidence=confidence)
+
+
 def _coerce_differential_item(raw: Mapping[str, Any], index: int) -> DifferentialItem:
-    dx = _coerce_string(raw.get("dx") or raw.get("diagnosis")) or f"Differential {index + 1}"
-    what_it_is = _coerce_string(
-        raw.get("whatItIs") or raw.get("description") or raw.get("summary")
+    dx = _coerce_differential_dx(raw.get("dx") or raw.get("diagnosis"), index)
+    confidence = dx.confidence
+    if confidence is None:
+        confidence = _coerce_dx_confidence(raw.get("confidence"))
+    what_it_is = sanitize_text(
+        _coerce_string(
+            raw.get("whatItIs") or raw.get("description") or raw.get("summary")
+        )
+    ).strip()
+    supporting = _dedupe_sanitized_strings(
+        _coerce_string_list(
+            raw.get("supportingFactors")
+            or raw.get("forFactors")
+            or raw.get("supporting")
+        )
     )
-    supporting = _coerce_string_list(
-        raw.get("supportingFactors")
-        or raw.get("forFactors")
-        or raw.get("supporting")
-    )
-    contradicting = _coerce_string_list(
-        raw.get("contradictingFactors")
-        or raw.get("againstFactors")
-        or raw.get("contradicting")
+    contradicting = _dedupe_sanitized_strings(
+        _coerce_string_list(
+            raw.get("contradictingFactors")
+            or raw.get("againstFactors")
+            or raw.get("contradicting")
+        )
     )
     confirm = _normalize_test_identifiers(
         raw.get("testsToConfirm") or raw.get("confirmatoryTests")
@@ -9516,15 +9578,21 @@ def _coerce_differential_item(raw: Mapping[str, Any], index: int) -> Differentia
     exclude = _normalize_test_identifiers(
         raw.get("testsToExclude") or raw.get("ruleOutTests")
     )
-    evidence = _coerce_string_list(raw.get("evidence"))
+    evidence = _dedupe_sanitized_strings(_coerce_string_list(raw.get("evidence")))
+    kb_version = _coerce_string(raw.get("kbVersion") or raw.get("kb_version")) or None
+    features = normalise_features(dx, raw.get("features"), kb_version)
     return DifferentialItem(
         dx=dx,
-        whatItIs=what_it_is or dx,
+        diagnosis=dx.name,
+        confidence=confidence,
+        icdCode=_coerce_string(raw.get("icdCode") or raw.get("icd_code")) or None,
+        whatItIs=what_it_is or dx.name,
         supportingFactors=supporting,
         contradictingFactors=contradicting,
         testsToConfirm=confirm,
         testsToExclude=exclude,
         evidence=evidence,
+        features=features,
     )
 
 
@@ -9801,16 +9869,36 @@ class ComplianceRuleUpdateRequest(ComplianceRuleBase):
 
 
 class DifferentialItem(BaseModel):
-    dx: str
+    dx: DifferentialDx
+    diagnosis: str
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    icdCode: Optional[str] = None
     whatItIs: str = ""
     supportingFactors: List[str] = Field(default_factory=list)
     contradictingFactors: List[str] = Field(default_factory=list)
     testsToConfirm: List[str] = Field(default_factory=list)
     testsToExclude: List[str] = Field(default_factory=list)
     evidence: List[str] = Field(default_factory=list)
+    features: DcsbFeatures = Field(default_factory=DcsbFeatures)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_dx(cls, value: Any) -> Any:  # noqa: D401,N805
+        if isinstance(value, Mapping):
+            if isinstance(value.get("dx"), str):
+                payload = dict(value)
+                dx_name = payload["dx"]
+                payload.setdefault("diagnosis", dx_name)
+                payload["dx"] = {"name": dx_name}
+                return payload
+        return value
 
     @model_validator(mode="after")
-    def _require_support_and_tests(self) -> "DifferentialItem":  # noqa: D401
+    def _finalise(self) -> "DifferentialItem":  # noqa: D401
+        if not self.diagnosis:
+            object.__setattr__(self, "diagnosis", self.dx.name)
+        if not self.whatItIs:
+            object.__setattr__(self, "whatItIs", self.dx.name)
         if not (self.supportingFactors or self.contradictingFactors):
             raise ValueError("At least one supporting or contradicting factor is required")
         if not (self.testsToConfirm or self.testsToExclude):
@@ -17375,7 +17463,9 @@ async def _differentials_generate(
 
     for item in diffs:
         if not item.evidence:
-            add_concern(f"{item.dx} lacks evidence snippets; verify source documentation.")
+            add_concern(
+                f"{item.dx.name} lacks evidence snippets; verify source documentation."
+            )
 
     return DifferentialsResponse(
         differentials=diffs,
