@@ -62,13 +62,22 @@ def test_differentials_v2_happy_path(
     body = response.json()
     assert len(body["differentials"]) == 1
     diff = body["differentials"][0]
-    assert diff["dx"] == "Influenza"
+    assert diff["dx"]["name"] == "Influenza"
+    assert diff["diagnosis"] == "Influenza"
     assert diff["whatItIs"] == "Seasonal influenza"
     assert diff["supportingFactors"] and diff["supportingFactors"][0] == "Fever 101F"
     assert diff["contradictingFactors"] == ["Clear lungs"]
     assert diff["testsToConfirm"] and diff["testsToConfirm"][0] == "87502"
     assert diff["testsToExclude"] == ["Chest X-ray"]
     assert diff["evidence"] == ["Fever 101F noted."]
+    assert diff["features"] == {
+        "pathognomonic": [],
+        "major": [],
+        "minor": [],
+        "vitals": [],
+        "labs": [],
+        "orders": [],
+    }
     assert body["potentialConcerns"] == ["LLM caution"]
 
     messages = captured["messages"]
@@ -153,6 +162,6 @@ def test_differentials_missing_supporting_data_warns(
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["differentials"][0]["dx"] == "Sinusitis"
+    assert payload["differentials"][0]["dx"]["name"] == "Sinusitis"
     assert any("No recent vitals" in concern for concern in payload["potentialConcerns"])
     assert any("No recent labs" in concern for concern in payload["potentialConcerns"])

@@ -170,14 +170,21 @@ def test_differentials_include_all_fields(
     assert isinstance(body.get("differentials"), list)
     assert len(body["differentials"]) == 1
     diff = body["differentials"][0]
-    assert diff == {
-        "dx": "Heart failure",
-        "whatItIs": "Pump failure",
-        "supportingFactors": ["Dyspnea"],
-        "contradictingFactors": ["Normal BNP"],
-        "testsToConfirm": ["93306 (CPT) Echocardiogram"],
-        "testsToExclude": ["Stress test"],
-        "evidence": ["\"Shortness of breath\" noted in assessment."],
+    assert diff["dx"]["name"] == "Heart failure"
+    assert diff["diagnosis"] == "Heart failure"
+    assert diff["whatItIs"] == "Pump failure"
+    assert diff["supportingFactors"] == ["Dyspnea"]
+    assert diff["contradictingFactors"] == ["Normal BNP"]
+    assert diff["testsToConfirm"] == ["93306 (CPT) Echocardiogram"]
+    assert diff["testsToExclude"] == ["Stress test"]
+    assert diff["evidence"] == ['"Shortness of breath" noted in assessment.']
+    assert diff["features"] == {
+        "pathognomonic": [],
+        "major": [],
+        "minor": [],
+        "vitals": [],
+        "labs": [],
+        "orders": [],
     }
     assert body["potentialConcerns"]
 
