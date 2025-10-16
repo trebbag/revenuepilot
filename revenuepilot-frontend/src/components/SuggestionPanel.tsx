@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Button } from "./ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card"
 import { Badge } from "./ui/badge"
@@ -7,7 +7,7 @@ import { ScrollArea } from "./ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
 import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle, HelpCircle } from "lucide-react"
-import { apiFetchJson } from "../lib/api"
+import { apiFetch, apiFetchJson } from "../lib/api"
 import type {
   CodeChangeLogEntry,
   ComplianceIssue,
@@ -132,6 +132,14 @@ const normalizeConfidence = (value: unknown): number | undefined => {
 }
 
 const NO_MEANINGFUL_CHANGES = "No meaningful changes"
+const BOUNDARY_PATTERN = /(?:\r?\n\s*$|[.!?][)"'\]]*\s*$)/
+
+const endsWithBoundary = (value: string): boolean => {
+  if (typeof value !== "string" || value.length === 0) {
+    return false
+  }
+  return BOUNDARY_PATTERN.test(value)
+}
 
 export function SuggestionPanel({
   onClose,
@@ -178,6 +186,12 @@ export function SuggestionPanel({
 
   const [showConfidenceWarning, setShowConfidenceWarning] = useState(false)
   const [selectedDifferential, setSelectedDifferential] = useState<DifferentialItem | null>(null)
+
+  const gateAttemptContentRef = useRef<string | null>(null)
+  const gateAllowedContentRef = useRef<string | null>(null)
+  const gateAllowedTrimmedRef = useRef<string | null>(null)
+  const codesFetchContentRef = useRef<string | null>(null)
+  const complianceFetchContentRef = useRef<string | null>(null)
 
   const codesInUse = useMemo(() => (selectedCodesList || []).map((item) => item?.code).filter((code): code is string => Boolean(code)), [selectedCodesList])
 
@@ -359,28 +373,9 @@ export function SuggestionPanel({
     return "Waiting for the live stream."
   }, [])
 
-  useEffect(() => {
-    const trimmed = noteContent?.trim()
-
-    if (!trimmed) {
-      setCodeSuggestions([])
-      setComplianceAlerts([])
-      setDifferentialSuggestions([])
-      setGapQuestions([])
-      return
-    }
-
-    const controller = new AbortController()
-    const signal = controller.signal
-
-    if (!shouldFetchCodes) {
-      setCodesLoading(false)
-    }
-    if (!shouldFetchCompliance) {
-      setComplianceLoading(false)
-    }
-
-    const fetchCodes = async () => {
+  const fetchCodes = useCallback(
+    async (content: string, signal: AbortSignal) => {
+      codesFetchContentRef.current = content
       setCodesLoading(true)
       setCodesError(null)
       try {
@@ -388,7 +383,7 @@ export function SuggestionPanel({
           (await apiFetchJson<{ suggestions?: any[]; questions?: any[] }>("/api/ai/codes/suggest", {
             method: "POST",
             jsonBody: {
-              content: trimmed,
+              content,
               codes: codesInUse,
               ...contextRequestPayload,
               transcript_cursor: transcriptCursor ?? undefined,
@@ -441,6 +436,7 @@ export function SuggestionPanel({
           : []
         setGapQuestions(normalizedQuestions)
       } catch (error) {
+        codesFetchContentRef.current = null
         if ((error as Error).name === "AbortError") {
           return
         }
@@ -455,16 +451,20 @@ export function SuggestionPanel({
       } finally {
         setCodesLoading(false)
       }
-    }
+    },
+    [codesInUse, contextRequestPayload, transcriptCursor],
+  )
 
-    const fetchCompliance = async () => {
+  const fetchCompliance = useCallback(
+    async (content: string, signal: AbortSignal) => {
+      complianceFetchContentRef.current = content
       setComplianceLoading(true)
       setComplianceError(null)
       try {
         const data =
           (await apiFetchJson<{ alerts?: any[] }>("/api/ai/compliance/check", {
             method: "POST",
-            jsonBody: { content: trimmed, codes: codesInUse },
+            jsonBody: { content, codes: codesInUse },
             signal,
           })) ?? {}
 
@@ -477,6 +477,7 @@ export function SuggestionPanel({
         }))
         setComplianceAlerts(normalized)
       } catch (error) {
+        complianceFetchContentRef.current = null
         if ((error as Error).name === "AbortError") {
           return
         }
@@ -490,16 +491,19 @@ export function SuggestionPanel({
       } finally {
         setComplianceLoading(false)
       }
-    }
+    },
+    [codesInUse],
+  )
 
-    const fetchDifferentials = async () => {
+  const fetchDifferentials = useCallback(
+    async (content: string, signal: AbortSignal) => {
       setDifferentialsLoading(true)
       setDifferentialsError(null)
       try {
         const data =
           (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
             method: "POST",
-            jsonBody: { content: trimmed, ...contextRequestPayload },
+            jsonBody: { content, ...contextRequestPayload },
             signal,
           })) ?? {}
 
@@ -553,23 +557,169 @@ export function SuggestionPanel({
       } finally {
         setDifferentialsLoading(false)
       }
+    },
+    [contextRequestPayload],
+  )
+
+  useEffect(() => {
+    const fullContent = typeof noteContent === "string" ? noteContent : ""
+    const trimmed = fullContent.trim()
+
+    if (!trimmed) {
+      setCodeSuggestions([])
+      setComplianceAlerts([])
+      setDifferentialSuggestions([])
+      setGapQuestions([])
+      gateAttemptContentRef.current = null
+      gateAllowedContentRef.current = null
+      gateAllowedTrimmedRef.current = null
+      codesFetchContentRef.current = null
+      complianceFetchContentRef.current = null
+      return
     }
 
-    const debounceId = window.setTimeout(() => {
-      if (shouldFetchCodes) {
-        void fetchCodes()
+    if (!shouldFetchCodes) {
+      setCodesLoading(false)
+    }
+    if (!shouldFetchCompliance) {
+      setComplianceLoading(false)
+    }
+
+    const boundaryReached = endsWithBoundary(fullContent)
+    if (!boundaryReached) {
+      gateAttemptContentRef.current = null
+      gateAllowedContentRef.current = null
+      gateAllowedTrimmedRef.current = null
+      codesFetchContentRef.current = null
+      complianceFetchContentRef.current = null
+      return
+    }
+
+    if (gateAttemptContentRef.current === fullContent) {
+      return
+    }
+
+    gateAttemptContentRef.current = fullContent
+
+    const gateController = new AbortController()
+    const fetchController = new AbortController()
+
+    const correlationId = typeof contextInfo?.correlationId === "string" ? contextInfo.correlationId.trim() : ""
+    const gatePayload: Record<string, unknown> = {
+      noteId: correlationId.length > 0 ? correlationId : "suggestion-draft",
+      noteContent: fullContent,
+      requestType: "auto",
+    }
+    if (transcriptCursor) {
+      gatePayload.transcriptCursor = transcriptCursor
+    }
+
+    const runGate = async () => {
+      try {
+        const response = await apiFetch("/api/notes/ai/gate", {
+          method: "POST",
+          jsonBody: gatePayload,
+          signal: gateController.signal,
+        })
+
+        if (gateController.signal.aborted) {
+          return
+        }
+
+        if (response.status === 202 || response.status === 200) {
+          gateAllowedContentRef.current = fullContent
+          gateAllowedTrimmedRef.current = trimmed
+          const tasks: Promise<void>[] = []
+          if (shouldFetchCodes) {
+            tasks.push(fetchCodes(trimmed, fetchController.signal))
+          }
+          if (shouldFetchCompliance) {
+            tasks.push(fetchCompliance(trimmed, fetchController.signal))
+          }
+          tasks.push(fetchDifferentials(trimmed, fetchController.signal))
+          await Promise.all(tasks)
+        } else if (response.status === 409) {
+          gateAllowedContentRef.current = null
+          gateAllowedTrimmedRef.current = null
+        } else {
+          console.error(`AI gate request failed with status ${response.status}`)
+        }
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to gate note suggestions", error)
       }
-      if (shouldFetchCompliance) {
-        void fetchCompliance()
+    }
+
+    void runGate()
+
+    return () => {
+      gateController.abort()
+      fetchController.abort()
+    }
+  }, [
+    noteContent,
+    shouldFetchCodes,
+    shouldFetchCompliance,
+    contextInfo?.correlationId,
+    transcriptCursor,
+    fetchCodes,
+    fetchCompliance,
+    fetchDifferentials,
+  ])
+
+  useEffect(() => {
+    const fullContent = typeof noteContent === "string" ? noteContent : ""
+    const trimmed = fullContent.trim()
+
+    if (!trimmed) {
+      return
+    }
+
+    if (!endsWithBoundary(fullContent)) {
+      return
+    }
+
+    if (gateAllowedContentRef.current !== fullContent || gateAllowedTrimmedRef.current !== trimmed) {
+      return
+    }
+
+    if (!shouldFetchCodes && !shouldFetchCompliance) {
+      return
+    }
+
+    const controller = new AbortController()
+    const tasks: Promise<void>[] = []
+
+    if (shouldFetchCodes && codesFetchContentRef.current !== trimmed) {
+      tasks.push(fetchCodes(trimmed, controller.signal))
+    }
+
+    if (shouldFetchCompliance && complianceFetchContentRef.current !== trimmed) {
+      tasks.push(fetchCompliance(trimmed, controller.signal))
+    }
+
+    if (tasks.length === 0) {
+      controller.abort()
+      return
+    }
+
+    void (async () => {
+      try {
+        await Promise.all(tasks)
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return
+        }
+        console.error("Failed to refresh AI suggestions after gating", error)
       }
-      fetchDifferentials()
-    }, 500)
+    })()
 
     return () => {
       controller.abort()
-      window.clearTimeout(debounceId)
     }
-  }, [noteContent, codesInUse, shouldFetchCodes, shouldFetchCompliance, contextRequestPayload, transcriptCursor])
+  }, [noteContent, shouldFetchCodes, shouldFetchCompliance, fetchCodes, fetchCompliance])
 
   useEffect(() => {
     const controller = new AbortController()

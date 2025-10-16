@@ -1,15 +1,21 @@
 import "@testing-library/jest-dom/vitest"
 import { render, screen, waitFor, fireEvent } from "@testing-library/react"
-import { act } from "react-dom/test-utils"
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 
 import { SuggestionPanel } from "../SuggestionPanel"
 import type { StreamConnectionState } from "../NoteEditor"
 
+const apiFetchMock = vi.fn<
+  [RequestInfo | URL, { method?: string; jsonBody?: unknown; signal?: AbortSignal }?],
+  Promise<Response>
+>()
 const apiFetchJsonMock = vi.fn<[RequestInfo | URL, { method?: string; jsonBody?: unknown; signal?: AbortSignal }?], Promise<any>>()
 
 vi.mock("../../lib/api", () => ({
-  apiFetchJson: (input: RequestInfo | URL, options?: { method?: string; jsonBody?: unknown; signal?: AbortSignal }) => apiFetchJsonMock(input, options),
+  apiFetch: (input: RequestInfo | URL, options?: { method?: string; jsonBody?: unknown; signal?: AbortSignal }) =>
+    apiFetchMock(input, options),
+  apiFetchJson: (input: RequestInfo | URL, options?: { method?: string; jsonBody?: unknown; signal?: AbortSignal }) =>
+    apiFetchJsonMock(input, options),
 }))
 
 const resolveUrl = (input: RequestInfo | URL): string => {
@@ -39,8 +45,20 @@ const flushPromises = async () => {
 
 describe("SuggestionPanel streaming integration", () => {
   beforeEach(() => {
-    vi.useFakeTimers()
+    apiFetchMock.mockReset()
     apiFetchJsonMock.mockReset()
+    apiFetchMock.mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          allowed: true,
+          model: "test",
+          route: "auto",
+          job: { jobId: "job-1", model: "test", route: "auto", queuedAt: new Date().toISOString() },
+          detail: {},
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    )
     apiFetchJsonMock.mockImplementation(async (input: RequestInfo | URL) => {
       const url = resolveUrl(input)
       if (url.includes("/api/ai/differentials/generate")) {
@@ -60,8 +78,8 @@ describe("SuggestionPanel streaming integration", () => {
   })
 
   afterEach(() => {
-    vi.runOnlyPendingTimers()
-    vi.useRealTimers()
+    apiFetchMock.mockReset()
+    apiFetchJsonMock.mockReset()
   })
 
   const baseProps = {
@@ -70,7 +88,7 @@ describe("SuggestionPanel streaming integration", () => {
     onUpdateCodes: vi.fn(),
     onAddCode: vi.fn(),
     addedCodes: [] as string[],
-    noteContent: "Initial note content",
+    noteContent: "Initial note content.",
     selectedCodesList: [] as any[],
   }
 
@@ -94,11 +112,6 @@ describe("SuggestionPanel streaming integration", () => {
         complianceConnection={defaultConnectionState("open")}
       />,
     )
-
-    await act(async () => {
-      vi.advanceTimersByTime(600)
-      await Promise.resolve()
-    })
 
     await flushPromises()
 
@@ -135,7 +148,7 @@ describe("SuggestionPanel streaming integration", () => {
     render(
       <SuggestionPanel
         {...baseProps}
-        noteContent="Offline fallback note"
+        noteContent="Offline fallback note."
         streamingCodes={[]}
         streamingCompliance={[]}
         codesConnection={defaultConnectionState("error", { lastError: "Socket failed" })}
@@ -144,11 +157,7 @@ describe("SuggestionPanel streaming integration", () => {
       />,
     )
 
-    await act(async () => {
-      vi.advanceTimersByTime(600)
-      await Promise.resolve()
-    })
-
+    await flushPromises()
     await flushPromises()
 
     const offlineBadges = screen.getAllByText((_, element) => element?.textContent === "Offline" && element.parentElement?.getAttribute("data-slot") === "badge")
@@ -209,18 +218,12 @@ describe("SuggestionPanel streaming integration", () => {
         />,
       )
 
-      await act(async () => {
-        vi.advanceTimersByTime(600)
-        await Promise.resolve()
-      })
-
+      await flushPromises()
       await flushPromises()
 
-      vi.useRealTimers()
       await waitFor(() => {
         expect(screen.getByText("Document medication list?")).toBeInTheDocument()
       })
-      vi.useFakeTimers()
 
       fireEvent.click(screen.getByText("Document medication list?"))
 
@@ -232,5 +235,57 @@ describe("SuggestionPanel streaming integration", () => {
     } finally {
       questionEventSpy.mockRestore()
     }
+  })
+
+  it("treats 409 gating responses as silent blocks and proceeds on later 202", async () => {
+    apiFetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ blocked: true, reason: "BELOW_THRESHOLD" }), {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+      }),
+    )
+
+    const { rerender } = render(
+      <SuggestionPanel
+        {...baseProps}
+        streamingCodes={[]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("error")}
+        complianceConnection={defaultConnectionState("error")}
+      />,
+    )
+
+    await flushPromises()
+
+    expect(apiFetchJsonMock).not.toHaveBeenCalled()
+
+    apiFetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          allowed: true,
+          model: "test",
+          route: "auto",
+          job: { jobId: "job-2", model: "test", route: "auto", queuedAt: new Date().toISOString() },
+          detail: {},
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+
+    rerender(
+      <SuggestionPanel
+        {...baseProps}
+        noteContent={`${baseProps.noteContent}\nAdditional sentence.`}
+        streamingCodes={[]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("error")}
+        complianceConnection={defaultConnectionState("error")}
+      />,
+    )
+
+    await flushPromises()
+    await waitFor(() => {
+      expect(apiFetchJsonMock).toHaveBeenCalled()
+    })
   })
 })
