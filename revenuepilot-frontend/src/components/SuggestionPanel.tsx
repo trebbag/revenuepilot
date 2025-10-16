@@ -99,6 +99,7 @@ interface CodeSuggestionItem {
   potentialConcerns?: string[]
   evidence?: string[]
   flaggedForReview?: boolean
+  source?: string
   origin?: string
   matchedFeatures?: MatchedFeatureGroup[]
   noteInsertText?: string
@@ -381,6 +382,7 @@ export function SuggestionPanel({
   const gateAttemptContentRef = useRef<string | null>(null)
   const gateAllowedContentRef = useRef<string | null>(null)
   const gateAllowedTrimmedRef = useRef<string | null>(null)
+  const gateRefreshMarkerRef = useRef<number>(0)
   const codesFetchContentRef = useRef<string | null>(null)
   const complianceFetchContentRef = useRef<string | null>(null)
 
@@ -431,6 +433,8 @@ export function SuggestionPanel({
 
   const shouldFetchCodes = !codesStreamAvailable
   const shouldFetchCompliance = !complianceStreamAvailable
+  const [manualRefreshAllowed, setManualRefreshAllowed] = useState(false)
+  const [gateRefreshCounter, setGateRefreshCounter] = useState(0)
 
   const requestHighlight = useCallback((evidence?: string[]) => {
     if (typeof window === "undefined") {
@@ -488,6 +492,7 @@ export function SuggestionPanel({
           potentialConcerns: [],
           flaggedForReview:
             Boolean(entry.flaggedForReview) || Boolean(entry.demotions && entry.demotions.length > 0),
+          source: typeof entry.source === "string" ? entry.source : undefined,
           origin,
           matchedFeatures,
           noteInsertText,
@@ -815,6 +820,7 @@ export function SuggestionPanel({
       gateAllowedTrimmedRef.current = null
       codesFetchContentRef.current = null
       complianceFetchContentRef.current = null
+      setManualRefreshAllowed(false)
       return
     }
 
@@ -832,14 +838,17 @@ export function SuggestionPanel({
       gateAllowedTrimmedRef.current = null
       codesFetchContentRef.current = null
       complianceFetchContentRef.current = null
+      setManualRefreshAllowed(false)
       return
     }
 
-    if (gateAttemptContentRef.current === fullContent) {
+    if (gateAttemptContentRef.current === fullContent && gateRefreshMarkerRef.current === gateRefreshCounter) {
       return
     }
 
     gateAttemptContentRef.current = fullContent
+    gateRefreshMarkerRef.current = gateRefreshCounter
+    setManualRefreshAllowed(false)
 
     const gateController = new AbortController()
     const fetchController = new AbortController()
@@ -866,12 +875,23 @@ export function SuggestionPanel({
           return
         }
 
+        let parsedBody: any = null
+        try {
+          parsedBody = await response.clone().json()
+        } catch (error) {
+          parsedBody = null
+        }
+
         if (response.status === 202 || response.status === 200) {
           gateAllowedContentRef.current = fullContent
           gateAllowedTrimmedRef.current = trimmed
+
+          setManualRefreshAllowed(false)
+
           window.dispatchEvent(
             new CustomEvent("rp-manual-refresh-hint", { detail: { enableManual: false } }),
           )
+
           const tasks: Promise<void>[] = []
           if (shouldFetchCodes) {
             tasks.push(fetchCodes(trimmed, fetchController.signal))
@@ -884,6 +904,10 @@ export function SuggestionPanel({
         } else if (response.status === 409) {
           gateAllowedContentRef.current = null
           gateAllowedTrimmedRef.current = null
+
+          const hintActive = Boolean(parsedBody?.detail?.hint)
+          setManualRefreshAllowed(hintActive)
+
           let data: any = null
           try {
             data = await response.json()
@@ -901,14 +925,17 @@ export function SuggestionPanel({
               }),
             )
           }
+
         } else {
           console.error(`AI gate request failed with status ${response.status}`)
+          setManualRefreshAllowed(false)
         }
       } catch (error) {
         if ((error as Error).name === "AbortError") {
           return
         }
         console.error("Failed to gate note suggestions", error)
+        setManualRefreshAllowed(false)
       }
     }
 
@@ -927,6 +954,7 @@ export function SuggestionPanel({
     fetchCodes,
     fetchCompliance,
     fetchDifferentials,
+    gateRefreshCounter,
   ])
 
   useEffect(() => {
@@ -981,8 +1009,19 @@ export function SuggestionPanel({
     }
   }, [noteContent, shouldFetchCodes, shouldFetchCompliance, fetchCodes, fetchCompliance])
 
-  const fetchPrevention = useCallback(
-    async (signal?: AbortSignal, intent: "auto" | "manual" = "auto") => {
+  const handleManualRefresh = useCallback(() => {
+    gateAttemptContentRef.current = null
+    setManualRefreshAllowed(false)
+    setGateRefreshCounter((value) => value + 1)
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    const signal = controller.signal
+
+    const fetchPrevention = async () => {
+
+
       setPreventionLoading(true)
       setPreventionError(null)
       try {
@@ -1294,6 +1333,14 @@ export function SuggestionPanel({
               <div className="flex flex-wrap items-center gap-2">
                 {renderConnectionBadge("Codes", codesConnection)}
                 {renderConnectionBadge("Compliance", complianceConnection)}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleManualRefresh}
+                  disabled={!manualRefreshAllowed}
+                >
+                  Refresh suggestions
+                </Button>
               </div>
             </div>
             <p className="text-xs text-muted-foreground">Live AI recommendations stream in real time when connected.</p>
@@ -1432,31 +1479,49 @@ export function SuggestionPanel({
                                       className="p-2.5 rounded-lg border bg-muted/20 cursor-pointer hover:bg-muted/40 transition-colors"
                                       onClick={() => requestHighlight(code.evidence)}
                                     >
-                                      <div className="flex items-center gap-3">
-                                        <Button
-                                          size="sm"
-                                          variant="ghost"
-                                          className="h-8 w-8 p-0 flex items-center justify-center hover:bg-blue-100 hover:text-blue-700 flex-shrink-0"
-                                          onClick={(e) => {
-                                            e.stopPropagation()
-                                            handleAddCode(code)
-                                          }}
-                                        >
-                                          <Plus className="h-4 w-4" />
-                                        </Button>
+                                        <div className="flex items-center gap-3">
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-8 w-8 p-0 flex items-center justify-center hover:bg-blue-100 hover:text-blue-700 flex-shrink-0"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              handleAddCode(code)
+                                            }}
+                                          >
+                                            <Plus className="h-4 w-4" />
+                                          </Button>
+                                          {code.source && code.source.toLowerCase() === "audio" && (
+                                            <Button
+                                              size="sm"
+                                              variant="ghost"
+                                              className="h-8 px-2 text-xs"
+                                              onClick={(e) => {
+                                                e.stopPropagation()
+                                                handleAddCode(code)
+                                              }}
+                                            >
+                                              Insert
+                                            </Button>
+                                          )}
 
-                                        <div className="flex-1 min-w-0 space-y-2">
-                                          <div className="flex items-center justify-between">
-                                            <div className="flex items-center gap-2">
-                                              <Badge variant="outline" className={`text-xs ${codeTypeColors[code.type || ""] || "bg-gray-50 border-gray-200 text-gray-700"}`}>
-                                                {code.type || "CODE"}
-                                              </Badge>
-                                              <span className="font-mono text-sm font-medium">{code.code}</span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                              {code.flaggedForReview && (
-                                                <Badge variant="outline" className="text-[10px] bg-amber-50 border-amber-200 text-amber-700">
-                                                  Needs review
+                                          <div className="flex-1 min-w-0 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                              <div className="flex items-center gap-2">
+                                                <Badge variant="outline" className={`text-xs ${codeTypeColors[code.type || ""] || "bg-gray-50 border-gray-200 text-gray-700"}`}>
+                                                  {code.type || "CODE"}
+                                                </Badge>
+                                                <span className="font-mono text-sm font-medium">{code.code}</span>
+                                                {code.source && code.source.toLowerCase() === "audio" && (
+                                                  <Badge variant="outline" className="text-[10px] bg-sky-50 border-sky-200 text-sky-700">
+                                                    From audio
+                                                  </Badge>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center gap-2">
+                                                {code.flaggedForReview && (
+                                                  <Badge variant="outline" className="text-[10px] bg-amber-50 border-amber-200 text-amber-700">
+                                                    Needs review
                                                 </Badge>
                                               )}
                                               <ConfidenceGauge confidence={code.confidence} size={24} />

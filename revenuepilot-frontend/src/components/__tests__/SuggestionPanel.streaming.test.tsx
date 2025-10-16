@@ -92,6 +92,37 @@ describe("SuggestionPanel streaming integration", () => {
     selectedCodesList: [] as any[],
   }
 
+  it("defers gating until the note ends with a sentence boundary", async () => {
+    const { rerender } = render(
+      <SuggestionPanel
+        {...baseProps}
+        noteContent="Working note"
+        streamingCodes={[]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("error")}
+        complianceConnection={defaultConnectionState("error")}
+      />,
+    )
+
+    await flushPromises()
+    expect(apiFetchMock).not.toHaveBeenCalled()
+
+    rerender(
+      <SuggestionPanel
+        {...baseProps}
+        noteContent="Working note."
+        streamingCodes={[]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("error")}
+        complianceConnection={defaultConnectionState("error")}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledTimes(1)
+    })
+  })
+
   it("skips REST fallbacks when websocket streams are live", async () => {
     render(
       <SuggestionPanel
@@ -323,5 +354,72 @@ describe("SuggestionPanel streaming integration", () => {
     await waitFor(() => {
       expect(apiFetchJsonMock).toHaveBeenCalled()
     })
+  })
+
+  it("enables manual refresh when gating reports a near-threshold hint", async () => {
+    apiFetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ blocked: true, reason: "LOW_SALIENCE", detail: { hint: true } }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+
+    apiFetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          allowed: true,
+          model: "test",
+          route: "auto",
+          job: { jobId: "job-hint", model: "test", route: "auto", queuedAt: new Date().toISOString() },
+          detail: {},
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+
+    render(
+      <SuggestionPanel
+        {...baseProps}
+        noteContent="Near threshold."
+        streamingCodes={[]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("error")}
+        complianceConnection={defaultConnectionState("error")}
+      />,
+    )
+
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(1))
+
+    const refreshButton = screen.getByRole("button", { name: /Refresh suggestions/i })
+    expect(refreshButton).not.toBeDisabled()
+
+    fireEvent.click(refreshButton)
+
+    await waitFor(() => expect(apiFetchMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(refreshButton).toBeDisabled())
+  })
+
+  it("renders an audio badge and insert action for streaming codes from audio", async () => {
+    const onAddCode = vi.fn()
+
+    render(
+      <SuggestionPanel
+        {...baseProps}
+        onAddCode={onAddCode}
+        streamingCodes={[
+          { id: "audio-1", code: "A123", description: "Audio code", receivedAt: Date.now(), source: "audio" },
+        ]}
+        streamingCompliance={[]}
+        codesConnection={defaultConnectionState("open")}
+        complianceConnection={defaultConnectionState("open")}
+      />,
+    )
+
+    await flushPromises()
+
+    expect(screen.getByText("From audio")).toBeInTheDocument()
+    const insertButton = screen.getByRole("button", { name: /Insert/i })
+    fireEvent.click(insertButton)
+    expect(onAddCode).toHaveBeenCalledWith(expect.objectContaining({ code: "A123" }))
   })
 })
