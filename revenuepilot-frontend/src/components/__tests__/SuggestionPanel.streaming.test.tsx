@@ -176,6 +176,42 @@ describe("SuggestionPanel streaming integration", () => {
     expect((codesRequest?.[1]?.jsonBody as Record<string, unknown>)?.transcript_cursor).toBe("cursor-token")
   })
 
+  it("renders audio-origin highlights with insert action", async () => {
+    const onInsertNote = vi.fn()
+
+    render(
+      <SuggestionPanel
+        {...baseProps}
+        onInsertNote={onInsertNote}
+        streamingCodes={[
+          {
+            id: "audio-1",
+            code: "R07.9",
+            description: "Chest pain, unspecified",
+            origin: "audio",
+            matchedFeatures: [{ label: "ACS", features: ["chest pressure", "jaw pain"] }],
+            receivedAt: Date.now(),
+          },
+        ]}
+        codesConnection={defaultConnectionState("open")}
+        complianceConnection={defaultConnectionState("open")}
+      />,
+    )
+
+    await flushPromises()
+
+    expect(screen.getByText("From audio")).toBeInTheDocument()
+    expect(screen.getByText("ACS: chest pressure, jaw pain")).toBeInTheDocument()
+
+    const insertButton = screen.getByRole("button", { name: /Insert into note/i })
+    fireEvent.click(insertButton)
+
+    expect(onInsertNote).toHaveBeenCalledWith(
+      "ACS: chest pressure, jaw pain",
+      expect.objectContaining({ code: "R07.9" }),
+    )
+  })
+
   it("renders gap questions from REST responses and dispatches highlight events", async () => {
     const questionEventSpy = vi.spyOn(window, "dispatchEvent")
 
