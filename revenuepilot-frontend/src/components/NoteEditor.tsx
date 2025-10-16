@@ -33,6 +33,7 @@ import { RichTextEditor } from "./RichTextEditor"
 import { BeautifiedView, type BeautifyResultState, type EhrExportState } from "./BeautifiedView"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs"
 import { FullTranscriptModal } from "./FullTranscriptModal"
+import RefreshQuickButton from "./RefreshQuickButton"
 import { type FinalizationWizardLaunchOptions, type PreFinalizeCheckResponse } from "./FinalizationWizardAdapter"
 import type { FinalizeResult } from "../features/finalization"
 import { apiFetch, apiFetchJson, getStoredToken, resolveWebsocketUrl, type ApiFetchOptions } from "../lib/api"
@@ -1686,6 +1687,15 @@ export function NoteEditor({
   const [patientInputValue, setPatientInputValue] = useState(initialNoteData?.patientId || initialNoteData?.patientName || prePopulatedPatient?.patientId || "")
   const [patientId, setPatientId] = useState(initialNoteData?.patientId || prePopulatedPatient?.patientId || "")
   const [selectedPatient, setSelectedPatient] = useState<PatientSuggestion | null>(null)
+  const [manualHint, setManualHint] = useState<{ enableManual: boolean; reason?: string }>({ enableManual: false })
+  const [manualBusy, setManualBusy] = useState(false)
+  const manualBusyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearManualBusyTimeout = useCallback(() => {
+    if (manualBusyTimeoutRef.current) {
+      clearTimeout(manualBusyTimeoutRef.current)
+      manualBusyTimeoutRef.current = null
+    }
+  }, [])
 
   const normalizedPatientId = useMemo(() => patientId.trim(), [patientId])
   const patientIdForContext = normalizedPatientId.length > 0 ? normalizedPatientId : undefined
@@ -1720,6 +1730,39 @@ export function NoteEditor({
     contextStageState.bestStage,
     contextStageState.contextGeneratedAt,
   ])
+
+  useEffect(() => {
+    const handleHint = (event: Event) => {
+      const custom = event as CustomEvent<{ enableManual?: unknown; reason?: unknown }>
+      const enableManual = Boolean(custom?.detail?.enableManual)
+      const reason =
+        typeof custom?.detail?.reason === "string" ? custom.detail.reason : undefined
+      setManualHint({ enableManual, reason })
+    }
+
+    window.addEventListener("rp-manual-refresh-hint", handleHint as EventListener)
+    return () => {
+      window.removeEventListener("rp-manual-refresh-hint", handleHint as EventListener)
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleComplete = () => {
+      clearManualBusyTimeout()
+      setManualBusy(false)
+    }
+
+    window.addEventListener("rp-manual-refresh-complete", handleComplete)
+    return () => {
+      window.removeEventListener("rp-manual-refresh-complete", handleComplete)
+    }
+  }, [clearManualBusyTimeout])
+
+  useEffect(() => {
+    return () => {
+      clearManualBusyTimeout()
+    }
+  }, [clearManualBusyTimeout])
 
   const contextStageDisplay = useMemo(() => {
     const result: Record<string, string> = {}
@@ -5826,6 +5869,20 @@ export function NoteEditor({
     }
   }, [workspaceClipboardText])
 
+  const handleManualRefresh = useCallback(() => {
+    if (!manualHint.enableManual || manualBusy) {
+      return
+    }
+
+    setManualBusy(true)
+    window.dispatchEvent(new CustomEvent("rp-manual-refresh"))
+    clearManualBusyTimeout()
+    manualBusyTimeoutRef.current = setTimeout(() => {
+      setManualBusy(false)
+      manualBusyTimeoutRef.current = null
+    }, 3000)
+  }, [manualHint.enableManual, manualBusy, clearManualBusyTimeout])
+
   const canStartVisit = useMemo(() => {
     if (isFinalized) {
       return false
@@ -6164,13 +6221,20 @@ export function NoteEditor({
             ) : (
               <span>Auto-save pending</span>
             )}
-            {autoSaveError && <span className="text-destructive">{autoSaveError}</span>}
-          </div>
+          {autoSaveError && <span className="text-destructive">{autoSaveError}</span>}
+        </div>
 
-          {patientIdForContext && (
-            <div className="flex items-center gap-2">
-              <Tooltip>
-                <TooltipTrigger asChild>
+        <RefreshQuickButton
+          enabled={manualHint.enableManual}
+          reason={manualHint.reason}
+          busy={manualBusy}
+          onClick={handleManualRefresh}
+        />
+
+        {patientIdForContext && (
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
                   <div className="flex items-center gap-1 text-xs text-muted-foreground rounded-full border border-border px-2 py-1">
                     <span className="font-medium">Context:</span>
                     {[

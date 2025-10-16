@@ -374,13 +374,14 @@ export function SuggestionPanel({
   }, [])
 
   const fetchCodes = useCallback(
-    async (content: string, signal: AbortSignal) => {
+    async (content: string, signal?: AbortSignal, intent: "auto" | "manual" = "auto") => {
       codesFetchContentRef.current = content
       setCodesLoading(true)
       setCodesError(null)
       try {
+        const intentQuery = intent ? `?intent=${encodeURIComponent(intent)}` : ""
         const data =
-          (await apiFetchJson<{ suggestions?: any[]; questions?: any[] }>("/api/ai/codes/suggest", {
+          (await apiFetchJson<{ suggestions?: any[]; questions?: any[] }>(`/api/ai/codes/suggest${intentQuery}` as const, {
             method: "POST",
             jsonBody: {
               content,
@@ -456,13 +457,14 @@ export function SuggestionPanel({
   )
 
   const fetchCompliance = useCallback(
-    async (content: string, signal: AbortSignal) => {
+    async (content: string, signal?: AbortSignal, intent: "auto" | "manual" = "auto") => {
       complianceFetchContentRef.current = content
       setComplianceLoading(true)
       setComplianceError(null)
       try {
+        const intentQuery = intent ? `?intent=${encodeURIComponent(intent)}` : ""
         const data =
-          (await apiFetchJson<{ alerts?: any[] }>("/api/ai/compliance/check", {
+          (await apiFetchJson<{ alerts?: any[] }>(`/api/ai/compliance/check${intentQuery}` as const, {
             method: "POST",
             jsonBody: { content, codes: codesInUse },
             signal,
@@ -496,16 +498,20 @@ export function SuggestionPanel({
   )
 
   const fetchDifferentials = useCallback(
-    async (content: string, signal: AbortSignal) => {
+    async (content: string, signal?: AbortSignal, intent: "auto" | "manual" = "auto") => {
       setDifferentialsLoading(true)
       setDifferentialsError(null)
       try {
+        const intentQuery = intent ? `?intent=${encodeURIComponent(intent)}` : ""
         const data =
-          (await apiFetchJson<{ differentials?: any[] }>("/api/ai/differentials/generate", {
-            method: "POST",
-            jsonBody: { content, ...contextRequestPayload },
-            signal,
-          })) ?? {}
+          (await apiFetchJson<{ differentials?: any[] }>(
+            `/api/ai/differentials/generate${intentQuery}` as const,
+            {
+              method: "POST",
+              jsonBody: { content, ...contextRequestPayload },
+              signal,
+            },
+          )) ?? {}
 
         const normalized: DifferentialItem[] = (data?.differentials || []).map((item: any) => {
           const supporting = Array.isArray(item.supportingFactors) ? item.supportingFactors.map((factor: any) => String(factor)) : []
@@ -629,6 +635,9 @@ export function SuggestionPanel({
         if (response.status === 202 || response.status === 200) {
           gateAllowedContentRef.current = fullContent
           gateAllowedTrimmedRef.current = trimmed
+          window.dispatchEvent(
+            new CustomEvent("rp-manual-refresh-hint", { detail: { enableManual: false } }),
+          )
           const tasks: Promise<void>[] = []
           if (shouldFetchCodes) {
             tasks.push(fetchCodes(trimmed, fetchController.signal))
@@ -641,6 +650,23 @@ export function SuggestionPanel({
         } else if (response.status === 409) {
           gateAllowedContentRef.current = null
           gateAllowedTrimmedRef.current = null
+          let data: any = null
+          try {
+            data = await response.json()
+          } catch (error) {
+            data = null
+          }
+          if (data?.blocked && data?.detail && data.detail.enableManual) {
+            const reason =
+              typeof data.detail.reason === "string"
+                ? data.detail.reason
+                : "You can pull a quick refresh now."
+            window.dispatchEvent(
+              new CustomEvent("rp-manual-refresh-hint", {
+                detail: { enableManual: true, reason },
+              }),
+            )
+          }
         } else {
           console.error(`AI gate request failed with status ${response.status}`)
         }
@@ -721,16 +747,14 @@ export function SuggestionPanel({
     }
   }, [noteContent, shouldFetchCodes, shouldFetchCompliance, fetchCodes, fetchCompliance])
 
-  useEffect(() => {
-    const controller = new AbortController()
-    const signal = controller.signal
-
-    const fetchPrevention = async () => {
+  const fetchPrevention = useCallback(
+    async (signal?: AbortSignal, intent: "auto" | "manual" = "auto") => {
       setPreventionLoading(true)
       setPreventionError(null)
       try {
+        const intentQuery = intent ? `?intent=${encodeURIComponent(intent)}` : ""
         const data =
-          (await apiFetchJson<{ recommendations?: any[] }>("/api/ai/prevention/suggest", {
+          (await apiFetchJson<{ recommendations?: any[] }>(`/api/ai/prevention/suggest${intentQuery}` as const, {
             method: "POST",
             jsonBody: { ...contextRequestPayload },
             signal,
@@ -766,14 +790,104 @@ export function SuggestionPanel({
       } finally {
         setPreventionLoading(false)
       }
-    }
+    },
+    [contextRequestPayload],
+  )
 
-    fetchPrevention()
+  useEffect(() => {
+    const controller = new AbortController()
+
+    void fetchPrevention(controller.signal)
 
     return () => {
       controller.abort()
     }
-  }, [])
+  }, [fetchPrevention])
+
+  useEffect(() => {
+    const handleManualRefresh = () => {
+      const run = async () => {
+        const fullContent = typeof noteContent === "string" ? noteContent : ""
+        const trimmed = fullContent.trim()
+
+        if (!trimmed) {
+          window.dispatchEvent(new CustomEvent("rp-manual-refresh-hint", { detail: { enableManual: false } }))
+          window.dispatchEvent(new CustomEvent("rp-manual-refresh-complete"))
+          return
+        }
+
+        const manualPayload: Record<string, unknown> = {
+          content: trimmed,
+        }
+        if (transcriptCursor) {
+          manualPayload.transcript_cursor = transcriptCursor
+        }
+
+        let gateAborted = false
+        try {
+          await apiFetchJson("/api/notes/ai/gate?requestType=manual", {
+            method: "POST",
+            jsonBody: manualPayload,
+            returnNullOnEmpty: true,
+          })
+        } catch (error) {
+          if ((error as Error).name === "AbortError") {
+            gateAborted = true
+          }
+          // Swallow manual gate errors per spec; the server is authoritative.
+        }
+
+        if (gateAborted) {
+          window.dispatchEvent(new CustomEvent("rp-manual-refresh-complete"))
+          return
+        }
+
+        const controller = new AbortController()
+
+        try {
+          const tasks: Promise<unknown>[] = []
+
+          if (shouldFetchCodes) {
+            tasks.push(fetchCodes(trimmed, controller.signal, "manual"))
+          }
+          if (shouldFetchCompliance) {
+            tasks.push(fetchCompliance(trimmed, controller.signal, "manual"))
+          }
+
+          tasks.push(fetchDifferentials(trimmed, controller.signal, "manual"))
+          tasks.push(fetchPrevention(controller.signal, "manual"))
+
+          await Promise.allSettled(tasks)
+          window.dispatchEvent(new CustomEvent("rp-manual-refresh-hint", { detail: { enableManual: false } }))
+        } catch (error) {
+          if ((error as Error).name === "AbortError") {
+            // Ignore aborts; completion event still fires below.
+          } else {
+            // Ignore failures — manual refresh is best-effort.
+          }
+        } finally {
+          controller.abort()
+          window.dispatchEvent(new CustomEvent("rp-manual-refresh-complete"))
+        }
+      }
+
+      void run()
+    }
+
+    window.addEventListener("rp-manual-refresh", handleManualRefresh)
+    return () => {
+      window.removeEventListener("rp-manual-refresh", handleManualRefresh)
+    }
+  }, [
+    noteContent,
+    transcriptCursor,
+    shouldFetchCodes,
+    shouldFetchCompliance,
+    fetchCodes,
+    fetchCompliance,
+    fetchDifferentials,
+    fetchPrevention,
+  ])
 
   const toggleCard = (cardKey: string) => {
     setExpandedCards((prev) => ({
