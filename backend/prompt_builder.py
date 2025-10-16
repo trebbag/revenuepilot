@@ -187,12 +187,12 @@ class _StableBlockCache:
 
     def __init__(self, maxsize: int = 64) -> None:
         self._maxsize = maxsize
-        self._items: "OrderedDict[Tuple[str, str, str], List[Dict[str, str]]]" = OrderedDict()
+        self._items: "OrderedDict[Tuple[Any, ...], List[Dict[str, str]]]" = OrderedDict()
         self._lock = threading.Lock()
 
     def get(
         self,
-        key: Tuple[str, str, str],
+        key: Tuple[Any, ...],
         builder: Callable[[], List[Dict[str, str]]],
     ) -> Tuple[List[Dict[str, str]], str]:
         with self._lock:
@@ -241,8 +241,10 @@ class SuggestPromptBuilder:
         encounter_id: Optional[str] = None,
         session_id: Optional[str] = None,
         transcript_cursor: Optional[str] = None,
+        policy_version: Optional[str] = None,
     ) -> PromptBlocks:
-        key = (lang or "en", specialty or "", payer or "")
+        policy_key = policy_version or "default"
+        key = (policy_key, lang or "en", specialty or "", payer or "")
 
         def _build_stable() -> List[Dict[str, str]]:
             placeholder = "__PROMPT_STATIC__"

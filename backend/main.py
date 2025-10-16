@@ -32,7 +32,7 @@ import sqlalchemy as sa
 from contextvars import ContextVar
 from contextlib import contextmanager
 from pathlib import Path
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict, deque, OrderedDict
 from datetime import datetime, timedelta, timezone, date
 from typing import (
     List,
@@ -469,6 +469,418 @@ TRANSCRIBE_WS_INTERIM_DROPPED_TOTAL = Counter(
 )
 PROMPT_GUARD = PromptPrivacyGuard()
 SUGGEST_PROMPT_BUILDER = SuggestPromptBuilder()
+
+
+_STABLE_PROMPT_CACHE_LOCK = threading.Lock()
+_STABLE_PROMPT_CACHE_SIZE = 128
+_STABLE_PROMPT_CACHE: "OrderedDict[Tuple[str, str, str, str, str, str], List[Dict[str, Any]]]" = OrderedDict()
+
+
+def _get_or_create_histogram(
+    name: str,
+    documentation: str,
+    *,
+    labelnames: Tuple[str, ...],
+    buckets: Tuple[float, ...],
+):
+    existing = REGISTRY._names_to_collectors.get(name)
+    if existing is not None:
+        return existing
+    return Histogram(name, documentation, labelnames=labelnames, buckets=buckets)
+
+
+PROMPT_CACHE_HITS = _get_or_create_metric(
+    Counter,
+    "revenuepilot_prompt_cache_hits_total",
+    "Stable prompt cache hits for AI routes",
+    ("route",),
+)
+PROMPT_CACHE_MISSES = _get_or_create_metric(
+    Counter,
+    "revenuepilot_prompt_cache_misses_total",
+    "Stable prompt cache misses for AI routes",
+    ("route",),
+)
+AI_PROMPT_TOKENS = _get_or_create_histogram(
+    "revenuepilot_ai_prompt_tokens",
+    "Prompt tokens per AI invocation",
+    labelnames=("route",),
+    buckets=(64, 128, 256, 512, 1024, 2048, 4096, float("inf")),
+)
+AI_COMPLETION_TOKENS = _get_or_create_histogram(
+    "revenuepilot_ai_completion_tokens",
+    "Completion tokens per AI invocation",
+    labelnames=("route",),
+    buckets=(32, 64, 128, 256, 512, 1024, 2048, float("inf")),
+)
+AI_COST_ESTIMATE_USD = _get_or_create_histogram(
+    "revenuepilot_ai_cost_estimate_usd",
+    "Estimated USD cost per AI invocation",
+    labelnames=("route",),
+    buckets=(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, float("inf")),
+)
+
+
+def _prompt_policy_version() -> str:
+    return f"deid:{DEID_POLICY.engine}|scrub:{PROMPT_GUARD.mode}"
+
+
+def _clone_messages(messages: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    return [copy.deepcopy(message) for message in messages]
+
+
+def _get_stable_prompt_block(
+    route: str,
+    *,
+    lang: str,
+    specialty: Optional[str],
+    payer: Optional[str],
+    region: Optional[str],
+    builder: Callable[[], List[Dict[str, Any]]],
+) -> Tuple[List[Dict[str, Any]], str]:
+    policy_version = _prompt_policy_version()
+    key = (
+        route,
+        policy_version,
+        (lang or "en").lower(),
+        (specialty or "").strip().lower(),
+        (payer or "").strip().lower(),
+        (region or "").strip().lower(),
+    )
+    with _STABLE_PROMPT_CACHE_LOCK:
+        cached = _STABLE_PROMPT_CACHE.get(key)
+        if cached is not None:
+            _STABLE_PROMPT_CACHE.move_to_end(key)
+            PROMPT_CACHE_HITS.labels(route=route).inc()
+            logger.info(
+                "prompt_stable_cache",
+                route=route,
+                cache_state="hit",
+                lang=lang or "en",
+                specialty=specialty or "default",
+                payer=payer or "default",
+                region=region or "default",
+                policy_version=policy_version,
+            )
+            return _clone_messages(cached), "hit"
+
+    messages = builder()
+    stable_messages = messages[:-1] if len(messages) > 1 else messages
+    stored = _clone_messages(stable_messages)
+    with _STABLE_PROMPT_CACHE_LOCK:
+        _STABLE_PROMPT_CACHE[key] = _clone_messages(stable_messages)
+        while len(_STABLE_PROMPT_CACHE) > _STABLE_PROMPT_CACHE_SIZE:
+            _STABLE_PROMPT_CACHE.popitem(last=False)
+    PROMPT_CACHE_MISSES.labels(route=route).inc()
+    logger.info(
+        "prompt_stable_cache",
+        route=route,
+        cache_state="miss",
+        lang=lang or "en",
+        specialty=specialty or "default",
+        payer=payer or "default",
+        region=region or "default",
+        policy_version=policy_version,
+    )
+    return stored, "miss"
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_sentences(text: str) -> List[str]:
+    if not text:
+        return []
+    sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
+    if not sentences:
+        stripped = text.strip()
+        if stripped:
+            sentences = [stripped]
+    return sentences
+
+
+def _collect_changed_sentences(
+    previous: Optional[str],
+    current: str,
+    *,
+    window: int = 1,
+    limit: int = 8,
+) -> List[str]:
+    sentences_current = _split_sentences(current)
+    if not sentences_current:
+        return []
+    if not previous:
+        return sentences_current[:limit]
+    sentences_previous = _split_sentences(previous)
+    matcher = difflib.SequenceMatcher(a=sentences_previous, b=sentences_current)
+    indexes: Set[int] = set()
+    for tag, _i1, _i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        for idx in range(j1, j2):
+            start = max(0, idx - window)
+            end = min(len(sentences_current), idx + window + 1)
+            indexes.update(range(start, end))
+    ordered = sorted(indexes)
+    if not ordered:
+        return sentences_current[:limit]
+    return [sentences_current[idx] for idx in ordered[:limit]]
+
+
+def _hash_json_payload(payload: Mapping[str, Any]) -> Optional[str]:
+    try:
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _build_state_summary(
+    note_text: str,
+    *,
+    request: Any,
+    prompt_context: PromptContext,
+) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "characters": len(note_text),
+        "lines": len(note_text.splitlines()),
+    }
+    sections = sorted(_extract_section_headers(note_text)) if note_text else []
+    if sections:
+        summary["sections"] = sections[:8]
+    for attr, key in (
+        ("lang", "lang"),
+        ("specialty", "specialty"),
+        ("payer", "payer"),
+    ):
+        value = getattr(request, attr, None)
+        if value:
+            summary[key] = str(value)
+    if prompt_context.age is not None:
+        summary["age"] = prompt_context.age
+    if prompt_context.sex:
+        summary["sex"] = prompt_context.sex
+    if prompt_context.region:
+        summary["region"] = prompt_context.region
+    transcript_cursor = getattr(request, "transcriptCursor", None)
+    if transcript_cursor:
+        summary["cursor"] = DEID_POLICY.apply(str(transcript_cursor))
+    accepted_json = getattr(request, "acceptedJson", None)
+    if isinstance(accepted_json, Mapping):
+        payload_hash = _hash_json_payload(accepted_json)
+        if payload_hash:
+            summary["acceptedHash"] = payload_hash
+    return summary
+
+
+def _format_state_summary(summary: Mapping[str, Any]) -> str:
+    if not summary:
+        return ""
+    parts: List[str] = []
+    order = (
+        "lang",
+        "specialty",
+        "payer",
+        "region",
+        "age",
+        "sex",
+        "cursor",
+        "acceptedHash",
+        "characters",
+        "lines",
+    )
+    for key in order:
+        value = summary.get(key)
+        if value in (None, ""):
+            continue
+        parts.append(f"{key}={value}")
+    sections = summary.get("sections")
+    if isinstance(sections, Sequence) and sections:
+        joined = ", ".join(str(item) for item in sections[:6])
+        parts.append(f"sections=[{joined}]")
+    return ", ".join(parts)
+
+
+def _build_transcript_snippet(value: Any, *, limit: int = 240) -> str:
+    if not value:
+        return ""
+    snippet = DEID_POLICY.apply(str(value))
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    if not snippet:
+        return ""
+    if len(snippet) > limit:
+        snippet = snippet[:limit].rstrip() + "…"
+    return snippet
+
+
+def _format_pmh_entries(entries: Sequence[Any], *, limit: int = 3) -> str:
+    lines: List[str] = []
+    for entry in entries:
+        label: Optional[str] = None
+        if isinstance(entry, Mapping):
+            for key in ("label", "name", "problem", "condition", "summary", "title"):
+                value = entry.get(key)
+                if value:
+                    label = DEID_POLICY.apply(str(value)).strip()
+                    break
+            if not label:
+                for key in ("code", "icd10", "snomed"):
+                    value = entry.get(key)
+                    if value:
+                        label = DEID_POLICY.apply(str(value)).strip()
+                        break
+        elif isinstance(entry, (str, int, float)):
+            label = DEID_POLICY.apply(str(entry)).strip()
+        if label:
+            lines.append(f"- {label}")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
+def _format_attachments_meta(request: Any) -> List[str]:
+    items: List[str] = []
+    if getattr(request, "chart", None):
+        chart_text = DEID_POLICY.apply(str(request.chart))
+        items.append(f"chartTextChars={len(chart_text)}")
+    if getattr(request, "audio", None):
+        audio_text = DEID_POLICY.apply(str(request.audio))
+        items.append(f"audioTranscriptChars={len(audio_text)}")
+    agencies = getattr(request, "agencies", None)
+    if isinstance(agencies, Sequence):
+        cleaned: List[str] = []
+        for agency in agencies:
+            if agency is None:
+                continue
+            cleaned_value = DEID_POLICY.apply(str(agency)).strip()
+            if cleaned_value:
+                cleaned.append(cleaned_value)
+            if len(cleaned) >= 5:
+                break
+        if cleaned:
+            items.append("agencies=" + ", ".join(cleaned))
+    return items
+
+
+def _build_dynamic_note_message(
+    *,
+    route: str,
+    prompt_context: PromptContext,
+    request: Any,
+    previous_snapshot: Optional[str],
+    pmh_entries: Sequence[Any] | None,
+    include_full_note: bool = True,
+) -> Dict[str, str]:
+    sanitized_note = prompt_context.text or ""
+    sanitized_previous = previous_snapshot or ""
+    sections: List[str] = []
+
+    changed = _collect_changed_sentences(sanitized_previous, sanitized_note)
+    if changed:
+        diff_payload = "\n".join(f"- {line}" for line in changed)
+        sections.append(f"Changed note sentences:\n{diff_payload}")
+
+    state_summary = _format_state_summary(
+        _build_state_summary(sanitized_note, request=request, prompt_context=prompt_context)
+    )
+    if state_summary:
+        sections.append(f"State summary: {state_summary}")
+
+    if prompt_context.rules:
+        rule_lines = [f"- {rule}" for rule in prompt_context.rules if rule]
+        if rule_lines:
+            sections.append("User rules:\n" + "\n".join(rule_lines))
+
+    transcript_snippet = _build_transcript_snippet(getattr(request, "audio", None))
+    if transcript_snippet:
+        sections.append(f"Transcript snippet: {transcript_snippet}")
+
+    pmh_text = _format_pmh_entries(pmh_entries or [])
+    if pmh_text:
+        sections.append("PMH highlights:\n" + pmh_text)
+
+    attachments = _format_attachments_meta(request)
+    if attachments:
+        sections.append("Attachments meta:\n" + "\n".join(f"- {item}" for item in attachments))
+
+    if route == "summary" and prompt_context.age is not None:
+        sections.append(
+            f"Communication guidance: Use words a {prompt_context.age}-year-old would understand."
+        )
+
+    if include_full_note and sanitized_note:
+        sections.append("Full note:\n" + sanitized_note)
+
+    content = "\n\n".join(part for part in sections if part).strip()
+    return {"role": "user", "content": content}
+
+
+def _fetch_previous_note_snapshot(
+    note_id: Optional[str],
+    clinician_id: Optional[int],
+) -> Optional[str]:
+    if not note_id or clinician_id is None:
+        return None
+    try:
+        with session_scope(db_conn) as session:
+            state = session.get(AINoteState, note_id)
+            if state and state.clinician_id == clinician_id and state.last_note_snapshot:
+                return DEID_POLICY.apply(state.last_note_snapshot)
+    except Exception:
+        logger.debug("previous_snapshot_lookup_failed", note_id=note_id)
+    return None
+
+
+def _fetch_pmh_entries_for_session(
+    username: Optional[str],
+    session_id: Optional[str],
+) -> Sequence[Any]:
+    if not username or not session_id:
+        return []
+    try:
+        _, _, _, session_payload = _resolve_session_for_user(username, session_id)
+    except Exception:
+        session_payload = None
+    patient_identifier: Optional[str] = None
+    if isinstance(session_payload, Mapping):
+        patient_identifier = session_payload.get("patientId") or session_payload.get("patient_id")
+        if not patient_identifier:
+            context_blob = session_payload.get("context")
+            if isinstance(context_blob, Mapping):
+                patient_identifier = context_blob.get("patientId") or context_blob.get("patient_id")
+    if not patient_identifier:
+        return []
+    try:
+        snapshot = context_pipeline.get_snapshot(str(patient_identifier), "superficial")
+    except Exception:
+        snapshot = None
+    if isinstance(snapshot, Mapping):
+        entries = snapshot.get("pmh")
+        if isinstance(entries, list):
+            return entries
+    return []
+
+
+def _record_prompt_usage(route: str, observation: RouteObservation, cache_state: str) -> None:
+    prompt_tokens = int(observation.prompt_tokens or 0)
+    completion_tokens = int(observation.completion_tokens or 0)
+    cost = float(observation.price_usd or 0.0)
+    observation.add_metadata("promptTokens", prompt_tokens)
+    observation.add_metadata("completionTokens", completion_tokens)
+    observation.add_metadata("costEstimateUsd", round(cost, 6))
+    observation.add_metadata("promptCacheState", cache_state)
+    AI_PROMPT_TOKENS.labels(route=route).observe(float(prompt_tokens))
+    AI_COMPLETION_TOKENS.labels(route=route).observe(float(completion_tokens))
+    AI_COST_ESTIMATE_USD.labels(route=route).observe(cost)
+    logger.info(
+        "prompt_usage",
+        route=route,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_estimate_usd=round(cost, 6),
+        cache_state=cache_state,
+    )
 
 
 _TRACE_ID_CTX: ContextVar[str | None] = ContextVar("trace_id", default=None)
@@ -12969,14 +13381,33 @@ async def summarize(
             data["patient_friendly"] = data.get("summary", "")
     else:
         try:
-            messages = build_summary_prompt(
-                cleaned,
-                req.lang,
-                req.specialty,
-                req.payer,
-                prompt_context.age,
+            stable_messages, cache_state = _get_stable_prompt_block(
+                "summary",
+                lang=req.lang or "en",
+                specialty=req.specialty,
+                payer=req.payer,
+                region=req.region,
+                builder=lambda: build_summary_prompt(
+                    "__PROMPT_DYNAMIC__",
+                    req.lang or "en",
+                    req.specialty,
+                    req.payer,
+                    None,
+                ),
             )
-            response_content = call_openai(messages)
+            observation.add_metadata("promptCache", cache_state)
+            previous_snapshot = _fetch_previous_note_snapshot(req.noteId, clinician_id)
+            pmh_entries = _fetch_pmh_entries_for_session(user.get("sub"), req.sessionId)
+            dynamic_message = _build_dynamic_note_message(
+                route="summary",
+                prompt_context=prompt_context,
+                request=req,
+                previous_snapshot=previous_snapshot,
+                pmh_entries=pmh_entries,
+            )
+            messages = stable_messages + [dynamic_message]
+            response_content = call_openai(messages, model=model_name or "gpt-4o")
+            _record_prompt_usage("summary", observation, cache_state)
             data = json.loads(response_content)
             if "patient_friendly" not in data and "summary" in data:
                 data["patient_friendly"] = data["summary"]
@@ -13385,8 +13816,32 @@ async def beautify_note(req: NoteRequest, user=Depends(require_role("user"))) ->
             return {"beautified": beautified}
 
         try:
-            messages = build_beautify_prompt(cleaned, req.lang, req.specialty, req.payer)
-            response_content = call_openai(messages)
+            stable_messages, cache_state = _get_stable_prompt_block(
+                "beautify",
+                lang=req.lang or "en",
+                specialty=req.specialty,
+                payer=req.payer,
+                region=req.region,
+                builder=lambda: build_beautify_prompt(
+                    "__PROMPT_DYNAMIC__",
+                    req.lang or "en",
+                    req.specialty,
+                    req.payer,
+                ),
+            )
+            observation.add_metadata("promptCache", cache_state)
+            previous_snapshot = _fetch_previous_note_snapshot(req.noteId, clinician_id)
+            pmh_entries = _fetch_pmh_entries_for_session(user.get("sub"), req.sessionId)
+            dynamic_message = _build_dynamic_note_message(
+                route="beautify",
+                prompt_context=prompt_context,
+                request=req,
+                previous_snapshot=previous_snapshot,
+                pmh_entries=pmh_entries,
+            )
+            messages = stable_messages + [dynamic_message]
+            response_content = call_openai(messages, model=model_name or "gpt-4o")
+            _record_prompt_usage("beautify", observation, cache_state)
             beautified = response_content.strip()
             return {"beautified": beautified}
         except Exception as exc:
@@ -13753,10 +14208,22 @@ async def suggest(
                 encounter_id=encounter_id,
                 session_id=session_id,
                 transcript_cursor=req.transcriptCursor,
+                policy_version=_prompt_policy_version(),
+            )
+            logger.info(
+                "prompt_stable_cache",
+                route="suggest",
+                cache_state=builder_blocks.cache_state,
+                lang=req.lang or "en",
+                specialty=req.specialty or "default",
+                payer=req.payer or "default",
+                region=req.region or "default",
+                policy_version=_prompt_policy_version(),
             )
             observation.add_metadata("promptCache", builder_blocks.cache_state)
             messages = builder_blocks.stable + builder_blocks.dynamic
-            response_content = call_openai(messages)
+            response_content = call_openai(messages, model=model_name or "gpt-4o")
+            _record_prompt_usage("suggest", observation, builder_blocks.cache_state)
             data = json.loads(response_content)
             codes_list: List[CodeSuggestion] = []
             logged_codes: List[Tuple[str, Optional[float]]] = []
