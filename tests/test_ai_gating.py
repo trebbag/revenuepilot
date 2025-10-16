@@ -97,6 +97,10 @@ def gating_client(monkeypatch, mock_embedding_client):
         "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
         ("doc", pwd, "user"),
     )
+    db.execute(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+        ("analyst", pwd, "analyst"),
+    )
     db.commit()
 
     monkeypatch.setattr(main, "db_conn", db)
@@ -280,6 +284,70 @@ def test_ai_gate_enforces_cooldown(gating_client):
 def _get_metric(name: str, labels: Dict[str, str]) -> float:
     value = REGISTRY.get_sample_value(name, labels)
     return 0.0 if value is None else float(value)
+
+
+def test_ai_gate_reason_metrics_and_analytics(gating_client):
+    client = gating_client
+    user_token = main.create_token("doc", "user")
+    analyst_token = main.create_token("analyst", "analyst")
+    clinician_id = main._get_user_db_id("doc")
+    assert clinician_id is not None
+
+    note_id = "note-metrics-analytics"
+    route = "auto"
+
+    blocked_reason_labels = {"route": route, "reason": "BELOW_THRESHOLD"}
+    allowed_reason_labels = {"route": route, "reason": "ALLOWED"}
+    route_blocked_labels = {"route": route, "decision": "blocked"}
+    route_allowed_labels = {"route": route, "decision": "allowed"}
+
+    blocked_before = _get_metric("revenuepilot_ai_gate_blocked_reason_total", blocked_reason_labels)
+    allowed_before = _get_metric("revenuepilot_ai_gate_allowed_reason_total", allowed_reason_labels)
+    route_blocked_before = _get_metric("revenuepilot_ai_gate_route_decisions_total", route_blocked_labels)
+    route_allowed_before = _get_metric("revenuepilot_ai_gate_route_decisions_total", route_allowed_labels)
+
+    resp_block = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": note_id,
+            "noteContent": "Short.",
+            "requestType": route,
+        },
+        headers=_auth_header(user_token),
+    )
+    assert resp_block.status_code == 409
+
+    long_note = ("Sentence. " * 60).strip() + "."
+    resp_allow = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": note_id,
+            "noteContent": long_note,
+            "requestType": route,
+        },
+        headers=_auth_header(user_token),
+    )
+    assert resp_allow.status_code == 202
+
+    assert _get_metric("revenuepilot_ai_gate_blocked_reason_total", blocked_reason_labels) == pytest.approx(blocked_before + 1.0)
+    assert _get_metric("revenuepilot_ai_gate_allowed_reason_total", allowed_reason_labels) == pytest.approx(allowed_before + 1.0)
+    assert _get_metric("revenuepilot_ai_gate_route_decisions_total", route_blocked_labels) == pytest.approx(route_blocked_before + 1.0)
+    assert _get_metric("revenuepilot_ai_gate_route_decisions_total", route_allowed_labels) == pytest.approx(route_allowed_before + 1.0)
+
+    resp_analytics = client.get(
+        "/api/analytics/ai-gating",
+        headers=_auth_header(analyst_token),
+    )
+    assert resp_analytics.status_code == 200
+    payload = resp_analytics.json()
+    assert payload["totals"]["allowed"] >= 1
+    assert payload["totals"]["blocked"] >= 1
+    route_summary = {entry["route"]: entry for entry in payload.get("per_route", [])}
+    assert route in route_summary
+    auto_summary = route_summary[route]
+    assert auto_summary["allowed"] >= 1
+    assert auto_summary["blocked"] >= 1
+    assert payload["edits"]["overall"] >= 0.0
 
 
 def test_ai_gate_metrics_record_permitted_runs(gating_client):

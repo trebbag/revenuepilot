@@ -13,8 +13,19 @@ import {
   type WizardStepOverride,
 } from "../features/finalization"
 import { useSession } from "../contexts/SessionContext"
+import type { SessionCode } from "../contexts/SessionContext"
 import type { LiveCodeSuggestion, StreamConnectionState } from "./NoteEditor"
 import { Badge } from "./ui/badge"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "./ui/alert-dialog"
 import type {
   FinalizeNoteResponse,
   PreFinalizeCheckResponse,
@@ -112,6 +123,8 @@ const CODE_CLASSIFICATION_MAP: Record<CodeCategory, string> = {
   diagnoses: "diagnosis",
   differentials: "differential",
 }
+
+const CRITICAL_DEMOTE_CUTOFF = 0.85
 
 const toCodeCategory = (value: unknown): CodeCategory | null => {
   if (typeof value !== "string") {
@@ -461,6 +474,21 @@ interface ValidationMappingResult {
   firstOpenStep: number | null
 }
 
+type PendingFinalizeAction =
+  | {
+      type: "finalize"
+      request: FinalizeRequest
+      resolve: (value: FinalizeResult) => void
+      reject: (reason?: unknown) => void
+    }
+  | {
+      type: "finalize-dispatch"
+      request: FinalizeRequest
+      dispatchForm: Record<string, unknown>
+      resolve: (value: { finalizedNoteId?: string; result?: FinalizeResult }) => void
+      reject: (reason?: unknown) => void
+    }
+
 const STEP_STATUS_PRIORITY: Record<StepStatus, number> = {
   completed: 0,
   pending: 1,
@@ -702,6 +730,10 @@ export function FinalizationWizardAdapter({
   complianceConnection,
 }: FinalizationWizardAdapterProps) {
   const { state: sessionState, actions: sessionActions } = useSession()
+  const [demoteDialogOpen, setDemoteDialogOpen] = useState(false)
+  const [pendingContradictions, setPendingContradictions] = useState<
+    Array<{ code: string; reason?: string; confidence?: number }>
+  >([])
   const [sessionData, setSessionData] = useState<WorkflowSessionResponsePayload | null>(initialSessionSnapshot ?? null)
   const sessionDataRef = useRef<WorkflowSessionResponsePayload | null>(initialSessionSnapshot ?? null)
   const [wizardSuggestions, setWizardSuggestions] = useState<WizardCodeItem[]>([])
@@ -733,6 +765,7 @@ export function FinalizationWizardAdapter({
   })
   const composeConnectionRef = useRef<StreamConnectionState>(composeConnection)
   const [composeFallbackActive, setComposeFallbackActive] = useState<boolean>(false)
+  const pendingFinalizeActionRef = useRef<PendingFinalizeAction | null>(null)
 
   const encounterId = useMemo(() => {
     const fromSession = sessionData?.encounterId ?? initialSessionSnapshot?.encounterId
@@ -1420,6 +1453,38 @@ export function FinalizationWizardAdapter({
     isOpen,
   ])
 
+  const buildSafeFinalizeRequest = useCallback(
+    (excludeCodes?: Set<string>): FinalizeRequest => {
+      const normalizedExclusions = new Set<string>()
+      excludeCodes?.forEach((code) => {
+        if (typeof code === "string" && code.trim().length > 0) {
+          normalizedExclusions.add(code.trim().toUpperCase())
+        }
+      })
+
+      const filterSnapshotList = (values: string[]): string[] =>
+        values
+          .map((value) => (typeof value === "string" ? value.trim() : ""))
+          .filter((value) => value.length > 0 && !normalizedExclusions.has(value.toUpperCase()))
+
+      const safeContent =
+        typeof noteContent === "string" && noteContent.trim().length > 0
+          ? noteContent
+          : finalizeRequestSnapshot.content
+
+      return {
+        content: safeContent,
+        codes: filterSnapshotList(finalizeRequestSnapshot.codes),
+        prevention: filterSnapshotList(finalizeRequestSnapshot.prevention),
+        diagnoses: filterSnapshotList(finalizeRequestSnapshot.diagnoses),
+        differentials: filterSnapshotList(finalizeRequestSnapshot.differentials),
+        compliance: filterSnapshotList(finalizeRequestSnapshot.compliance),
+        patient: finalizeRequestSnapshot.patient,
+      }
+    },
+    [finalizeRequestSnapshot, noteContent],
+  )
+
   const handleComposeRequest = useCallback(
     (options?: { force?: boolean }) => {
       if (!sessionData?.sessionId) {
@@ -1592,6 +1657,89 @@ export function FinalizationWizardAdapter({
       .filter((value): value is string => Boolean(value))
     return new Set(identifiers)
   }, [selectedCodesList])
+
+  const selectedCodeLookup = useMemo(() => {
+    const lookup = new Map<string, SessionCodeLike>()
+    if (!Array.isArray(selectedCodesList)) {
+      return lookup
+    }
+
+    selectedCodesList.forEach((entry) => {
+      const codeKey = typeof entry?.code === "string" ? entry.code.trim().toUpperCase() : ""
+      if (codeKey) {
+        lookup.set(codeKey, entry)
+      }
+    })
+
+    return lookup
+  }, [selectedCodesList])
+
+  const findCriticalContradictions = useCallback(() => {
+    if (!Array.isArray(streamingCodeSuggestions) || streamingCodeSuggestions.length === 0) {
+      return [] as Array<{ code: string; reason?: string; confidence?: number }>
+    }
+
+    if (selectedCodeLookup.size === 0) {
+      return [] as Array<{ code: string; reason?: string; confidence?: number }>
+    }
+
+    const contradictions = new Map<string, { code: string; reason?: string; confidence?: number }>()
+
+    streamingCodeSuggestions.forEach((suggestion) => {
+      const suggestionCode =
+        typeof suggestion?.code === "string" && suggestion.code.trim().length > 0
+          ? suggestion.code.trim().toUpperCase()
+          : ""
+
+      if (!suggestionCode || !selectedCodeLookup.has(suggestionCode)) {
+        return
+      }
+
+      const hasNoSupport = !Array.isArray(suggestion?.supportingSpans) || suggestion.supportingSpans.length === 0
+      const demotions = Array.isArray(suggestion?.demotions) ? suggestion.demotions : []
+
+      demotions.some((demotion) => {
+        const demotedCode =
+          typeof demotion?.code === "string" && demotion.code.trim().length > 0
+            ? demotion.code.trim().toUpperCase()
+            : ""
+
+        if (!demotedCode || demotedCode !== suggestionCode) {
+          return false
+        }
+
+        const rawConfidence = demotion?.confidence
+        const parsedConfidence =
+          typeof rawConfidence === "number"
+            ? rawConfidence
+            : typeof rawConfidence === "string"
+              ? Number.parseFloat(rawConfidence)
+              : NaN
+        const confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : undefined
+        const meetsConfidence = typeof confidence === "number" && confidence >= CRITICAL_DEMOTE_CUTOFF
+        const hasNegatingEvidence = Boolean(demotion?.negatingEvidence)
+
+        if (meetsConfidence && (hasNegatingEvidence || hasNoSupport)) {
+          const reason =
+            typeof demotion?.reason === "string" && demotion.reason.trim().length > 0
+              ? demotion.reason.trim()
+              : hasNoSupport && !hasNegatingEvidence
+                ? "No supporting evidence available"
+                : "Contradicted by current evidence"
+          contradictions.set(suggestionCode, {
+            code: suggestionCode,
+            reason,
+            confidence,
+          })
+          return true
+        }
+
+        return false
+      })
+    })
+
+    return Array.from(contradictions.values())
+  }, [selectedCodeLookup, streamingCodeSuggestions])
 
   const buildSuggestionKey = (item: WizardCodeItem): string | undefined => {
     const code = sanitizeString(item.code)
@@ -2672,9 +2820,12 @@ export function FinalizationWizardAdapter({
   )
 
 
-  const handleFinalize = useCallback(
-    async (request: FinalizeRequest): Promise<FinalizeResult> => {
-      const payload = toFinalizeRequestPayload(request, finalizeRequestSnapshot)
+  const performFinalize = useCallback(
+    async (
+      request: FinalizeRequest,
+      options?: { fallbackOverride?: FinalizeRequest },
+    ): Promise<FinalizeResult> => {
+      const payload = toFinalizeRequestPayload(request, options?.fallbackOverride ?? finalizeRequestSnapshot)
 
       try {
         const response = await fetchWithAuth("/api/notes/finalize", {
@@ -2707,12 +2858,13 @@ export function FinalizationWizardAdapter({
     [applyValidationResult, fetchWithAuth, finalizeRequestSnapshot, onError],
   )
 
-  const handleFinalizeAndDispatch = useCallback(
+  const performFinalizeAndDispatch = useCallback(
     async (
       request: FinalizeRequest,
       dispatchForm: Record<string, unknown>,
+      options?: { fallbackOverride?: FinalizeRequest },
     ): Promise<{ finalizedNoteId?: string; result?: FinalizeResult }> => {
-      const payload = toFinalizeRequestPayload(request, finalizeRequestSnapshot)
+      const payload = toFinalizeRequestPayload(request, options?.fallbackOverride ?? finalizeRequestSnapshot)
 
       try {
         const preResponse = await fetchWithAuth("/api/notes/pre-finalize-check", {
@@ -2818,6 +2970,164 @@ export function FinalizationWizardAdapter({
     [applyValidationResult, encounterId, fetchWithAuth, finalizeRequestSnapshot, onError, sessionSnapshot],
   )
 
+  const handleCancelDemotions = useCallback(() => {
+    const pendingAction = pendingFinalizeActionRef.current
+    if (pendingAction) {
+      pendingFinalizeActionRef.current = null
+      pendingAction.reject?.(new Error("Finalization cancelled"))
+    }
+    setPendingContradictions([])
+    setDemoteDialogOpen(false)
+  }, [])
+
+  const handleDemoteDialogOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        handleCancelDemotions()
+        return
+      }
+      setDemoteDialogOpen(true)
+    },
+    [handleCancelDemotions],
+  )
+
+  const confirmDemotionsAndFinalize = useCallback(async () => {
+    const pendingAction = pendingFinalizeActionRef.current
+    const contradictions = pendingContradictions
+    if (!pendingAction) {
+      setDemoteDialogOpen(false)
+      setPendingContradictions([])
+      return
+    }
+
+    pendingFinalizeActionRef.current = null
+
+    const codesToRemove = new Set<string>()
+
+    const resolveCategory = (value: unknown): SessionCode["category"] => {
+      if (typeof value !== "string") {
+        return "diagnoses"
+      }
+      const normalized = value.trim().toLowerCase()
+      if (normalized === "codes") {
+        return "codes"
+      }
+      if (normalized === "prevention") {
+        return "prevention"
+      }
+      if (normalized === "differentials" || normalized === "differential") {
+        return "differentials"
+      }
+      return "diagnoses"
+    }
+
+    contradictions.forEach((item) => {
+      const normalized = typeof item.code === "string" ? item.code.trim().toUpperCase() : ""
+      if (!normalized || codesToRemove.has(normalized)) {
+        return
+      }
+      codesToRemove.add(normalized)
+
+      const matched = selectedCodeLookup.get(normalized)
+      const resolvedCategory = resolveCategory(matched?.category)
+      const resolvedCode =
+        typeof matched?.code === "string" && matched.code.trim().length > 0 ? matched.code.trim() : item.code
+      const resolvedType =
+        typeof matched?.type === "string" && matched.type.trim().length > 0
+          ? matched.type.trim()
+          : resolvedCategory === "codes"
+            ? "CPT"
+            : "ICD-10"
+      const resolvedDescription =
+        typeof matched?.description === "string" ? matched.description : ""
+
+      const payload: SessionCode = {
+        code: resolvedCode,
+        type: resolvedType,
+        category: resolvedCategory,
+        description: resolvedDescription,
+        rationale: typeof matched?.rationale === "string" ? matched.rationale : undefined,
+        confidence: typeof matched?.confidence === "number" ? matched.confidence : undefined,
+        reimbursement: typeof matched?.reimbursement === "string" ? matched.reimbursement : undefined,
+        rvu: typeof matched?.rvu === "string" ? matched.rvu : undefined,
+      }
+
+      sessionActions.removeCode(payload, {
+        reasoning: item.reason ?? "Strong contradiction at finalize",
+      })
+    })
+
+    setDemoteDialogOpen(false)
+    setPendingContradictions([])
+
+    const safeRequest = buildSafeFinalizeRequest(codesToRemove)
+
+    try {
+      if (pendingAction.type === "finalize") {
+        const result = await performFinalize(safeRequest, { fallbackOverride: safeRequest })
+        pendingAction.resolve(result)
+      } else {
+        const result = await performFinalizeAndDispatch(safeRequest, pendingAction.dispatchForm, {
+          fallbackOverride: safeRequest,
+        })
+        pendingAction.resolve(result)
+      }
+    } catch (error) {
+      pendingAction.reject?.(error)
+    }
+  }, [
+    buildSafeFinalizeRequest,
+    pendingContradictions,
+    performFinalize,
+    performFinalizeAndDispatch,
+    selectedCodeLookup,
+    sessionActions,
+  ])
+
+  const handleFinalizeWithGuard = useCallback(
+    (request: FinalizeRequest): Promise<FinalizeResult> => {
+      const contradictions = findCriticalContradictions()
+      if (contradictions.length > 0) {
+        return new Promise<FinalizeResult>((resolve, reject) => {
+          pendingFinalizeActionRef.current = {
+            type: "finalize",
+            request,
+            resolve,
+            reject,
+          }
+          setPendingContradictions(contradictions)
+          setDemoteDialogOpen(true)
+        })
+      }
+      return performFinalize(request)
+    },
+    [findCriticalContradictions, performFinalize],
+  )
+
+  const handleFinalizeAndDispatchWithGuard = useCallback(
+    (
+      request: FinalizeRequest,
+      dispatchForm: Record<string, unknown>,
+    ): Promise<{ finalizedNoteId?: string; result?: FinalizeResult }> => {
+      const contradictions = findCriticalContradictions()
+      if (contradictions.length > 0) {
+        return new Promise<{ finalizedNoteId?: string; result?: FinalizeResult }>((resolve, reject) => {
+          pendingFinalizeActionRef.current = {
+            type: "finalize-dispatch",
+            request,
+            dispatchForm,
+            resolve,
+            reject,
+          }
+          setPendingContradictions(contradictions)
+          setDemoteDialogOpen(true)
+        })
+      }
+      return performFinalizeAndDispatch(request, dispatchForm)
+    },
+    [findCriticalContradictions, performFinalizeAndDispatch],
+  )
+
   const handleWizardStepChange = useCallback(
     (stepId: number) => {
       setActiveWizardStep(stepId)
@@ -2903,12 +3213,39 @@ export function FinalizationWizardAdapter({
         composeJob={composeJob ?? undefined}
         composeError={composeError ?? undefined}
         onRequestCompose={handleComposeRequest}
-        onFinalize={handleFinalize}
-        onFinalizeAndDispatch={handleFinalizeAndDispatch}
+        onFinalize={handleFinalizeWithGuard}
+        onFinalizeAndDispatch={handleFinalizeAndDispatchWithGuard}
         onSubmitAttestation={submitAttestation}
         onStepChange={handleWizardStepChange}
         onClose={handleClose}
       />
+      <AlertDialog open={demoteDialogOpen} onOpenChange={handleDemoteDialogOpenChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm demotion before export</AlertDialogTitle>
+            <AlertDialogDescription>
+              The following codes are strongly contradicted by current evidence and will be demoted before finalizing:
+              <ul className="mt-2 list-disc pl-5">
+                {pendingContradictions.map((item) => (
+                  <li key={item.code} className="mt-1">
+                    <span className="font-medium">{item.code}</span>
+                    {typeof item.confidence === "number"
+                      ? ` — model confidence ${Math.round(
+                          Math.min(Math.max(item.confidence, 0), 1) * 100,
+                        )}%`
+                      : null}
+                    {item.reason ? ` — ${item.reason}` : null}
+                  </li>
+                ))}
+              </ul>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleCancelDemotions}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDemotionsAndFinalize}>Demote &amp; finalize</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 

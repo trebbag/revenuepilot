@@ -296,6 +296,24 @@ from backend.ai_gating import (
     EMBED_SENTINEL_NEW,
     EMBED_SENTINEL_OLD,
     SentenceBoundary,
+    AI_AUTO_THRESHOLD_CHARS,
+    AI_AUTO_THRESHOLD_PCT,
+    AI_COLD_START_CHARS,
+    AI_MANUAL_THRESHOLD_CHARS,
+    AI_MANUAL_THRESHOLD_PCT,
+    AI_SEMANTIC_DISTANCE_AUTO_MIN,
+    AI_SEMANTIC_DISTANCE_MANUAL_MIN,
+    AI_GATE_ALLOWED_REASON_TOTAL,
+    AI_GATE_BLOCKED_REASON_TOTAL,
+    AI_GATE_ROUTE_DECISIONS,
+    AI_AUDIO_DECISIONS,
+    AI_AUDIO_ASCORE,
+    AI_AUDIO_DCB,
+    AI_AUDIO_ASR_CONFIDENCE,
+    AUDIO_AUTO_ROUTE,
+    ASR_CONFIDENCE_MIN,
+    AUDIO_SALIENCE_SCORE_MIN,
+    AUDIO_CRITICAL_OVERRIDES,
     normalize_note_text,
     _diff_spans as ai_diff_spans,
     trigram_dice,
@@ -474,6 +492,13 @@ SUGGEST_PROMPT_BUILDER = SuggestPromptBuilder()
 _STABLE_PROMPT_CACHE_LOCK = threading.Lock()
 _STABLE_PROMPT_CACHE_SIZE = 128
 _STABLE_PROMPT_CACHE: "OrderedDict[Tuple[str, str, str, str, str, str], List[Dict[str, Any]]]" = OrderedDict()
+
+
+def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames):
+    existing = REGISTRY._names_to_collectors.get(name)
+    if existing is not None:
+        return existing
+    return metric_cls(name, documentation, labelnames=labelnames)
 
 
 def _get_or_create_histogram(
@@ -884,13 +909,6 @@ def _record_prompt_usage(route: str, observation: RouteObservation, cache_state:
 
 
 _TRACE_ID_CTX: ContextVar[str | None] = ContextVar("trace_id", default=None)
-
-def _get_or_create_metric(metric_cls, name: str, documentation: str, labelnames):
-    existing = REGISTRY._names_to_collectors.get(name)
-    if existing is not None:
-        return existing
-    return metric_cls(name, documentation, labelnames=labelnames)
-
 
 class _StatsdClient:
     """Minimal DogStatsD compatible client used for optional metrics forwarding."""
@@ -13221,6 +13239,191 @@ async def analytics_compliance(
         compliance_distribution=compliance_distribution,
     )
     return analytics.model_dump()
+
+
+@app.get("/api/analytics/ai-gating")
+async def analytics_ai_gating(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    user=Depends(require_roles("analyst", "admin")),
+) -> Dict[str, Any]:
+    """Summarise AI gating outcomes and costs for administrators."""
+
+    clauses: List[str] = []
+    params: List[Any] = []
+    if start:
+        clauses.append("DATE(created_at) >= DATE(?)")
+        params.append(start)
+    if end:
+        clauses.append("DATE(created_at) <= DATE(?)")
+        params.append(end)
+
+    base_where = ""
+    if clauses:
+        base_where = "WHERE " + " AND ".join(clauses)
+    allowed_where = f"{base_where} AND allowed = 1" if base_where else "WHERE allowed = 1"
+
+    cursor = db_conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN allowed = 1 THEN 1 ELSE 0 END) AS allowed_total,
+            SUM(CASE WHEN allowed = 0 THEN 1 ELSE 0 END) AS blocked_total
+        FROM ai_gate_decisions
+        {base_where}
+        """,
+        params,
+    )
+    totals_row_raw = cursor.fetchone()
+    totals_row = dict(totals_row_raw) if totals_row_raw else {}
+    allowed_total = int(totals_row.get("allowed_total") or 0)
+    blocked_total = int(totals_row.get("blocked_total") or 0)
+    total_decisions = allowed_total + blocked_total
+    allow_rate = (allowed_total / total_decisions) if total_decisions else 0.0
+
+    cursor.execute(
+        f"""
+        SELECT
+            DATE(created_at) AS day,
+            SUM(CASE WHEN allowed = 1 THEN 1 ELSE 0 END) AS allowed_count,
+            SUM(CASE WHEN allowed = 0 THEN 1 ELSE 0 END) AS blocked_count
+        FROM ai_gate_decisions
+        {base_where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 30
+        """,
+        params,
+    )
+    timeseries_rows = cursor.fetchall()
+    timeseries: List[Dict[str, Any]] = []
+    for raw_row in reversed(timeseries_rows):
+        row = dict(raw_row)
+        day_value = row.get("day")
+        if not day_value:
+            continue
+        timeseries.append(
+            {
+                "day": day_value,
+                "allowed": int(row.get("allowed_count") or 0),
+                "blocked": int(row.get("blocked_count") or 0),
+            }
+        )
+
+    cursor.execute(
+        f"""
+        SELECT
+            route,
+            SUM(CASE WHEN allowed = 1 THEN 1 ELSE 0 END) AS allowed_count,
+            SUM(CASE WHEN allowed = 0 THEN 1 ELSE 0 END) AS blocked_count
+        FROM ai_gate_decisions
+        {base_where}
+        GROUP BY route
+        ORDER BY route
+        """,
+        params,
+    )
+    per_route_rows = cursor.fetchall()
+    per_route: List[Dict[str, Any]] = []
+    for raw_row in per_route_rows:
+        row = dict(raw_row)
+        route_name = row.get("route") or "unknown"
+        route_allowed = int(row.get("allowed_count") or 0)
+        route_blocked = int(row.get("blocked_count") or 0)
+        route_total = route_allowed + route_blocked
+        per_route.append(
+            {
+                "route": route_name,
+                "allowed": route_allowed,
+                "blocked": route_blocked,
+                "allow_rate": (route_allowed / route_total) if route_total else 0.0,
+            }
+        )
+
+    cursor.execute(
+        f"""
+        SELECT AVG(delta_chars) AS avg_delta
+        FROM ai_gate_decisions
+        {allowed_where}
+        """,
+        params,
+    )
+    edits_row_raw = cursor.fetchone()
+    edits_row = dict(edits_row_raw) if edits_row_raw else {}
+    avg_edits = float(edits_row.get("avg_delta") or 0.0)
+
+    cursor.execute(
+        f"""
+        SELECT DATE(created_at) AS day, AVG(delta_chars) AS avg_delta
+        FROM ai_gate_decisions
+        {allowed_where}
+        GROUP BY day
+        ORDER BY day DESC
+        LIMIT 30
+        """,
+        params,
+    )
+    edits_rows = cursor.fetchall()
+    edits_timeseries: List[Dict[str, Any]] = []
+    for raw_row in reversed(edits_rows):
+        row = dict(raw_row)
+        day_value = row.get("day")
+        if not day_value:
+            continue
+        edits_timeseries.append(
+            {
+                "day": day_value,
+                "average_edits": float(row.get("avg_delta") or 0.0),
+            }
+        )
+
+    cursor.execute(
+        f"""
+        SELECT
+            route,
+            COUNT(*) AS runs,
+            AVG(CASE WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.costEstimateUsd'), 0.0) ELSE 0.0 END) AS avg_cost,
+            SUM(CASE WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.costEstimateUsd'), 0.0) ELSE 0.0 END) AS total_cost,
+            AVG(CASE WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.promptTokens'), 0.0) ELSE 0.0 END) AS avg_prompt_tokens,
+            AVG(CASE WHEN json_valid(metadata) THEN COALESCE(json_extract(metadata, '$.completionTokens'), 0.0) ELSE 0.0 END) AS avg_completion_tokens
+        FROM ai_gate_decisions
+        {allowed_where}
+        GROUP BY route
+        ORDER BY route
+        """,
+        params,
+    )
+    cost_rows = cursor.fetchall()
+    costs: List[Dict[str, Any]] = []
+    for raw_row in cost_rows:
+        row = dict(raw_row)
+        route_name = row.get("route") or "unknown"
+        runs = int(row.get("runs") or 0)
+        costs.append(
+            {
+                "route": route_name,
+                "runs": runs,
+                "avg_cost_usd": float(row.get("avg_cost") or 0.0),
+                "total_cost_usd": float(row.get("total_cost") or 0.0),
+                "avg_prompt_tokens": float(row.get("avg_prompt_tokens") or 0.0),
+                "avg_completion_tokens": float(row.get("avg_completion_tokens") or 0.0),
+            }
+        )
+
+    return {
+        "totals": {
+            "allowed": allowed_total,
+            "blocked": blocked_total,
+            "allow_rate": allow_rate,
+        },
+        "per_route": per_route,
+        "timeseries": timeseries,
+        "edits": {
+            "overall": avg_edits,
+            "timeseries": edits_timeseries,
+        },
+        "costs": costs,
+    }
 
 
 @app.get("/api/analytics/confidence")

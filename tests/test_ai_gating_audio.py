@@ -7,7 +7,8 @@ from typing import Dict
 
 import pytest
 
-from backend.ai_gating import AUDIO_SALIENCE_SCORE_MIN
+from prometheus_client import REGISTRY
+from backend.ai_gating import AUDIO_AUTO_ROUTE, AUDIO_SALIENCE_SCORE_MIN
 from backend.db.models import AINoteState
 from backend.migrations import session_scope
 
@@ -98,6 +99,23 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
     note_id = "audio-pe-repeat"
     _ensure_state(conn, note_id, clinician_id)
 
+    def metric(name: str, labels: Dict[str, str]) -> float:
+        value = REGISTRY.get_sample_value(name, labels)
+        return 0.0 if value is None else float(value)
+
+    route = AUDIO_AUTO_ROUTE
+    blocked_reason = {"route": route, "decision": "blocked", "reason": "LOW_SALIENCE"}
+    allowed_reason = {"route": route, "decision": "allowed", "reason": "allowed"}
+    ascore_count = {"route": route}
+    dcb_count = {"route": route}
+    confidence_count = {"route": route}
+
+    blocked_before = metric("revenuepilot_ai_audio_decisions_total", blocked_reason)
+    allowed_before = metric("revenuepilot_ai_audio_decisions_total", allowed_reason)
+    ascore_before = metric("revenuepilot_ai_audio_ascore_count", ascore_count)
+    dcb_before = metric("revenuepilot_ai_audio_dcb_count", dcb_count)
+    confidence_before = metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count)
+
     segment = {
         "text": "Physical exam reveals diffuse wheezing.",
         "tokens": [{"confidence": 0.91}, {"confidence": 0.9}, {"confidence": 0.92}],
@@ -168,3 +186,10 @@ def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
     assert allowed is False
     assert detail["reason"] == "NOT_MEANINGFUL"
     assert detail["hint"] is False
+
+    assert metric("revenuepilot_ai_audio_decisions_total", blocked_reason) == pytest.approx(blocked_before + 1.0)
+    assert metric("revenuepilot_ai_audio_decisions_total", allowed_reason) == pytest.approx(allowed_before + 1.0)
+    assert metric("revenuepilot_ai_audio_ascore_count", ascore_count) == pytest.approx(ascore_before + 2.0)
+    assert metric("revenuepilot_ai_audio_dcb_count", dcb_count) == pytest.approx(dcb_before + 2.0)
+    assert metric("revenuepilot_ai_audio_asr_confidence_count", confidence_count) == pytest.approx(confidence_before + 2.0)
+
