@@ -10,17 +10,18 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
-if not hasattr(builtins, "_get_or_create_metric"):
+# Remove global monkey-patch; use pytest fixture instead.
+
+def _bootstrap_metric(metric_cls, name: str, documentation: str, labelnames):
     from prometheus_client import REGISTRY as _PROM_REGISTRY
+    existing = _PROM_REGISTRY._names_to_collectors.get(name)
+    if existing is not None:
+        return existing
+    return metric_cls(name, documentation, labelnames=labelnames)
 
-    def _bootstrap_metric(metric_cls, name: str, documentation: str, labelnames):
-        existing = _PROM_REGISTRY._names_to_collectors.get(name)
-        if existing is not None:
-            return existing
-        return metric_cls(name, documentation, labelnames=labelnames)
-
-    builtins._get_or_create_metric = _bootstrap_metric  # type: ignore[attr-defined]
-
+@pytest.fixture(autouse=True)
+def patch_get_or_create_metric(monkeypatch):
+    monkeypatch.setattr(builtins, "_get_or_create_metric", _bootstrap_metric)
 # Presidio attempts to download a large spaCy model when initialised. For the
 # gating tests we only need the regex de-identification path, so stub out the
 # module before importing the backend to avoid the network dependency.
