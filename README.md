@@ -99,3 +99,33 @@ with the following highlights:
   Alembic upgrade with the `migration` role, validate row counts, run smoke
   tests, and be prepared to downgrade or restore from backups if
   verification fails.
+
+## macOS one-click launcher
+
+- Script: `scripts/revenuepilot_launch.sh` (starts backend + frontend if needed; opens Chrome as an app window)
+- NPM shortcut: `cd revenuepilot-frontend && npm run app:dev`
+- Logs: `~/Library/Logs/RevenuePilot/`
+
+### Optional: auto-start backend at login (LaunchAgent)
+1. Copy `ops/macos/com.revenuepilot.backend.plist` to `~/Library/LaunchAgents/`.
+2. Edit the file and replace `__REPO__` with your absolute repo path.
+3. Run:
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.revenuepilot.backend.plist
+   launchctl start com.revenuepilot.backend
+   ```
+   Stop/unload:
+   ```bash
+   launchctl stop com.revenuepilot.backend
+   launchctl unload ~/Library/LaunchAgents/com.revenuepilot.backend.plist
+   ```
+
+### Optional: make a clickable macOS app icon (no Terminal window)
+
+Use Automator → Application → Run Shell Script with:
+
+```
+"/Users/$USER/path/to/repo/scripts/revenuepilot_launch.sh"
+```
+
+Save as RevenuePilot.app in Applications and pin to the Dock.
