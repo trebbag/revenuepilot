@@ -10,10 +10,13 @@ from backend import main
 from backend.db.models import AIJsonSnapshot, AINoteState
 from backend.migrations import create_all_tables, session_scope
 from backend.ai_gating import (
+    AIGateInput,
     AIGatingService,
     DiffSpan,
     EMBED_SENTINEL_NEW,
     EMBED_SENTINEL_OLD,
+    embedding_distance,
+    normalize_note_text,
 )
 from backend.migrations import create_all_tables
 from backend.encryption import decrypt_ai_payload
@@ -281,6 +284,38 @@ def test_ai_gate_metrics_record_permitted_runs(gating_client):
     assert mean_value == pytest.approx(row["mean_time_between_allowed_ms"])
 
 
+def test_ai_gate_salience_detects_medication(gating_service_state):
+    conn, service, clinician_id = gating_service_state
+    note_id = "salience-med"
+    base_note = "HPI: Patient stable.\nPlan: Continue home meds."
+    updated_note = base_note + "\nStart amoxicillin 500 mg TID."
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        if state is None:
+            state = AINoteState(
+                note_id=note_id,
+                clinician_id=clinician_id,
+                last_note_snapshot=normalize_note_text(base_note),
+                cold_start_completed=True,
+            )
+        else:
+            state.last_note_snapshot = normalize_note_text(base_note)
+            state.cold_start_completed = True
+        session.add(state)
+
+    payload = AIGateInput(
+        note_id=note_id,
+        clinician_id=clinician_id,
+        text=updated_note,
+        request_type="manual_mini",
+    )
+
+    decision = service.evaluate(payload)
+    assert decision.allowed is True
+    assert decision.detail.salient is True
+    assert decision.status_code == 202
+
 
 def test_reconcile_json_merges_small_divergence(gating_service_state):
     conn, service, clinician_id = gating_service_state
@@ -386,7 +421,9 @@ def test_is_meaningful_uses_embedding_sentinels(mock_embedding_client):
         mock_embedding_client.set_vector(old_payload, [1.0, 0.0, 0.0])
         mock_embedding_client.set_vector(new_payload, [1.0, 0.0, 0.0])
 
-        assert service._is_meaningful([span], {}) is False
+        distance = embedding_distance(mock_embedding_client, old_payload, new_payload)
+        result = service._is_meaningful([(span, 0.0, distance)], {}, request_type="auto")
+        assert result == (False, False)
         assert mock_embedding_client.calls[-1] == (old_payload, new_payload)
     finally:
         db.close()
@@ -410,7 +447,10 @@ def test_is_meaningful_treats_embedding_failure_as_meaningful(mock_embedding_cli
         with pytest.raises(RuntimeError):
             mock_embedding_client.embed_many([old_payload, new_payload])
 
-        assert service._is_meaningful([span], {}) is True
+        distance = embedding_distance(mock_embedding_client, old_payload, new_payload)
+        assert distance is None
+        result = service._is_meaningful([(span, 0.0, distance)], {}, request_type="auto")
+        assert result == (True, False)
         assert mock_embedding_client.calls[-1] == (old_payload, new_payload)
     finally:
         db.close()
