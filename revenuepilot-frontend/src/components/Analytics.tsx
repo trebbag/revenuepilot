@@ -113,6 +113,48 @@ interface DraftAnalyticsResponse {
   drafts: number
 }
 
+interface AIGateTimeseriesPoint {
+  day: string
+  allowed: number
+  blocked: number
+}
+
+interface AIGateRouteSummary {
+  route: string
+  allowed: number
+  blocked: number
+  allow_rate: number
+}
+
+interface AIGateEditsPoint {
+  day: string
+  average_edits: number
+}
+
+interface AIGateCostSummary {
+  route: string
+  runs: number
+  avg_cost_usd: number
+  total_cost_usd: number
+  avg_prompt_tokens: number
+  avg_completion_tokens: number
+}
+
+interface AIGatingAnalyticsResponse {
+  totals: {
+    allowed: number
+    blocked: number
+    allow_rate: number
+  }
+  per_route: AIGateRouteSummary[]
+  timeseries: AIGateTimeseriesPoint[]
+  edits: {
+    overall: number
+    timeseries: AIGateEditsPoint[]
+  }
+  costs: AIGateCostSummary[]
+}
+
 interface DataState<T> {
   data: T | null
   loading: boolean
@@ -318,6 +360,7 @@ interface NoteQualityDashboardProps {
   complianceState: DataState<ComplianceAnalyticsResponse>
   codingState: DataState<CodingAccuracyAnalyticsResponse>
   draftState: DataState<DraftAnalyticsResponse>
+  aiGateState: DataState<AIGatingAnalyticsResponse>
   filters: AnalyticsFilters
   onFiltersChange: (updates: Partial<AnalyticsFilters>) => void
   onRefresh: () => void
@@ -695,6 +738,128 @@ function BillingCodingDashboard({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>AI Gate Diagnostics</CardTitle>
+              <CardDescription>
+                {totalDecisions
+                  ? `${totalAllowed.toLocaleString()} allowed · ${totalBlocked.toLocaleString()} blocked decisions`
+                  : "No AI gate decisions recorded yet."}
+              </CardDescription>
+            </div>
+            <Badge variant="outline" className="text-xs">
+              {totalDecisions ? `${allowRatePct.toFixed(1)}% allow rate` : "No decisions yet"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {gatingLoading ? (
+            <Skeleton className="h-[240px] w-full" />
+          ) : gatingError ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive-foreground">
+              {gatingError}
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {gatingTimeseriesData.length === 0 ? (
+                <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">
+                  No AI gate decisions recorded yet.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={gatingTimeseriesData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="label" />
+                    <YAxis allowDecimals />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="allowed" stroke="#16a34a" strokeWidth={2} name="Allowed" />
+                    <Line type="monotone" dataKey="blocked" stroke="#ef4444" strokeWidth={2} name="Blocked" />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {gatingRouteSummary.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-muted-foreground/40 p-4 text-sm text-muted-foreground">
+                    Route-level gating data will appear here once decisions are recorded.
+                  </div>
+                ) : (
+                  gatingRouteSummary.map((entry) => {
+                    const percent = Math.round(Math.max(entry.allow_rate ?? 0, 0) * 1000) / 10
+                    return (
+                      <div key={entry.route} className="rounded-md border bg-muted/40 p-3">
+                        <div className="flex items-center justify-between text-sm font-medium text-foreground">
+                          <span>{entry.route}</span>
+                          <span className="text-xs text-muted-foreground">{percent.toFixed(1)}% allow</span>
+                        </div>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          {entry.allowed.toLocaleString()} allowed · {entry.blocked.toLocaleString()} blocked
+                        </p>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="rounded-lg border bg-background p-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-foreground">Edits per allowed run</h4>
+                    <span className="text-xs text-muted-foreground">
+                      Avg {gatingEditsAverage.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                    </span>
+                  </div>
+                  {gatingEditsSeries.length === 0 ? (
+                    <div className="mt-6 flex h-[180px] items-center justify-center text-xs text-muted-foreground">
+                      No recent allowed runs to display.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={gatingEditsSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="label" />
+                        <YAxis />
+                        <Tooltip />
+                        <Bar dataKey="average" fill="#0ea5e9" name="Avg edits" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                <div className="rounded-lg border bg-background p-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-medium text-foreground">Route cost estimates</h4>
+                    <span className="text-xs text-muted-foreground">
+                      Total {usdFormatter.format(gatingTotalCost)}
+                    </span>
+                  </div>
+                  {gatingCostSeries.length === 0 ? (
+                    <div className="mt-6 flex h-[180px] items-center justify-center text-xs text-muted-foreground">
+                      Cost data populates after gated runs complete.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={gatingCostSeries}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="route" />
+                        <YAxis />
+                        <Tooltip
+                          formatter={(value: number) => usdFormatter.format(value as number)}
+                          labelFormatter={(label) => `${label} · ${gatingCostRuns.get(label as string) ?? 0} runs`}
+                        />
+                        <Bar dataKey="avgCost" fill="#6366f1" name="Avg cost (USD)" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -773,6 +938,7 @@ function NoteQualityDashboard({
   complianceState,
   codingState,
   draftState,
+  aiGateState,
   filters,
   onFiltersChange,
   onRefresh,
@@ -835,6 +1001,64 @@ function NoteQualityDashboard({
   const avgTrend: "up" | "down" = avgChange >= 0 ? "up" : "down"
 
   const draftsCount = draftState.data?.drafts ?? 0
+  const gatingTotals = aiGateState.data?.totals
+  const totalAllowed = gatingTotals?.allowed ?? 0
+  const totalBlocked = gatingTotals?.blocked ?? 0
+  const totalDecisions = totalAllowed + totalBlocked
+  const allowRatePct = gatingTotals ? Math.round(Math.max(gatingTotals.allow_rate ?? 0, 0) * 1000) / 10 : 0
+  const gatingTimeseriesData = useMemo(() => {
+    return (aiGateState.data?.timeseries ?? []).map((point) => {
+      let label = point.day
+      try {
+        label = new Date(point.day).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      } catch (error) {
+        console.debug("Unable to format gating date", error)
+      }
+      return {
+        label,
+        allowed: point.allowed,
+        blocked: point.blocked,
+      }
+    })
+  }, [aiGateState.data?.timeseries])
+  const gatingEditsSeries = useMemo(() => {
+    return (aiGateState.data?.edits?.timeseries ?? []).map((point) => {
+      let label = point.day
+      try {
+        label = new Date(point.day).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      } catch (error) {
+        console.debug("Unable to format gating edit date", error)
+      }
+      const average = Number.parseFloat(String(point.average_edits ?? 0))
+      return {
+        label,
+        average: Number.isFinite(average) ? Number(average.toFixed(2)) : 0,
+      }
+    })
+  }, [aiGateState.data?.edits?.timeseries])
+  const gatingEditsAverage = Number.isFinite(aiGateState.data?.edits?.overall)
+    ? Number((aiGateState.data?.edits?.overall ?? 0).toFixed(2))
+    : 0
+  const gatingCostSeries = useMemo(() => {
+    return (aiGateState.data?.costs ?? []).map((item) => ({
+      route: item.route,
+      avgCost: Number.isFinite(item.avg_cost_usd) ? Number(item.avg_cost_usd) : 0,
+      totalCost: Number.isFinite(item.total_cost_usd) ? Number(item.total_cost_usd) : 0,
+      runs: Number.isFinite(item.runs) ? Number(item.runs) : 0,
+    }))
+  }, [aiGateState.data?.costs])
+  const gatingCostRuns = useMemo(() => new Map(gatingCostSeries.map((entry) => [entry.route, entry.runs])), [gatingCostSeries])
+  const gatingTotalCost = useMemo(
+    () => gatingCostSeries.reduce((sum, entry) => sum + (Number.isFinite(entry.totalCost) ? entry.totalCost : 0), 0),
+    [gatingCostSeries],
+  )
+  const gatingRouteSummary = aiGateState.data?.per_route ?? []
+  const gatingLoading = aiGateState.loading
+  const gatingError = aiGateState.error
+  const usdFormatter = useMemo(
+    () => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }),
+    [],
+  )
   const showQualityChart = qualityData.length > 0
 
   return (
@@ -1041,6 +1265,11 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
     loading: true,
     error: null,
   })
+  const [aiGateState, setAiGateState] = useState<DataState<AIGatingAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null,
+  })
   const [draftAnalyticsState, setDraftAnalyticsState] = useState<DataState<DraftAnalyticsResponse>>({
     data: null,
     loading: true,
@@ -1127,6 +1356,7 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
       setCodingAccuracyState((prev) => ({ ...prev, loading: true, error: null }))
       setRevenueState((prev) => ({ ...prev, loading: true, error: null }))
       setComplianceState((prev) => ({ ...prev, loading: true, error: null }))
+      setAiGateState((prev) => ({ ...prev, loading: true, error: null }))
       setDraftAnalyticsState((prev) => ({ ...prev, loading: true, error: null }))
 
       const toMessage = (reason: unknown): string => {
@@ -1142,11 +1372,12 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
       const query = buildAnalyticsQuery(filters)
       const suffix = query ? `?${query}` : ""
 
-      const [usageResult, codingResult, revenueResult, complianceResult, draftsResult] = await Promise.allSettled([
+      const [usageResult, codingResult, revenueResult, complianceResult, aiGateResult, draftsResult] = await Promise.allSettled([
         apiFetchJson<UsageAnalyticsResponse>(`/api/analytics/usage${suffix}`, { signal }),
         apiFetchJson<CodingAccuracyAnalyticsResponse>(`/api/analytics/coding-accuracy${suffix}`, { signal }),
         apiFetchJson<RevenueAnalyticsResponse>(`/api/analytics/revenue${suffix}`, { signal }),
         apiFetchJson<ComplianceAnalyticsResponse>(`/api/analytics/compliance${suffix}`, { signal }),
+        apiFetchJson<AIGatingAnalyticsResponse>(`/api/analytics/ai-gating${suffix}`, { signal }),
         apiFetchJson<DraftAnalyticsResponse>("/api/analytics/drafts", { signal }),
       ])
 
@@ -1203,6 +1434,20 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
           data: prev.data,
           loading: false,
           error: message || prev.error || "Unable to load compliance analytics.",
+        }))
+      }
+
+      if (aiGateResult.status === "fulfilled") {
+        setAiGateState({ data: aiGateResult.value ?? null, loading: false, error: null })
+      } else {
+        const message = toMessage(aiGateResult.reason)
+        if (message) {
+          console.error("Failed to load AI gating analytics", aiGateResult.reason)
+        }
+        setAiGateState((prev) => ({
+          data: prev.data,
+          loading: false,
+          error: message || prev.error || "Unable to load AI gating analytics.",
         }))
       }
 
@@ -1361,6 +1606,7 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
             complianceState={complianceState}
             codingState={codingAccuracyState}
             draftState={draftAnalyticsState}
+            aiGateState={aiGateState}
             filters={filters}
             onFiltersChange={handleFiltersChange}
             onRefresh={handleRefresh}
