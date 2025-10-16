@@ -15,12 +15,13 @@ import hashlib
 import json
 import math
 import os
+import re
 import statistics
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Mapping as MappingABC
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 import structlog
 
@@ -73,6 +74,45 @@ AI_MANUAL_THRESHOLD_PCT = _env_float("AI_MANUAL_THRESHOLD_PCT", 0.05)
 AI_SEMANTIC_DISTANCE_AUTO_MIN = _env_float("AI_SEMANTIC_DISTANCE_AUTO_MIN", 0.08)
 AI_SEMANTIC_DISTANCE_MANUAL_MIN = _env_float("AI_SEMANTIC_DISTANCE_MANUAL_MIN", 0.15)
 AI_EMBEDDING_MODEL = os.getenv("AI_EMBEDDING_MODEL", os.getenv("AI_EMBED_MODEL", "text-embedding-3-small"))
+ASR_CONFIDENCE_MIN = _env_float("ASR_CONFIDENCE_MIN", 0.85)
+AUDIO_SALIENCE_SCORE_MIN = _env_float("AUDIO_SALIENCE_SCORE_MIN", 0.75)
+
+
+def _parse_audio_override_rules(value: str) -> Tuple[Dict[str, Any], ...]:
+    rules: List[Dict[str, Any]] = []
+    if not value:
+        return tuple(rules)
+    for raw_rule in value.split(","):
+        rule = raw_rule.strip()
+        if not rule:
+            continue
+        match = re.match(r"(?P<field>[a-z0-9_/]+)\s*(?P<op><=|>=|<|>)\s*(?P<value>[0-9]+(?:\.[0-9]+)?(?:/[0-9]+(?:\.[0-9]+)?)?)", rule, re.I)
+        if not match:
+            continue
+        field = match.group("field").lower()
+        op = match.group("op")
+        raw_value = match.group("value")
+        if "/" in raw_value:
+            try:
+                systolic_str, diastolic_str = raw_value.split("/", 1)
+                parsed_value: Any = (float(systolic_str), float(diastolic_str))
+            except ValueError:
+                continue
+        else:
+            try:
+                parsed_value = float(raw_value)
+            except ValueError:
+                continue
+        rules.append({"field": field, "op": op, "value": parsed_value, "raw": rule})
+    return tuple(rules)
+
+
+AUDIO_CRITICAL_OVERRIDES = _parse_audio_override_rules(
+    os.getenv(
+        "AUDIO_CRITICAL_OVERRIDES",
+        "spo2<90,hr>130,sbp<90,dbp<50",
+    )
+)
 
 
 SECTION_PATTERNS: Dict[str, Tuple[str, ...]] = {
@@ -132,6 +172,7 @@ class GateDetail:
     manual4o_count_day: int = 0
     dice: float = 0.0
     cosine: float = 0.0
+    salient: bool = False
 
     def asdict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -257,6 +298,259 @@ def embedding_distance(embedder: Any, a: str, b: str) -> Optional[float]:
     dot = sum(x * y for x, y in zip(vec_a, vec_b)) / (norm_a * norm_b)
     dot = max(min(dot, 1.0), -1.0)
     return 1.0 - dot
+
+
+def _segment_confidences(segment: Mapping[str, Any]) -> List[float]:
+    confidences: List[float] = []
+    tokens = segment.get("tokens")
+    if isinstance(tokens, Iterable):
+        for token in tokens:
+            if isinstance(token, MappingABC):
+                try:
+                    value = float(token.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0.0:
+                    confidences.append(value)
+    confidence = segment.get("confidence")
+    if not confidences and confidence is not None:
+        try:
+            confidences.append(float(confidence))
+        except (TypeError, ValueError):
+            pass
+    return confidences
+
+
+def _median_confidence(segment: Mapping[str, Any]) -> float:
+    confidences = _segment_confidences(segment)
+    if not confidences:
+        return 0.0
+    try:
+        return float(statistics.median(confidences))
+    except statistics.StatisticsError:
+        return float(confidences[0])
+
+
+def _extract_measurement(value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if "/" in value:
+            parts = value.split("/", 1)
+            try:
+                return float(parts[0]), float(parts[1])
+            except (ValueError, TypeError):
+                return None
+        try:
+            return float(re.findall(r"-?\d+(?:\.\d+)?", value)[0])
+        except IndexError:
+            return None
+    if isinstance(value, MappingABC):
+        systolic = value.get("systolic")
+        diastolic = value.get("diastolic")
+        if systolic is not None and diastolic is not None:
+            try:
+                return float(systolic), float(diastolic)
+            except (TypeError, ValueError):
+                return None
+        nested_value = value.get("value")
+        if nested_value is not None:
+            return _extract_measurement(nested_value)
+    return None
+
+
+def _collect_measurements(segment: Mapping[str, Any], diar: Mapping[str, Any]) -> Dict[str, Any]:
+    measurements: Dict[str, Any] = {}
+    for source in (segment, diar):
+        vitals = source.get("vitals") if isinstance(source, MappingABC) else None
+        if isinstance(vitals, MappingABC):
+            for key, value in vitals.items():
+                key_lower = str(key).lower()
+                if key_lower not in measurements:
+                    measurements[key_lower] = _extract_measurement(value)
+        if isinstance(source, MappingABC):
+            for key in ("spo2", "hr", "rr", "resp", "bp", "sbp", "dbp", "temp"):
+                if key in measurements:
+                    continue
+                if key in source:
+                    measurements[key] = _extract_measurement(source.get(key))
+    return measurements
+
+
+def _measurement_triggered(rule: Mapping[str, Any], measurement: Any) -> bool:
+    if measurement is None:
+        return False
+    op = rule.get("op")
+    threshold = rule.get("value")
+    if isinstance(threshold, tuple):
+        if not isinstance(measurement, tuple):
+            return False
+        try:
+            meas_hi = float(measurement[0])
+            meas_lo = float(measurement[1])
+            thresh_hi = float(threshold[0])
+            thresh_lo = float(threshold[1])
+        except (TypeError, ValueError):
+            return False
+        if op == "<":
+            return meas_hi < thresh_hi and meas_lo < thresh_lo
+        if op == "<=":
+            return meas_hi <= thresh_hi and meas_lo <= thresh_lo
+        if op == ">":
+            return meas_hi > thresh_hi and meas_lo > thresh_lo
+        if op == ">=":
+            return meas_hi >= thresh_hi and meas_lo >= thresh_lo
+        return False
+    try:
+        measurement_value = float(measurement)
+        threshold_value = float(threshold)
+    except (TypeError, ValueError):
+        return False
+    if op == "<":
+        return measurement_value < threshold_value
+    if op == "<=":
+        return measurement_value <= threshold_value
+    if op == ">":
+        return measurement_value > threshold_value
+    if op == ">=":
+        return measurement_value >= threshold_value
+    return False
+
+
+def _critical_override(
+    segment: Mapping[str, Any], diar: Mapping[str, Any]
+) -> Optional[str]:
+    measurements = _collect_measurements(segment, diar)
+    for rule in AUDIO_CRITICAL_OVERRIDES:
+        measurement = measurements.get(rule["field"])
+        if _measurement_triggered(rule, measurement):
+            return str(rule.get("raw"))
+    return None
+
+
+def _has_salience(old_span: str, new_span: str) -> bool:
+    combined = f"{old_span} {new_span}".strip()
+    if not combined:
+        return False
+    if VITALS_RE.search(combined):
+        return True
+    if LABS_RE.search(combined):
+        return True
+    if MEDS_RE.search(combined):
+        return True
+    if ORDERS_RE.search(combined):
+        return True
+    if DIAGNOSTIC_RE.search(combined):
+        return True
+
+    old_has_negation = bool(NEGATION_RE.search(old_span))
+    new_has_negation = bool(NEGATION_RE.search(new_span))
+    new_has_positive = bool(POSITIVE_PHRASES_RE.search(new_span))
+    if old_has_negation and not new_has_negation:
+        return True
+    if new_has_positive and not new_has_negation and not old_has_negation:
+        return True
+    return False
+
+
+def _speaker_multiplier(
+    speaker: Optional[str], focus_set: Mapping[str, Any]
+) -> float:
+    speaker_map = focus_set.get("speaker_multipliers")
+    if isinstance(speaker_map, MappingABC) and speaker:
+        multiplier = speaker_map.get(str(speaker).lower())
+        if isinstance(multiplier, (int, float)):
+            return float(multiplier)
+    return 1.0
+
+
+def _compute_ascore(
+    segment: Mapping[str, Any],
+    diar: Mapping[str, Any],
+    focus_set: Mapping[str, Any],
+) -> Tuple[float, Dict[str, float]]:
+    ascore_components: Dict[str, float] = {}
+    entities = segment.get("entities") if isinstance(segment.get("entities"), Iterable) else []
+    weights = {}
+    focus_entities = focus_set.get("entity_weights")
+    if isinstance(focus_entities, MappingABC):
+        weights = {str(key).lower(): float(value) for key, value in focus_entities.items() if isinstance(value, (int, float))}
+    entity_score = 0.0
+    counted_entities = 0
+    for entity in entities:
+        if not isinstance(entity, MappingABC):
+            continue
+        label = str(entity.get("type") or entity.get("label") or "").lower()
+        if not label:
+            continue
+        if label not in weights:
+            continue
+        confidence = entity.get("confidence")
+        if isinstance(confidence, (int, float)):
+            weight = weights[label] * float(confidence)
+        else:
+            weight = weights[label]
+        entity_score += weight
+        counted_entities += 1
+    speaker = segment.get("speaker") or diar.get("speaker")
+    multiplier = _speaker_multiplier(speaker, focus_set)
+    entity_score *= multiplier
+    ascore_components["entities"] = entity_score
+
+    plan_sections = focus_set.get("plan_sections")
+    plan_bonus = focus_set.get("plan_bonus")
+    plan_applied = 0.0
+    if isinstance(plan_bonus, (int, float)):
+        section = segment.get("section") or diar.get("section")
+        section_lower = str(section).lower() if section else ""
+        if section_lower:
+            valid_sections = ["plan", "assessment", "a/p"]
+            if isinstance(plan_sections, Iterable):
+                valid_sections = [str(item).lower() for item in plan_sections]
+            if section_lower in valid_sections:
+                plan_applied = float(plan_bonus)
+        if not plan_applied and isinstance(segment.get("text"), str):
+            if "plan" in segment["text"].lower():
+                plan_applied = float(plan_bonus)
+    if plan_applied:
+        ascore_components["plan"] = plan_applied
+
+    repetition_bonus = focus_set.get("repetition_bonus")
+    if isinstance(repetition_bonus, (int, float)):
+        repetitions = diar.get("repetitions")
+        try:
+            repetitions_val = max(0, int(repetitions))
+        except (TypeError, ValueError):
+            repetitions_val = 0
+        if repetitions_val:
+            cap = focus_set.get("repetition_cap")
+            try:
+                cap_val = int(cap)
+            except (TypeError, ValueError):
+                cap_val = repetitions_val
+            repetitions_val = min(repetitions_val, max(cap_val, 1))
+            applied = float(repetition_bonus) * repetitions_val
+            ascore_components["repetition"] = applied
+
+    density_bonus = focus_set.get("medical_density_bonus")
+    if isinstance(density_bonus, (int, float)):
+        density_threshold = focus_set.get("medical_density_threshold")
+        try:
+            threshold_val = float(density_threshold)
+        except (TypeError, ValueError):
+            threshold_val = 0.0
+        density = segment.get("medical_density")
+        try:
+            density_val = float(density)
+        except (TypeError, ValueError):
+            density_val = 0.0
+        if density_val >= threshold_val and (counted_entities or density_val):
+            ascore_components["medical_density"] = float(density_bonus)
+
+    ascore_total = sum(ascore_components.values())
+    return ascore_total, ascore_components
 
 
 def compute_hash(value: str, salt: str) -> str:
@@ -656,12 +950,14 @@ class AIGatingService:
                 )
 
             meaningful = True
+            salient = False
             if not payload.force:
-                meaningful = self._is_meaningful(
+                meaningful, salient = self._is_meaningful(
                     span_metrics,
                     sections,
                     request_type=payload.request_type,
                 )
+                detail.salient = salient
                 if not meaningful:
                     detail.reason = "NOT_MEANINGFUL"
                     return AIGateDecision(
@@ -672,9 +968,11 @@ class AIGatingService:
                         detail=detail,
                         reason="NOT_MEANINGFUL",
                     )
+            else:
+                detail.salient = True
 
             if payload.request_type in {"auto", "manual_full"}:
-                if not payload.force and delta_chars < full_threshold:
+                if not payload.force and not detail.salient and delta_chars < full_threshold:
                     detail.reason = "minChars"
                     return AIGateDecision(
                         allowed=False,
@@ -739,7 +1037,7 @@ class AIGatingService:
                 return decision
 
             if payload.request_type == "manual_mini":
-                if not payload.force and delta_chars < mini_threshold:
+                if not payload.force and not detail.salient and delta_chars < mini_threshold:
                     detail.reason = "minChars"
                     return AIGateDecision(
                         allowed=False,
@@ -789,6 +1087,114 @@ class AIGatingService:
             reason="NOT_MEANINGFUL",
         )
 
+    def should_allow_audio_auto(
+        self,
+        note_id: str,
+        clinician_id: int,
+        segment: Mapping[str, Any],
+        diar: Mapping[str, Any],
+        focus_set: Mapping[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        if not isinstance(segment, MappingABC):
+            raise TypeError("segment must be a mapping")
+        diar = diar if isinstance(diar, MappingABC) else {}
+        focus_set = focus_set if isinstance(focus_set, MappingABC) else {}
+
+        text = str(segment.get("text") or "").strip()
+        detail: Dict[str, Any] = {
+            "medianConfidence": 0.0,
+            "dice": 0.0,
+            "distance": None,
+            "ascore": 0.0,
+            "dcb": float(focus_set.get("dcb", 0.0)) if isinstance(focus_set.get("dcb"), (int, float)) else 0.0,
+            "score": 0.0,
+            "components": {},
+            "criticalOverride": None,
+            "hint": False,
+            "reason": None,
+        }
+
+        if not text:
+            detail["reason"] = "EMPTY_SEGMENT"
+            return False, detail
+        if not _has_boundary(text):
+            detail["reason"] = "NO_BOUNDARY"
+            return False, detail
+
+        median_conf = _median_confidence(segment)
+        detail["medianConfidence"] = median_conf
+        if median_conf < ASR_CONFIDENCE_MIN:
+            detail["reason"] = "LOW_CONFIDENCE"
+            return False, detail
+
+        with session_scope(self._connection) as session:
+            state = session.get(AINoteState, note_id)
+            if state is None:
+                state = AINoteState(
+                    note_id=note_id,
+                    clinician_id=clinician_id,
+                    last_note_snapshot="",
+                )
+                session.add(state)
+                session.flush()
+            else:
+                state.clinician_id = clinician_id
+
+            previous_text = state.last_transcript_cursor or ""
+            dice = trigram_dice(previous_text, text) if previous_text else 0.0
+            detail["dice"] = dice
+            distance = (
+                embedding_distance(self._embedder, previous_text, text)
+                if previous_text and self._embedder
+                else None
+            )
+            detail["distance"] = distance
+            if previous_text and dice >= 0.92 and (distance is None or distance < 0.05):
+                detail["reason"] = "NOT_MEANINGFUL"
+                return False, detail
+
+            override = _critical_override(segment, diar)
+            detail["criticalOverride"] = override
+
+            ascore, components = _compute_ascore(segment, diar, focus_set)
+            detail["components"] = components
+            detail["ascore"] = ascore
+            dcb = detail["dcb"]
+            total_score = ascore + dcb
+            detail["score"] = total_score
+
+            if override:
+                allowed = True
+            else:
+                allowed = total_score >= AUDIO_SALIENCE_SCORE_MIN
+
+            if not allowed:
+                margin = AUDIO_SALIENCE_SCORE_MIN - total_score
+                if margin <= 0.05:
+                    detail["hint"] = True
+                detail["reason"] = "LOW_SALIENCE"
+                return False, detail
+
+            cursor_value = segment.get("cursor") or diar.get("cursor") or text
+            state.last_transcript_cursor = str(cursor_value)
+
+            accepted_json = segment.get("accepted_json") or diar.get("accepted_json")
+            stored_hash: Optional[str] = None
+            if isinstance(accepted_json, MappingABC):
+                stored_hash = self._store_json_payload(
+                    session,
+                    accepted_json,
+                    note_id=note_id,
+                )
+            if stored_hash:
+                state.last_accepted_json_hash = stored_hash
+
+            session.add(state)
+
+            detail["hint"] = False
+            detail["reason"] = None
+            return True, detail
+
     # Internal helpers ------------------------------------------------
 
     def _is_meaningful(
@@ -797,27 +1203,30 @@ class AIGatingService:
         sections: Mapping[str, Sequence[int]],
         *,
         request_type: str,
-    ) -> bool:
+    ) -> Tuple[bool, bool]:
         if not span_metrics:
-            return False
+            return False, False
         distance_threshold = (
             AI_SEMANTIC_DISTANCE_MANUAL_MIN
             if request_type in {"manual", "manual_full", "manual_mini"}
             else AI_SEMANTIC_DISTANCE_AUTO_MIN
         )
+        salient_detected = False
         for span, dice, distance in span_metrics:
+            if _has_salience(span.old_text, span.new_text):
+                return True, True
             touched = _touches_sections(span, sections)
             if {"PE", "A/P"} & touched:
-                return True
+                return True, salient_detected
             if span.delta_chars < 40:
                 continue
             if dice > 0.90:
                 continue
             if distance is None:
-                return True
+                return True, salient_detected
             if distance >= distance_threshold:
-                return True
-        return False
+                return True, salient_detected
+        return False, salient_detected
 
     def _allow(
         self,
@@ -1060,3 +1469,17 @@ __all__ = [
     "EMBED_SENTINEL_NEW",
     "EMBED_SENTINEL_OLD",
 ]
+VITALS_RE = re.compile(r"(bp\s*\d{2,3}/\d{2,3}|hr\s*\d{2,3}|spo2\s*\d{2,3}%)", re.I)
+LABS_RE = re.compile(
+    r"\b(na|k|cr|hba1c|hgb|wbc)\b\s*(\d+(?:\.\d+)?(?:\s*(?:mmol/l|mg/dl|g/dl|%))?)",
+    re.I,
+)
+MEDS_RE = re.compile(
+    r"[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d+\s*(?:mg|mcg|u)\s+(?:bid|tid|qhs|qam|prn)",
+    re.I,
+)
+ORDERS_RE = re.compile(r"\b(ekg|cxr|mri|colonoscopy|ct)\b", re.I)
+DIAGNOSTIC_RE = re.compile(r"(pneumonia|nstemi|r/o\s+pe)", re.I)
+NEGATION_RE = re.compile(r"\bdenies\b", re.I)
+POSITIVE_PHRASES_RE = re.compile(r"\b(reports|endorses|admits|has|experiencing)\b", re.I)
+

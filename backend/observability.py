@@ -1021,6 +1021,11 @@ def record_gate_decision(
     clinician_id: Optional[int] = None,
     note_id: Optional[str] = None,
     delta_chars: Optional[int] = None,
+    dice: Optional[float] = None,
+    cosine: Optional[float] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+    cost_estimate_usd: Optional[float] = None,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> None:
     if _RECORDER is None:
@@ -1033,6 +1038,11 @@ def record_gate_decision(
         clinician_id=clinician_id,
         note_id=note_id,
         delta_chars=delta_chars,
+        dice=dice,
+        cosine=cosine,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_estimate_usd=cost_estimate_usd,
         metadata=metadata,
     )
 

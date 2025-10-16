@@ -45,7 +45,7 @@ LABS_RE = re.compile(
     re.I,
 )
 MEDS_RE = re.compile(
-    r"[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d+(?:mg|mcg|u)\s+(?:bid|tid|qhs|qam|prn)",
+    r"[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d+\s*(?:mg|mcg|u)\s+(?:bid|tid|qhs|qam|prn)",
     re.I,
 )
 PROCEDURE_RE = re.compile(r"\b(ekg|cxr|mri|colonoscopy|ct)\b", re.I)
