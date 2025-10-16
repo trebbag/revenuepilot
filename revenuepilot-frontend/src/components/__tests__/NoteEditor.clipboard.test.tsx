@@ -1,16 +1,26 @@
 import "../../test/setupDom"
 import "@testing-library/jest-dom/vitest"
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const { toastSuccess, toastError, toastInfo, fetchMock, fetchJsonMock } = vi.hoisted(() => {
+const { toastSuccess, toastError, toastInfo, fetchMock, fetchJsonMock, refreshQuickButtonProps } = vi.hoisted(() => {
   return {
     toastSuccess: vi.fn(),
     toastError: vi.fn(),
     toastInfo: vi.fn(),
     fetchMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<Response>>(),
     fetchJsonMock: vi.fn<[RequestInfo | URL, Record<string, any> | undefined], Promise<any>>(),
+    refreshQuickButtonProps: vi.fn<
+      [
+        {
+          enabled: boolean
+          busy?: boolean
+          reason?: string
+          onClick: () => void
+        },
+      ]
+    >(),
   }
 })
 
@@ -34,6 +44,23 @@ vi.mock("../FinalizationWizardAdapter", () => ({
   FinalizationWizardAdapter: () => null,
 }))
 
+vi.mock("../RefreshQuickButton", () => ({
+  __esModule: true,
+  default: (props: { enabled: boolean; busy?: boolean; reason?: string; onClick: () => void }) => {
+    refreshQuickButtonProps(props)
+    return (
+      <button
+        data-testid="refresh-quick-btn"
+        disabled={!props.enabled || props.busy}
+        aria-disabled={!props.enabled || props.busy}
+        onClick={props.onClick}
+      >
+        Refresh (quick)
+      </button>
+    )
+  },
+}))
+
 vi.mock("lucide-react", () => ({
   CheckCircle: () => null,
   Save: () => null,
@@ -47,6 +74,9 @@ vi.mock("lucide-react", () => ({
   XIcon: () => null,
   BookOpen: () => null,
   Copy: () => null,
+  RotateCcw: () => null,
+  Search: () => null,
+  ArrowLeftRight: () => null,
 }))
 
 vi.mock("../../contexts/AuthContext", () => ({
@@ -236,6 +266,7 @@ afterEach(() => {
   toastSuccess.mockReset()
   toastError.mockReset()
   toastInfo.mockReset()
+  refreshQuickButtonProps.mockReset()
 })
 
 describe("buildNoteWorkspaceClipboardText", () => {
@@ -338,5 +369,70 @@ describe("NoteEditor clipboard action", () => {
     })
 
     consoleSpy.mockRestore()
+  })
+})
+
+describe("NoteEditor manual refresh quick button", () => {
+  it("dispatches manual refresh and clears hint when clicked", async () => {
+    const manualSpy = vi.fn()
+    const listener = () => manualSpy()
+    window.addEventListener("rp-manual-refresh", listener)
+
+    try {
+      render(
+        <NoteEditor
+          initialNoteData={{ noteId: "note-refresh", content: "<p>Initial</p>" }}
+          selectedCodes={{ codes: 0, prevention: 0, diagnoses: 0, differentials: 0 }}
+          selectedCodesList={[]}
+          testOverrides={{ initialRecordedSeconds: 120 }}
+        />,
+      )
+
+      const refreshButton = await screen.findByTestId("refresh-quick-btn")
+      await waitFor(() => expect(refreshButton).toBeDisabled())
+
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      await act(async () => {
+        await new Promise<void>((resolve) => {
+          setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent("rp-manual-refresh-hint", {
+                detail: { enableManual: true, reason: "Try manual refresh" },
+              }),
+            )
+            resolve()
+          }, 0)
+        })
+      })
+
+      await waitFor(() => expect(refreshButton).toBeEnabled(), { timeout: 2000 })
+      await waitFor(() => {
+        const lastCall = refreshQuickButtonProps.mock.calls.at(-1)
+        expect(lastCall?.[0].enabled).toBe(true)
+        expect(lastCall?.[0].busy).toBeFalsy()
+      })
+
+      await userEvent.click(refreshButton)
+
+      await waitFor(() => expect(manualSpy).toHaveBeenCalledTimes(1))
+
+      fireEvent(window, new CustomEvent("rp-manual-refresh-complete"))
+
+      await waitFor(() => {
+        const icon = refreshButton.querySelector("svg")
+        if (icon) {
+          expect(icon).not.toHaveClass("animate-spin")
+        }
+        expect(refreshButton).toBeDisabled()
+        const lastCall = refreshQuickButtonProps.mock.calls.at(-1)
+        expect(lastCall?.[0].enabled).toBe(false)
+        expect(lastCall?.[0].busy).toBe(false)
+      })
+    } finally {
+      window.removeEventListener("rp-manual-refresh", listener)
+    }
   })
 })
