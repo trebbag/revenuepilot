@@ -30,6 +30,7 @@ import {
   Timer,
   AlertCircle,
 } from "lucide-react"
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
 import { Button } from "./ui/button"
 import { Badge } from "./ui/badge"
@@ -69,6 +70,29 @@ interface SystemStatusResponse {
   lastSyncTime?: string | null
 }
 
+interface AIGateTimeseriesPoint {
+  day: string
+  allowed: number
+  blocked: number
+}
+
+interface AIGateRouteSummary {
+  route: string
+  allowed: number
+  blocked: number
+  allow_rate: number
+}
+
+interface AIGatingAnalyticsResponse {
+  totals: {
+    allowed: number
+    blocked: number
+    allow_rate: number
+  }
+  per_route: AIGateRouteSummary[]
+  timeseries: AIGateTimeseriesPoint[]
+}
+
 interface DataState<T> {
   data: T | null
   loading: boolean
@@ -104,6 +128,11 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     loading: true,
     error: null,
   })
+  const [aiGatingState, setAiGatingState] = useState<DataState<AIGatingAnalyticsResponse>>({
+    data: null,
+    loading: true,
+    error: null,
+  })
   const [refreshCounter, setRefreshCounter] = useState(0)
 
   const loadDashboardData = useCallback(async (signal?: AbortSignal) => {
@@ -111,6 +140,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     setQuickActionsState((prev) => ({ ...prev, loading: true, error: null }))
     setActivityState((prev) => ({ ...prev, loading: true, error: null }))
     setSystemStatusState((prev) => ({ ...prev, loading: true, error: null }))
+    setAiGatingState((prev) => ({ ...prev, loading: true, error: null }))
 
     const handleError = (reason: unknown): string => {
       if (reason instanceof DOMException && reason.name === "AbortError") {
@@ -122,11 +152,20 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       return "Unable to load data."
     }
 
-    const [dailyResult, quickResult, activityResult, systemResult] = await Promise.allSettled([
+    const formatDateParam = (date: Date) => date.toISOString().slice(0, 10)
+    const now = new Date()
+    const sevenDaysAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000)
+    const gatingParams = new URLSearchParams({
+      start: formatDateParam(sevenDaysAgo),
+      end: formatDateParam(now),
+    })
+
+    const [dailyResult, quickResult, activityResult, systemResult, aiGatingResult] = await Promise.allSettled([
       apiFetchJson<DailyOverviewResponse>("/api/dashboard/daily-overview", { signal }),
       apiFetchJson<QuickActionsResponse>("/api/dashboard/quick-actions", { signal }),
       apiFetchJson<ActivityFeedItem[]>("/api/dashboard/activity", { signal }),
       apiFetchJson<SystemStatusResponse>("/api/system/status", { signal }),
+      apiFetchJson<AIGatingAnalyticsResponse>(`/api/analytics/ai-gating?${gatingParams.toString()}`, { signal }),
     ])
 
     if (signal?.aborted) {
@@ -186,6 +225,20 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         data: prev.data,
         loading: false,
         error: message || prev.error || "Unable to load system status.",
+      }))
+    }
+
+    if (aiGatingResult.status === "fulfilled") {
+      setAiGatingState({ data: aiGatingResult.value ?? null, loading: false, error: null })
+    } else {
+      const message = handleError(aiGatingResult.reason)
+      if (message) {
+        console.error("Failed to load AI gating analytics", aiGatingResult.reason)
+      }
+      setAiGatingState((prev) => ({
+        data: prev.data,
+        loading: false,
+        error: message || prev.error || "Unable to load AI gating analytics.",
       }))
     }
   }, [])
@@ -261,6 +314,13 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       hour: "numeric",
       minute: "2-digit",
     })
+  }, [])
+
+  const formatRouteLabel = useCallback((value: string | null | undefined) => {
+    if (!value) {
+      return "Unknown route"
+    }
+    return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())
   }, [])
 
   const getStatusBadgeClasses = useCallback((status: string | null | undefined) => {
@@ -372,6 +432,49 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       color: "slate", // Follow-up - neutral theme
     },
   ]
+
+  const shortDateFormatter = useMemo(
+    () => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }),
+    [],
+  )
+
+  const aiGatingChartData = useMemo(() => {
+    const series = aiGatingState.data?.timeseries ?? []
+    if (!series.length) {
+      return []
+    }
+    const trimmed = series.slice(Math.max(series.length - 7, 0))
+    return trimmed.map((point) => {
+      const parsed = new Date(point.day)
+      return {
+        isoDay: point.day,
+        day: Number.isNaN(parsed.getTime()) ? point.day : shortDateFormatter.format(parsed),
+        allowed: point.allowed,
+        blocked: point.blocked,
+      }
+    })
+  }, [aiGatingState.data?.timeseries, shortDateFormatter])
+
+  const aiGatingKpi = useMemo(() => {
+    const latest = aiGatingState.data?.timeseries?.[aiGatingState.data.timeseries.length - 1]
+    if (!latest) {
+      return null
+    }
+    const total = latest.allowed + latest.blocked
+    const percentBlocked = total > 0 ? Math.round((latest.blocked / total) * 100) : 0
+    return {
+      percentBlocked,
+      blocked: latest.blocked,
+      allowed: latest.allowed,
+      total,
+    }
+  }, [aiGatingState.data?.timeseries])
+
+  const aiGatingTopRoutes = useMemo(() => {
+    const routes = [...(aiGatingState.data?.per_route ?? [])]
+    routes.sort((a, b) => b.blocked - a.blocked || b.allowed - a.allowed)
+    return routes.slice(0, 3)
+  }, [aiGatingState.data?.per_route])
 
   const quickActions = useMemo(() => {
     const quickData = quickActionsState.data
@@ -919,6 +1022,155 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                       Last sync: <span className="font-medium text-stone-700">{formatSystemTimestamp(systemStatusState.data?.lastSyncTime)}</span>
                     </div>
                   </div>
+                )}
+              </div>
+            </motion.section>
+
+            <motion.section initial={{ opacity: 0, x: 30 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 1.35, duration: 0.5 }}>
+              <div className="bg-rose-50/60 rounded-2xl border border-rose-200/40 p-5 shadow-md">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-rose-600" />
+                    <span className="font-semibold text-stone-800 text-sm">AI Gating SLO</span>
+                  </div>
+                  {aiGatingState.loading ? (
+                    <Badge variant="outline" className="text-xs">
+                      Loading…
+                    </Badge>
+                  ) : aiGatingKpi ? (
+                    <Badge
+                      variant="outline"
+                      className={`text-xs ${aiGatingKpi.percentBlocked >= 50 ? "border-emerald-200 bg-emerald-50/80 text-emerald-700" : "border-amber-200 bg-amber-50/80 text-amber-700"}`}
+                    >
+                      {aiGatingKpi.percentBlocked >= 50 ? "SLO Met" : "SLO At Risk"}
+                    </Badge>
+                  ) : null}
+                </div>
+
+                {aiGatingState.error ? (
+                  <div className="rounded-lg border border-rose-200/60 bg-white/80 p-3 text-xs text-rose-700">
+                    {aiGatingState.error}
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-4">
+                      {aiGatingState.loading ? (
+                        <Skeleton className="h-8 w-24" />
+                      ) : aiGatingKpi ? (
+                        <div className="flex items-baseline gap-2">
+                          <span
+                            className={`text-2xl font-semibold ${
+                              aiGatingKpi.percentBlocked >= 50 ? "text-emerald-700" : "text-rose-600"
+                            }`}
+                          >
+                            {aiGatingKpi.percentBlocked}%
+                          </span>
+                          <span className="text-xs text-stone-600">blocked last 24h</span>
+                        </div>
+                      ) : (
+                        <div className="text-xs text-stone-600">No AI gating activity recorded.</div>
+                      )}
+                      {aiGatingKpi && (
+                        <div className="mt-1 text-[11px] text-stone-500">
+                          {aiGatingKpi.blocked} blocked • {aiGatingKpi.allowed} allowed
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="h-40 mb-4">
+                      {aiGatingState.loading ? (
+                        <Skeleton className="h-full w-full" />
+                      ) : aiGatingChartData.length ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={aiGatingChartData} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="aiGatingAllowed" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#2563eb" stopOpacity={0.35} />
+                                <stop offset="95%" stopColor="#2563eb" stopOpacity={0.05} />
+                              </linearGradient>
+                              <linearGradient id="aiGatingBlocked" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor="#f97316" stopOpacity={0.4} />
+                                <stop offset="95%" stopColor="#f97316" stopOpacity={0.08} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid stroke="#e7e5e4" strokeDasharray="4 4" strokeOpacity={0.6} />
+                            <XAxis
+                              dataKey="day"
+                              tickLine={false}
+                              axisLine={false}
+                              tick={{ fill: "#57534e", fontSize: 11 }}
+                              interval={aiGatingChartData.length > 5 ? 1 : 0}
+                            />
+                            <YAxis hide domain={[0, (dataMax: number = 0) => Math.max(Math.ceil(dataMax * 1.1), 1)]} />
+                            <Tooltip
+                              cursor={{ stroke: "#94a3b8", strokeDasharray: 4 }}
+                              contentStyle={{
+                                backgroundColor: "rgba(255,255,255,0.95)",
+                                borderRadius: "0.75rem",
+                                border: "1px solid rgba(120,113,108,0.25)",
+                                color: "#1f2937",
+                                fontSize: "0.75rem",
+                              }}
+                              labelStyle={{ color: "#57534e", fontWeight: 600, fontSize: "0.75rem" }}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="blocked"
+                              stackId="1"
+                              stroke="#ea580c"
+                              fill="url(#aiGatingBlocked)"
+                              name="Blocked"
+                              strokeWidth={2}
+                              dot={false}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="allowed"
+                              stackId="1"
+                              stroke="#2563eb"
+                              fill="url(#aiGatingAllowed)"
+                              name="Allowed"
+                              strokeWidth={2}
+                              dot={false}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-xs text-stone-500">
+                          Not enough AI gating data.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      {aiGatingState.loading ? (
+                        <div className="space-y-2">
+                          <Skeleton className="h-3 w-5/6" />
+                          <Skeleton className="h-3 w-4/6" />
+                          <Skeleton className="h-3 w-3/6" />
+                        </div>
+                      ) : aiGatingTopRoutes.length ? (
+                        aiGatingTopRoutes.map((route) => {
+                          const total = route.allowed + route.blocked
+                          const blockedRate = total > 0 ? Math.round((route.blocked / total) * 100) : 0
+                          return (
+                            <div key={route.route} className="rounded-lg border border-rose-200/50 bg-white/80 p-2">
+                              <div className="flex items-center justify-between text-[11px] text-stone-600">
+                                <span className="font-medium text-stone-700">{formatRouteLabel(route.route)}</span>
+                                <span>
+                                  {route.blocked} / {total} blocked
+                                </span>
+                              </div>
+                              <Progress value={blockedRate} className="mt-2 h-1.5" />
+                              <div className="mt-1 text-[10px] text-stone-500">{blockedRate}% blocked</div>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="text-xs text-stone-500">No route-level decisions recorded.</div>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             </motion.section>
