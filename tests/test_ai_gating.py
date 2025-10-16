@@ -1,10 +1,35 @@
+import builtins
+import os
 import sqlite3
+import sys
 import time
+import types
 from typing import Dict, List, Sequence, Tuple
 
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
+
+if not hasattr(builtins, "_get_or_create_metric"):
+    from prometheus_client import REGISTRY as _PROM_REGISTRY
+
+    def _bootstrap_metric(metric_cls, name: str, documentation: str, labelnames):
+        existing = _PROM_REGISTRY._names_to_collectors.get(name)
+        if existing is not None:
+            return existing
+        return metric_cls(name, documentation, labelnames=labelnames)
+
+    builtins._get_or_create_metric = _bootstrap_metric  # type: ignore[attr-defined]
+
+# Presidio attempts to download a large spaCy model when initialised. For the
+# gating tests we only need the regex de-identification path, so stub out the
+# module before importing the backend to avoid the network dependency.
+if "presidio_analyzer" not in sys.modules:
+    fake_presidio = types.ModuleType("presidio_analyzer")
+    fake_presidio.AnalyzerEngine = lambda *args, **kwargs: None  # type: ignore[assignment]
+    sys.modules["presidio_analyzer"] = fake_presidio
+
+os.environ.setdefault("USE_OFFLINE_MODEL", "1")
 
 from backend import main
 from backend.db.models import AIJsonSnapshot, AINoteState
@@ -150,6 +175,64 @@ def test_ai_gate_cold_start_and_allow(gating_client):
     assert payload["allowed"] is True
     assert payload["model"] == main.AI_MODEL_HIGH
     assert resp_allow.headers["X-AI-Gate"] == f"allowed:{main.AI_MODEL_HIGH}"
+
+
+def test_ai_gate_blocks_duplicate_state(gating_client):
+    client = gating_client
+    token = main.create_token("doc", "user")
+
+    base_note = ("Sentence. " * 80).strip() + "."
+    first = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": "note-dup",
+            "noteContent": base_note,
+            "requestType": "auto",
+        },
+        headers=_auth_header(token),
+    )
+    assert first.status_code == 202
+
+    time.sleep(0.2)
+
+    duplicate = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": "note-dup",
+            "noteContent": base_note,
+            "requestType": "auto",
+        },
+        headers=_auth_header(token),
+    )
+    assert duplicate.status_code == 409
+    data = duplicate.json()
+    assert data["reason"] == "NOT_MEANINGFUL"
+    detail = data.get("detail") or {}
+    assert detail.get("delta_chars") == 0
+    assert detail.get("reason") == "NOT_MEANINGFUL"
+    assert duplicate.headers["X-AI-Gate"] == "blocked:NOT_MEANINGFUL"
+
+
+def test_ai_gate_requires_sentence_boundary(gating_client):
+    client = gating_client
+    token = main.create_token("doc", "user")
+
+    response = client.post(
+        "/api/notes/ai/gate",
+        json={
+            "noteId": "note-boundary",
+            "noteContent": "Clinical summary without ending",
+            "requestType": "auto",
+        },
+        headers=_auth_header(token),
+    )
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["reason"] == "BELOW_THRESHOLD"
+    detail = payload.get("detail") or {}
+    assert detail.get("reason") == "BELOW_THRESHOLD"
+    assert detail.get("cold_start_completed") is False
+    assert response.headers["X-AI-Gate"] == "blocked:BELOW_THRESHOLD"
 
 
 def test_ai_gate_enforces_cooldown(gating_client):

@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Dict
 
+import pytest
+
 from backend.ai_gating import AUDIO_SALIENCE_SCORE_MIN
 from backend.db.models import AINoteState
 from backend.migrations import session_scope
@@ -46,6 +48,7 @@ def test_audio_gate_allows_on_critical_override(gating_service_state) -> None:
     assert allowed is True
     assert detail["criticalOverride"] == "spo2<90"
     assert detail["reason"] is None
+    assert pytest.approx(detail["medianConfidence"], rel=1e-6) == 0.93
 
     with session_scope(conn) as session:
         state = session.get(AINoteState, note_id)
@@ -80,8 +83,9 @@ def test_audio_gate_scores_medication_plan(gating_service_state) -> None:
     allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
     assert allowed is True
     assert detail["score"] >= AUDIO_SALIENCE_SCORE_MIN
-    assert detail["components"].get("plan", 0.0) > 0.0
-    assert detail["components"].get("entities", 0.0) > 0.0
+    assert detail["components"].get("plan", 0.0) == pytest.approx(0.15)
+    assert detail["components"].get("entities", 0.0) == pytest.approx(0.7 * 0.95 * 1.1)
+    assert detail["components"].get("medical_density", 0.0) == pytest.approx(0.1)
 
     with session_scope(conn) as session:
         state = session.get(AINoteState, note_id)
@@ -119,6 +123,7 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
     assert allowed_first is False
     assert detail_first["reason"] == "LOW_SALIENCE"
     assert detail_first["hint"] is True
+    assert pytest.approx(detail_first["dcb"], rel=1e-6) == 0.3
     assert math.isclose(
         AUDIO_SALIENCE_SCORE_MIN - detail_first["score"],
         0.01,
@@ -131,7 +136,7 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
         note_id, clinician_id, segment, diar_second, focus_set
     )
     assert allowed_second is True
-    assert detail_second["components"].get("repetition", 0.0) >= 0.1
+    assert detail_second["components"].get("repetition", 0.0) == pytest.approx(0.1)
     assert detail_second["score"] >= AUDIO_SALIENCE_SCORE_MIN
     assert detail_second["hint"] is False
 
@@ -139,3 +144,27 @@ def test_audio_gate_hint_and_repetition_bonus(gating_service_state) -> None:
         state = session.get(AINoteState, note_id)
         assert state is not None
         assert state.last_transcript_cursor == "cursor-pe"
+
+
+def test_audio_gate_blocks_conversational_repeat(gating_service_state) -> None:
+    conn, service, clinician_id = gating_service_state
+    note_id = "audio-smalltalk"
+    _ensure_state(conn, note_id, clinician_id)
+
+    with session_scope(conn) as session:
+        state = session.get(AINoteState, note_id)
+        assert state is not None
+        state.last_transcript_cursor = "How have you been feeling lately?"
+        session.add(state)
+
+    segment = {
+        "text": "How have you been feeling lately?",
+        "tokens": [{"confidence": 0.91}, {"confidence": 0.92}],
+    }
+    diar = {"speaker": "patient"}
+    focus_set: Dict[str, float] = {}
+
+    allowed, detail = service.should_allow_audio_auto(note_id, clinician_id, segment, diar, focus_set)
+    assert allowed is False
+    assert detail["reason"] == "NOT_MEANINGFUL"
+    assert detail["hint"] is False

@@ -62,6 +62,7 @@ def test_differentials_features_are_normalized(
 
     monkeypatch.setattr(main, "call_openai", fake_call)
     monkeypatch.setattr(main, "_enforce_suggestion_gate", lambda *a, **k: True)
+    monkeypatch.setattr(main, "USE_OFFLINE_MODEL", False)
 
     response = suggestion_client.post(
         "/api/ai/differentials/generate",
@@ -74,6 +75,8 @@ def test_differentials_features_are_normalized(
 
     diff = body["differentials"][0]
     features = diff["features"]
+    assert sorted(features.keys()) == ["labs", "major", "minor", "orders", "pathognomonic", "vitals"]
+    assert features["pathognomonic"] == []
     assert diff["dx"] == {
         "id": "DX-ACS",
         "icdCode": "I24.9",
@@ -99,6 +102,7 @@ def test_differentials_features_are_normalized(
 
     labs = features["labs"]
     assert any(entry["name"].startswith("troponin") for entry in labs)
+    assert all(set(entry.keys()) == {"name", "operator", "unit", "value"} for entry in labs)
 
     second = suggestion_client.post(
         "/api/ai/differentials/generate",
