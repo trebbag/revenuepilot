@@ -953,6 +953,16 @@ export interface LiveCodeSuggestion {
   category?: string | null
   receivedAt: number
   source?: string | null
+  origin?: string | null
+  matchedFeatures?: unknown
+  audioFeatures?: unknown
+  matched_features?: unknown
+  audio_features?: unknown
+  noteInsertText?: string | null
+  noteInsert?: string | null
+  insertText?: string | null
+  noteSnippet?: string | null
+  snippet?: string | null
   accepted?: boolean
   acceptedByUser?: boolean
   flaggedForReview?: boolean
@@ -5563,10 +5573,9 @@ export function NoteEditor({
     return fallback
   }, [])
 
-  const handleInsertTranscriptEntry = useCallback(
-    (entry: TranscriptEntry) => {
-      const rawText = entry?.text ?? ""
-      const trimmed = rawText.trim()
+  const insertTextBlock = useCallback(
+    (text: string) => {
+      const trimmed = typeof text === "string" ? text.trim() : ""
       if (!trimmed) {
         return
       }
@@ -5618,6 +5627,30 @@ export function NoteEditor({
     },
     [noteContentRef, onNoteContentChange, resolveNoteTextarea, setNoteContent],
   )
+
+  const handleInsertTranscriptEntry = useCallback(
+    (entry: TranscriptEntry) => {
+      insertTextBlock(entry?.text ?? "")
+    },
+    [insertTextBlock],
+  )
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined
+    }
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: unknown }>).detail
+      const textValue = typeof detail?.text === "string" ? detail.text : null
+      if (textValue) {
+        insertTextBlock(textValue)
+      }
+    }
+    window.addEventListener("note-insert-snippet", handler)
+    return () => {
+      window.removeEventListener("note-insert-snippet", handler)
+    }
+  }, [insertTextBlock])
 
   const launchFinalizationWizard = useCallback(async () => {
     if (!onOpenFinalization) {

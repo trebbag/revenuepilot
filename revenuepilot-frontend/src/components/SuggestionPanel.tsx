@@ -6,7 +6,26 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collap
 import { ScrollArea } from "./ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "./ui/alert-dialog"
-import { X, ChevronDown, ChevronRight, Code, Shield, Heart, Stethoscope, Calendar, Plus, TrendingUp, TrendingDown, ClipboardList, Minus, ExternalLink, TestTube, AlertTriangle, HelpCircle } from "lucide-react"
+import {
+  X,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Shield,
+  Heart,
+  Stethoscope,
+  Calendar,
+  Plus,
+  TrendingUp,
+  TrendingDown,
+  ClipboardList,
+  Minus,
+  ExternalLink,
+  TestTube,
+  AlertTriangle,
+  HelpCircle,
+  Mic,
+} from "lucide-react"
 import { apiFetch, apiFetchJson } from "../lib/api"
 import type {
   CodeChangeLogEntry,
@@ -26,6 +45,7 @@ interface SuggestionPanelProps {
   }
   onUpdateCodes: (codes: { codes: number; prevention: number; diagnoses: number; differentials: number }) => void
   onAddCode?: (code: any) => void
+  onInsertNote?: (text: string, suggestion?: CodeSuggestionItem) => void
   addedCodes?: string[]
   noteContent?: string
   selectedCodesList?: SelectedCodeItem[]
@@ -79,6 +99,9 @@ interface CodeSuggestionItem {
   potentialConcerns?: string[]
   evidence?: string[]
   flaggedForReview?: boolean
+  origin?: string
+  matchedFeatures?: MatchedFeatureGroup[]
+  noteInsertText?: string
 }
 
 interface ComplianceAlertItem {
@@ -111,6 +134,11 @@ interface GapQuestionItem {
   evidence?: string[]
 }
 
+interface MatchedFeatureGroup {
+  label?: string
+  features: string[]
+}
+
 const normalizeConfidence = (value: unknown): number | undefined => {
   if (value === null || value === undefined) {
     return undefined
@@ -131,6 +159,168 @@ const normalizeConfidence = (value: unknown): number | undefined => {
   return Math.round(numeric)
 }
 
+const coerceString = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null
+  }
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+const stringListFromValue = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => stringListFromValue(entry))
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? [trimmed] : []
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [String(value)]
+  }
+  return []
+}
+
+const normalizeMatchedFeatures = (value: unknown): MatchedFeatureGroup[] => {
+  if (!value) {
+    return []
+  }
+
+  const groups: MatchedFeatureGroup[] = []
+  const reservedKeys = new Set([
+    "label",
+    "name",
+    "condition",
+    "category",
+    "type",
+    "origin",
+    "source",
+    "code",
+    "id",
+    "confidence",
+    "score",
+  ])
+
+  const collectFromObject = (obj: Record<string, unknown>, fallbackLabel?: string) => {
+    const explicitKeys = [
+      "features",
+      "matchedFeatures",
+      "matched_features",
+      "audioFeatures",
+      "audio_features",
+      "matched",
+      "matches",
+      "values",
+      "items",
+      "terms",
+      "details",
+      "symptoms",
+      "observations",
+      "phrases",
+    ]
+    const collected: string[] = []
+    for (const key of explicitKeys) {
+      if (key in obj) {
+        collected.push(...stringListFromValue(obj[key]))
+      }
+    }
+    if (!collected.length) {
+      for (const [key, raw] of Object.entries(obj)) {
+        if (reservedKeys.has(key)) {
+          continue
+        }
+        collected.push(...stringListFromValue(raw))
+      }
+    }
+    const unique = Array.from(new Set(collected.map((entry) => entry.trim()).filter((entry) => entry.length > 0)))
+    if (!unique.length) {
+      return
+    }
+    const labelCandidate =
+      coerceString(obj.label) ||
+      coerceString(obj.name) ||
+      coerceString(obj.condition) ||
+      coerceString(obj.category) ||
+      coerceString(obj.type) ||
+      fallbackLabel ||
+      undefined
+    groups.push({ label: labelCandidate ?? undefined, features: unique })
+  }
+
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const stringValues = stringListFromValue(value)
+    if (stringValues.length) {
+      groups.push({ features: stringValues })
+    }
+    return groups
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      if (typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean") {
+        const strings = stringListFromValue(entry)
+        if (strings.length) {
+          groups.push({ features: strings })
+        }
+        return
+      }
+      if (entry && typeof entry === "object") {
+        collectFromObject(entry as Record<string, unknown>, `Match ${index + 1}`)
+      }
+    })
+    return groups
+  }
+
+  if (value && typeof value === "object") {
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+        const nested = normalizeMatchedFeatures(raw)
+        if (nested.length) {
+          nested.forEach((item) =>
+            groups.push({ label: item.label ?? key, features: item.features.filter((feature) => feature.length > 0) }),
+          )
+          continue
+        }
+      }
+      const strings = stringListFromValue(raw)
+      if (strings.length) {
+        groups.push({ label: key, features: strings })
+      }
+    }
+  }
+
+  return groups
+}
+
+const resolveInsertText = (
+  matches: MatchedFeatureGroup[],
+  ...candidates: unknown[]
+): string | undefined => {
+  for (const candidate of candidates) {
+    const coerced = coerceString(candidate)
+    if (coerced) {
+      return coerced
+    }
+  }
+  if (!matches.length) {
+    return undefined
+  }
+  const segments = matches
+    .map((match) => {
+      const list = match.features.join(", ")
+      if (!list) {
+        return ""
+      }
+      return match.label ? `${match.label}: ${list}` : list
+    })
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+  if (!segments.length) {
+    return undefined
+  }
+  return segments.join("\n")
+}
+
 const NO_MEANINGFUL_CHANGES = "No meaningful changes"
 const BOUNDARY_PATTERN = /(?:\r?\n\s*$|[.!?][)"'\]]*\s*$)/
 
@@ -146,6 +336,7 @@ export function SuggestionPanel({
   selectedCodes,
   onUpdateCodes,
   onAddCode,
+  onInsertNote,
   addedCodes = [],
   noteContent = "",
   selectedCodesList = [],
@@ -265,6 +456,25 @@ export function SuggestionPanel({
         const rationaleValue = typeof entry.rationale === "string" ? entry.rationale.trim() : ""
         const identifier = codeValue || descriptionValue || entry.id || `live-${index + 1}`
         const normalizedConfidence = normalizeConfidence(entry.confidence)
+        const origin =
+          coerceString((entry as { origin?: unknown }).origin) ||
+          coerceString((entry as { source?: unknown }).source) ||
+          undefined
+        const matchedFeatures = normalizeMatchedFeatures(
+          (entry as { matchedFeatures?: unknown }).matchedFeatures ??
+            (entry as { audioFeatures?: unknown }).audioFeatures ??
+            (entry as { matched_features?: unknown }).matched_features ??
+            (entry as { audio_features?: unknown }).audio_features ??
+            undefined,
+        )
+        const noteInsertText =
+          resolveInsertText(
+            matchedFeatures,
+            (entry as { noteInsertText?: unknown }).noteInsertText,
+            (entry as { noteInsert?: unknown }).noteInsert,
+            (entry as { insertText?: unknown }).insertText,
+            (entry as { snippet?: unknown }).snippet,
+          ) ?? undefined
         return {
           code: codeValue || identifier,
           type: entry.type || "AI",
@@ -278,6 +488,9 @@ export function SuggestionPanel({
           potentialConcerns: [],
           flaggedForReview:
             Boolean(entry.flaggedForReview) || Boolean(entry.demotions && entry.demotions.length > 0),
+          origin,
+          matchedFeatures,
+          noteInsertText,
         } satisfies CodeSuggestionItem
       })
       .filter((entry): entry is CodeSuggestionItem => Boolean(entry))
@@ -397,6 +610,24 @@ export function SuggestionPanel({
           const descriptionValue = typeof item?.description === "string" ? item.description : ""
           const rationaleValue = typeof item?.rationale === "string" ? item.rationale : ""
           const reasoningValue = typeof item?.reasoning === "string" ? item.reasoning : rationaleValue
+          const origin =
+            coerceString(item?.origin) || coerceString(item?.source) || coerceString(item?.suggestedBy) || undefined
+          const matchedFeatures = normalizeMatchedFeatures(
+            item?.matchedFeatures ??
+              item?.audioFeatures ??
+              item?.matched_features ??
+              item?.audio_features ??
+              undefined,
+          )
+          const noteInsertText =
+            resolveInsertText(
+              matchedFeatures,
+              item?.noteInsertText,
+              item?.noteInsert,
+              item?.insertText,
+              item?.noteSnippet,
+              item?.snippet,
+            ) ?? undefined
 
           return {
             code: codeValue,
@@ -418,6 +649,9 @@ export function SuggestionPanel({
                   .map((entry: any) => String(entry))
                   .filter((entry: string) => entry.trim().length > 0)
               : [],
+            origin,
+            matchedFeatures,
+            noteInsertText,
           }
         })
         setCodeSuggestions(normalized)
@@ -974,6 +1208,30 @@ export function SuggestionPanel({
     }
   }
 
+  const handleInsertNoteSnippet = useCallback(
+    (text: string, suggestion?: CodeSuggestionItem) => {
+      const trimmed = typeof text === "string" ? text.trim() : ""
+      if (!trimmed) {
+        return
+      }
+      if (onInsertNote) {
+        onInsertNote(trimmed, suggestion)
+        return
+      }
+      if (typeof window === "undefined") {
+        return
+      }
+      const event = new CustomEvent("note-insert-snippet", {
+        detail: {
+          text: trimmed,
+          suggestion,
+        },
+      })
+      window.dispatchEvent(event)
+    },
+    [onInsertNote],
+  )
+
   const followUpSuggestions = [
     { interval: "2 weeks", condition: "if symptoms persist", priority: "routine" },
     { interval: "3-5 days", condition: "if symptoms worsen", priority: "urgent" },
@@ -1155,6 +1413,18 @@ export function SuggestionPanel({
                               }
                               const codeKey = `${code.code}-${index}`
                               const rationale = code.rationale || code.reasoning || "AI rationale unavailable."
+                              const isAudioOrigin = (code.origin || "").toLowerCase() === "audio"
+                              const audioMatches: MatchedFeatureGroup[] = (code.matchedFeatures || [])
+                                .map((group) => ({
+                                  label: group.label?.trim() || undefined,
+                                  features: (group.features || [])
+                                    .map((feature) => feature.trim())
+                                    .filter((feature) => feature.length > 0),
+                                }))
+                                .filter((group) => group.features.length > 0)
+                              const insertionText =
+                                code.noteInsertText ||
+                                (isAudioOrigin ? resolveInsertText(audioMatches, code.description, rationale) : undefined)
                               return (
                                 <Tooltip key={codeKey}>
                                   <TooltipTrigger asChild>
@@ -1196,6 +1466,55 @@ export function SuggestionPanel({
                                           {code.description && <p className="text-sm font-medium">{code.description}</p>}
 
                                           <div className="text-xs text-muted-foreground">{rationale}</div>
+
+                                          {isAudioOrigin && (
+                                            <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50/80 p-2">
+                                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                                <Badge
+                                                  variant="outline"
+                                                  className="flex items-center gap-1 border-blue-200 bg-blue-100 text-[10px] font-medium uppercase tracking-wide text-blue-800"
+                                                >
+                                                  <Mic className="h-3 w-3" />
+                                                  From audio
+                                                </Badge>
+                                                {insertionText && (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="secondary"
+                                                    className="h-7 px-3 text-xs"
+                                                    onClick={(event) => {
+                                                      event.stopPropagation()
+                                                      handleInsertNoteSnippet(insertionText, code)
+                                                    }}
+                                                  >
+                                                    Insert into note
+                                                  </Button>
+                                                )}
+                                              </div>
+                                              {audioMatches.length > 0 ? (
+                                                <ul className="mt-2 space-y-1 text-xs text-blue-900">
+                                                  {audioMatches.map((match, matchIndex) => {
+                                                    const featureText = match.features.join(", ")
+                                                    if (!featureText) {
+                                                      return null
+                                                    }
+                                                    return (
+                                                      <li key={`${codeKey}-feature-${matchIndex}`}>
+                                                        {match.label ? (
+                                                          <span className="font-medium">{match.label}: </span>
+                                                        ) : null}
+                                                        <span>{featureText}</span>
+                                                      </li>
+                                                    )
+                                                  })}
+                                                </ul>
+                                              ) : (
+                                                insertionText && (
+                                                  <p className="mt-2 text-xs text-blue-900">{insertionText}</p>
+                                                )
+                                              )}
+                                            </div>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
