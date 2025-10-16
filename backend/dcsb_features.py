@@ -8,10 +8,11 @@ side bar) consumers can rely on without performing their own sanitisation.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from functools import lru_cache
 import os
 import re
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -76,6 +77,9 @@ _DX_OVERRIDES: Dict[str, Dict[str, Sequence[Any]]] = {
 _ALLOWED_OPERATORS = {"<", "<=", ">", ">=", "=", "≈"}
 _UNIT_PATTERN = re.compile(r"^[A-Za-z0-9/%°\[\]\s\-\.]+$")
 
+_FEATURE_CACHE_CAPACITY = 256
+_FEATURE_CACHE: "OrderedDict[Tuple[str, str], Features]" = OrderedDict()
+
 
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip()
@@ -93,6 +97,16 @@ def _canonicalise(value: str) -> str:
         if lower in variants:
             return canonical
     return lower
+
+
+def _coerce_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        trimmed = value.strip()
+        return trimmed or None
+    text = str(value).strip()
+    return text or None
 
 
 def _dedupe_preserve_order(values: Iterable[str]) -> List[str]:
@@ -274,6 +288,146 @@ class DxWithFeatures(BaseModel):
     features: Features = Field(default_factory=Features)
 
 
+def _ensure_iterable(value: Any) -> Iterable[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return value
+    return [value]
+
+
+def _normalise_feature_payload(payload: Mapping[str, Any]) -> Features:
+    return Features(
+        pathognomonic=_normalise_string_list(_ensure_iterable(payload.get("pathognomonic"))),
+        major=_normalise_string_list(_ensure_iterable(payload.get("major"))),
+        minor=_normalise_string_list(_ensure_iterable(payload.get("minor"))),
+        vitals=_normalise_quantified_list(_ensure_iterable(payload.get("vitals"))),
+        labs=_normalise_quantified_list(_ensure_iterable(payload.get("labs"))),
+        orders=_normalise_string_list(_ensure_iterable(payload.get("orders"))),
+    )
+
+
+def _cache_features(key: Optional[str], kb_version: Optional[str], features: Features) -> Features:
+    if not key:
+        return features
+    cache_key = (key.strip().lower(), (kb_version or _DEFAULT_KB_VERSION).strip().lower())
+    cached = _FEATURE_CACHE.get(cache_key)
+    if cached is not None:
+        _FEATURE_CACHE.move_to_end(cache_key)
+        return cached
+    snapshot = features.model_copy(deep=True)
+    _FEATURE_CACHE[cache_key] = snapshot
+    if len(_FEATURE_CACHE) > _FEATURE_CACHE_CAPACITY:
+        _FEATURE_CACHE.popitem(last=False)
+    return snapshot
+
+
+def _iter_feature_entries(
+    features_by_dx: Mapping[Any, Any] | Sequence[Any],
+) -> Iterator[Tuple[Features, Dict[str, Any]]]:
+    if isinstance(features_by_dx, Mapping):
+        iterator = features_by_dx.items()
+    elif isinstance(features_by_dx, Sequence):
+        iterator = enumerate(features_by_dx)
+    else:
+        return
+
+    for key, raw in iterator:
+        dx_id: Optional[str] = None
+        kb_version: Optional[str] = None
+        plan_flag = False
+        repetition_count = 0
+        speaker_multiplier: Optional[float] = None
+        expected_speaker: Optional[str] = None
+
+        features: Optional[Features] = None
+
+        if isinstance(raw, Features):
+            features = raw
+        elif isinstance(raw, DxWithFeatures):
+            features = raw.features
+            dx_id = raw.dx.id or raw.dx.name
+        elif isinstance(raw, Mapping):
+            dx_payload = raw.get("dx")
+            if isinstance(dx_payload, DifferentialDx):
+                dx_id = dx_payload.id or dx_payload.name
+            elif isinstance(dx_payload, Mapping):
+                dx_id = (
+                    _coerce_string(dx_payload.get("id"))
+                    or _coerce_string(dx_payload.get("dxId"))
+                    or _coerce_string(dx_payload.get("name"))
+                )
+                kb_version = _coerce_string(dx_payload.get("kbVersion")) or kb_version
+            elif isinstance(key, str):
+                dx_id = _coerce_string(key)
+            else:
+                dx_id = _coerce_string(raw.get("id") or raw.get("dxId"))
+
+            kb_version = (
+                _coerce_string(raw.get("kbVersion"))
+                or _coerce_string(raw.get("kb_version"))
+                or kb_version
+            )
+
+            feature_payload = raw.get("features")
+            if isinstance(feature_payload, Features):
+                features = feature_payload
+            elif isinstance(feature_payload, Mapping):
+                features = _normalise_feature_payload(feature_payload)
+            else:
+                features = _normalise_feature_payload(raw)
+
+            plan_flag = bool(
+                raw.get("plan")
+                or raw.get("isPlan")
+                or raw.get("planSection")
+            )
+            section = raw.get("section") or raw.get("sectionName")
+            if isinstance(section, str) and section.strip().lower() in {"plan", "assessment/plan", "assessment and plan", "a/p"}:
+                plan_flag = True
+
+            repetition_value = raw.get("repetitions") or raw.get("repetition") or raw.get("repeat")
+            if isinstance(repetition_value, bool):
+                repetition_count = 1 if repetition_value else 0
+            elif isinstance(repetition_value, (int, float)):
+                repetition_count = max(0, int(repetition_value))
+            elif isinstance(repetition_value, str):
+                try:
+                    repetition_count = max(0, int(float(repetition_value.strip())))
+                except ValueError:
+                    repetition_count = 1
+
+            expected_speaker_value = raw.get("speaker") or raw.get("speakerRole") or raw.get("speaker_role")
+            if isinstance(expected_speaker_value, str):
+                expected_speaker = expected_speaker_value.strip().lower()
+
+            speaker_multiplier_value = raw.get("speakerMultiplier") or raw.get("speaker_multiplier")
+            if isinstance(speaker_multiplier_value, (int, float)):
+                speaker_multiplier = float(speaker_multiplier_value)
+            elif isinstance(speaker_multiplier_value, str):
+                try:
+                    speaker_multiplier = float(speaker_multiplier_value.strip())
+                except ValueError:
+                    speaker_multiplier = None
+        else:
+            continue
+
+        if features is None:
+            continue
+
+        kb_version = kb_version or _DEFAULT_KB_VERSION
+        cached = _cache_features(dx_id, kb_version, features)
+        metadata = {
+            "plan": bool(plan_flag),
+            "repetitions": max(0, repetition_count),
+        }
+        if expected_speaker:
+            metadata["expected_speaker"] = expected_speaker
+        if speaker_multiplier is not None:
+            metadata["speaker_multiplier"] = speaker_multiplier
+        yield cached, metadata
+
+
 def _coerce_quantified(raw: Any) -> Optional[QuantifiedFeature]:
     if isinstance(raw, QuantifiedFeature):
         return raw
@@ -375,4 +529,94 @@ def normalise_features(
         )
     )
     return merged.clamp_tokens()
+
+
+def _match_terms(text: str, terms: Sequence[str]) -> set[str]:
+    matches: set[str] = set()
+    for term in terms:
+        candidate = term.strip()
+        if not candidate:
+            continue
+        lowered = candidate.lower()
+        if lowered and lowered in text:
+            matches.add(lowered)
+    return matches
+
+
+def compute_dcb(
+    segment_text: str,
+    speaker: Optional[str],
+    features_by_dx: Mapping[Any, Any] | Sequence[Any],
+) -> float:
+    """Return the disease concordance boost for ``segment_text``.
+
+    ``features_by_dx`` may be a mapping keyed by diagnosis identifiers or a
+    sequence of feature payloads.  Each payload can be either a ``Features``
+    instance, :class:`DxWithFeatures` or a plain mapping with a ``features``
+    key matching the schema produced by :func:`normalise_features`.
+    """
+
+    if not segment_text or not features_by_dx:
+        return 0.0
+
+    normalized_text = _normalize_text(segment_text)
+    if not normalized_text:
+        return 0.0
+
+    speaker_normalized = str(speaker or "").strip().lower()
+    best_score = 0.0
+
+    for features, metadata in _iter_feature_entries(features_by_dx):
+        # Copy the lists defensively; cached entries should not be mutated.
+        path_terms = list(features.pathognomonic)
+        major_terms = list(features.major)
+        minor_terms = list(features.minor)
+
+        matches: set[str] = set()
+        path_hits = _match_terms(normalized_text, path_terms)
+        major_hits = _match_terms(normalized_text, major_terms)
+        minor_hits = _match_terms(normalized_text, minor_terms)
+        matches.update(path_hits)
+        matches.update(major_hits)
+        matches.update(minor_hits)
+
+        base = (
+            len(path_hits) * 1.0
+            + len(major_hits) * 0.6
+            + len(minor_hits) * 0.3
+        )
+
+        plan_bonus = 0.3 if metadata.get("plan") else 0.0
+        repetition_bonus = 0.4 if metadata.get("repetitions") else 0.0
+
+        if base <= 0.0 and not (plan_bonus or repetition_bonus):
+            continue
+
+        match_count = len(matches)
+        synergy = 1.0
+        if match_count:
+            synergy = min(1.6, 1.0 + 0.2 * (match_count - 1))
+
+        score = base * synergy
+
+        expected_speaker = metadata.get("expected_speaker")
+        multiplier_override = metadata.get("speaker_multiplier")
+
+        speaker_multiplier = 1.0
+        if speaker_normalized:
+            if expected_speaker and speaker_normalized != expected_speaker:
+                speaker_multiplier = 1.0
+            elif speaker_normalized == "clinician":
+                speaker_multiplier = multiplier_override or 1.3
+            else:
+                speaker_multiplier = multiplier_override or 1.0
+        score *= speaker_multiplier
+
+        score += plan_bonus
+        if repetition_bonus:
+            score += repetition_bonus
+
+        best_score = max(best_score, score)
+
+    return float(round(best_score, 6))
 
