@@ -1,0 +1,23 @@
+#!/bin/zsh
+set -euo pipefail
+
+# Try to locate the repository from an explicit override first.
+REPO_ROOT="${REVENUEPILOT_HOME:-$HOME/revenuepilot}"
+
+if [[ ! -x "$REPO_ROOT/scripts/revenuepilot_launch.sh" ]]; then
+  # If the default location fails, fall back to a path next to the app bundle.
+  APP_PARENT="$(cd "$(dirname "$0")/../.." && pwd)"
+  POSSIBLE_ROOT="${APP_PARENT%/.app}"
+  if [[ -x "$POSSIBLE_ROOT/scripts/revenuepilot_launch.sh" ]]; then
+    REPO_ROOT="$POSSIBLE_ROOT"
+  fi
+fi
+
+LAUNCHER="$REPO_ROOT/scripts/revenuepilot_launch.sh"
+if [[ ! -x "$LAUNCHER" ]]; then
+  /usr/bin/osascript -e 'display alert "RevenuePilot" message "Could not find scripts/revenuepilot_launch.sh. Set REVENUEPILOT_HOME or keep the app next to the repository before launching."'
+  exit 1
+fi
+
+cd "$REPO_ROOT"
+exec "$LAUNCHER"

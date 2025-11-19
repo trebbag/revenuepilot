@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>AMApplicationBuild</key>
+    <string>550</string>
+    <key>AMApplicationVersion</key>
+    <string>2.10</string>
+    <key>AMDocumentVersion</key>
+    <string>2.0</string>
+    <key>actions</key>
+    <array>
+        <dict>
+            <key>action</key>
+            <dict>
+                <key>AMApplicationBuild</key>
+                <string>550</string>
+                <key>AMApplicationVersion</key>
+                <string>2.10</string>
+                <key>AMActionVersion</key>
+                <string>2.0.3</string>
+                <key>AMBundleIdentifier</key>
+                <string>com.apple.Automator.RunShellScript</string>
+                <key>AMPath</key>
+                <string>/System/Library/Automator/Run Shell Script.action</string>
+                <key>AMUUID</key>
+                <string>EF9961B1-A6EA-4D4E-8D96-A9FF00FBFB3F</string>
+                <key>AMParameters</key>
+                <dict>
+                    <key>checkedForUserDefaultShell</key>
+                    <true/>
+                    <key>input</key>
+                    <string>none</string>
+                    <key>shell</key>
+                    <string>/bin/zsh</string>
+                    <key>script</key>
+                    <string>#!/bin/zsh
+set -euo pipefail
+
+REPO_ROOT="${REVENUEPILOT_HOME:-$HOME/revenuepilot}"
+
+if [[ ! -x "$REPO_ROOT/scripts/revenuepilot_launch.sh" ]]; then
+  APP_PARENT="$(cd "$(dirname "$0")/../.." &amp;&amp; pwd)"
+  POSSIBLE_ROOT="${APP_PARENT%/.app}"
+  if [[ -x "$POSSIBLE_ROOT/scripts/revenuepilot_launch.sh" ]]; then
+    REPO_ROOT="$POSSIBLE_ROOT"
+  fi
+fi
+
+LAUNCHER="$REPO_ROOT/scripts/revenuepilot_launch.sh"
+if [[ ! -x "$LAUNCHER" ]]; then
+  /usr/bin/osascript -e 'display alert "RevenuePilot" message "Could not find scripts/revenuepilot_launch.sh. Set REVENUEPILOT_HOME or keep the app next to the repository before launching."'
+  exit 1
+fi
+
+cd "$REPO_ROOT"
+exec "$LAUNCHER"</string>
+                    <key>stdin</key>
+                    <string>none</string>
+                </dict>
+            </dict>
+            <key>isViewVisible</key>
+            <true/>
+        </dict>
+    </array>
+    <key>connectors</key>
+    <array/>
+    <key>workflowMetaData</key>
+    <dict>
+        <key>workflowTypeIdentifier</key>
+        <string>com.apple.Automator.application</string>
+        <key>workflowInput</key>
+        <string>none</string>
+        <key>workflowOutput</key>
+        <string>none</string>
+        <key>applicationBundleID</key>
+        <string>com.revenuepilot.automator</string>
+    </dict>
+</dict>
+</plist>
