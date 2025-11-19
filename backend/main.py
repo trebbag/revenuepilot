@@ -278,6 +278,12 @@ from backend.templates import (
     update_user_template,
     delete_user_template,
 )  # type: ignore
+from backend.analytics_exports import (
+    ExportSchedule,
+    delete_schedule,
+    list_schedules,
+    register_schedule,
+)
 import backend.database_legacy as db
 get_db = db.get_db
 from backend.scheduling import DEFAULT_EVENT_SUMMARY, export_ics, recommend_follow_up  # type: ignore
@@ -11800,6 +11806,9 @@ async def get_metrics(
     start: Optional[str] = None,
     end: Optional[str] = None,
     clinician: Optional[str] = None,
+    clinic: Optional[str] = None,
+    payer: Optional[str] = None,
+    provider: Optional[str] = None,
     daily: bool = True,
     weekly: bool = True,
     user=Depends(require_roles("analyst")),
@@ -11834,12 +11843,24 @@ async def get_metrics(
 
     cursor.execute(
         """
-        SELECT DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician
+        SELECT
+            DISTINCT json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') AS clinician,
+            json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinic') AS clinic,
+            json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.payer') AS payer
         FROM events
-        WHERE json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') IS NOT NULL
+        WHERE json_valid(details)
         """
     )
-    clinicians = [row["clinician"] for row in cursor.fetchall() if row["clinician"]]
+    clinicians: List[str] = []
+    clinics: List[str] = []
+    payers: List[str] = []
+    for row in cursor.fetchall():
+        if row["clinician"]:
+            clinicians.append(row["clinician"])
+        if row["clinic"]:
+            clinics.append(row["clinic"])
+        if row["payer"]:
+            payers.append(row["payer"])
 
     def _parse_iso_ts(value: str) -> float | None:
         try:
@@ -11863,11 +11884,22 @@ async def get_metrics(
         if ts is not None:
             base_conditions.append("timestamp <= ?")
             base_params.append(ts)
-    if clinician:
+    selected_provider = clinician or provider
+    if selected_provider:
         base_conditions.append(
             "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinician') = ?"
         )
-        base_params.append(clinician)
+        base_params.append(selected_provider)
+    if clinic:
+        base_conditions.append(
+            "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.clinic') = ?"
+        )
+        base_params.append(clinic)
+    if payer:
+        base_conditions.append(
+            "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.payer') = ?"
+        )
+        base_params.append(payer)
 
     baseline_cond = "json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 1"
     current_cond = "(json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') IS NULL OR json_extract(CASE WHEN json_valid(details) THEN details ELSE '{}' END, '$.baseline') = 0)"
@@ -12287,10 +12319,63 @@ async def get_metrics(
             "baseline": baseline_template_counts,
         },
         "clinicians": clinicians,
+        "clinics": clinics,
+        "payers": payers,
         "timeseries": timeseries,
         "top_compliance": top_compliance,
 
     }
+
+
+class ExportScheduleRequest(BaseModel):
+    cadence: str = Field(..., description="daily|weekly|monthly|once")
+    format: str = Field("pdf", description="pdf or email")
+    recipients: List[str] = Field(default_factory=list)
+    clinic: Optional[str] = None
+    provider: Optional[str] = None
+    payer: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+@app.get("/api/analytics/exports", response_model=List[ExportSchedule])
+def list_analytics_exports(user=Depends(require_roles("analyst"))) -> List[ExportSchedule]:
+    """Return scheduled analytics exports across PDF/email channels."""
+
+    return list_schedules()
+
+
+@app.post("/api/analytics/exports", response_model=ExportSchedule)
+def create_analytics_export(
+    schedule: ExportScheduleRequest, user=Depends(require_roles("analyst"))
+) -> ExportSchedule:
+    """Persist a new analytics export schedule and compute the next run."""
+
+    filters = {
+        "clinic": schedule.clinic,
+        "provider": schedule.provider,
+        "payer": schedule.payer,
+        "start": schedule.start,
+        "end": schedule.end,
+    }
+    clean_filters = {k: v for k, v in filters.items() if v is not None}
+    record = register_schedule(
+        schedule.cadence,
+        schedule.format,
+        schedule.recipients,
+        clean_filters,
+    )
+    return record
+
+
+@app.delete("/api/analytics/exports/{schedule_id}", response_model=Dict[str, str])
+def delete_analytics_export(
+    schedule_id: str, user=Depends(require_roles("analyst"))
+) -> Dict[str, str]:
+    """Remove a scheduled export request."""
+
+    delete_schedule(schedule_id)
+    return {"status": "deleted"}
 
 
 @app.get("/status/observability")
