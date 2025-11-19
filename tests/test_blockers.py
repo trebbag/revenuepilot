@@ -55,7 +55,7 @@ def test_audio_transcription_returns_text(monkeypatch):
     class DummyClient:
         audio = type("obj", (), {"transcriptions": DummyCreate()})()
 
-    monkeypatch.setattr(audio_processing, "OpenAI", lambda api_key=None: DummyClient())
+    monkeypatch.setattr(audio_processing, "_create_openai_client", lambda api_key: DummyClient())
     monkeypatch.setattr(audio_processing, "get_api_key", lambda: "key")
 
     # create dummy audio bytes (contents don't matter for this stub)
