@@ -28,6 +28,7 @@ import AdminUsers from './components/AdminUsers.jsx';
 import SatisfactionSurvey from './components/SatisfactionSurvey.jsx';
 import Notifications from './components/Notifications.jsx';
 import Scheduler from './components/Scheduler.tsx';
+import { parseJwt } from './utils/jwt.js';
 
 // Utility to convert HTML strings into plain text by stripping tags.  The
 // ReactQuill editor stores content as HTML; our backend accepts plain
@@ -36,14 +37,6 @@ import Scheduler from './components/Scheduler.tsx';
 // using a library like html-to-text.
 function stripHtml(html) {
   return html ? html.replace(/<[^>]+>/g, '') : '';
-}
-
-function parseJwt(tok) {
-  try {
-    return JSON.parse(atob(tok.split('.')[1]));
-  } catch {
-    return null;
-  }
 }
 
 // Basic skeleton component implementing the toolbar, tab system and suggestion panel.

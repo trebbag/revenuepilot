@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { login as apiLogin, register as apiRegister, AuthResponse } from '../api/auth';
 import { putUserSession } from '../api.js';
+import { parseJwt } from '../utils/jwt.js';
 
 interface AuthContextValue {
   token: string | null;
@@ -63,22 +64,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Simple token expiry watcher (decode exp from JWT)
   useEffect(() => {
     if (!token || !refreshToken) return;
-    try {
-      const payload = JSON.parse(atob(token.split('.')[1]));
-      if (!payload.exp) return;
-      const timeout = payload.exp * 1000 - Date.now() - 60000; // refresh 1m early by relying on global fetch logic
-      if (timeout <= 0) {
-        // Let global refresh logic in api.js handle actual refresh on next request
-        return;
-      }
-      const id = setTimeout(() => {
-        // Trigger a no-op to allow consumer to re-render; actual refresh occurs transparently in fetch wrapper
-        setToken(t => (t ? t : null));
-      }, timeout);
-      return () => clearTimeout(id);
-    } catch {
-      /* ignore */
+    const payload = parseJwt(token);
+    if (!payload?.exp) return;
+    const timeout = payload.exp * 1000 - Date.now() - 60000; // refresh 1m early by relying on global fetch logic
+    if (timeout <= 0) {
+      // Let global refresh logic in api.js handle actual refresh on next request
+      return;
     }
+    const id = setTimeout(() => {
+      // Trigger a no-op to allow consumer to re-render; actual refresh occurs transparently in fetch wrapper
+      setToken((t) => (t ? t : null));
+    }, timeout);
+    return () => clearTimeout(id);
   }, [token, refreshToken]);
 
   useEffect(() => {
