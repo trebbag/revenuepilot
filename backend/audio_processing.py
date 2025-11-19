@@ -19,8 +19,6 @@ import threading
 import logging
 from typing import Any, Dict, Tuple
 
-from openai import OpenAI
-
 from backend.key_manager import get_api_key
 
 # Public functions exported by this module.  Keeping this explicit makes the
@@ -40,6 +38,7 @@ except Exception:  # pragma: no cover - dependency may be missing
 _LOCAL_MODELS: Dict[str, Any] = {}
 _DIARISATION_PIPELINE: Any | None = None
 _TIMEOUT = 15  # seconds
+_OPENAI_AVAILABLE = True
 
 
 def _select_model(language: str | None) -> str:
@@ -77,6 +76,14 @@ def _run_with_timeout(func, timeout: int = _TIMEOUT):
     if "error" in result:
         raise result["error"]
     return result.get("value")
+
+
+def _create_openai_client(api_key: str):
+    """Import and instantiate the OpenAI client lazily."""
+
+    from openai import OpenAI  # type: ignore
+
+    return OpenAI(api_key=api_key, timeout=_TIMEOUT)
 
 
 def _load_local_model(language: str | None) -> Any:  # pragma: no cover - heavy optional dependency
@@ -151,10 +158,11 @@ def _transcribe_bytes(data: bytes, language: str | None = None) -> Tuple[str, st
             logging.exception("Local transcription failed")
             error_msg = str(exc)
 
+    global _OPENAI_AVAILABLE
     api_key = get_api_key()
-    if api_key and not offline:
+    if api_key and not offline and _OPENAI_AVAILABLE:
         try:
-            client = OpenAI(api_key=api_key, timeout=_TIMEOUT)
+            client = _create_openai_client(api_key)
             # Allow callers to override the remote Whisper model via env var
             model_name = os.getenv("WHISPER_API_MODEL", "whisper-1")
             with io.BytesIO(data) as buf:
@@ -164,6 +172,10 @@ def _transcribe_bytes(data: bytes, language: str | None = None) -> Tuple[str, st
             text = getattr(resp, "text", "") if resp else ""
             if text:
                 return text.strip(), ""
+        except ModuleNotFoundError as exc:
+            _OPENAI_AVAILABLE = False
+            logging.info("OpenAI SDK unavailable: %s", exc)
+            error_msg = str(exc)
         except Exception as exc:  # pragma: no cover - network failure
             logging.exception("OpenAI transcription failed")
             error_msg = str(exc)

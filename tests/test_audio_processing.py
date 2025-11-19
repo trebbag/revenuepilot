@@ -1,5 +1,7 @@
 import backend.audio_processing as ap
 import pytest
+import builtins
+import sys
 
 from fastapi.testclient import TestClient
 import sqlite3
@@ -20,7 +22,7 @@ def test_simple_transcribe_uses_openai(monkeypatch):
     class DummyClient:
         audio = type("obj", (), {"transcriptions": DummyCreate()})()
 
-    monkeypatch.setattr(ap, "OpenAI", lambda api_key=None, timeout=None: DummyClient())
+    monkeypatch.setattr(ap, "_create_openai_client", lambda api_key: DummyClient())
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
     result = ap.simple_transcribe(b"data", language="es")
     assert result == "hello world"
@@ -160,10 +162,37 @@ def test_transcribe_placeholder_on_failure(monkeypatch):
     class DummyClient:
         audio = type("obj", (), {"transcriptions": DummyCreate()})()
 
-    monkeypatch.setattr(ap, "OpenAI", lambda api_key=None: DummyClient())
+    monkeypatch.setattr(ap, "_create_openai_client", lambda api_key: DummyClient())
     monkeypatch.setattr(ap, "get_api_key", lambda: "key")
     result = ap.simple_transcribe(b"\xff\xfe", language="en")
     assert result == "[transcribed 2 bytes]"
+
+
+def test_diarize_and_transcribe_without_openai_sdk(monkeypatch):
+    """Ensure fallback placeholders when the OpenAI SDK cannot be imported."""
+
+    monkeypatch.setattr(ap, "_DIARISATION_AVAILABLE", False)
+    monkeypatch.setattr(ap, "get_api_key", lambda: "key")
+    monkeypatch.setattr(ap, "_OPENAI_AVAILABLE", True)
+    monkeypatch.delenv("OFFLINE_TRANSCRIBE", raising=False)
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "openai":
+            raise ModuleNotFoundError("No module named 'openai'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.delitem(sys.modules, "openai", raising=False)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    result = ap.diarize_and_transcribe(b"\xff\xfe", language="en")
+    assert result["provider"] == "[transcribed 2 bytes]"
+    assert result["segments"] == [
+        {"speaker": "provider", "start": 0.0, "end": 0.0, "text": "[transcribed 2 bytes]"}
+    ]
+    assert "error" in result
+    assert "openai" in result["error"].lower()
 
 
 def test_offline_transcribe_uses_local_model(monkeypatch):
