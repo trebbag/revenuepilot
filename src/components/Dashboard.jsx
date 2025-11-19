@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getMetrics, getAlertSummary, getObservabilityStatus } from '../api.js';
+import { parseJwt } from '../utils/jwt.js';
 import { Line, Bar } from 'react-chartjs-2';
 import jsPDF from 'jspdf';
 import {
@@ -32,14 +33,7 @@ function Dashboard() {
   // Determine user role from JWT; only admins may view this component.
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-  let role = null;
-  if (token) {
-    try {
-      role = JSON.parse(atob(token.split('.')[1])).role;
-    } catch {
-      role = null;
-    }
-  }
+  const role = token ? parseJwt(token)?.role ?? null : null;
   if (role !== 'admin') {
     if (typeof window !== 'undefined') {
       alert(t('dashboard.accessDenied'));

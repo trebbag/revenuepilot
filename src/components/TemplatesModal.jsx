@@ -7,6 +7,7 @@ import {
   deleteTemplate,
   getPromptTemplates,
 } from '../api.js';
+import { parseJwt } from '../utils/jwt.js';
 
 function TemplatesModal({
   baseTemplates,
@@ -31,11 +32,8 @@ function TemplatesModal({
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('token');
     if (token) {
-      try {
-        isAdmin = JSON.parse(atob(token.split('.')[1])).role === 'admin';
-      } catch {
-        isAdmin = false;
-      }
+      const payload = parseJwt(token);
+      isAdmin = payload?.role === 'admin';
     }
   }
 

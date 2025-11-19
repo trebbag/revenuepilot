@@ -15,6 +15,7 @@ import {
   savePromptTemplates,
 } from '../api.js';
 import yaml from 'js-yaml';
+import { parseJwt } from '../utils/jwt.js';
 
 const SPECIALTIES = ['', 'cardiology', 'dermatology'];
 const PAYERS = ['', 'medicare', 'aetna'];
@@ -28,11 +29,8 @@ function Settings({ settings, updateSettings }) {
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('token');
     if (token) {
-      try {
-        isAdmin = JSON.parse(atob(token.split('.')[1])).role === 'admin';
-      } catch {
-        isAdmin = false;
-      }
+      const payload = parseJwt(token);
+      isAdmin = payload?.role === 'admin';
     }
   }
   const [apiKeyInput, setApiKeyInput] = useState('');
