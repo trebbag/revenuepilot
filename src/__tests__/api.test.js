@@ -73,4 +73,77 @@ describe('api helper error handling', () => {
     vi.useRealTimers();
     localStorage.clear();
   });
+
+  it('uses localhost backend when running from a file:// origin', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: () => Promise.resolve({ beautified: 'Beautified Text' }),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            codes: [],
+            compliance: [],
+            publicHealth: [],
+            differentials: [],
+          }),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: () =>
+          Promise.resolve({ summary: 'Summary', recommendations: [], warnings: [] }),
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+    const originalWindow = globalThis.window;
+    const stubWindow = Object.create(originalWindow || {});
+    stubWindow.location = { origin: 'file://unit-test' };
+    if (originalWindow?.addEventListener) {
+      stubWindow.addEventListener = originalWindow.addEventListener.bind(originalWindow);
+    } else {
+      stubWindow.addEventListener = vi.fn();
+    }
+    if (originalWindow?.removeEventListener) {
+      stubWindow.removeEventListener = originalWindow.removeEventListener.bind(originalWindow);
+    }
+    vi.stubGlobal('window', stubWindow);
+
+    const { beautifyNote, getSuggestions, summarizeNote, submitSurvey } = await import('../api.js');
+
+    await beautifyNote('note text');
+    await getSuggestions('note text');
+    await summarizeNote('note text');
+    await submitSurvey(5, 'Great job');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:8000/beautify',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:8000/suggest',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      'http://127.0.0.1:8000/summarize',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:8000/survey',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
 });

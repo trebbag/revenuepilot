@@ -9,7 +9,8 @@
 // automatic token refresh without recursion.
 const rawFetch = globalThis.fetch.bind(globalThis);
 
-// Simplified and hardened backend URL resolver (replaces earlier experimental logic)
+const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8000';
+
 function resolveBaseUrl() {
   if (typeof window !== 'undefined' && window.__BACKEND_URL__)
     return window.__BACKEND_URL__;
@@ -27,7 +28,7 @@ function resolveBaseUrl() {
   ) {
     return window.location.origin;
   }
-  return 'http://127.0.0.1:8000';
+  return DEFAULT_BACKEND_URL;
 }
 
 function resolveWebsocketUrl(path) {
@@ -665,12 +666,8 @@ export async function saveSettings(settings, token) {
  * @returns {Promise<string>}
  */
 export async function beautifyNote(text, lang = 'en', context = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  // If a backend URL is configured, call the API.  Otherwise, fall back to a stub.
-  if (baseUrl) {
+  const baseUrl = resolveBaseUrl();
+  try {
     const payload = { text, lang };
     if (context.specialty) payload.specialty = context.specialty;
     if (context.payer) payload.payer = context.payer;
@@ -694,6 +691,9 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
     }
     const data = await resp.json();
     return data.beautified;
+  } catch (err) {
+    if (err?.message === 'Unauthorized') throw err;
+    console.error('Failed to beautify note', err);
   }
   // simulate network delay in stub mode
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -708,11 +708,8 @@ export async function beautifyNote(text, lang = 'en', context = {}) {
 
 */
 export async function getSuggestions(text, context = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (baseUrl) {
+  const baseUrl = resolveBaseUrl();
+  try {
     // Construct the request payload.  Always include the main note text; add
     // optional chart, rules and audio transcript when provided.  The backend
     // should ignore any empty or missing fields.
@@ -778,6 +775,9 @@ export async function getSuggestions(text, context = {}) {
     const data = await resp.json();
     cacheCodes(data.codes);
     return data;
+  } catch (err) {
+    if (err?.message === 'Unauthorized') throw err;
+    console.error('Failed to fetch suggestions', err);
   }
   // fallback: simulate network delay and return stub suggestions
   await new Promise((resolve) => setTimeout(resolve, 500));
@@ -1173,10 +1173,7 @@ export async function scheduleBulkOperations(request = {}) {
  * @returns {Promise<string>} ICS text
  */
 export async function exportFollowUp(interval, summary = '') {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
@@ -1203,45 +1200,40 @@ export async function exportFollowUp(interval, summary = '') {
  * @returns {Promise<string>}
  */
 export async function transcribeAudio(blob, diarise = false) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (baseUrl) {
-    const form = new FormData();
-    form.append('file', blob, 'audio.webm');
-    try {
-      const token =
-        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
-        method: 'POST',
-        body: form,
-        headers,
-      });
-      if (resp.status === 401 || resp.status === 403) {
-        throw new Error('Unauthorized');
-      }
-      const data = await resp.json();
-      if (data.provider || data.patient) {
-        return {
-          provider: data.provider || '',
-          patient: data.patient || '',
-          segments: data.segments || [],
-          error: data.error || '',
-        };
-      }
-      if (data.transcript) {
-        return {
-          provider: data.transcript,
-          patient: '',
-          segments: data.segments || [],
-          error: data.error || '',
-        };
-      }
-    } catch (err) {
-      console.error('Transcription error', err);
+  const baseUrl = resolveBaseUrl();
+  const form = new FormData();
+  form.append('file', blob, 'audio.webm');
+  try {
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const resp = await fetch(`${baseUrl}/transcribe?diarise=${diarise}`, {
+      method: 'POST',
+      body: form,
+      headers,
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
     }
+    const data = await resp.json();
+    if (data.provider || data.patient) {
+      return {
+        provider: data.provider || '',
+        patient: data.patient || '',
+        segments: data.segments || [],
+        error: data.error || '',
+      };
+    }
+    if (data.transcript) {
+      return {
+        provider: data.transcript,
+        patient: '',
+        segments: data.segments || [],
+        error: data.error || '',
+      };
+    }
+  } catch (err) {
+    console.error('Transcription error', err);
   }
   // Fallback placeholder when no backend is available
   return {
@@ -1257,29 +1249,24 @@ export async function transcribeAudio(blob, diarise = false) {
  * @returns {Promise<{provider: string, patient: string}>}
  */
 export async function fetchLastTranscript() {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (baseUrl) {
-    try {
-      const token =
-        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
-      const resp = await fetch(`${baseUrl}/transcribe`, { headers });
-      if (resp.status === 401 || resp.status === 403) {
-        throw new Error('Unauthorized');
-      }
-      const data = await resp.json();
-      return {
-        provider: data.provider || '',
-        patient: data.patient || '',
-        segments: data.segments || [],
-        error: data.error || '',
-      };
-    } catch (err) {
-      console.error('fetchLastTranscript error', err);
+  const baseUrl = resolveBaseUrl();
+  try {
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const resp = await fetch(`${baseUrl}/transcribe`, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
     }
+    const data = await resp.json();
+    return {
+      provider: data.provider || '',
+      patient: data.patient || '',
+      segments: data.segments || [],
+      error: data.error || '',
+    };
+  } catch (err) {
+    console.error('fetchLastTranscript error', err);
   }
   return { provider: '', patient: '', segments: [], error: '' };
 }
@@ -1292,14 +1279,7 @@ export async function fetchLastTranscript() {
  * @returns {Promise<void>}
  */
 export async function logEvent(eventType, details = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) {
-    // In stub mode just resolve immediately
-    return;
-  }
+  const baseUrl = resolveBaseUrl();
   try {
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -1326,11 +1306,7 @@ export async function logEvent(eventType, details = {}) {
  * @param {string} feedback Optional free-text feedback
  */
 export async function submitSurvey(rating, feedback = '') {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) return;
+  const baseUrl = resolveBaseUrl();
   try {
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
@@ -1356,55 +1332,49 @@ export async function submitSurvey(rating, feedback = '') {
  * @returns {Promise<object>}
  */
 export async function getMetrics(filters = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) {
-    // Return stub metrics
-    return {
-      baseline: {
-        total_notes: 0,
-        total_beautify: 0,
-        total_suggest: 0,
-        total_summary: 0,
-        total_chart_upload: 0,
-        total_audio: 0,
-        avg_note_length: 0,
-        avg_beautify_time: 0,
-        avg_time_to_close: 0,
-        revenue_projection: 0,
-        revenue_per_visit: 0,
-        denial_rate: 0,
-        deficiency_rate: 0,
-      },
-      current: {
-        total_notes: 0,
-        total_beautify: 0,
-        total_suggest: 0,
-        total_summary: 0,
-        total_chart_upload: 0,
-        total_audio: 0,
-        avg_note_length: 0,
-        avg_beautify_time: 0,
-        avg_time_to_close: 0,
-        revenue_projection: 0,
-        revenue_per_visit: 0,
-        denial_rate: 0,
-        deficiency_rate: 0,
-      },
-      improvement: {},
-      coding_distribution: {},
-      denial_rates: {},
-      compliance_counts: {},
-      avg_satisfaction: 0,
-      public_health_rate: 0,
+  const baseUrl = resolveBaseUrl();
+  const fallback = {
+    baseline: {
+      total_notes: 0,
+      total_beautify: 0,
+      total_suggest: 0,
+      total_summary: 0,
+      total_chart_upload: 0,
+      total_audio: 0,
+      avg_note_length: 0,
+      avg_beautify_time: 0,
+      avg_time_to_close: 0,
+      revenue_projection: 0,
+      revenue_per_visit: 0,
+      denial_rate: 0,
+      deficiency_rate: 0,
+    },
+    current: {
+      total_notes: 0,
+      total_beautify: 0,
+      total_suggest: 0,
+      total_summary: 0,
+      total_chart_upload: 0,
+      total_audio: 0,
+      avg_note_length: 0,
+      avg_beautify_time: 0,
+      avg_time_to_close: 0,
+      revenue_projection: 0,
+      revenue_per_visit: 0,
+      denial_rate: 0,
+      deficiency_rate: 0,
+    },
+    improvement: {},
+    coding_distribution: {},
+    denial_rates: {},
+    compliance_counts: {},
+    avg_satisfaction: 0,
+    public_health_rate: 0,
 
-      clinicians: [],
-      timeseries: { daily: [], weekly: [] },
-      template_usage: { current: {}, baseline: {} },
-    };
-  }
+    clinicians: [],
+    timeseries: { daily: [], weekly: [] },
+    template_usage: { current: {}, baseline: {} },
+  };
   const params = new URLSearchParams();
   if (filters.start) params.append('start', filters.start);
   if (filters.end) params.append('end', filters.end);
@@ -1412,71 +1382,77 @@ export async function getMetrics(filters = {}) {
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, {
-    headers,
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/metrics?${params.toString()}`, {
+      headers,
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch metrics');
+    }
+    return await resp.json();
+  } catch (err) {
+    if (err?.message === 'Unauthorized' || err?.message === 'Failed to fetch metrics') {
+      throw err;
+    }
+    console.error('Failed to fetch metrics, returning fallback', err);
   }
-  if (!resp.ok) {
-    throw new Error('Failed to fetch metrics');
-  }
-  return await resp.json();
+  return fallback;
 }
 
 export async function getAlertSummary() {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) {
-    return {
-      workflow: { total: 0, byDestination: {}, lastCompletion: null },
-      exports: { failures: 0, bySystem: {}, lastFailure: null },
-      ai: { errors: 0, byRoute: {}, lastError: null },
-      updatedAt: null,
-    };
-  }
+  const baseUrl = resolveBaseUrl();
+  const fallback = {
+    workflow: { total: 0, byDestination: {}, lastCompletion: null },
+    exports: { failures: 0, bySystem: {}, lastFailure: null },
+    ai: { errors: 0, byRoute: {}, lastError: null },
+    updatedAt: null,
+  };
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/status/alerts`, { headers });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/status/alerts`, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch alerts');
+    }
+    return await resp.json();
+  } catch (err) {
+    if (err?.message === 'Unauthorized' || err?.message === 'Failed to fetch alerts') {
+      throw err;
+    }
+    console.error('Failed to fetch alert summary', err);
   }
-  if (!resp.ok) {
-    throw new Error('Failed to fetch alerts');
-  }
-  return await resp.json();
+  return fallback;
 }
 
 export async function getObservabilityStatus(filters = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const nowIso = new Date().toISOString();
-  if (!baseUrl) {
-    return {
-      generatedAt: nowIso,
-      window: {
-        start: new Date(Date.now() - (filters.hours || 24) * 60 * 60 * 1000).toISOString(),
-        end: nowIso,
-      },
-      routes: [],
-      trends: {},
-      recentFailures: [],
-      availableRoutes: [],
-      queue: { stages: [] },
-      gate: {
-        counts: { allowed: 0, blocked: 0, total: 0 },
-        allowedReasons: [],
-        blockedReasons: [],
-        avgEditsPerAllowed: 0,
-        costByRouteModel: [],
-      },
-    };
-  }
+  const fallback = {
+    generatedAt: nowIso,
+    window: {
+      start: new Date(Date.now() - (filters.hours || 24) * 60 * 60 * 1000).toISOString(),
+      end: nowIso,
+    },
+    routes: [],
+    trends: {},
+    recentFailures: [],
+    availableRoutes: [],
+    queue: { stages: [] },
+    gate: {
+      counts: { allowed: 0, blocked: 0, total: 0 },
+      allowedReasons: [],
+      blockedReasons: [],
+      avgEditsPerAllowed: 0,
+      costByRouteModel: [],
+    },
+  };
   const params = new URLSearchParams();
   if (filters.hours) params.append('hours', filters.hours);
   if (filters.route) params.append('route', filters.route);
@@ -1488,14 +1464,25 @@ export async function getObservabilityStatus(filters = {}) {
   const url = query
     ? `${baseUrl}/status/observability?${query}`
     : `${baseUrl}/status/observability`;
-  const resp = await fetch(url, { headers });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(url, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch observability metrics');
+    }
+    return await resp.json();
+  } catch (err) {
+    if (
+      err?.message === 'Unauthorized' ||
+      err?.message === 'Failed to fetch observability metrics'
+    ) {
+      throw err;
+    }
+    console.error('Failed to fetch observability status', err);
   }
-  if (!resp.ok) {
-    throw new Error('Failed to fetch observability metrics');
-  }
-  return await resp.json();
+  return fallback;
 }
 
 /**
@@ -1510,10 +1497,7 @@ export async function getObservabilityStatus(filters = {}) {
  * @returns {Promise<Array<{id:number,name:string,content:string}>>}
  */
 export async function getTemplates(specialty, payer) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -1543,10 +1527,7 @@ export async function getTemplates(specialty, payer) {
  * @returns {Promise<object>}
  */
 export async function createTemplate(tpl) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
@@ -1582,10 +1563,7 @@ export async function createTemplate(tpl) {
  * @returns {Promise<object>}
  */
 export async function updateTemplate(id, tpl) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
@@ -1624,10 +1602,7 @@ export async function updateTemplate(id, tpl) {
  * @returns {Promise<void>}
  */
 export async function deleteTemplate(id) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -1649,48 +1624,62 @@ export async function deleteTemplate(id) {
 }
 
 export async function getPromptTemplates() {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) return {};
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
-  const resp = await fetch(`${baseUrl}/prompt-templates`, { headers });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/prompt-templates`, { headers });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      throw new Error('Failed to fetch prompt templates');
+    }
+    return await resp.json();
+  } catch (err) {
+    if (
+      err?.message === 'Unauthorized' ||
+      err?.message === 'Failed to fetch prompt templates'
+    ) {
+      throw err;
+    }
+    console.error('Failed to fetch prompt templates', err);
+    return {};
   }
-  if (!resp.ok) {
-    throw new Error('Failed to fetch prompt templates');
-  }
-  return await resp.json();
 }
 
 export async function savePromptTemplates(data) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) return data;
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
     ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     : { 'Content-Type': 'application/json' };
-  const resp = await fetch(`${baseUrl}/prompt-templates`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(data),
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    throw new Error('Unauthorized');
+  try {
+    const resp = await fetch(`${baseUrl}/prompt-templates`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(data),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
+    }
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to save prompt templates');
+    }
+    return await resp.json();
+  } catch (err) {
+    if (
+      err?.message === 'Unauthorized' ||
+      err?.message === 'Failed to save prompt templates'
+    ) {
+      throw err;
+    }
+    console.error('Failed to save prompt templates', err);
+    return data;
   }
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to save prompt templates');
-  }
-  return await resp.json();
 }
 
 /**
@@ -1713,13 +1702,7 @@ export async function setApiKey(key) {
   // Compute the backend URL.  This falls back to a global injected
   // BACKEND_URL or the current origin.  If none is found, throw an
   // explicit error so the caller can handle the missing configuration.
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (!baseUrl) {
-    throw new Error('Backend URL not set');
-  }
+  const baseUrl = resolveBaseUrl();
   const token =
     typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers = token
@@ -2285,10 +2268,7 @@ export async function exportToEhr(
     return { status: 'skipped' };
   }
 
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
+  const baseUrl = resolveBaseUrl();
   const auth =
     token ||
     (typeof window !== 'undefined' ? localStorage.getItem('token') : null);
@@ -2332,48 +2312,43 @@ export async function exportToEhr(
  * @returns {Promise<string>}
  */
 export async function summarizeNote(text, context = {}) {
-  const baseUrl =
-    import.meta?.env?.VITE_API_URL ||
-    window.__BACKEND_URL__ ||
-    window.location.origin;
-  if (baseUrl) {
-    const payload = { text };
-    if (context.lang) payload.lang = context.lang;
-    if (context.patientAge != null) payload.patientAge = context.patientAge;
-    if (context.chart) payload.chart = context.chart;
-    if (context.audio) payload.audio = context.audio;
-    if (context.specialty) payload.specialty = context.specialty;
-    if (context.payer) payload.payer = context.payer;
-    if (typeof context.useLocalModels === 'boolean')
-      payload.useLocalModels = context.useLocalModels;
-    if (context.summarizeModel) payload.summarizeModel = context.summarizeModel;
-    try {
-      const token =
-        typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-      const headers = token
-        ? {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          }
-        : { 'Content-Type': 'application/json' };
-      const resp = await fetch(`${baseUrl}/summarize`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-      if (resp.status === 401 || resp.status === 403) {
-        throw new Error('Unauthorized');
-      }
-      const data = await resp.json();
-      return {
-        summary: data.summary || '',
-        recommendations: data.recommendations || [],
-        warnings: data.warnings || [],
-      };
-    } catch (err) {
-      console.error('Error summarizing note:', err);
-      // fall through to stub behaviour
+  const baseUrl = resolveBaseUrl();
+  const payload = { text };
+  if (context.lang) payload.lang = context.lang;
+  if (context.patientAge != null) payload.patientAge = context.patientAge;
+  if (context.chart) payload.chart = context.chart;
+  if (context.audio) payload.audio = context.audio;
+  if (context.specialty) payload.specialty = context.specialty;
+  if (context.payer) payload.payer = context.payer;
+  if (typeof context.useLocalModels === 'boolean')
+    payload.useLocalModels = context.useLocalModels;
+  if (context.summarizeModel) payload.summarizeModel = context.summarizeModel;
+  try {
+    const token =
+      typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    const headers = token
+      ? {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        }
+      : { 'Content-Type': 'application/json' };
+    const resp = await fetch(`${baseUrl}/summarize`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      throw new Error('Unauthorized');
     }
+    const data = await resp.json();
+    return {
+      summary: data.summary || '',
+      recommendations: data.recommendations || [],
+      warnings: data.warnings || [],
+    };
+  } catch (err) {
+    console.error('Error summarizing note:', err);
+    // fall through to stub behaviour
   }
   // fallback: return the first sentence or first 200 characters
   if (!text) return { summary: '', recommendations: [], warnings: [] };
@@ -2398,7 +2373,6 @@ export async function summarizeNote(text, context = {}) {
  */
 export async function getEvents() {
   const baseUrl = resolveBaseUrl();
-  if (!baseUrl) return [];
   try {
     const token =
       typeof window !== 'undefined' ? localStorage.getItem('token') : null;
