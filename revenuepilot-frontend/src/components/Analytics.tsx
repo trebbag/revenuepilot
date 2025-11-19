@@ -35,6 +35,7 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { Skeleton } from "./ui/skeleton"
 import { apiFetch, apiFetchJson } from "../lib/api"
 import { downloadPdfWithFallback } from "../utils/pdfFallback"
+import { Input } from "./ui/input"
 
 interface UsageTrendPoint {
   day: string
@@ -169,6 +170,7 @@ interface AnalyticsFilters {
   datePreset: DatePreset
   customRange: DateRange | null
   clinician: string | null
+  provider: string | null
   clinic: string | null
   payer: string | null
 }
@@ -180,8 +182,17 @@ interface StoredAnalyticsFilters {
     to?: string | null
   }
   clinician?: string | null
+  provider?: string | null
   clinic?: string | null
   payer?: string | null
+}
+
+interface ExportScheduleResponse {
+  id: string
+  cadence: string
+  format: string
+  recipients: string[]
+  next_run_at?: string | null
 }
 
 function createDefaultFilters(): AnalyticsFilters {
@@ -189,6 +200,7 @@ function createDefaultFilters(): AnalyticsFilters {
     datePreset: "30days",
     customRange: null,
     clinician: null,
+    provider: null,
     clinic: null,
     payer: null,
   }
@@ -217,6 +229,7 @@ function serializeFilters(filters: AnalyticsFilters): StoredAnalyticsFilters {
   const payload: StoredAnalyticsFilters = {
     datePreset: filters.datePreset,
     clinician: filters.clinician,
+    provider: filters.provider,
     clinic: filters.clinic,
     payer: filters.payer,
   }
@@ -248,6 +261,7 @@ function deserializeFilters(raw: unknown): AnalyticsFilters {
   }
 
   base.clinician = normalizeFilterValue(record.clinician)
+  base.provider = normalizeFilterValue(record.provider)
   base.clinic = normalizeFilterValue(record.clinic)
   base.payer = normalizeFilterValue(record.payer)
 
@@ -321,6 +335,9 @@ function buildAnalyticsQuery(filters: AnalyticsFilters): string {
   }
   if (filters.clinician) {
     params.set("clinician", filters.clinician)
+  }
+  if (filters.provider) {
+    params.set("provider", filters.provider)
   }
   if (filters.clinic) {
     params.set("clinic", filters.clinic)
@@ -415,6 +432,12 @@ interface DashboardFiltersProps {
 }
 
 function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFiltersProps) {
+  const [scheduleCadence, setScheduleCadence] = useState<string>("weekly")
+  const [scheduleFormat, setScheduleFormat] = useState<string>("pdf")
+  const [scheduleRecipients, setScheduleRecipients] = useState<string>("")
+  const [scheduleStatus, setScheduleStatus] = useState<string | null>(null)
+  const [scheduling, setScheduling] = useState(false)
+
   const handleDatePresetChange = (value: string) => {
     const preset = value as DatePreset
     onFiltersChange({
@@ -437,6 +460,43 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
 
   const handlePayerChange = (value: string) => {
     onFiltersChange({ payer: value === "all" ? null : value })
+  }
+
+  const handleProviderChange = (value: string) => {
+    onFiltersChange({ provider: value === "all" ? null : value })
+  }
+
+  const scheduleExport = async () => {
+    setScheduling(true)
+    setScheduleStatus(null)
+    const { start, end } = resolveDateRange(filters)
+    try {
+      const recipients = scheduleRecipients
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+      const payload = {
+        cadence: scheduleCadence,
+        format: scheduleFormat,
+        recipients,
+        clinic: filters.clinic,
+        provider: filters.provider ?? filters.clinician,
+        payer: filters.payer,
+        start: start?.toISOString(),
+        end: end?.toISOString(),
+      }
+      const response = await apiFetchJson<ExportScheduleResponse>("/api/analytics/exports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const eta = response.next_run_at ? new Date(response.next_run_at).toLocaleString() : "queued"
+      setScheduleStatus(`Scheduled ${response.format.toUpperCase()} export (${response.cadence}) - next run ${eta}`)
+    } catch (error) {
+      setScheduleStatus("Unable to schedule export. Check filters and recipients.")
+    } finally {
+      setScheduling(false)
+    }
   }
 
   return (
@@ -469,6 +529,21 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
             <SelectItem value="alice">Dr. Alice</SelectItem>
             <SelectItem value="bob">Dr. Bob</SelectItem>
             <SelectItem value="carol">NP Carol</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Stethoscope className="w-4 h-4 text-muted-foreground" />
+        <Select value={filters.provider ?? "all"} onValueChange={handleProviderChange}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Select provider" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Providers</SelectItem>
+            <SelectItem value="attending">Attending</SelectItem>
+            <SelectItem value="resident">Resident</SelectItem>
+            <SelectItem value="pa">PA/NP</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -509,6 +584,41 @@ function DashboardFilters({ filters, onFiltersChange, onExport }: DashboardFilte
         <Download className="w-4 h-4 mr-2" />
         Export PDF
       </Button>
+
+      <div className="flex flex-wrap items-center gap-3 w-full border rounded-lg p-3 bg-muted/50">
+        <div className="flex items-center gap-2 min-w-[220px]">
+          <Input
+            value={scheduleRecipients}
+            onChange={(event) => setScheduleRecipients(event.target.value)}
+            placeholder="analytics@clinic.com, ops@payer.com"
+            className="h-9"
+          />
+        </div>
+        <Select value={scheduleCadence} onValueChange={setScheduleCadence}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="Cadence" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="daily">Daily</SelectItem>
+            <SelectItem value="weekly">Weekly</SelectItem>
+            <SelectItem value="monthly">Monthly</SelectItem>
+            <SelectItem value="once">One-time</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={scheduleFormat} onValueChange={setScheduleFormat}>
+          <SelectTrigger className="w-[140px]">
+            <SelectValue placeholder="Format" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="pdf">PDF</SelectItem>
+            <SelectItem value="email">Email Digest</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button variant="default" size="sm" onClick={() => void scheduleExport()} disabled={scheduling}>
+          Schedule export
+        </Button>
+        {scheduleStatus && <Badge variant="outline">{scheduleStatus}</Badge>}
+      </div>
     </div>
   )
 }
@@ -1336,6 +1446,10 @@ export function Analytics({ userRole = "user" }: AnalyticsProps) {
 
       if (updates.clinician !== undefined) {
         next.clinician = normalizeFilterValue(updates.clinician)
+      }
+
+      if (updates.provider !== undefined) {
+        next.provider = normalizeFilterValue(updates.provider)
       }
 
       if (updates.clinic !== undefined) {
